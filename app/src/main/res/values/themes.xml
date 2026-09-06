@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Cursor" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/cursor_canvas</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.Cursor.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/cursor_canvas</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.Cursor</item>
+    </style>
+</resources>
