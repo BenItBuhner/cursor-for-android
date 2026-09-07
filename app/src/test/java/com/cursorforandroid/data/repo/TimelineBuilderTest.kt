@@ -12,6 +12,7 @@ import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.ThinkingBlock
+import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
@@ -65,6 +66,77 @@ class TimelineBuilderTest {
     private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = RunStreamEvent.ToolCall(
         SseToolCallDto(callId = id, name = name, status = status, args = buildJsonObject { args.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }),
     )
+
+    /** What a replayed (or live) stream of `runId` produces: thinking, one tool batch, the reply and the footer. */
+    private fun trace(runId: String, reply: String, finished: Boolean = true): List<TimelineItem> {
+        val live = TimelineBuilder.LiveRun(runId, timed = false)
+        live.apply(RunStreamEvent.Thinking("Looking around."))
+        live.apply(tool("$runId-c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(tool("$runId-c2", "grep", "completed", "pattern" to "TODO"))
+        live.apply(RunStreamEvent.Assistant(reply))
+        if (finished) live.apply(RunStreamEvent.Result(runId, RunStatus.FINISHED, reply, 42_000, null))
+        return live.snapshot()
+    }
+
+    @Test
+    fun `a run's trace stands in for its transcript replies and footer`() {
+        val messages = listOf(
+            V0ConversationMessageDto("m1", "user_message", "Add a README"),
+            V0ConversationMessageDto("m2", "assistant_message", "Working on it."),
+            V0ConversationMessageDto("m3", "assistant_message", "Done, README added."),
+            V0ConversationMessageDto("m4", "user_message", "Add troubleshooting"),
+            V0ConversationMessageDto("m5", "assistant_message", "Added a troubleshooting section."),
+            V0ConversationMessageDto("m6", "user_message", "And a FAQ"),
+        )
+        val runs = listOf(
+            run("run-3", "2026-04-13T19:10:00.000Z", status = "RUNNING", duration = null),
+            run("run-2", "2026-04-13T18:50:00.000Z"),
+            run("run-1", "2026-04-13T18:30:00.000Z", branch = "cursor/readme"),
+        )
+        // run-1 replayed from its retained stream; run-2 expired (text only); run-3 is live and still streaming.
+        val traces = mapOf(
+            "run-1" to trace("run-1", "Done, README added."),
+            "run-3" to trace("run-3", "Drafting the FAQ", finished = false),
+        )
+        val items = TimelineBuilder.fromHistory(messages, runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        assertThat(items.map { it::class.simpleName }).containsExactly(
+            "DateHeader", "UserMessage", "ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "ThinkingBlock", "ToolActivity", "AssistantMessage",
+        ).inOrder()
+        // The transcript's copies of run-1's replies are gone; the trace's own text and footer took their place.
+        assertThat(items.none { it.id == "m2" || it.id == "m3" || it.id == "run-run-1" }).isTrue()
+        assertThat((items[4] as AssistantMessage).markdown).isEqualTo("Done, README added.")
+        assertThat((items[5] as RunFooter).runId).isEqualTo("run-1")
+        assertThat((items[5] as RunFooter).durationMs).isEqualTo(42_000L)
+        // The expired run keeps the transcript text and a footer built from the run record.
+        assertThat(items[8].id).isEqualTo("m5")
+        assertThat((items[9] as RunFooter).durationMs).isEqualTo(185_000L)
+        // The live run has no footer yet, and its tools sit right after its prompt rather than after the older runs.
+        assertThat((items[11] as UserMessage).text).isEqualTo("And a FAQ")
+        assertThat((items[13] as ToolActivity).calls.map { it.callId }).containsExactly("run-3-c1", "run-3-c2").inOrder()
+    }
+
+    @Test
+    fun `a trace also replaces the result fallback of runs missing from the transcript`() {
+        val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z", result = "Final answer"))
+        val traces = mapOf("run-1" to trace("run-1", "Final answer"))
+        val items = TimelineBuilder.fromHistory(emptyList(), runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        assertThat(items.map { it::class.simpleName }).containsExactly("DateHeader", "ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.none { it.id == "res-run-1" }).isTrue()
+    }
+
+    @Test
+    fun `an untimed accumulator leaves thinking durations out`() {
+        var clock = 1_000L
+        val live = TimelineBuilder.LiveRun("run-1", timed = false) { clock }
+        live.apply(RunStreamEvent.Thinking("Replayed thought."))
+        clock += 30_000
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        val thinking = live.snapshot().filterIsInstance<ThinkingBlock>().single()
+        assertThat(thinking.isStreaming).isFalse()
+        assertThat(thinking.durationSeconds).isNull()
+    }
 
     @Test
     fun `live run coalesces deltas, groups tools, tracks subagents and finishes with a footer`() {
