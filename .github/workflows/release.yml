@@ -32,6 +32,10 @@ concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
+
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
   # Only used by Gradle when RELEASE_KEYSTORE_FILE is set (see the "Prepare signing" step).

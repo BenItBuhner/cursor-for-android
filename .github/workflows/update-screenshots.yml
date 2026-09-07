@@ -23,6 +23,10 @@ concurrency:
   group: update-screenshots-${{ inputs.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   record:
     name: Record ${{ inputs.ref }}

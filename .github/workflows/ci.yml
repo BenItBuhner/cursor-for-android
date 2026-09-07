@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
+
 jobs:
   build:
     name: Build & lint
