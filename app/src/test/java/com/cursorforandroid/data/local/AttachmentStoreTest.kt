@@ -16,6 +16,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlin.random.Random
 
 /** Native graphics so [BitmapFactory] and [Bitmap.compress] really decode and encode. */
 @RunWith(AndroidJUnit4::class)
@@ -30,11 +31,24 @@ class AttachmentStoreTest {
     @After
     fun cleanUp() = runBlocking { store.clear() }
 
-    private fun png(width: Int, height: Int, color: Int = Color.RED): PromptImage {
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
+    private fun encode(bitmap: Bitmap, format: Bitmap.CompressFormat, mimeType: String): PromptImage {
         val out = ByteArrayOutputStream()
-        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
-        return PromptImage(out.toByteArray(), "image/png")
+        check(bitmap.compress(format, 90, out))
+        return PromptImage(out.toByteArray(), mimeType)
+    }
+
+    private fun png(width: Int, height: Int, color: Int = Color.RED): PromptImage =
+        encode(Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }, Bitmap.CompressFormat.PNG, "image/png")
+
+    private fun jpeg(width: Int, height: Int): PromptImage =
+        encode(Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }, Bitmap.CompressFormat.JPEG, "image/jpeg")
+
+    /** Random opaque pixels compress to nothing, so a modest bitmap becomes a multi-megabyte PNG. */
+    private fun noisyPng(width: Int, height: Int): PromptImage {
+        val random = Random(7)
+        val pixels = IntArray(width * height) { random.nextInt() or 0xFF000000.toInt() }
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { setPixels(pixels, 0, width, 0, 0, width, height) }
+        return encode(bitmap, Bitmap.CompressFormat.PNG, "image/png")
     }
 
     private fun dimensions(path: String): Pair<Int, Int> {
@@ -71,13 +85,38 @@ class AttachmentStoreTest {
     }
 
     @Test
-    fun `previews are shrunk to 1600px and written as jpeg unless they have transparent pixels`() = runBlocking {
-        val kept = store.save("bc-1", "run-1", listOf(png(3200, 800), png(100, 50, Color.TRANSPARENT), png(50, 50)))
+    fun `images already within bounds are kept byte for byte`() = runBlocking {
+        val png = png(400, 800)
+        val jpeg = jpeg(300, 200)
+        val gif = PromptImage(TINY_GIF, "image/gif")
+        val kept = store.save("bc-1", "run-1", listOf(png, jpeg, gif))
+        assertThat(kept.map { File(it.path).extension }).containsExactly("png", "jpg", "gif").inOrder()
+        assertThat(File(kept[0].path).readBytes()).isEqualTo(png.bytes)
+        assertThat(File(kept[1].path).readBytes()).isEqualTo(jpeg.bytes)
+        assertThat(File(kept[2].path).readBytes()).isEqualTo(TINY_GIF)
+        assertThat(kept[0].width to kept[0].height).isEqualTo(400 to 800)
+        assertThat(kept[1].width to kept[1].height).isEqualTo(300 to 200)
+        assertThat(kept[2].width to kept[2].height).isEqualTo(1 to 1)
+    }
+
+    @Test
+    fun `oversized images are shrunk to 1600px and re-encoded, as png when they have transparent pixels`() = runBlocking {
+        val kept = store.save("bc-1", "run-1", listOf(png(3200, 800), png(3200, 200, Color.TRANSPARENT)))
         assertThat(kept[0].width to kept[0].height).isEqualTo(1600 to 400)
         assertThat(dimensions(kept[0].path)).isEqualTo(1600 to 400)
         assertThat(kept[0].path).endsWith(".jpg")
+        assertThat(kept[1].width to kept[1].height).isEqualTo(1600 to 100)
         assertThat(kept[1].path).endsWith(".png")
-        assertThat(kept[2].width to kept[2].height).isEqualTo(50 to 50)
+    }
+
+    @Test
+    fun `an image within bounds but heavier than 2 MB is re-encoded rather than copied`() = runBlocking {
+        val noisy = noisyPng(1200, 1200)
+        assertThat(noisy.sizeBytes).isGreaterThan(2 * 1024 * 1024)
+        val kept = store.save("bc-1", "run-1", listOf(noisy)).single()
+        assertThat(kept.path).endsWith(".jpg")
+        assertThat(kept.width to kept.height).isEqualTo(1200 to 1200)
+        assertThat(File(kept.path).length()).isLessThan(noisy.sizeBytes.toLong())
     }
 
     @Test
@@ -109,6 +148,15 @@ class AttachmentStoreTest {
         store.delete("bc-1")
         assertThat(store.forAgent("bc-1")).isEmpty()
         assertThat(store.forAgent("bc-2")).hasSize(1)
+    }
+
+    private companion object {
+        /** The classic 1x1 transparent GIF89a. */
+        val TINY_GIF: ByteArray = byteArrayOf(
+            0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80.toByte(), 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x21, 0xF9.toByte(), 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2C,
+            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3B,
+        )
     }
 
     @Test

@@ -25,8 +25,9 @@ class StagedAttachments internal constructor(internal val dir: File?, val attach
  *
  * `GET /v0/agents/{id}/conversation` returns a `user_message` as text only: the `prompt.images` that went up with a
  * prompt never come back down, so a screenshot the user attached would vanish the moment the optimistic bubble is
- * replaced by history. Sending a prompt therefore writes a downscaled preview of each image here, filed by agent and
- * run (`files/attachments/<agent>/<run>/`), and `TimelineBuilder` pairs them with the user message that began that run.
+ * replaced by history. Sending a prompt therefore writes each image here — as sent when it is already display-sized,
+ * downscaled otherwise — filed by agent and run (`files/attachments/<agent>/<run>/`), and `TimelineBuilder` pairs them
+ * with the user message that began that run.
  *
  * A prompt is [stage]d before the request goes out so the optimistic bubble already shows its images; on success it is
  * [commit]ted under the run the API returned, on failure [discard]ed.
@@ -114,14 +115,21 @@ class AttachmentStore(context: Context) {
     }
 
     /**
-     * Decodes [image], shrinks it to at most [MAX_EDGE] on its long side and writes it as JPEG, or PNG when it has
-     * transparent pixels. Returns null for bytes that are not a decodable image.
+     * Writes [image] for display. An image that already fits [MAX_EDGE] on its long side and [PASSTHROUGH_MAX_BYTES]
+     * is kept byte for byte — the composer downsizes before upload, so that is nearly everything, and copying keeps
+     * a GIF's animation and avoids a second lossy encode. Anything larger is decoded, shrunk to [MAX_EDGE] and
+     * written as JPEG, or PNG when it has transparent pixels. Returns null for bytes that are not a decodable image.
      */
     private fun writePreview(image: PromptImage, dir: File, index: Int): MessageAttachment? {
         val bytes = image.bytes
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        if (maxOf(bounds.outWidth, bounds.outHeight) <= MAX_EDGE && bytes.size <= PASSTHROUGH_MAX_BYTES) {
+            val file = File(dir, "$index.${extensionFor(image.mimeType)}")
+            file.writeBytes(bytes)
+            return MessageAttachment(file.path, bounds.outWidth, bounds.outHeight)
+        }
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / sample > MAX_EDGE * 2) sample *= 2
         val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
@@ -156,9 +164,20 @@ class AttachmentStore(context: Context) {
         return false
     }
 
+    /** Cosmetic: [BitmapFactory] sniffs the real format when reading. */
+    private fun extensionFor(mimeType: String): String = when (mimeType.lowercase()) {
+        "image/png" -> "png"
+        "image/gif" -> "gif"
+        "image/webp" -> "webp"
+        else -> "jpg"
+    }
+
     private companion object {
         const val META_FILE = "meta.json"
+        /** Just above the composer's upload ceiling (1568px), so what the API received is what gets kept. */
         const val MAX_EDGE = 1600
+        /** Only a GIF can arrive both within [MAX_EDGE] and this heavy; its first frame is re-encoded instead. */
+        const val PASSTHROUGH_MAX_BYTES = 2 * 1024 * 1024
         const val JPEG_QUALITY = 85
 
         /**
