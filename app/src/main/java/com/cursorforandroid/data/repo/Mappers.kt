@@ -58,34 +58,75 @@ fun ModelListItemDto.toModel(): ModelOption = ModelOption(
 
 /** Builds the list-row model from the v1 summary, optionally enriched with the legacy v0 record. */
 fun AgentSummaryDto.toAgent(v0: V0AgentDto?, previous: Agent?): Agent {
+    val lifecycle = AgentLifecycle.parse(status)
+    val updatedAtMillis = parseIsoMillis(updatedAt, parseIsoMillis(createdAt))
+    val v0Status = v0?.status?.let { RunStatus.parse(it) }?.takeIf { it != RunStatus.UNKNOWN }
     val v0Branch = v0?.target?.branchName
     val v0Pr = v0?.target?.prUrl
     val v0Repo = v0?.source?.repository
-    val branches = when {
-        previous?.branches?.isNotEmpty() == true -> previous.branches
-        v0Branch != null || v0Pr != null -> listOf(GitBranch(v0Repo ?: "", v0Branch, v0Pr))
-        else -> emptyList()
-    }
-    val runStatus = v0?.status?.let { RunStatus.parse(it) }?.takeIf { it != RunStatus.UNKNOWN } ?: previous?.runStatus
     return Agent(
         id = id,
         name = name?.ifBlank { null } ?: v0?.name?.ifBlank { null } ?: "Untitled agent",
-        lifecycle = AgentLifecycle.parse(status),
-        runStatus = runStatus,
+        lifecycle = lifecycle,
+        runStatus = resolveListRunStatus(lifecycle, v0Status, previous, updatedAtMillis),
         envType = EnvType.parse(env.type),
         envName = env.name,
         url = url.ifBlank { "https://cursor.com/agents/$id" },
         createdAtMillis = parseIsoMillis(createdAt, parseIsoMillis(v0?.createdAt)),
-        updatedAtMillis = parseIsoMillis(updatedAt, parseIsoMillis(createdAt)),
+        updatedAtMillis = maxOf(updatedAtMillis, previous?.updatedAtMillis ?: 0L),
         latestRunId = latestRunId ?: previous?.latestRunId,
         repoUrl = v0Repo ?: previous?.repoUrl,
         startingRef = v0?.source?.ref ?: previous?.startingRef,
-        branches = branches,
+        branches = mergeBranches(v0Repo, v0Branch, v0Pr, previous?.branches.orEmpty()),
         summary = v0?.summary ?: previous?.summary,
         autoCreatePr = v0?.target?.autoCreatePr ?: previous?.autoCreatePr,
         workOnCurrentBranch = previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
         durationMs = previous?.durationMs,
+    )
+}
+
+/**
+ * Merges list-refresh run status without letting a lagging v0 FINISHED clobber a live follow-up, and
+ * without letting a stale local RUNNING survive after v1 has already gone idle.
+ */
+internal fun resolveListRunStatus(
+    lifecycle: AgentLifecycle,
+    v0Status: RunStatus?,
+    previous: Agent?,
+    summaryUpdatedAtMillis: Long,
+): RunStatus? {
+    val previousStatus = previous?.runStatus
+    if (lifecycle == AgentLifecycle.ACTIVE) {
+        return when {
+            v0Status?.isActive == true -> v0Status
+            previousStatus?.isActive == true -> previousStatus
+            v0Status != null && !v0Status.isTerminal -> v0Status
+            else -> previousStatus?.takeIf { it.isActive } ?: RunStatus.RUNNING
+        }
+    }
+    // Live hub / follow-up may have marked the row running more recently than this summary.
+    if (previousStatus?.isActive == true && (previous?.updatedAtMillis ?: 0L) > summaryUpdatedAtMillis) {
+        return previousStatus
+    }
+    return v0Status ?: previousStatus
+}
+
+/** Prefers fresh v0 branch/PR fields, keeps prior PR/branch when the legacy payload briefly omits them. */
+internal fun mergeBranches(
+    v0Repo: String?,
+    v0Branch: String?,
+    v0Pr: String?,
+    previous: List<GitBranch>,
+): List<GitBranch> {
+    if (v0Branch == null && v0Pr == null) return previous
+    val prior = previous.firstOrNull()
+    return listOf(
+        GitBranch(
+            repoUrl = v0Repo?.takeIf { it.isNotBlank() } ?: prior?.repoUrl.orEmpty(),
+            branch = v0Branch ?: prior?.branch,
+            prUrl = v0Pr ?: prior?.prUrl,
+        ),
     )
 }
 

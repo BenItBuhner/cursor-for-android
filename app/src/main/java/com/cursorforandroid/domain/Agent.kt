@@ -62,7 +62,11 @@ data class Agent(
     val hasBranch: Boolean get() = branchName != null
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
-    val isRunning: Boolean get() = !isArchived && (runStatus?.isActive == true || (runStatus == null && lifecycle == AgentLifecycle.ACTIVE))
+    /**
+     * True while a run is in flight. Trusts v1 `ACTIVE` even when a lagging v0/list status still says
+     * FINISHED — otherwise home "Open" and sidebar "Working" disagree after follow-ups on PR agents.
+     */
+    val isRunning: Boolean get() = !isArchived && (lifecycle == AgentLifecycle.ACTIVE || runStatus?.isActive == true)
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
 
     companion object {

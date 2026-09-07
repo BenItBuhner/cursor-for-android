@@ -15,6 +15,31 @@ data class AgentRow(
     val launchedFromThisDevice: Boolean,
 )
 
+/**
+ * What the New Chat preview card shows. Chat/run state always wins over merge/git state so the home
+ * list stays aligned with the sidebar [AgentIndicator] (Working vs Open was the classic desync).
+ */
+enum class RecentChatBadge { Working, Failed, Open, Branch, Summary, Empty }
+
+/** Leading metadata glyph next to model/repo/age — same priority as [RecentChatBadge]. */
+enum class RecentChatMetaGlyph { Running, PullRequest, Branch, Sparkle }
+
+fun AgentRow.recentChatBadge(): RecentChatBadge = when {
+    indicator == AgentIndicator.Running -> RecentChatBadge.Working
+    indicator == AgentIndicator.Error -> RecentChatBadge.Failed
+    agent.hasPullRequest -> RecentChatBadge.Open
+    agent.hasBranch -> RecentChatBadge.Branch
+    !agent.summary.isNullOrBlank() -> RecentChatBadge.Summary
+    else -> RecentChatBadge.Empty
+}
+
+fun AgentRow.recentChatMetaGlyph(): RecentChatMetaGlyph = when {
+    indicator == AgentIndicator.Running -> RecentChatMetaGlyph.Running
+    agent.hasPullRequest -> RecentChatMetaGlyph.PullRequest
+    agent.hasBranch -> RecentChatMetaGlyph.Branch
+    else -> RecentChatMetaGlyph.Sparkle
+}
+
 data class AgentSection(
     val key: String,
     val title: String,

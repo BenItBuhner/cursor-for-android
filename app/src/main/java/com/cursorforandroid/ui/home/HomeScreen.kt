@@ -40,7 +40,11 @@ import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelVariant
+import com.cursorforandroid.domain.RecentChatBadge
+import com.cursorforandroid.domain.RecentChatMetaGlyph
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.domain.recentChatBadge
+import com.cursorforandroid.domain.recentChatMetaGlyph
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
@@ -235,11 +239,11 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
             }
             Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                when {
-                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(16.dp))
-                    agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
-                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 16.dp, color = colors.iconTertiary)
-                    else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+                when (row.recentChatMetaGlyph()) {
+                    RecentChatMetaGlyph.Running -> RunningGlyph(size = 16.dp, color = colors.iconTertiary)
+                    RecentChatMetaGlyph.PullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(16.dp))
+                    RecentChatMetaGlyph.Branch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+                    RecentChatMetaGlyph.Sparkle -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
                 }
                 agent.modelDisplayName?.let { Text(it, style = type.base, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
@@ -257,20 +261,20 @@ private fun PreviewCard(row: AgentRow) {
     val agent = row.agent
     CursorCard(Modifier.size(width = CursorDimens.previewCardWidth, height = CursorDimens.previewCardHeight), shape = CursorTheme.shapes.lg) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
-            when {
-                agent.hasPullRequest -> Pill("Open", icon = CursorIcons.GitPullRequest, tint = colors.gitAdded, fill = colors.gitAdded.copy(alpha = 0.14f))
-                row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
-                row.indicator == AgentIndicator.Error -> Pill("Failed", tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
-                agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)
-                !agent.summary.isNullOrBlank() -> Text(
-                    agent.summary!!,
+            when (row.recentChatBadge()) {
+                RecentChatBadge.Working -> Pill("Working", icon = CursorIcons.Sparkle)
+                RecentChatBadge.Failed -> Pill("Failed", tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
+                RecentChatBadge.Open -> Pill("Open", icon = CursorIcons.GitPullRequest, tint = colors.gitAdded, fill = colors.gitAdded.copy(alpha = 0.14f))
+                RecentChatBadge.Branch -> Pill("Branch", icon = CursorIcons.GitBranch)
+                RecentChatBadge.Summary -> Text(
+                    agent.summary.orEmpty(),
                     style = type.code.copy(fontSize = 10.sp, lineHeight = 13.sp),
                     color = colors.textTertiary,
                     maxLines = 5,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxSize(),
                 )
-                else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(24.dp))
+                RecentChatBadge.Empty -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(24.dp))
             }
         }
     }

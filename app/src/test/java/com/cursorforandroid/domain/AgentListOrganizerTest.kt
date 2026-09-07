@@ -56,6 +56,35 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `active lifecycle counts as running even when run status lags as finished`() {
+        val a = agent(
+            "follow-up",
+            lifecycle = AgentLifecycle.ACTIVE,
+            runStatus = RunStatus.FINISHED,
+            branch = "cursor/x",
+            pr = "https://github.com/acme/app/pull/1",
+        )
+        assertThat(a.isRunning).isTrue()
+        val row = AgentListOrganizer.toRow(a, LocalAgentState())
+        assertThat(row.indicator).isEqualTo(AgentIndicator.Running)
+        assertThat(row.recentChatBadge()).isEqualTo(RecentChatBadge.Working)
+        assertThat(row.recentChatMetaGlyph()).isEqualTo(RecentChatMetaGlyph.Running)
+    }
+
+    @Test
+    fun `preview badge prefers working and failed over open pull request`() {
+        val withPr = agent("pr", branch = "cursor/x", pr = "https://github.com/acme/app/pull/1")
+        val runningWithPr = withPr.copy(lifecycle = AgentLifecycle.ACTIVE, runStatus = RunStatus.RUNNING)
+        val failedWithPr = withPr.copy(runStatus = RunStatus.ERROR)
+        val local = LocalAgentState(readMarkers = mapOf("pr" to now, "fail" to now))
+
+        assertThat(AgentListOrganizer.toRow(runningWithPr, local).recentChatBadge()).isEqualTo(RecentChatBadge.Working)
+        assertThat(AgentListOrganizer.toRow(failedWithPr.copy(id = "fail"), local).recentChatBadge()).isEqualTo(RecentChatBadge.Failed)
+        assertThat(AgentListOrganizer.toRow(withPr, local).recentChatBadge()).isEqualTo(RecentChatBadge.Open)
+        assertThat(AgentListOrganizer.toRow(agent("branch", branch = "cursor/y"), local).recentChatBadge()).isEqualTo(RecentChatBadge.Branch)
+    }
+
+    @Test
     fun `active lifecycle without run status counts as running`() {
         val a = agent("x", lifecycle = AgentLifecycle.ACTIVE, runStatus = null)
         assertThat(a.isRunning).isTrue()
