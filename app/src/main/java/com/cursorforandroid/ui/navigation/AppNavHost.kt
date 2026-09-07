@@ -40,6 +40,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
@@ -94,6 +95,7 @@ fun AppNavHost(
             onDeepLinkConsumed()
         }
     }
+    NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
     fun openAgent(id: String) {
         scope.launch { drawerState.close() }

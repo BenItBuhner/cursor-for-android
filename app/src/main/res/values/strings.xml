@@ -1,4 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Cursor</string>
+
+    <!-- Live notifications -->
+    <string name="channel_live_name">Running agents</string>
+    <string name="channel_live_description">Live status of agents that are currently working. Silent; shown as a Live Update on Android 16.</string>
+    <string name="channel_finished_name">Agent finished</string>
+    <string name="channel_finished_description">An agent finished a turn and is ready for review.</string>
+
+    <string name="notif_status_running">Running</string>
+    <string name="notif_status_starting">Starting</string>
+    <string name="notif_status_stopping">Stopping</string>
+    <string name="notif_status_finished">Finished</string>
+    <string name="notif_status_failed">Failed</string>
+    <string name="notif_status_cancelled">Cancelled</string>
+    <string name="notif_status_expired">Expired</string>
+    <plurals name="notif_agents_running">
+        <item quantity="one">%1$d agent running</item>
+        <item quantity="other">%1$d agents running</item>
+    </plurals>
+    <!-- Status-bar chip text on Android 16; keep it short. -->
+    <plurals name="notif_chip_agents">
+        <item quantity="one">%1$d agent</item>
+        <item quantity="other">%1$d agents</item>
+    </plurals>
+    <string name="notif_connecting">Connecting to your agents…</string>
+    <string name="notif_action_review">Review</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_action_view_pr">View PR</string>
+    <string name="notif_stop_failed">Couldn\'t stop the run: %1$s</string>
 </resources>

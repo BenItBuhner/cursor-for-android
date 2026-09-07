@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar / notification glyph: the cube mark in white with alpha shading, as small icons are tinted by the system. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- top face -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3.5 L19.5,7.75 L12,12 L4.5,7.75 Z" />
+    <!-- left face -->
+    <path
+        android:fillColor="#8CFFFFFF"
+        android:pathData="M4.5,7.75 L12,12 L12,20.5 L4.5,16.25 Z" />
+    <!-- right face -->
+    <path
+        android:fillColor="#CCFFFFFF"
+        android:pathData="M19.5,7.75 L12,12 L12,20.5 L19.5,16.25 Z" />
+</vector>

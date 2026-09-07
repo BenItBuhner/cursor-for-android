@@ -10,7 +10,10 @@ import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.parseIsoMillis
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
 class AppGraph(context: Context) {
@@ -28,9 +31,18 @@ class AppGraph(context: Context) {
     val session = SessionManager(keyStore, prefs, realBackend, demoBackend)
     val agents = AgentRepository(session, prefs)
     val catalog = CatalogRepository(session)
-    val conversations = ConversationRepository(session, agents, prefs)
+    /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
+    val liveRuns = LiveRunHub(session, agents)
+    val conversations = ConversationRepository(session, agents, prefs, liveRuns)
+    val runMonitor = RunMonitor(
+        agents = agents,
+        hub = liveRuns,
+        runStartedAt = { agentId, runId -> parseIsoMillis(session.current.api.getRun(agentId, runId).createdAt).takeIf { it > 0 } },
+    )
 
     suspend fun signOut() {
+        runMonitor.stop()
+        liveRuns.resetAll()
         conversations.resetAll()
         catalog.reset()
         session.signOut()

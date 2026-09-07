@@ -24,6 +24,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -60,16 +61,21 @@ class AgentRepository(
 
     init {
         scope.launch {
-            session.backend.collect { _state.value = AgentListState() }
+            // Only actual backend switches reset the list; reacting to the initial value could race a refresh that
+            // completed before this collector got scheduled and wipe its result.
+            session.backend.drop(1).collect { _state.value = AgentListState() }
         }
     }
 
     fun agent(id: String): Agent? = _state.value.agents.firstOrNull { it.id == id }
 
-    /** Fetches v1 (identity + lifecycle) and v0 (repo / branch / PR / summary) in parallel and merges them. */
-    suspend fun refresh() = refreshMutex.withLock {
+    /**
+     * Fetches v1 (identity + lifecycle) and v0 (repo / branch / PR / summary) in parallel and merges them.
+     * [silent] refreshes (background polling) leave the pull-to-refresh indicator alone.
+     */
+    suspend fun refresh(silent: Boolean = false) = refreshMutex.withLock {
         val api = session.current.api
-        _state.update { it.copy(isRefreshing = true, error = null) }
+        _state.update { it.copy(isRefreshing = !silent, error = null) }
         try {
             coroutineScope {
                 val v1 = async {
