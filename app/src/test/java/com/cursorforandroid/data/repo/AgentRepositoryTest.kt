@@ -255,6 +255,26 @@ class AgentRepositoryTest {
     }
 
     @Test
+    fun `a fetch that outlives a reset publishes nothing into the list that replaced it`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Previous account", "run-1")
+        api.v0Gate = CompletableDeferred()
+        val repo = repository()
+        val refresh = scope.launch { repo.refresh() }
+        awaitUntil { repo.state.value.agents.size == 1 }
+
+        repo.reset()
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+        api.v0Gate!!.complete(Unit)
+        refresh.join()
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+
+        // The next refresh belongs to the new session and lands normally.
+        repo.refresh()
+        assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
+        assertThat(repo.state.value.isRefreshing).isFalse()
+    }
+
+    @Test
     fun `the run monitor ignores rows restored from disk until a fetch confirms them`() = runBlocking<Unit> {
         cache.write(
             listOf(
@@ -280,7 +300,9 @@ class AgentRepositoryTest {
 
         repo.refresh()
         awaitUntil { monitor.state.value.running.map { it.agentId } == listOf("bc-live") }
-        assertThat(streamer.connections).containsExactly("run-live")
+        // The tracker is registered before its stream connects.
+        awaitUntil { streamer.connections.isNotEmpty() }
+        assertThat(streamer.connections.toList()).containsExactly("run-live")
         assertThat(repo.state.value.agents.first { it.id == "bc-stale" }.isRunning).isFalse()
         monitor.stop()
     }

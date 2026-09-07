@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 data class AgentListState(
     val agents: List<Agent> = emptyList(),
@@ -91,15 +92,17 @@ class AgentRepository(
     private var inFlight: InFlight? = null
     /** The backend whose cache has been consulted; a backend switch starts over. */
     @Volatile private var restoredFor: CursorBackend? = null
+    /** Bumped by [reset]; a fetch that started before a reset must not publish into the list that replaced it. */
+    private val generation = AtomicInteger()
+    /** The backend the published list belongs to; a switch only clears a list that still belongs to the old one. */
+    @Volatile private var owner: CursorBackend? = null
 
     init {
         scope.launch {
-            // Only actual backend switches reset the list; reacting to the initial value could race a refresh that
-            // completed before this collector got scheduled and wipe its result.
-            session.backend.drop(1).collect {
-                _state.value = AgentListState()
-                restoredFor = null
-            }
+            // Only actual backend switches clear the list; reacting to the initial value could race a refresh that
+            // completed before this collector got scheduled and wipe its result. Fetches for the old backend cannot
+            // publish any more (see publish), so a fetch for the new one that already landed is left alone.
+            session.backend.drop(1).collect { current -> if (owner !== current) clear() }
         }
         if (cache != null) {
             scope.launch {
@@ -115,6 +118,18 @@ class AgentRepository(
 
     fun agent(id: String): Agent? = _state.value.agents.firstOrNull { it.id == id }
 
+    /** Forgets the list on sign-out, so the next account never sees the previous one's agents, not even from a fetch still in flight. */
+    fun reset() {
+        generation.incrementAndGet()
+        clear()
+        restoredFor = null
+    }
+
+    private fun clear() {
+        owner = null
+        _state.value = AgentListState()
+    }
+
     /**
      * Shows the list saved by the previous session, if any. Idempotent per backend and a no-op for the demo, which
      * regenerates its data. [refresh] calls this first, so any entry point is cache-first.
@@ -127,6 +142,7 @@ class AgentRepository(
             restoredFor = backend
             val entry = cache.read() ?: return
             if (session.current !== backend) return
+            owner = backend
             _state.update { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else s.copy(agents = entry.value, hasLoaded = true, isFromCache = true)
@@ -167,10 +183,13 @@ class AgentRepository(
         val backend = session.current
         val api = backend.api
         val startedAt = AppClock.now()
-        // Everything published by this fetch belongs to the backend it started against; a demo / real switch
-        // half-way through must not leak the old backend's agents into the new list.
+        val startedIn = generation.get()
+        // Everything published by this fetch belongs to the backend and session it started against; a demo / real
+        // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState) {
-            if (session.current === backend) _state.update(transform)
+            if (session.current !== backend || generation.get() != startedIn) return
+            owner = backend
+            _state.update(transform)
         }
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
         try {

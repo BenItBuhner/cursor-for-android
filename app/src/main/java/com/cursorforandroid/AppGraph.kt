@@ -60,6 +60,7 @@ class AppGraph(context: Context) {
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()
+            agents.reset()
             catalog.reset()
             caches.clear()
         }
