@@ -102,12 +102,65 @@ data class ModelOption(
     val displayName: String,
     val description: String? = null,
     val variants: List<ModelVariant> = emptyList(),
+    /** The `parameters` definitions from `GET /v1/models`: what each variant's `params` mean in words. */
+    val parameters: List<ModelParameter> = emptyList(),
+) {
+    /**
+     * The variant's parameters in words — "Fast", "Fast off", "1M context · Max effort" — resolved through
+     * [parameters] where the API provides display names; null for a variant without parameters.
+     */
+    fun qualifier(variant: ModelVariant): String? {
+        if (variant.params.isEmpty()) return null
+        return variant.params.joinToString(" · ") { param ->
+            val definition = parameters.firstOrNull { it.id == param.id }
+            val name = definition?.displayName?.takeIf { it.isNotBlank() } ?: humanize(param.id)
+            val valueName = definition?.values?.firstOrNull { it.value == param.value }?.displayName?.takeIf { it.isNotBlank() }
+            when {
+                valueName != null -> if (valueName.equals(name, ignoreCase = true)) valueName else "$valueName ${name.lowercase()}"
+                param.value.equals("true", ignoreCase = true) -> name
+                param.value.equals("false", ignoreCase = true) -> "$name off"
+                else -> "${humanize(param.value)} ${name.lowercase()}"
+            }
+        }
+    }
+
+    /**
+     * What the composer chip and the picker call [variant]. `GET /v1/models` reuses the model's name for every
+     * variant of a model ("Composer 2" with `fast` on and off), so the parameters are appended whenever the name
+     * alone does not single the variant out among its siblings.
+     */
+    fun labelFor(variant: ModelVariant?): String {
+        if (variant == null) return displayName
+        val ambiguous = variants.count { it.displayName == variant.displayName } > 1
+        val qualifier = qualifier(variant)
+        return if (ambiguous && qualifier != null) "${variant.displayName} · $qualifier" else variant.displayName
+    }
+
+    /** The variant a fresh selection of this model starts with: the API's default, else the first one. */
+    val defaultVariant: ModelVariant? get() = variants.firstOrNull { it.isDefault } ?: variants.firstOrNull()
+
+    /** The variant whose parameters are exactly [params] (an empty map matches a parameter-less variant). */
+    fun variantWithParams(params: Map<String, String>): ModelVariant? =
+        variants.firstOrNull { v -> v.params.associate { it.id to it.value } == params }
+
+    private companion object {
+        fun humanize(raw: String): String = raw.replace('_', ' ').replace('-', ' ').trim().replaceFirstChar { it.uppercaseChar() }
+    }
+}
+
+data class ModelParameter(
+    val id: String,
+    val displayName: String? = null,
+    val values: List<ModelParameterValue> = emptyList(),
 )
+
+data class ModelParameterValue(val value: String, val displayName: String? = null)
 
 data class ModelVariant(
     val displayName: String,
     val params: List<ModelParam>,
     val isDefault: Boolean,
+    val description: String? = null,
 )
 
 data class ModelParam(val id: String, val value: String)
