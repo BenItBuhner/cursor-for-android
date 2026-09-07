@@ -8,7 +8,8 @@ plugins {
 
 android {
     namespace = "com.cursorforandroid"
-    compileSdk = 35
+    // 36 is required by androidx.core 1.17, which carries the Android 16 Live Updates notification APIs.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.cursorforandroid"
@@ -56,6 +57,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.security.crypto)

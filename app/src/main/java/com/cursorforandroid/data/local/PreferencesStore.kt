@@ -53,7 +53,19 @@ class PreferencesStore(context: Context) {
         val lastModel = stringPreferencesKey("last_model")
         val lastModelParams = stringPreferencesKey("last_model_params")
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
+        val liveNotifications = booleanPreferencesKey("live_notifications")
+        val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
     }
+
+    /** Live notification for running agents (the Android counterpart of iOS Live Activities). On by default. */
+    val liveNotifications: Flow<Boolean> = store.data.map { it[Keys.liveNotifications] ?: true }
+
+    /** True once the POST_NOTIFICATIONS prompt has been shown, so a refusal is not nagged about. */
+    val notificationPermissionAsked: Flow<Boolean> = store.data.map { it[Keys.notificationPermissionAsked] ?: false }
+
+    suspend fun setLiveNotifications(enabled: Boolean) = store.edit { it[Keys.liveNotifications] = enabled }
+
+    suspend fun setNotificationPermissionAsked() = store.edit { it[Keys.notificationPermissionAsked] = true }
 
     val themeMode: Flow<ThemeMode> = store.data.map { p ->
         p[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System

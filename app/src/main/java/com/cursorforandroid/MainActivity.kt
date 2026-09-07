@@ -11,6 +11,8 @@ import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.notifications.LiveNotificationCoordinator
+import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -28,6 +30,8 @@ class MainActivity : ComponentActivity() {
 
         val graph = appGraph
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
+        LiveNotifications.ensureChannels(this)
+        LiveNotificationCoordinator.bind(this, graph)
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
