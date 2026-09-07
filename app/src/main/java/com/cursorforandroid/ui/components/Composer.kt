@@ -188,7 +188,6 @@ fun SelectorChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
-    mono: Boolean = false,
     enabled: Boolean = true,
     showChevron: Boolean = enabled,
 ) {
@@ -206,7 +205,7 @@ fun SelectorChip(
         if (label.isNotEmpty()) {
             Text(
                 label,
-                style = if (mono) type.code.copy(fontSize = type.base.fontSize) else type.base,
+                style = type.base,
                 color = colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
