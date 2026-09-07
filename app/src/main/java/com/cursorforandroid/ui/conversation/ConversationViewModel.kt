@@ -87,6 +87,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun reload() = graph.conversations.reload(agentId)
 
+    /** The screen is back in the foreground: catch up on whatever the run did while the app was away. */
+    fun revalidate() = graph.conversations.revalidate(agentId)
+
     fun togglePinned() = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
 
     fun archive(onDone: () -> Unit) = viewModelScope.launch {
