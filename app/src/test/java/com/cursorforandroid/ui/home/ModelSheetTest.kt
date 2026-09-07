@@ -53,6 +53,8 @@ class ModelSheetTest {
         unavailable: Boolean = false,
         onSelect: (ModelOption?, ModelVariant?) -> Unit = { _, _ -> },
         onRetry: () -> Unit = {},
+        onAutoCreatePr: ((Boolean) -> Unit)? = {},
+        noModelRow: NoModelRow? = NoModelRow.Default,
     ) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
@@ -65,15 +67,18 @@ class ModelSheetTest {
                     loading = loading,
                     unavailable = unavailable,
                     onPlanMode = {},
-                    onAutoCreatePr = {},
+                    onAutoCreatePr = onAutoCreatePr,
                     onRetry = onRetry,
                     onSelect = onSelect,
                     onDismiss = {},
+                    noModelRow = noModelRow,
                 )
             }
         }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("Model")).fetchSemanticsNodes().isNotEmpty() }
     }
+
+    private fun assertAbsent(text: String) = assertThat(compose.onAllNodes(hasText(text)).fetchSemanticsNodes()).isEmpty()
 
     /**
      * The API identifies a variant only by `id`+`params` and reuses the model's display name for each one, so a
@@ -112,5 +117,37 @@ class ModelSheetTest {
     fun `an empty catalogue shows the loading row while the request is in flight`() {
         show(emptyList(), loading = true)
         compose.onNodeWithText("Loading models…").assertIsDisplayed()
+    }
+
+    @Test
+    fun `on a new chat the no-model row is Cursor's default and both options are offered`() {
+        show(listOf(sonnet))
+        compose.onNodeWithText("Default").assertIsDisplayed()
+        compose.onNodeWithText("Your Cursor default model").assertIsDisplayed()
+        compose.onNodeWithText("Plan mode").assertIsDisplayed()
+        compose.onNodeWithText("Auto-create PR").assertIsDisplayed()
+    }
+
+    /** On a follow-up the row stands for the chat's current model, and picking it reports no model at all. */
+    @Test
+    fun `the no-model row reads as the caller says and still reports no model`() {
+        var picked: Pair<ModelOption?, ModelVariant?>? = null
+        show(listOf(sonnet), onSelect = { m, v -> picked = m to v }, noModelRow = NoModelRow("Current model", "Keep the model this chat has been using"))
+        compose.onNodeWithText("Keep the model this chat has been using").assertIsDisplayed()
+        assertAbsent("Default")
+        compose.onNodeWithText("Current model").performClick()
+        compose.waitForIdle()
+        assertThat(picked).isEqualTo(null to null)
+    }
+
+    /** A follow-up cannot change an agent's auto-PR setting, and a chat whose model the catalog lists needs no extra row. */
+    @Test
+    fun `without an auto-PR handler or a no-model row neither is shown`() {
+        show(listOf(sonnet), onAutoCreatePr = null, noModelRow = null)
+        compose.onNodeWithText("Plan mode").assertIsDisplayed()
+        compose.onNodeWithText("Claude 4.6 Sonnet (Thinking)").assertIsDisplayed()
+        assertAbsent("Auto-create PR")
+        assertAbsent("Default")
+        assertAbsent("Current model")
     }
 }
