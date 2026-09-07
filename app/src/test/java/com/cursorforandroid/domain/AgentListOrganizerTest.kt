@@ -56,6 +56,22 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `active lifecycle with error status still surfaces as failed not working`() {
+        val a = agent(
+            "boom",
+            lifecycle = AgentLifecycle.ACTIVE,
+            runStatus = RunStatus.ERROR,
+            branch = "cursor/x",
+            pr = "https://github.com/acme/app/pull/1",
+        )
+        assertThat(a.isRunning).isFalse()
+        assertThat(a.isError).isTrue()
+        val row = AgentListOrganizer.toRow(a, LocalAgentState(readMarkers = mapOf("boom" to now)))
+        assertThat(row.indicator).isEqualTo(AgentIndicator.Error)
+        assertThat(row.recentChatBadge()).isEqualTo(RecentChatBadge.Failed)
+    }
+
+    @Test
     fun `active lifecycle counts as running even when run status lags as finished`() {
         val a = agent(
             "follow-up",
