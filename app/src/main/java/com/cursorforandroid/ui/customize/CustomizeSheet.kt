@@ -12,15 +12,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,7 +31,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,8 +40,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -59,6 +58,7 @@ import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.SheetHeaderHeight
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rewind
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -77,7 +77,6 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf<FilterKind?>(null) }
     // Seekable so a back gesture scrubs the drill-in page out and the root page in; committed on release.
@@ -88,7 +87,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
         pageTransition.animateTo(page)
     }
 
-    CursorSheet(onDismiss = onDismiss, sheetState = sheetState, scrimColor = Color.Black.copy(alpha = 0.5f)) {
+    CursorSheet(onDismiss = onDismiss) {
         PredictiveBackHandler(enabled = page != null) { events ->
             rewindJob?.cancel()
             try {
@@ -100,23 +99,26 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
             page = null
         }
         val transition = rememberTransition(pageTransition, label = "customize-page")
-        Column(Modifier.fillMaxWidth().navigationBarsPadding().heightIn(min = 280.dp)) {
+        Column(Modifier.fillMaxWidth().heightIn(min = 280.dp)) {
             // The header rides the same transition as the body, so the title changes with the gesture, not after it.
             transition.AnimatedContent(
                 transitionSpec = { fadeIn(tween(PageTransitionMillis)) togetherWith fadeOut(tween(PageTransitionMillis)) using null },
             ) { current ->
-                Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = if (current == null) 16.dp else 6.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth().height(SheetHeaderHeight).padding(start = if (current == null) 20.dp else 8.dp, end = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     if (current != null) {
                         FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = { page = null })
-                        Spacer(Modifier.width(2.dp))
+                        Spacer(Modifier.width(4.dp))
                     }
-                    Text(current?.label ?: "Chats", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                    Text(current?.label ?: "Chats", style = type.sectionTitle, color = colors.textPrimary, modifier = Modifier.weight(1f))
                     if (current == null && !state.prefs.isDefault) {
                         Text(
                             "Reset",
-                            style = type.base,
+                            style = type.baseMedium,
                             color = colors.link,
-                            modifier = Modifier.pressable(viewModel::resetPrefs, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.pressable(viewModel::resetPrefs, CursorTheme.shapes.base).padding(horizontal = 10.dp, vertical = 8.dp),
                         )
                     }
                 }
@@ -162,7 +164,7 @@ private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen:
     PickerRow(CursorIcons.Filter, "Sort by", SortOrder.entries.map { it.label }, prefs.sortOrder.ordinal) { viewModel.setSortOrder(SortOrder.entries[it]) }
 
     SectionLabel("Filter")
-    DrillRow(CursorIcons.Folder, "Repo", prefs.summaryFor(FilterKind.Repo)) { onOpen(FilterKind.Repo) }
+    DrillRow(CursorIcons.Repo, "Repo", prefs.summaryFor(FilterKind.Repo)) { onOpen(FilterKind.Repo) }
     DrillRow(CursorIcons.Sparkle, "Status", prefs.summaryFor(FilterKind.Status)) { onOpen(FilterKind.Status) }
     DrillRow(CursorIcons.GitBranch, "Git", prefs.summaryFor(FilterKind.Git)) { onOpen(FilterKind.Git) }
     DrillRow(CursorIcons.Cloud, "Source", prefs.summaryFor(FilterKind.Source)) { onOpen(FilterKind.Source) }
@@ -179,25 +181,28 @@ private fun SectionLabel(text: String) {
         text,
         style = CursorTheme.typography.small,
         color = CursorTheme.colors.textTertiary,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 4.dp),
     )
 }
 
+/** A sheet list row: 17px glyph at 66 %, label, trailing control; inset 8dp so the press highlight has a margin. */
 @Composable
-private fun RowShell(icon: ImageVector, label: String, onClick: (() -> Unit)?, trailing: @Composable () -> Unit) {
+private fun RowShell(icon: ImageVector?, label: String, onClick: (() -> Unit)?, trailing: @Composable RowScope.() -> Unit) {
     val colors = CursorTheme.colors
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .then(if (onClick != null) Modifier.pressable(onClick, CursorTheme.shapes.base) else Modifier)
-            .height(38.dp)
-            .padding(horizontal = 8.dp),
+            .height(CursorDimens.listRow)
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
+        if (icon != null) {
+            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(12.dp))
+        }
+        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         trailing()
     }
 }
@@ -206,7 +211,7 @@ private fun RowShell(icon: ImageVector, label: String, onClick: (() -> Unit)?, t
 private fun DrillRow(icon: ImageVector, label: String, value: String, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     RowShell(icon, label, onClick) {
-        Text(value, style = CursorTheme.typography.base, color = colors.textTertiary)
+        Text(value, style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1)
         Spacer(Modifier.width(4.dp))
         Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
     }
@@ -221,7 +226,7 @@ private fun PickerRow(icon: ImageVector, label: String, options: List<String>, s
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(options[selectedIndex], style = CursorTheme.typography.base, color = colors.textTertiary)
                 Spacer(Modifier.width(3.dp))
-                Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+                Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(15.dp))
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                 options.forEachIndexed { i, option ->
@@ -229,7 +234,8 @@ private fun PickerRow(icon: ImageVector, label: String, options: List<String>, s
                         text = { Text(option, style = CursorTheme.typography.base, color = colors.textPrimary) },
                         trailingIcon = { if (i == selectedIndex) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) },
                         onClick = { open = false; onSelect(i) },
-                        modifier = Modifier.height(32.dp),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp),
+                        modifier = Modifier.height(40.dp),
                     )
                 }
             }
@@ -243,47 +249,39 @@ private fun ToggleRow(icon: ImageVector, label: String, checked: Boolean, onChan
 }
 
 @Composable
-private fun ChecklistPage(items: List<Pair<String, Boolean>>, onToggle: (Int) -> Unit) {
+private fun CheckRow(label: String, checked: Boolean, onClick: () -> Unit, icon: ImageVector? = null, detail: String? = null) {
     val colors = CursorTheme.colors
-    Spacer(Modifier.height(6.dp))
-    items.forEachIndexed { index, (label, checked) ->
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp).pressable({ onToggle(index) }, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(label, style = CursorTheme.typography.base, color = colors.textPrimary)
+    RowShell(icon, label, onClick) {
+        if (detail != null) {
+            Text(detail, style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
+            Spacer(Modifier.width(10.dp))
+        }
+        Box(Modifier.size(16.dp)) {
             if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
         }
     }
 }
 
 @Composable
+private fun ChecklistPage(items: List<Pair<String, Boolean>>, onToggle: (Int) -> Unit) {
+    Spacer(Modifier.height(6.dp))
+    items.forEachIndexed { index, (label, checked) -> CheckRow(label, checked, onClick = { onToggle(index) }) }
+}
+
+@Composable
 private fun RepoPage(slugs: List<String>, selected: Set<String>?, onSelectAll: () -> Unit, onToggle: (String) -> Unit) {
     val colors = CursorTheme.colors
     Spacer(Modifier.height(6.dp))
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp).pressable(onSelectAll, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text("All repositories", style = CursorTheme.typography.base, color = colors.textPrimary)
-        if (selected == null) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
-    }
-    HairlineDivider(Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-    if (slugs.isEmpty()) Text("No repositories yet", style = CursorTheme.typography.small, color = colors.textQuaternary, modifier = Modifier.padding(16.dp))
+    CheckRow("All repositories", checked = selected == null, onClick = onSelectAll)
+    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+    if (slugs.isEmpty()) Text("No repositories yet", style = CursorTheme.typography.small, color = colors.textQuaternary, modifier = Modifier.padding(20.dp))
     slugs.forEach { slug ->
-        val checked = selected == null || slug in selected
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp).pressable({ onToggle(slug) }, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(CursorIcons.Folder, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(10.dp))
-            Text(slug.substringAfterLast('/'), style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
-            Text(slug.substringBeforeLast('/', ""), style = CursorTheme.typography.small, color = colors.textQuaternary)
-            Spacer(Modifier.width(10.dp))
-            if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
-        }
+        CheckRow(
+            label = slug.substringAfterLast('/'),
+            checked = selected == null || slug in selected,
+            onClick = { onToggle(slug) },
+            icon = CursorIcons.Repo,
+            detail = slug.substringBeforeLast('/', ""),
+        )
     }
 }
