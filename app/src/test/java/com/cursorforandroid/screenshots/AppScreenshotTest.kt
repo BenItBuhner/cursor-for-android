@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -159,6 +160,20 @@ class AppScreenshotTest {
         compose.waitUntil(90_000) { graph.conversations.state(cesiumId).value.items.any { it is RunFooter } }
         compose.waitForIdle()
         capture("06_conversation")
+
+        // A finished reply that embeds a screenshot and a recording by their /opt/cursor/artifacts paths: the image
+        // is fetched through the (demo) artifact download endpoint, the video shows its poster card.
+        Espresso.pressBack()
+        compose.waitForIdle()
+        scrollListTo("Android mobile experience")
+        compose.onAllNodesWithText("Android mobile experience").onFirst().performClick()
+        waitForText("Follow up")
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Sidebar drawer mid-gesture")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Video: predictive_back_demo.mp4")).fetchSemanticsNodes().isNotEmpty() }
+        // The reply is taller than the viewport; line its first paragraph up with the top so the figure is in frame.
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Predictive back was missing", substring = true))
+        compose.waitForIdle()
+        capture("11_conversation_media")
 
         // Settings + light theme.
         Espresso.pressBack()

@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
 import com.cursorforandroid.data.api.dto.AgentUsageResponseDto
 import com.cursorforandroid.data.api.dto.ApiKeyInfoDto
+import com.cursorforandroid.data.api.dto.ArtifactDto
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
 import com.cursorforandroid.data.api.dto.CreateRunRequestDto
@@ -35,6 +36,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
@@ -205,8 +207,19 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
     }
 
     override suspend fun usage(id: String): AgentUsageResponseDto = AgentUsageResponseDto()
-    override suspend fun artifacts(id: String): ListArtifactsResponseDto = ListArtifactsResponseDto()
-    override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto = DownloadArtifactResponseDto(url = "")
+
+    override suspend fun artifacts(id: String): ListArtifactsResponseDto = io {
+        delay(100)
+        if (id !in store.agents) throw notFound("agent_not_found")
+        ListArtifactsResponseDto(DemoData.artifacts[id].orEmpty().map { ArtifactDto(it.path, it.sizeBytes, store.iso()) })
+    }
+
+    /** The "presigned URL" of a demo artifact is the bundled asset, which Coil and ExoPlayer both read directly. */
+    override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto = io {
+        delay(100)
+        val artifact = DemoData.artifacts[id].orEmpty().firstOrNull { it.path == path } ?: throw notFound("artifact_not_found")
+        DownloadArtifactResponseDto(url = MediaLoader.ASSET_PREFIX + artifact.asset, expiresAt = store.iso(AppClock.now() + 15 * 60_000L))
+    }
 
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto = io {
         delay(120)

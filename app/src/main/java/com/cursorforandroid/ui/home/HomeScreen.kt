@@ -50,6 +50,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.components.ComposerBox
@@ -291,7 +292,7 @@ private fun PreviewCard(row: AgentRow) {
                 row.indicator == AgentIndicator.Error -> Pill("Failed", icon = CursorIcons.Warning, tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)
                 !agent.summary.isNullOrBlank() -> Text(
-                    agent.summary.orEmpty(),
+                    remember(agent.summary) { MediaMarkup.stripped(agent.summary.orEmpty()) },
                     style = type.code.copy(fontSize = 10.sp, lineHeight = 13.sp),
                     color = colors.textTertiary,
                     maxLines = 5,
