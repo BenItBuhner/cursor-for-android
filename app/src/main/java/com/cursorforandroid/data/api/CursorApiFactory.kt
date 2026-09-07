@@ -101,6 +101,19 @@ object CursorApiFactory {
         .build()
 
     /**
+     * For the browser login's `/auth/poll` and the dashboard RPC that mints the key: no stored credential may ride
+     * along, and nothing is logged, because the poll carries the verifier that redeems the login.
+     */
+    fun loginClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
+        }
+        .build()
+
+    /**
      * SSE connections have no call timeout — a run streams for as long as it takes. The read timeout is a heartbeat
      * watchdog: the server sends `heartbeat` frames on a quiet stream, so a socket that goes this long without a
      * byte is one the network dropped without telling us (a Wi-Fi to cellular handoff, Doze). Reading it fails with
