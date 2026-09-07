@@ -27,6 +27,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.RunFooter
+import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -168,6 +169,10 @@ class AppScreenshotTest {
         scrollListTo("Android mobile experience")
         compose.onAllNodesWithText("Android mobile experience").onFirst().performClick()
         waitForText("Follow up")
+        // The finished run's trace is replayed a beat after the transcript; wait for it too, so what is captured is
+        // the settled list rather than whichever of the trace and the media happened to land first.
+        val mobileId = graph.agents.state.value.agents.first { it.name == "Android mobile experience" }.id
+        compose.waitUntil(30_000) { graph.conversations.state(mobileId).value.items.any { it is ToolActivity } }
         compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Sidebar drawer mid-gesture")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Video: predictive_back_demo.mp4")).fetchSemanticsNodes().isNotEmpty() }
         // The reply is taller than the viewport; line its first paragraph up with the top so the figure is in frame.
@@ -200,6 +205,11 @@ class AppScreenshotTest {
         capture("09_tablet_home")
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
+        // The finished run's thinking / tool / subagent trace is replayed from its retained stream a beat after the
+        // transcript; capture once it has been spliced in.
+        val revenueId = graph.agents.state.value.agents.first { it.name == "Revenue Scaling Pipeline Research" }.id
+        compose.waitUntil(30_000) { graph.conversations.state(revenueId).value.items.any { it is ToolActivity } }
+        compose.waitForIdle()
         capture("10_tablet_conversation")
     }
 

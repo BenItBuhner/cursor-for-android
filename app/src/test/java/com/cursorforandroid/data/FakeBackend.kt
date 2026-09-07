@@ -102,6 +102,23 @@ open class FakeCursorApi : CursorApi {
         runs[runId] = RunDto(id = runId, agentId = id, status = "FINISHED", createdAt = createdAt, updatedAt = createdAt, durationMs = 65_000, result = result)
     }
 
+    /** An idle agent whose runs all finished; [prompts] pair each run (oldest first) with its transcript prompt and reply. */
+    fun addFinishedAgent(id: String, name: String, vararg prompts: Triple<String, String, String>, firstRunAt: String = "2026-04-13T18:30:00.000Z") {
+        var at = java.time.Instant.parse(firstRunAt)
+        val messages = mutableListOf<V0ConversationMessageDto>()
+        prompts.forEachIndexed { index, (runId, prompt, reply) ->
+            val iso = at.toString()
+            runs[runId] = RunDto(id = runId, agentId = id, status = "FINISHED", createdAt = iso, updatedAt = iso, durationMs = 60_000L * (index + 1), result = reply)
+            messages += V0ConversationMessageDto("$runId-u", "user_message", prompt)
+            messages += V0ConversationMessageDto("$runId-a", "assistant_message", reply)
+            at = at.plusSeconds(3600)
+        }
+        val last = prompts.last().first
+        agents[id] = AgentDto(id = id, name = name, status = "IDLE", createdAt = firstRunAt, updatedAt = runs.getValue(last).updatedAt, latestRunId = last)
+        v0[id] = V0AgentDto(id = id, name = name, status = "FINISHED")
+        transcripts[id] = messages
+    }
+
     private fun notFound() = CursorApiException(404, "not_found", "Not found.")
 
     private fun <T : Any> page(all: List<T>, id: (T) -> String, limit: Int, cursor: String?): Pair<List<T>, String?> {
@@ -170,7 +187,18 @@ open class FakeCursorApi : CursorApi {
         getRunCalls++
         return runs[runId] ?: throw notFound()
     }
-    override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto = throw UnsupportedOperationException()
+    /** Starts `run-<n>` on the agent; the test streams it through the fake streamer like any other run. */
+    override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
+        val agent = agents[id] ?: throw notFound()
+        val sequence = ids.incrementAndGet()
+        val runId = "run-followup-$sequence"
+        val now = java.time.Instant.parse("2026-04-14T09:00:00.000Z").plusSeconds(sequence.toLong()).toString()
+        val run = RunDto(id = runId, agentId = id, status = "RUNNING", createdAt = now, updatedAt = now)
+        runs[runId] = run
+        agents[id] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
+        transcripts[id] = transcripts[id].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", body.prompt.text)
+        return CreateRunResponseDto(run)
+    }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
         if (failCancel) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
         cancelled += runId
