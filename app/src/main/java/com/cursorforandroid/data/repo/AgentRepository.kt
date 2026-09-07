@@ -16,17 +16,12 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -53,28 +48,51 @@ class AgentRepository(
     private val session: SessionManager,
     private val prefs: PreferencesStore,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val refreshMutex = Mutex()
 
     private val _state = MutableStateFlow(AgentListState())
     val state: StateFlow<AgentListState> = _state.asStateFlow()
 
-    init {
-        scope.launch {
-            // Only actual backend switches reset the list; reacting to the initial value could race a refresh that
-            // completed before this collector got scheduled and wipe its result.
-            session.backend.drop(1).collect { _state.value = AgentListState() }
-        }
+    /** The backend the cached list was fetched from; a different current backend means the list is not ours. */
+    @Volatile private var loadedFrom: CursorBackend? = null
+
+    /** Bumped by [reset]; a refresh that started before a reset must not publish the old session's rows after it. */
+    @Volatile private var generation = 0
+
+    /** Epoch millis of the last successful [refresh]; zero before the first one and after a [reset]. */
+    @Volatile var lastRefreshedAt: Long = 0L
+        private set
+
+    /** Forgets the cached list, e.g. on sign-out, so the next session starts from "Loading" rather than stale rows. */
+    fun reset() {
+        generation++
+        loadedFrom = null
+        lastRefreshedAt = 0L
+        _state.value = AgentListState()
     }
 
     fun agent(id: String): Agent? = _state.value.agents.firstOrNull { it.id == id }
 
+    val isRefreshing: Boolean get() = refreshMutex.isLocked
+
+    /** Refreshes silently unless one is in flight or the current backend's list was fetched less than [maxAgeMs] ago. */
+    suspend fun refreshIfStale(maxAgeMs: Long) {
+        if (isRefreshing) return
+        if (loadedFrom === session.current && AppClock.now() - lastRefreshedAt < maxAgeMs) return
+        refresh(silent = true)
+    }
+
     /**
      * Fetches v1 (identity + lifecycle) and v0 (repo / branch / PR / summary) in parallel and merges them.
-     * [silent] refreshes (background polling) leave the pull-to-refresh indicator alone.
+     * [silent] refreshes (background polling) leave the pull-to-refresh indicator alone. A list cached from another
+     * backend (demo vs. real) is dropped before the fetch, and a result is discarded if the backend changed or
+     * [reset] ran while it was in flight.
      */
     suspend fun refresh(silent: Boolean = false) = refreshMutex.withLock {
-        val api = session.current.api
+        val backend = session.current
+        val api = backend.api
+        if (loadedFrom != null && loadedFrom !== backend) _state.value = AgentListState()
+        val startedIn = generation
         _state.update { it.copy(isRefreshing = !silent, error = null) }
         try {
             coroutineScope {
@@ -100,17 +118,26 @@ class AgentRepository(
                         }
                     }.getOrDefault(emptyList())
                 }
-                val summaries = v1.await()
+                // Pages are cursor-based over a list that changes underneath; an agent can straddle two of them,
+                // and the sidebar keys its rows on the id.
+                val summaries = v1.await().distinctBy { it.id }
                 val legacy: Map<String, V0AgentDto> = v0.await().associateBy { it.id }
+                if (generation != startedIn || session.current !== backend) return@coroutineScope discard()
                 val previous = _state.value.agents.associateBy { it.id }
                 val merged = summaries.map { it.toAgent(legacy[it.id], previous[it.id]) }
                 _state.update { it.copy(agents = merged, isRefreshing = false, hasLoaded = true, error = null) }
+                loadedFrom = backend
+                lastRefreshedAt = AppClock.now()
             }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
+            if (generation != startedIn || session.current !== backend) return@withLock discard()
             _state.update { it.copy(isRefreshing = false, hasLoaded = true, error = t.userMessage()) }
         }
     }
+
+    /** The session moved on while this fetch ran: leave the (already reset) list alone, but never a stuck spinner. */
+    private fun discard() = _state.update { it.copy(isRefreshing = false) }
 
     /** Loads the full agent record plus its latest run and folds them into the cached row. */
     suspend fun loadDetail(id: String): Result<Agent> = runCatching {

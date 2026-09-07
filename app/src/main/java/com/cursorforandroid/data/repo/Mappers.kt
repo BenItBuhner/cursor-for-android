@@ -14,6 +14,8 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ModelParameter
+import com.cursorforandroid.domain.ModelParameterValue
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.RunStatus
 import java.time.Instant
@@ -52,7 +54,11 @@ fun ModelListItemDto.toModel(): ModelOption = ModelOption(
             displayName = v.displayName,
             params = v.params.map { ModelParam(it.id, it.value) },
             isDefault = v.isDefault == true,
+            description = v.description,
         )
+    },
+    parameters = parameters.orEmpty().map { p ->
+        ModelParameter(id = p.id, displayName = p.displayName, values = p.values.map { ModelParameterValue(it.value, it.displayName) })
     },
 )
 

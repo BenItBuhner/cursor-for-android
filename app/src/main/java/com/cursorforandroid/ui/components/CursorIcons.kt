@@ -7,16 +7,17 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.group
 import androidx.compose.ui.unit.dp
 
 /**
  * The app's line icons. All glyphs sit on the 24-unit grid and are drawn as strokes, so one set scales from the
- * 12px composer buttons to the 24px logo without changing weight ratios.
+ * 12px composer buttons to the 22px logo slot without changing weight ratios.
  *
  * Geometry comes from Lucide (ISC, see `app/licenses/ISC_Lucide.txt`), the open icon family closest to the thin,
  * round-capped line style of Cursor's own UI; the strokes are rendered at 1.75 instead of Lucide's 2 to match the
- * weight Cursor draws its 16px icons at. The cube mark, the "working" dot cluster and the stop square are Cursor's
- * own shapes and are drawn here.
+ * weight Cursor draws its 16px icons at. Two shapes are Cursor's own: [Cube] is the official filled brand mark, and
+ * [Stop] the composer's stop square.
  */
 object CursorIcons {
 
@@ -55,24 +56,20 @@ object CursorIcons {
     // ------------------------------------------------------------------------------------------------------------
 
     /**
-     * The Cursor mark as the web sidebar draws it: a true isometric cube (vertices on a 30° lattice) with the three
-     * inner edges meeting at the centre. Sharp joins — the mark is not a rounded icon.
+     * The Cursor cube: the official 2D mark from the brand kit (https://cursor.com/brand, cursor-brand-assets.zip →
+     * General Logos/Cube/SVG/CUBE_2D_*.svg), path data verbatim. Filled, so it takes the tint like every other icon;
+     * the group scales the 466.73×532.09 artwork to the 16-unit width the sidebar glyphs occupy (18.24 tall, centred).
      */
     val Cube: ImageVector by lazy {
         icon("Cube") {
-            path("M12 3.25L19.58 7.625V16.375L12 20.75L4.42 16.375V7.625L12 3.25Z", 1.5f, join = StrokeJoin.Miter, cap = StrokeCap.Butt)
-            path("M4.42 7.625L12 12L19.58 7.625", 1.5f, join = StrokeJoin.Miter, cap = StrokeCap.Butt)
-            path("M12 12V20.75", 1.5f, cap = StrokeCap.Butt)
-        }
-    }
-
-    /** The sidebar's "working" glyph: four dots that rotate while a run is active. */
-    val Working: ImageVector by lazy {
-        icon("Working") {
-            dot(12f, 5.25f, 2f)
-            dot(18.75f, 12f, 2f)
-            dot(12f, 18.75f, 2f)
-            dot(5.25f, 12f, 2f)
+            group(scaleX = 0.034281f, scaleY = 0.034281f, translationX = 4f, translationY = 2.8797f) {
+                fill(
+                    "M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99" +
+                        "c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11" +
+                        "v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21" +
+                        "c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z",
+                )
+            }
         }
     }
 
@@ -327,14 +324,6 @@ object CursorIcons {
             path("M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z")
             path("M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12")
             path("M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17")
-        }
-    }
-
-    val Mic: ImageVector by lazy {
-        icon("Mic") {
-            path("M12 19v3")
-            path("M19 10v2a7 7 0 0 1-14 0v-2")
-            rect(9f, 2f, 6f, 13f, 3f)
         }
     }
 

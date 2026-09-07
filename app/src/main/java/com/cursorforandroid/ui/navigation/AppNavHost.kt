@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
@@ -96,6 +97,13 @@ fun AppNavHost(
             openAgent(it)
             onDeepLinkConsumed()
         }
+    }
+    // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
+    // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
+    // session, whose list sign-out cleared.
+    LifecycleStartEffect(Unit) {
+        agentsViewModel.refreshIfStale()
+        onStopOrDispose { }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 

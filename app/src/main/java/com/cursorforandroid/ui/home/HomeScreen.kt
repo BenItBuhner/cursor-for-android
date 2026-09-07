@@ -8,11 +8,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,17 +23,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,8 +50,6 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
-import com.cursorforandroid.domain.ModelOption
-import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.components.ComposerBox
@@ -49,7 +57,6 @@ import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
-import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -100,9 +107,11 @@ fun HomeScreen(
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
         }
+        // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
+        val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         LazyColumn(
             Modifier.fillMaxSize().imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item("composer") {
@@ -118,6 +127,9 @@ fun HomeScreen(
                         SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             if (editingRef) {
+                                // Tapping the branch chip means "type a branch": focus the field and open the keyboard.
+                                val refFocus = remember { FocusRequester() }
+                                LaunchedEffect(Unit) { refFocus.requestFocus() }
                                 Row(
                                     Modifier.height(28.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(start = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -130,7 +142,9 @@ fun HomeScreen(
                                         singleLine = true,
                                         textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
                                         cursorBrush = SolidColor(colors.textPrimary),
-                                        modifier = Modifier.widthIn(min = 56.dp, max = 150.dp),
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
+                                        keyboardActions = KeyboardActions(onDone = { editingRef = false }),
+                                        modifier = Modifier.widthIn(min = 56.dp, max = 150.dp).focusRequester(refFocus),
                                         decorationBox = { inner -> Box { if (state.ref.isEmpty()) Text("branch", style = type.base, color = colors.textQuaternary); inner() } },
                                     )
                                     FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 28.dp, iconSize = 15.dp)
@@ -172,7 +186,14 @@ fun HomeScreen(
             item("gap") { Spacer(Modifier.height(26.dp)) }
             if (recent.isEmpty() && listState.hasLoaded) {
                 item("empty") {
-                    Text("No chats yet", style = type.base, color = colors.textQuaternary, modifier = Modifier.padding(top = 24.dp))
+                    // A failed list request is not "no chats": say what happened (offline, rejected key, ...).
+                    val error = listState.error
+                    Text(
+                        error ?: "No chats yet",
+                        style = type.base,
+                        color = if (error != null) colors.red else colors.textQuaternary,
+                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
+                    )
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
@@ -188,7 +209,7 @@ fun HomeScreen(
             noRepo = state.noRepo,
             loading = state.isLoadingRepos,
             unavailable = state.reposUnavailable,
-            onSelect = { viewModel.selectRepo(it); repoSheet = false },
+            onSelect = viewModel::selectRepo,
             onRefresh = viewModel::refreshRepositories,
             onDismiss = { repoSheet = false },
         )
@@ -200,22 +221,14 @@ fun HomeScreen(
             selectedVariant = state.selectedVariant,
             planMode = state.planMode,
             autoCreatePr = state.autoCreatePr,
+            loading = state.isLoadingModels,
+            unavailable = state.modelsUnavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = viewModel::setAutoCreatePr,
-            onSelect = { m, v -> viewModel.selectModel(m, v); modelSheet = false },
+            onRetry = viewModel::refreshModels,
+            onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
         )
-    }
-}
-
-@Composable
-private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().pressable({ onChange(!checked) }, CursorTheme.shapes.base).height(CursorDimens.listRow).padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary, modifier = Modifier.weight(1f))
-        CursorToggle(checked, onChange)
     }
 }
 
@@ -306,16 +319,22 @@ private fun RepositorySheet(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var filter by remember { mutableStateOf("") }
-    CursorSheet(onDismiss = onDismiss) {
+    CursorSheet(onDismiss = onDismiss) { dismiss ->
+        // Picking a row plays the sheet's hide animation before the selection is applied.
+        fun pick(repo: Repository?) {
+            onSelect(repo)
+            dismiss()
+        }
         SheetHeader("Repository") {
             if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
         }
         SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
         Spacer(Modifier.height(6.dp))
-        val visible = repos.filter { it.slug.contains(filter, ignoreCase = true) }
+        // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.
+        val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             item("none") {
-                SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { onSelect(null) }
+                SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
                 HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             }
             if (unavailable && repos.isEmpty()) {
@@ -332,66 +351,15 @@ private fun RepositorySheet(
                 }
             }
             items(visible, key = { it.url }) { repo ->
-                SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { onSelect(repo) }
+                SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** Small 12sp label above a group of sheet rows ("Options", a model's name above its variants). */
 @Composable
-private fun ModelSheet(
-    models: List<ModelOption>,
-    selectedModel: ModelOption?,
-    selectedVariant: ModelVariant?,
-    planMode: Boolean,
-    autoCreatePr: Boolean,
-    onPlanMode: (Boolean) -> Unit,
-    onAutoCreatePr: (Boolean) -> Unit,
-    onSelect: (ModelOption?, ModelVariant?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    CursorSheet(onDismiss = onDismiss) {
-        SheetHeader("Model")
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
-            item("options") {
-                OptionRow("Plan mode", planMode, onPlanMode)
-                OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
-                HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
-            }
-            item("default") {
-                SheetRow(title = "Default", subtitle = "Your Cursor default model", checked = selectedModel == null) { onSelect(null, null) }
-            }
-            if (models.isEmpty()) {
-                item("loading") {
-                    Row(Modifier.padding(horizontal = 20.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        SpinnerRing(); Spacer(Modifier.width(8.dp))
-                        Text("Loading models…", style = type.small, color = colors.textQuaternary)
-                    }
-                }
-            }
-            models.forEach { model ->
-                if (model.variants.size <= 1) {
-                    item(model.id) { SheetRow(title = model.displayName, subtitle = model.description, checked = model.id == selectedModel?.id) { onSelect(model, model.variants.firstOrNull()) } }
-                } else {
-                    item("hdr-${model.id}") { SheetSectionLabel(model.displayName) }
-                    items(model.variants, key = { "${model.id}:${it.displayName}" }) { variant ->
-                        SheetRow(
-                            title = variant.displayName,
-                            subtitle = variant.params.joinToString("  ") { "${it.id}=${it.value}" }.ifBlank { model.description },
-                            checked = model.id == selectedModel?.id && variant == selectedVariant,
-                        ) { onSelect(model, variant) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SheetSectionLabel(text: String) {
+internal fun SheetSectionLabel(text: String) {
     Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 2.dp))
 }
 
@@ -424,8 +392,9 @@ private fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pla
     }
 }
 
+/** Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. */
 @Composable
-private fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, onClick: () -> Unit) {
+internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(

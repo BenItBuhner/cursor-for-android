@@ -22,8 +22,10 @@ import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,6 +50,9 @@ import kotlinx.coroutines.launch
  * is switched off here (`shouldDismissOnBackPress = false`) and replaced by a [PredictiveBackHandler] that reproduces
  * Material's shrink-toward-the-bottom-edge gesture animation, so handlers nested in [content] (drill-in pages) get the
  * gesture first, the way they do anywhere else in the app.
+ *
+ * [content] receives `dismiss`, which plays the hide animation before calling [onDismiss]; use it when a row is
+ * picked so the sheet slides away instead of vanishing with the composition.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,12 +61,16 @@ fun CursorSheet(
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     scrimColor: Color = Color.Black.copy(alpha = 0.5f),
-    content: @Composable ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
 ) {
     val colors = CursorTheme.colors
     val scope = rememberCoroutineScope()
     val backProgress = remember { Animatable(0f) }
     val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.86f).dp
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val dismiss: () -> Unit = remember(sheetState) {
+        { scope.launch { sheetState.hide() }.invokeOnCompletion { currentOnDismiss() } }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -95,7 +104,7 @@ fun CursorSheet(
                 scope.launch { backProgress.animateTo(0f) }
                 scope.launch { sheetState.partialExpand() }
             } else {
-                scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
+                dismiss()
             }
         }
         Column(
@@ -112,7 +121,7 @@ fun CursorSheet(
                 }
                 .navigationBarsPadding(),
         ) {
-            content()
+            content(dismiss)
         }
     }
 }

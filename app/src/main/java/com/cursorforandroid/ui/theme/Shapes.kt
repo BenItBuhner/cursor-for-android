@@ -54,7 +54,7 @@ object CursorDimens {
     /** State glyph slot in a chat row. */
     val glyph = 16.dp
     val unreadDot = 6.dp
-    /** Composer "+", mic and send: round buttons with ~13px glyphs. */
+    /** Composer "+", send and stop: round buttons with ~13px glyphs. */
     val roundButton = 28.dp
     val roundButtonGlyph = 19.dp
     /** Composer box: 640px max, 12px padding. */
