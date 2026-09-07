@@ -12,6 +12,7 @@ import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -468,11 +469,20 @@ class ConversationRepository(
         inputsUpdatedAt = maxOf(inputsUpdatedAt, finishedAt)
     }
 
+    /**
+     * Files the follow-up and starts streaming its run. [modelId] (with [modelParams] and the [modelDisplayName] it is
+     * shown under) switches the chat to another model from this run on; [planMode] asks for plan or agent mode
+     * explicitly. Both null keep the chat as it is — see [AgentRepository.followUp].
+     */
     suspend fun sendFollowUp(
         agentId: String,
         text: String,
         images: List<PromptImage> = emptyList(),
         mcpServers: List<McpServer> = emptyList(),
+        planMode: Boolean? = null,
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
     ): Result<Unit> {
         val e = entry(agentId)
         val trimmed = text.trim()
@@ -493,7 +503,16 @@ class ConversationRepository(
             transform = { copy(error = null) },
         )
 
-        val result = agents.followUp(agentId, trimmed, images, mcpServers = mcpServers)
+        val result = agents.followUp(
+            agentId,
+            trimmed,
+            images,
+            planMode = planMode,
+            mcpServers = mcpServers,
+            modelId = modelId,
+            modelParams = modelParams,
+            modelDisplayName = modelDisplayName,
+        )
         return result.fold(
             onSuccess = { run ->
                 // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.

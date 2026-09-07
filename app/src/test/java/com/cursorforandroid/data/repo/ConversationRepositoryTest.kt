@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.ModelParamDto
+import com.cursorforandroid.data.api.dto.ModelRefDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.local.AgentListCache
@@ -14,10 +16,11 @@ import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -185,7 +188,7 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.isStreaming }
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
         streamer.emit("run-1", RunStreamEvent.Thinking("Looking around."))
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ThinkingBlock } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
 
         // The reader leaves while the run is still going; the hub lets go of the stream after its grace period...
         conversations.detach("bc-1")
@@ -212,9 +215,9 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ThinkingBlock } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         val traced = conversations.state("bc-1").value
-        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ThinkingBlock", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
@@ -249,6 +252,33 @@ class ConversationRepositoryTest {
         agents.refresh()
         awaitUntil { cache.read("bc-a")?.value?.messages?.size == 4 }
         assertThat(api.conversationCalls).isEqualTo(3)
+    }
+
+    @Test
+    fun `a follow-up that switches the model carries it to the run and the row, and streams the run`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+
+        val result = conversations.sendFollowUp(
+            "bc-1", "Try Composer",
+            planMode = false,
+            modelId = "composer-2", modelParams = listOf(ModelParam("fast", "true")), modelDisplayName = "Composer 2 · Fast",
+        )
+
+        assertThat(result.isSuccess).isTrue()
+        val body = api.runRequests.single()
+        assertThat(body.prompt.text).isEqualTo("Try Composer")
+        assertThat(body.model).isEqualTo(ModelRefDto("composer-2", listOf(ModelParamDto("fast", "true"))))
+        assertThat(body.mode).isEqualTo("agent")
+        val row = agents.agent("bc-1")!!
+        assertThat(row.modelId).isEqualTo("composer-2")
+        assertThat(row.modelDisplayName).isEqualTo("Composer 2 · Fast")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<UserMessage>().last().text).isEqualTo("Try Composer")
     }
 
     @Test

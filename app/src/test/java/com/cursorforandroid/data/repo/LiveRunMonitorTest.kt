@@ -311,7 +311,7 @@ class LiveRunMonitorTest {
 
         val snapshot = hub.replay("bc-1", "run-1")
         assertThat(snapshot.hasTrace).isTrue()
-        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(streamer.connections).containsExactly("run-1", "run-1").inOrder()
         // Reading history is not news about the agent: no poll, no patch, no "updated just now".
         assertThat(api.getRunCalls).isEqualTo(0)

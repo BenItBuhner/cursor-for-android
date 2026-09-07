@@ -117,6 +117,8 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         autoCreatePr = previous?.autoCreatePr,
         workOnCurrentBranch = previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
+        modelId = previous?.modelId,
+        modelParams = previous?.modelParams.orEmpty(),
         durationMs = previous?.durationMs,
     )
 }
@@ -183,6 +185,8 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         autoCreatePr = autoCreatePR ?: previous?.autoCreatePr,
         workOnCurrentBranch = workOnCurrentBranch ?: previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
+        modelId = previous?.modelId,
+        modelParams = previous?.modelParams.orEmpty(),
         durationMs = latestRun?.durationMs ?: previous?.durationMs,
     )
 }
