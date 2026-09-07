@@ -21,6 +21,7 @@ import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
@@ -74,7 +75,7 @@ class ConversationRepositoryTest {
         val disk = JsonDiskCache(folder.newFolder("cache"), dispatcher = Dispatchers.Unconfined)
         attachments = AttachmentStore(context)
         agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         cache = ConversationCache(disk.child("conversations"))
         traces = TraceCache(disk.child("traces"))
         AppClock.nowMillis = { now }
@@ -447,6 +448,106 @@ class ConversationRepositoryTest {
         agents.refresh()
         awaitUntil { cache.read("bc-a")?.value?.messages?.size == 4 }
         assertThat(api.conversationCalls).isEqualTo(3)
+    }
+
+    /** The retained log of a finished run has expired: the conversation keeps its text and asks nothing more. */
+    private suspend fun expireStream(runId: String) {
+        streamer.emit(runId, RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit(runId, RunStreamEvent.Done)
+    }
+
+    private fun state(conversations: ConversationRepository) = conversations.state("bc-1").value
+
+    @Test
+    fun `a follow-up whose stream is refused while the machine wakes keeps its prompt, says so, and finishes in place`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        expireStream("run-1")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && "run-1" in streamer.connections }
+
+        // The agent was idle, so its machine has to wake up first: the stream endpoint refuses the first connections.
+        val runId = "run-followup-1"
+        streamer.dropNextConnection(runId)
+        streamer.dropNextConnection(runId)
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 2").isSuccess).isTrue()
+
+        awaitUntil { state(conversations).isStreaming && state(conversations).isReconnecting }
+        val waiting = state(conversations)
+        assertThat(waiting.activeRunId).isEqualTo(runId)
+        assertThat(waiting.runStatus?.isActive).isTrue()
+        // The prompt is there and nothing has been said about the connection inside the transcript.
+        assertThat(waiting.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat((waiting.items.last() as UserMessage).text).isEqualTo("Prompt 2")
+        assertThat(waiting.items.none { it is NoticeCard }).isTrue()
+
+        // Third time lucky: the trace arrives and the reconnecting state clears.
+        awaitUntil { streamer.connections.count { it == runId } == 3 }
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, RunStreamEvent.Assistant("Reply 2"))
+        awaitUntil { !state(conversations).isReconnecting && state(conversations).items.last() is AssistantMessage }
+        assertThat(state(conversations).isStreaming).isTrue()
+
+        streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply 2", 5_000, null))
+        streamer.emit(runId, RunStreamEvent.Done)
+        awaitUntil { state(conversations).items.lastOrNull() is RunFooter && !state(conversations).isStreaming }
+        val done = state(conversations)
+        assertThat(done.isReconnecting).isFalse()
+        assertThat(done.items.none { it is NoticeCard }).isTrue()
+        assertThat(done.items.map { it::class.simpleName }.takeLast(4)).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat((done.items.last() as RunFooter).runId).isEqualTo(runId)
+    }
+
+    @Test
+    fun `reloading while the run list lags a follow-up keeps following it and shows the prompt once`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        expireStream("run-1")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && "run-1" in streamer.connections }
+
+        // The transcript picks the prompt up at once (the fake appends it on createRun); the run list has not caught up.
+        val runId = "run-followup-1"
+        api.runsHiddenFromList += runId
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 2").isSuccess).isTrue()
+        awaitUntil { state(conversations).isStreaming }
+
+        var listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading && state(conversations).isStreaming }
+        val reloaded = state(conversations)
+        // The previous run did not become the active one again; the follow-up is still what the screen follows.
+        assertThat(reloaded.activeRunId).isEqualTo(runId)
+        assertThat(reloaded.runStatus?.isActive).isTrue()
+        // The prompt shows once, with its timestamp, although both the transcript and the local copy have it.
+        assertThat(reloaded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
+        assertThat(reloaded.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(reloaded.items.map { it.id }).containsNoDuplicates()
+
+        // The run's events still land after the reload.
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, RunStreamEvent.Assistant("Reply 2"))
+        streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply 2", 5_000, null))
+        streamer.emit(runId, RunStreamEvent.Done)
+        awaitUntil { state(conversations).items.lastOrNull() is RunFooter && !state(conversations).isStreaming }
+        val finished = state(conversations)
+        assertThat(finished.items.map { it::class.simpleName }).containsExactly(
+            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
+        ).inOrder()
+
+        // The list catches up: the server's copy of the turn takes over, and the picture does not change.
+        api.runsHiddenFromList -= runId
+        listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading && !state(conversations).isStreaming }
+        val caughtUp = state(conversations)
+        assertThat(caughtUp.items.map { it::class.simpleName }).isEqualTo(finished.items.map { it::class.simpleName })
+        assertThat(caughtUp.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
+        assertThat(caughtUp.items.map { it.id }).containsNoDuplicates()
+        assertThat(caughtUp.activeRunId).isEqualTo(runId)
     }
 
     @Test

@@ -11,6 +11,7 @@ import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.data.local.TraceCache
+import com.cursorforandroid.data.repo.TimelineBuilder.withUniqueIds
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
@@ -52,6 +53,11 @@ data class ConversationState(
     val activeRunId: String? = null,
     val runStatus: RunStatus? = null,
     val isStreaming: Boolean = false,
+    /**
+     * The live connection dropped and is being re-established; the trace shown is complete up to the drop and the
+     * run is still going. Only meaningful while [isStreaming].
+     */
+    val isReconnecting: Boolean = false,
     val transcriptUnavailable: Boolean = false,
 )
 
@@ -89,7 +95,10 @@ class ConversationRepository(
      * A follow-up sent from this device: its prompt and its run, a placeholder until the server has answered, and
      * — once the run finished while we watched — the reply the transcript will carry, for the disk copy.
      */
-    private data class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto, val reply: V0ConversationMessageDto? = null)
+    private data class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto, val reply: V0ConversationMessageDto? = null) {
+        /** True once the server has answered with the real run; until then [run] is the placeholder named after the prompt. */
+        val filed: Boolean get() = run.id != message.id
+    }
 
     /** What the stream of the run being followed has told so far. */
     private data class LiveTrace(val runId: String, val items: List<TimelineItem>)
@@ -142,10 +151,15 @@ class ConversationRepository(
         val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty()
         val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true
 
+        // Each half has unique ids on its own; the join is made unique too, because a follow-up can briefly exist
+        // on both sides (the server listed its run while the request was still in flight), and a repeated id
+        // aborts the list that renders these.
         fun items(): List<TimelineItem> {
             val shown = shownTraces()
-            return TimelineBuilder.fromHistory(messages, runs, shown, promptImages) +
-                TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, shown, promptImages)
+            return (
+                TimelineBuilder.fromHistory(historyMessages(), runs, shown, promptImages) +
+                    TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, shown, promptImages)
+                ).withUniqueIds()
         }
 
         /** The complete traces, plus the story so far of the followed run unless it already has a complete one. */
@@ -154,10 +168,27 @@ class ConversationRepository(
             return traces + (current.runId to current.items)
         }
 
+        /**
+         * The transcript with the prompts of follow-ups sent from here taken off its tail. The two endpoints do not
+         * move in step: the transcript can list a follow-up's prompt while the run list does not have its run yet,
+         * and for as long as that lasts the local copy — which has the run, and with it the timestamp and the
+         * trace — is the one shown. A prompt that has no run to pair with is one of ours by construction: every
+         * transcript prompt begins a run.
+         */
+        fun historyMessages(): List<V0ConversationMessageDto> {
+            var remaining = (messages.count { it.type == USER_MESSAGE } - runs.size).coerceIn(0, local.size)
+            if (remaining == 0) return messages
+            val cut = messages.indexOfLast { it.type == USER_MESSAGE && --remaining == 0 }
+            return if (cut < 0) messages else messages.take(cut)
+        }
+
+        /** The newest run there is, counting follow-ups sent from here that the server's list has not caught up with. */
+        fun latestRun(): RunDto? = (runs + local.filter { it.filed }.map { it.run }).maxByOrNull { parseIsoMillis(it.createdAt) }
+
         /** The inputs as the server will report them once it has caught up, which is what the disk keeps. */
         fun flattened(): CachedConversation = CachedConversation(
             agentId = agentId,
-            messages = messages + local.flatMap { listOfNotNull(it.message, it.reply) },
+            messages = historyMessages() + local.flatMap { listOfNotNull(it.message, it.reply) },
             runs = runs + local.map { it.run },
             transcriptUnavailable = transcriptUnavailable,
             agentUpdatedAtMillis = inputsUpdatedAt,
@@ -289,7 +320,7 @@ class ConversationRepository(
     /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */
     private fun Entry.stopFollowing() {
         streamJob?.cancel()
-        publish(mutate = { streamJob = null; live = null }, transform = { copy(isStreaming = false) })
+        publish(mutate = { streamJob = null; live = null }, transform = { copy(isStreaming = false, isReconnecting = false) })
     }
 
     private suspend fun load(e: Entry, agentId: String) {
@@ -307,9 +338,11 @@ class ConversationRepository(
                 val onDevice = stored.await()
                 val transcript = convResult.getOrNull()?.messages ?: emptyList()
                 val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
-                val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
-                val latestStatus = latest?.statusEnum()
                 val fetched = convResult.isSuccess || runList.isNotEmpty()
+                // The newest run once the inputs are merged: usually the server's, but a follow-up sent from here
+                // that the list has not caught up with yet is newer, and a reload must keep following it rather
+                // than declare the previous run the active one.
+                var latest: RunDto? = null
                 if (fetched) {
                     // The traces are kept: they are complete, and a finished run's log does not change. Local
                     // follow-ups hand over to the server once it lists their run.
@@ -324,14 +357,16 @@ class ConversationRepository(
                             promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
                             this.fetched = true
                             fetchedAt = AppClock.now()
+                            latest = latestRun()
                         },
                         transform = {
                             copy(
                                 isLoading = false,
                                 error = null,
                                 activeRunId = latest?.id,
-                                runStatus = latestStatus,
+                                runStatus = latest?.statusEnum(),
                                 isStreaming = false,
+                                isReconnecting = false,
                                 transcriptUnavailable = transcriptUnavailable && transcript.isEmpty(),
                             )
                         },
@@ -347,8 +382,9 @@ class ConversationRepository(
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
                     persist(e, backend)
-                    if (latest != null && latestStatus?.isActive == true) {
-                        startStreaming(e, agentId, latest)
+                    val active = latest?.takeIf { it.statusEnum().isActive }
+                    if (active != null) {
+                        startStreaming(e, agentId, active)
                     } else {
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
@@ -512,6 +548,9 @@ class ConversationRepository(
      * the run's prompt). An outcome read from the run record after the stream broke stays the story so far: it has
      * the final reply and the footer to show, but not everything in between, so it never passes for the trace. A
      * snapshot from a job that is no longer the follower — its cancel raced the emission — is dropped (false).
+     *
+     * Until the stream has said anything, the run record's status (CREATING for a fresh follow-up) stands rather than
+     * the snapshot's default; a snapshot taken between two connections marks the state as reconnecting.
      */
     private fun Entry.applyLive(follower: Job?, run: RunDto, snapshot: LiveRunHub.Snapshot): Boolean = synchronized(this) {
         if (streamJob !== follower) return false
@@ -524,7 +563,13 @@ class ConversationRepository(
                     live = LiveTrace(run.id, snapshot.items)
                 }
             },
-            transform = { copy(runStatus = snapshot.status, isStreaming = !snapshot.finished) },
+            transform = {
+                copy(
+                    runStatus = if (snapshot.eventCount > 0 || snapshot.finished) snapshot.status else runStatus,
+                    isStreaming = !snapshot.finished,
+                    isReconnecting = snapshot.reconnecting && !snapshot.finished,
+                )
+            },
         )
         true
     }
@@ -641,7 +686,9 @@ class ConversationRepository(
                 val kept = runCatching { attachments.commit(agentId, run.id, staged) }.getOrDefault(staged.attachments)
                 e.publish(
                     mutate = {
-                        local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                        // A reload that raced the request may already list this run; then the server's copy of the
+                        // turn is the one to show, and ours would only repeat it.
+                        local = if (runs.any { it.id == run.id }) local.filterNot { it.run.id == localId } else local.map { if (it.run.id == localId) it.copy(run = run) else it }
                         promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
                         inputsUpdatedAt = maxOf(inputsUpdatedAt, now)
                     },
@@ -767,6 +814,7 @@ class ConversationRepository(
     }
 
     private companion object {
+        const val USER_MESSAGE = "user_message"
         const val MAX_ENTRIES = 24
         const val PREFETCH_LIMIT = 6
         const val PREFETCH_SPACING_MS = 400L

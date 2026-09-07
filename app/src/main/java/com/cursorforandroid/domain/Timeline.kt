@@ -81,7 +81,15 @@ data class ToolCall(
     val args: JsonElement? = null,
     val result: JsonElement? = null,
 ) : ActivityStep {
-    val isRunning: Boolean get() = status == "running"
+    val isRunning: Boolean get() = status == STATUS_RUNNING
+
+    companion object {
+        /** The two statuses the stream reports. */
+        const val STATUS_RUNNING = "running"
+        const val STATUS_COMPLETED = "completed"
+        /** Ours: the run ended (error, cancel) while the call was still reported as running. */
+        const val STATUS_INTERRUPTED = "interrupted"
+    }
 }
 
 /**
