@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.domain.McpServer
+import com.cursorforandroid.domain.McpTransport
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.google.common.truth.Truth.assertThat
@@ -48,6 +50,26 @@ class LaunchIdempotencyTest {
         assertThat(ids).containsNoDuplicates()
         assertThat(ids).doesNotContain(base)
         ids.forEach { assertThat(LaunchIdempotency.isValid(it)).isTrue() }
+    }
+
+    @Test
+    fun `the enabled MCP servers are part of the draft`() {
+        val linear = McpServer(id = "1", name = "linear", url = "https://mcp.linear.app/mcp", headers = mapOf("Authorization" to "Bearer k"))
+        val github = McpServer(id = "2", name = "github", transport = McpTransport.Stdio, command = "npx", args = listOf("-y", "srv"), env = mapOf("TOKEN" to "t"))
+        val base = LaunchIdempotency.agentId(request, "n")
+        val withServers = LaunchIdempotency.agentId(request.copy(mcpServers = listOf(linear, github)), "n")
+        assertThat(withServers).isNotEqualTo(base)
+        // Only what goes out counts: a disabled server hashes like an absent one, an unchanged retry keeps the id.
+        assertThat(LaunchIdempotency.agentId(request.copy(mcpServers = listOf(linear.copy(enabled = false))), "n")).isEqualTo(base)
+        assertThat(LaunchIdempotency.agentId(request.copy(mcpServers = listOf(linear.copy(), github.copy())), "n")).isEqualTo(withServers)
+        val edits = listOf(
+            request.copy(mcpServers = listOf(linear)),
+            request.copy(mcpServers = listOf(linear.copy(headers = mapOf("Authorization" to "Bearer other")), github)),
+            request.copy(mcpServers = listOf(linear, github.copy(args = listOf("-y", "other")))),
+            request.copy(mcpServers = listOf(linear, github.copy(env = emptyMap()))),
+        ).map { LaunchIdempotency.agentId(it, "n") }
+        assertThat(edits).containsNoDuplicates()
+        assertThat(edits).containsNoneOf(base, withServers)
     }
 
     @Test

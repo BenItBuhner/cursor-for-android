@@ -153,6 +153,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 modelParams = s.selectedVariant?.params ?: emptyList(),
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
+                mcpServers = graph.mcpServers.enabled(),
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
             // created instead of launching a duplicate.

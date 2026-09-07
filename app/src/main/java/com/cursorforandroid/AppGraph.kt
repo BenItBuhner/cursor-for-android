@@ -4,6 +4,7 @@ import android.content.Context
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
@@ -21,6 +22,8 @@ import com.cursorforandroid.data.repo.parseIsoMillis
 class AppGraph(context: Context) {
     val keyStore = SecureKeyStore(context)
     val prefs = PreferencesStore(context)
+    /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
+    val mcpServers = McpServerStore(keyStore)
 
     private val okHttp = CursorApiFactory.okHttp { keyStore.apiKey() }
     private val realBackend = CursorBackend(
