@@ -1,7 +1,10 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -62,6 +66,13 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
+/**
+ * One chat: header with the agent's name and repo · branch, the transcript, and the follow-up composer.
+ *
+ * The transcript is a bottom-anchored (`reverseLayout`) list, which is what keeps it stable while a run streams: the
+ * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
+ * has scrolled up stays put. New items snap the list back to the bottom only while the reader is following along.
+ */
 @Composable
 fun ConversationScreen(
     graph: AppGraph,
@@ -69,6 +80,7 @@ fun ConversationScreen(
     onBack: (() -> Unit)?,
     onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenSidebar: (() -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -96,24 +108,35 @@ fun ConversationScreen(
         }
     }
 
-    val isAtBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            last.index >= info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset + 48
-        }
-    }
-    LaunchedEffect(conversation.items.size, conversation.items.lastOrNull()?.hashCode(), conversation.isStreaming) {
-        if (isAtBottom && conversation.items.isNotEmpty()) listState.scrollToItem(conversation.items.lastIndex)
-    }
-
+    val items = conversation.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
+    val showWorking = isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }
+
+    // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
+    val atBottom by remember {
+        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset <= BottomTolerancePx }
+    }
+    // Whether the reader wants to follow the newest content. Only the reader's own scrolls change it: a new item
+    // arriving cannot knock the list out of follow mode.
+    var following by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) following = atBottom }
+    }
+    val newestKey = items.lastOrNull()?.id
+    LaunchedEffect(items.size, newestKey, showWorking) {
+        if (following) listState.requestScrollToItem(0)
+    }
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
             title = agent?.name ?: "Chat",
             subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
-            leading = { if (onBack != null) FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack) },
+            leading = {
+                when {
+                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
+                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
+                }
+            },
             trailing = {
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
@@ -135,23 +158,26 @@ fun ConversationScreen(
         )
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            val items = conversation.items
+            val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 20.dp),
+                reverseLayout = true,
+                // Not fillMaxSize: a short transcript then sizes to its content and reads from the top.
+                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (conversation.isLoading && items.isEmpty()) {
-                    item("loading") {
-                        Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing(size = 14.dp)
+                if (showWorking) {
+                    item("working") {
+                        Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
+                            RunningGlyph(size = 16.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text("Loading…", style = type.base, color = colors.textQuaternary)
+                            Text(if (conversation.runStatus == RunStatus.CREATING) "Starting…" else "Working…", style = type.base, color = colors.textTertiary)
                         }
                     }
                 }
+                items(items.asReversed(), key = { it.id }) { item -> TimelineItemView(item, paneWidth) }
                 if (!conversation.isLoading && items.isEmpty()) {
                     item("empty") {
                         Text(
@@ -162,32 +188,31 @@ fun ConversationScreen(
                         )
                     }
                 }
-                items(items, key = { it.id }) { item -> TimelineItemView(item, Modifier.widthIn(max = CursorDimens.composerMaxWidth)) }
-                if (isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }) {
-                    item("working") {
-                        Row(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            RunningGlyph(size = 16.dp)
+                if (conversation.isLoading && items.isEmpty()) {
+                    item("loading") {
+                        Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                            SpinnerRing(size = 14.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (conversation.runStatus == RunStatus.CREATING) "Starting…" else "Working…", style = type.base, color = colors.textTertiary)
+                            Text("Loading…", style = type.base, color = colors.textQuaternary)
                         }
                     }
                 }
             }
 
             androidx.compose.animation.AnimatedVisibility(
-                visible = !isAtBottom && items.size > 2,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                enter = fadeIn(),
-                exit = fadeOut(),
+                visible = !following && items.size > 2,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+                enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f),
+                exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f),
             ) {
                 Box(
                     Modifier
-                        .size(28.dp)
-                        .cursorSurface(colors.elevated, colors.stroke, CircleShape)
-                        .pressable({ scope.launch { listState.animateScrollToItem(items.lastIndex.coerceAtLeast(0)) } }, CircleShape),
+                        .size(34.dp)
+                        .cursorSurface(colors.elevated, colors.strokeStrong, CircleShape)
+                        .pressable({ scope.launch { listState.animateScrollToItem(0) } }, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(CursorIcons.ChevronDown, "Scroll to bottom", tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
+                    Icon(CursorIcons.ArrowDown, "Scroll to latest", tint = colors.iconPrimary, modifier = Modifier.size(16.dp))
                 }
             }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
@@ -195,8 +220,15 @@ fun ConversationScreen(
             }
         }
 
-        conversation.error?.takeIf { conversation.items.isNotEmpty() }?.let { err ->
-            Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        conversation.error?.takeIf { items.isNotEmpty() }?.let { err ->
+            Row(
+                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(err, style = type.small, color = colors.red, maxLines = 2)
+            }
         }
 
         Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(), contentAlignment = Alignment.Center) {
@@ -226,10 +258,13 @@ fun ConversationScreen(
             titleContentColor = colors.textPrimary,
             textContentColor = colors.textSecondary,
             shape = CursorTheme.shapes.xl,
-            title = { Text("Delete chat?", style = type.title) },
+            title = { Text("Delete chat?", style = type.sectionTitle) },
             text = { Text("This permanently deletes the agent and its transcript. Archive it instead if you might need it later.", style = type.base) },
             confirmButton = { TextButton(onClick = { confirmDelete = false; viewModel.delete(onDone = onDeleted) }) { Text("Delete", style = type.baseMedium, color = colors.red) } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
         )
     }
 }
+
+/** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
+private const val BottomTolerancePx = 48

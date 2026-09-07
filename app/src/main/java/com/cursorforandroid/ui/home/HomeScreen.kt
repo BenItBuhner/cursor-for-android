@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.home
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -62,6 +64,7 @@ import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
+import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
@@ -108,25 +111,31 @@ fun HomeScreen(
         val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         LazyColumn(
             Modifier.fillMaxSize().imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 12.dp else 50.dp, bottom = 32.dp + navigationBar),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item("composer") {
                 Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
                     SelectorRow {
+                        val selectedRepo = state.selectedRepo
                         val repoLabel = when {
                             state.noRepo -> "No repository"
-                            state.selectedRepo != null -> state.selectedRepo!!.shortName
+                            selectedRepo != null -> selectedRepo.shortName
                             state.isLoadingRepos -> "Loading…"
                             else -> "Repository"
                         }
-                        SelectorChip(repoLabel, onClick = { repoSheet = true })
+                        SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             if (editingRef) {
                                 // Tapping the branch chip means "type a branch": focus the field and open the keyboard.
                                 val refFocus = remember { FocusRequester() }
                                 LaunchedEffect(Unit) { refFocus.requestFocus() }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    Modifier.height(28.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(start = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(5.dp))
                                     BasicTextField(
                                         value = state.ref,
                                         onValueChange = viewModel::setRef,
@@ -135,20 +144,16 @@ fun HomeScreen(
                                         cursorBrush = SolidColor(colors.textPrimary),
                                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
                                         keyboardActions = KeyboardActions(onDone = { editingRef = false }),
-                                        modifier = Modifier
-                                            .widthIn(min = 56.dp, max = 160.dp)
-                                            .background(colors.fillFaint, CursorTheme.shapes.base)
-                                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                                            .focusRequester(refFocus),
+                                        modifier = Modifier.widthIn(min = 56.dp, max = 150.dp).focusRequester(refFocus),
+                                        decorationBox = { inner -> Box { if (state.ref.isEmpty()) Text("branch", style = type.base, color = colors.textQuaternary); inner() } },
                                     )
-                                    FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 24.dp, iconSize = 16.dp)
+                                    FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 28.dp, iconSize = 15.dp)
                                 }
                             } else {
-                                SelectorChip(state.ref.ifBlank { "default" }, onClick = { editingRef = true })
+                                SelectorChip(state.ref.ifBlank { "default" }, onClick = { editingRef = true }, icon = CursorIcons.GitBranch, mono = true)
                             }
                         }
-                        SelectorChip("", onClick = {}, icon = CursorIcons.Cloud, enabled = false)
-                        Spacer(Modifier.weight(1f))
+                        SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
                     }
                     ComposerBox(
                         value = state.prompt,
@@ -165,10 +170,16 @@ fun HomeScreen(
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
                         onModel = { modelSheet = true },
                     )
-                    state.error?.let { Text(it, style = type.small, color = colors.red, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) }
+                    state.error?.let {
+                        Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(it, style = type.small, color = colors.red)
+                        }
+                    }
                 }
             }
-            item("gap") { Spacer(Modifier.height(30.dp)) }
+            item("gap") { Spacer(Modifier.height(26.dp)) }
             if (recent.isEmpty() && listState.hasLoaded) {
                 item("empty") {
                     // A failed list request is not "no chats": say what happened (offline, rejected key, ...).
@@ -182,7 +193,7 @@ fun HomeScreen(
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().padding(horizontal = 7.dp))
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth())
             }
         }
     }
@@ -218,8 +229,8 @@ fun HomeScreen(
 }
 
 /**
- * Recent chat row from cursor.com/agents: a 120x80 preview card on the left, then the title with the unread dot
- * and a metadata line (state glyph · model · repo · age).
+ * Recent chat row from cursor.com/agents: a preview card on the left, then the title with the unread dot and a
+ * metadata line (state glyph · model · repo · age).
  */
 @Composable
 fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modifier, nowMillis: Long = AppClock.now()) {
@@ -228,15 +239,15 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
     val agent = row.agent
     Row(
         modifier
-            .pressable(onClick, CursorTheme.shapes.lg)
-            .padding(vertical = CursorDimens.recentRowGap / 2),
+            .pressable(onClick, CursorTheme.shapes.xl)
+            .padding(horizontal = 6.dp, vertical = CursorDimens.recentRowGap / 2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PreviewCard(row)
         Spacer(Modifier.width(CursorDimens.previewToTitle))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(agent.name, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(agent.name, style = type.rowMedium, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (row.indicator == AgentIndicator.Unread) {
                     Spacer(Modifier.width(7.dp))
                     Dot(colors.unreadDot, size = CursorDimens.recentDot)
@@ -246,18 +257,18 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
                     Dot(colors.red, size = CursorDimens.recentDot)
                 }
             }
-            Spacer(Modifier.height(2.dp))
+            Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
-                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(16.dp))
-                    agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
-                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 16.dp, color = colors.iconTertiary)
-                    else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(14.dp))
+                    agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
+                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
+                    else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                 }
-                agent.modelDisplayName?.let { Text(it, style = type.base, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                agent.modelDisplayName?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
-                workspace?.let { Text(it, style = type.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
-                Text(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis), style = type.base, color = colors.textQuaternary)
+                workspace?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+                Text(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis), style = type.small, color = colors.textQuaternary)
             }
         }
     }
@@ -273,17 +284,17 @@ private fun PreviewCard(row: AgentRow) {
             when {
                 agent.hasPullRequest -> Pill("Open", icon = CursorIcons.GitPullRequest, tint = colors.gitAdded, fill = colors.gitAdded.copy(alpha = 0.14f))
                 row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
-                row.indicator == AgentIndicator.Error -> Pill("Failed", tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
+                row.indicator == AgentIndicator.Error -> Pill("Failed", icon = CursorIcons.Warning, tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)
                 !agent.summary.isNullOrBlank() -> Text(
-                    agent.summary!!,
+                    agent.summary.orEmpty(),
                     style = type.code.copy(fontSize = 10.sp, lineHeight = 13.sp),
                     color = colors.textTertiary,
                     maxLines = 5,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxSize(),
                 )
-                else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(24.dp))
+                else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(22.dp))
             }
         }
     }
@@ -305,61 +316,103 @@ private fun RepositorySheet(
     val type = CursorTheme.typography
     var filter by remember { mutableStateOf("") }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
+        // Picking a row plays the sheet's hide animation before the selection is applied.
         fun pick(repo: Repository?) {
             onSelect(repo)
             dismiss()
         }
-        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Repository", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                if (loading) SpinnerRing() else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
-            }
-            BasicTextField(
-                value = filter,
-                onValueChange = { filter = it },
-                singleLine = true,
-                textStyle = type.base.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.textPrimary),
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(horizontal = 10.dp, vertical = 7.dp),
-                decorationBox = { inner -> Box { if (filter.isEmpty()) Text("Filter repositories", style = type.base, color = colors.textQuaternary); inner() } },
-            )
-            Spacer(Modifier.height(6.dp))
-            Column(Modifier.weight(1f, fill = false)) {
+        SheetHeader("Repository") {
+            if (loading) SpinnerRing(modifier = Modifier.padding(end = 8.dp)) else FlatIconButton(CursorIcons.Refresh, "Refresh repositories", onClick = onRefresh)
+        }
+        SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
+        Spacer(Modifier.height(6.dp))
+        // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.
+        val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
+        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+            item("none") {
                 SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
-                HairlineDivider(Modifier.padding(horizontal = 12.dp))
-                val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
-                if (unavailable && repos.isEmpty()) {
+                HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            }
+            if (unavailable && repos.isEmpty()) {
+                item("unavailable") {
                     Text(
                         "Cursor couldn't list your GitHub repositories right now (the endpoint is heavily rate limited). Refresh later or start without one.",
-                        style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(16.dp),
+                        style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                     )
                 }
-                LazyColumn(Modifier.fillMaxWidth()) {
-                    items(visible, key = { it.url }) { repo ->
-                        SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Folder) { pick(repo) }
-                    }
+            }
+            if (visible.isEmpty() && repos.isNotEmpty()) {
+                item("no-match") {
+                    Text("No repositories match \"$filter\"", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
+            }
+            items(visible, key = { it.url }) { repo ->
+                SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
             }
         }
     }
 }
 
+/** Small 12sp label above a group of sheet rows ("Options", a model's name above its variants). */
+@Composable
+internal fun SheetSectionLabel(text: String) {
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(start = 20.dp, top = 12.dp, bottom = 2.dp))
+}
+
+@Composable
+private fun SheetSearchField(value: String, onValueChange: (String) -> Unit, placeholder: String) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.base
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .background(colors.fillFaint, shape)
+            .border(CursorDimens.hairline, colors.strokeSubtle, shape)
+            .height(38.dp)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(8.dp))
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = type.base.copy(color = colors.textPrimary),
+            cursorBrush = SolidColor(colors.textPrimary),
+            modifier = Modifier.weight(1f),
+            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
+        )
+    }
+}
+
+/** Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. */
 @Composable
 internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
-        Modifier.fillMaxWidth().pressable(onClick, CursorTheme.shapes.base).padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp)
+            .pressable(onClick, CursorTheme.shapes.base)
+            .heightIn(min = CursorDimens.listRow)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(10.dp))
+            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+        if (checked) {
+            Spacer(Modifier.width(12.dp))
+            Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+        }
     }
 }
