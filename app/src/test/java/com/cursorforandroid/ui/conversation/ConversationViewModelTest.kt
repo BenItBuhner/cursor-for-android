@@ -79,7 +79,7 @@ class ConversationViewModelTest {
         val composer = graph.catalog.loadModels().getOrThrow().first { it.id == "composer-2.5" }
         val slow = composer.variants.first { !it.isDefault }
         val request = LaunchRequest(prompt = "Do the thing", repoUrl = null, ref = null, modelId = composer.id, modelParams = slow.params, autoCreatePr = false, planMode = false)
-        val agent = graph.agents.launch(request, "Composer 2.5 · Fast off").getOrThrow()
+        val agent = graph.agents.launch(request, "Composer 2.5 · Fast off").getOrThrow().agent
 
         val picker = open(agent.id).picker { it.current != null }
         assertThat(picker.current).isEqualTo(ModelChoice(composer, slow))
