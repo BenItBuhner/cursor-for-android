@@ -1,5 +1,7 @@
 package com.cursorforandroid.domain
 
+import kotlinx.serialization.Serializable
+
 /** Durable agent lifecycle as reported by `GET /v1/agents`. */
 enum class AgentLifecycle { ACTIVE, IDLE, ARCHIVED, UNKNOWN;
     companion object {
@@ -28,12 +30,15 @@ enum class EnvType { CLOUD, POOL, MACHINE, UNKNOWN;
     }
 }
 
+@Serializable
 data class GitBranch(
     val repoUrl: String,
     val branch: String?,
     val prUrl: String?,
 )
 
+/** The list row. Serializable so the last known list can be restored from disk before the network answers. */
+@Serializable
 data class Agent(
     val id: String,
     val name: String,
@@ -97,6 +102,7 @@ data class CursorUser(
         }
 }
 
+@Serializable
 data class ModelOption(
     val id: String,
     val displayName: String,
@@ -104,14 +110,17 @@ data class ModelOption(
     val variants: List<ModelVariant> = emptyList(),
 )
 
+@Serializable
 data class ModelVariant(
     val displayName: String,
     val params: List<ModelParam>,
     val isDefault: Boolean,
 )
 
+@Serializable
 data class ModelParam(val id: String, val value: String)
 
+@Serializable
 data class Repository(val url: String) {
     val slug: String get() = Agent.repoSlugOf(url) ?: url
     val shortName: String get() = slug.substringAfterLast('/')
