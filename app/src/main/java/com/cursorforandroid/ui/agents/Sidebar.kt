@@ -90,15 +90,13 @@ fun Sidebar(
 
     Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
-            Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 14.dp, end = 6.dp),
+            Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 13.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(CursorIcons.Cube, "Cursor", tint = colors.iconPrimary, modifier = Modifier.size(18.dp))
+            Icon(CursorIcons.Cube, "Cursor", tint = colors.iconPrimary, modifier = Modifier.size(CursorDimens.logo))
             Spacer(Modifier.weight(1f))
+            FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar ?: {}, enabled = callbacks.onToggleSidebar != null)
             FlatIconButton(CursorIcons.Search, "Search chats", onClick = { searching = !searching; if (!searching) onQueryChange("") })
-            if (callbacks.onToggleSidebar != null) {
-                FlatIconButton(CursorIcons.Sidebar, "Close sidebar", onClick = callbacks.onToggleSidebar)
-            }
         }
 
         if (searching) {
@@ -111,11 +109,13 @@ fun Sidebar(
             LaunchedEffect(Unit) { focusRequester.requestFocus() }
         }
 
+        Spacer(Modifier.height(6.dp))
         NavRow(CursorIcons.NewAgent, "New Chat", selected = selectedDestination == SidebarDestination.NewChat, onClick = callbacks.onNewChat)
 
-        Spacer(Modifier.height(10.dp))
-        GroupLabel("Chats", Modifier.padding(start = 4.dp)) {
-            FlatIconButton(CursorIcons.Filter, "Filter and group chats", onClick = callbacks.onCustomize, size = 26.dp, iconSize = 15.dp)
+        // Web: "Chats" label centre sits 18px below the last nav row.
+        Spacer(Modifier.height(4.dp))
+        GroupLabel("Chats", Modifier.padding(start = 13.dp, end = 8.dp).height(28.dp)) {
+            FlatIconButton(CursorIcons.Filter, "Filter and group chats", onClick = callbacks.onCustomize)
         }
 
         PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
@@ -140,7 +140,8 @@ fun Sidebar(
                 }
                 state.sections.forEach { section ->
                     item("hdr-${section.key}") {
-                        GroupLabel(section.title, Modifier.padding(start = 4.dp, top = 10.dp, bottom = 4.dp))
+                        // Group labels sit on the same 33px pitch as rows.
+                        GroupLabel(section.title, Modifier.padding(start = 13.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
                     }
                     items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
                         AgentRowItem(
@@ -148,7 +149,7 @@ fun Sidebar(
                             selected = row.agent.id == selectedAgentId,
                             prefs = state.prefs,
                             actions = callbacks.rowActions,
-                            modifier = Modifier.animateItem().padding(vertical = 1.dp),
+                            modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                         )
                     }
                 }
@@ -163,19 +164,19 @@ fun Sidebar(
 @Composable
 private fun NavRow(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
     val colors = CursorTheme.colors
-    val shape = CursorTheme.shapes.lg
+    val shape = CursorTheme.shapes.base
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp)
+            .padding(horizontal = CursorDimens.selectionInset)
             .background(if (selected) colors.fillSoft else Color.Transparent, shape)
             .pressable(onClick, shape)
             .height(CursorDimens.sidebarRow)
-            .padding(horizontal = 8.dp),
+            .padding(start = 8.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(CursorDimens.icon))
-        Spacer(Modifier.width(10.dp))
+        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(CursorDimens.rowIcon))
+        Spacer(Modifier.width(5.dp))
         Text(label, style = CursorTheme.typography.row, color = colors.textPrimary, modifier = Modifier.weight(1f))
     }
 }
@@ -188,13 +189,13 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .padding(horizontal = CursorDimens.selectionInset, vertical = 2.dp)
             .background(colors.fillFaint, shape)
             .height(CursorDimens.sidebarRow)
-            .padding(start = 8.dp, end = 4.dp),
+            .padding(start = 8.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
+        Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(8.dp))
         BasicTextField(
             value = value,
@@ -209,7 +210,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
                 Box { if (value.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
             },
         )
-        FlatIconButton(CursorIcons.Close, "Close search", onClick = onClose, size = 24.dp, iconSize = 13.dp)
+        FlatIconButton(CursorIcons.Close, "Close search", onClick = onClose, size = 24.dp, iconSize = 12.dp)
     }
 }
 
@@ -223,21 +224,21 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
             .background(if (selected) colors.fillSoft else Color.Transparent)
             .pressable(onClick, CursorTheme.shapes.base)
             .navigationBarsPadding()
-            .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+            .padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(user, 28.dp)
-        Spacer(Modifier.width(10.dp))
+        Avatar(user, CursorDimens.avatar)
+        Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
             Text(user.displayName, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(if (isDemo) "Demo" else user.apiKeyName, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Icon(CursorIcons.More, "Account", tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
+        FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
     }
 }
 
 @Composable
-fun Avatar(user: CursorUser, size: Dp = 28.dp) {
+fun Avatar(user: CursorUser, size: Dp = CursorDimens.avatar) {
     val colors = CursorTheme.colors
     Box(Modifier.size(size).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
         Text(user.initials, style = CursorTheme.typography.tiny.copy(fontWeight = FontWeight.Medium), color = colors.textPrimary)

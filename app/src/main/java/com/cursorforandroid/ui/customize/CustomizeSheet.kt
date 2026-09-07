@@ -160,7 +160,7 @@ private fun RowShell(icon: ImageVector, label: String, onClick: (() -> Unit)?, t
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
+        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(10.dp))
         Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
         trailing()
@@ -173,7 +173,7 @@ private fun DrillRow(icon: ImageVector, label: String, value: String, onClick: (
     RowShell(icon, label, onClick) {
         Text(value, style = CursorTheme.typography.base, color = colors.textTertiary)
         Spacer(Modifier.width(4.dp))
-        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
+        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
     }
 }
 
@@ -186,13 +186,13 @@ private fun PickerRow(icon: ImageVector, label: String, options: List<String>, s
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(options[selectedIndex], style = CursorTheme.typography.base, color = colors.textTertiary)
                 Spacer(Modifier.width(3.dp))
-                Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
+                Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                 options.forEachIndexed { i, option ->
                     DropdownMenuItem(
                         text = { Text(option, style = CursorTheme.typography.base, color = colors.textPrimary) },
-                        trailingIcon = { if (i == selectedIndex) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(13.dp)) },
+                        trailingIcon = { if (i == selectedIndex) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) },
                         onClick = { open = false; onSelect(i) },
                         modifier = Modifier.height(32.dp),
                     )
@@ -218,7 +218,7 @@ private fun ChecklistPage(items: List<Pair<String, Boolean>>, onToggle: (Int) ->
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(label, style = CursorTheme.typography.base, color = colors.textPrimary)
-            if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+            if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
         }
     }
 }
@@ -233,7 +233,7 @@ private fun RepoPage(slugs: List<String>, selected: Set<String>?, onSelectAll: (
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text("All repositories", style = CursorTheme.typography.base, color = colors.textPrimary)
-        if (selected == null) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        if (selected == null) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
     }
     HairlineDivider(Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
     if (slugs.isEmpty()) Text("No repositories yet", style = CursorTheme.typography.small, color = colors.textQuaternary, modifier = Modifier.padding(16.dp))
@@ -243,12 +243,12 @@ private fun RepoPage(slugs: List<String>, selected: Set<String>?, onSelectAll: (
             Modifier.fillMaxWidth().padding(horizontal = 8.dp).pressable({ onToggle(slug) }, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(CursorIcons.Folder, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
+            Icon(CursorIcons.Folder, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
             Text(slug.substringAfterLast('/'), style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
             Text(slug.substringBeforeLast('/', ""), style = CursorTheme.typography.small, color = colors.textQuaternary)
             Spacer(Modifier.width(10.dp))
-            if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+            if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
         }
     }
 }

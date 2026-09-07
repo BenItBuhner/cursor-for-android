@@ -33,7 +33,7 @@ data class ListPreferences(
     val sources: Set<SourceFilter> = SourceFilter.entries.toSet(),
     val showWorkspace: Boolean = false,
     val showBranchStatus: Boolean = true,
-    val showRuntime: Boolean = true,
+    val showRuntime: Boolean = false,
 ) {
     val isDefault: Boolean get() = this == ListPreferences()
 

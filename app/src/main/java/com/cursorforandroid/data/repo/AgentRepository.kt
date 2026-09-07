@@ -5,7 +5,6 @@ import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateRunRequestDto
 import com.cursorforandroid.data.api.dto.ModelParamDto
 import com.cursorforandroid.data.api.dto.ModelRefDto
-import com.cursorforandroid.data.api.dto.PromptDto
 import com.cursorforandroid.data.api.dto.RepoConfigDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
@@ -14,6 +13,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +37,7 @@ data class AgentListState(
 
 data class LaunchRequest(
     val prompt: String,
+    val images: List<PromptImage> = emptyList(),
     val repoUrl: String?,
     val ref: String?,
     val modelId: String?,
@@ -117,7 +118,7 @@ class AgentRepository(
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?): Result<Agent> = runCatching {
         val api = session.current.api
         val body = CreateAgentRequestDto(
-            prompt = PromptDto(text = request.prompt),
+            prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
             model = request.modelId?.let { id ->
                 ModelRefDto(id = id, params = request.modelParams.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
             },
@@ -139,8 +140,11 @@ class AgentRepository(
         agent
     }
 
-    suspend fun followUp(agentId: String, text: String, planMode: Boolean? = null): Result<RunDto> = runCatching {
-        val response = session.current.api.createRun(agentId, CreateRunRequestDto(PromptDto(text), mode = planMode?.let { if (it) "plan" else "agent" }))
+    suspend fun followUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), planMode: Boolean? = null): Result<RunDto> = runCatching {
+        val response = session.current.api.createRun(
+            agentId,
+            CreateRunRequestDto(PromptEncoding.toPromptDto(text, images), mode = planMode?.let { if (it) "plan" else "agent" }),
+        )
         agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = System.currentTimeMillis())) }
         response.run
     }

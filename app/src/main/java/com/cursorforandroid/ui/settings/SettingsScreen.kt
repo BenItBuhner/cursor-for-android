@@ -100,7 +100,7 @@ fun SettingsScreen(
                             when (mode) { ThemeMode.System -> "Match system"; ThemeMode.Dark -> "Cursor Dark"; ThemeMode.Light -> "Cursor Light" },
                             style = type.base, color = colors.textPrimary,
                         )
-                        if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+                        if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
                     }
                     if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 12.dp))
                 }
@@ -138,7 +138,7 @@ private fun LinkRow(label: String, url: String, open: (String) -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
-        Icon(CursorIcons.ExternalLink, null, tint = colors.iconQuaternary, modifier = Modifier.size(13.dp))
+        Icon(CursorIcons.ExternalLink, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
     }
 }
 

@@ -33,12 +33,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * Cursor's prompt box: `--cursor-editor` surface, 8 % stroke (12 % when focused), radius 12, 14/22 text, and a
- * footer holding the round "+" button, the plain-text model selector and the mic / send / stop control.
- * Context selectors (repo, branch, environment) sit above the box on the home pane — see [SelectorRow].
+ * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (12 % focused),
+ * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" (attach) on the left, mic /
+ * send / stop on the right — with the 13px model selector next to the "+".
  */
 @Composable
 fun ComposerBox(
@@ -51,6 +52,8 @@ fun ComposerBox(
     isRunning: Boolean = false,
     onStop: (() -> Unit)? = null,
     onPlus: (() -> Unit)? = null,
+    attachments: List<PendingAttachment> = emptyList(),
+    onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
@@ -68,37 +71,41 @@ fun ComposerBox(
         onValueChange(if (value.isBlank()) spoken else "$value $spoken")
     }
     val speechAvailable = remember { Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(context.packageManager) != null }
+    val pad = CursorDimens.composerPadding
 
     Column(
         modifier
             .fillMaxWidth()
             .cursorSurface(colors.elevated, if (focused) colors.stroke else colors.strokeSubtle, shape)
-            .padding(start = 12.dp, end = 10.dp, top = 10.dp, bottom = 8.dp),
+            .padding(start = pad, end = pad, top = pad, bottom = pad),
     ) {
+        if (attachments.isNotEmpty() && onRemoveAttachment != null) {
+            AttachmentStrip(attachments, onRemoveAttachment)
+        }
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            textStyle = type.message.copy(color = colors.textPrimary),
+            textStyle = type.input.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
             minLines = minLines,
             maxLines = 10,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 22.dp)
+                .heightIn(min = 20.dp)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) Text(placeholder, style = type.message, color = colors.textTertiary)
+                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary)
                     inner()
                 }
             },
         )
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(Modifier.height(12.dp))
+        Row(Modifier.fillMaxWidth().height(CursorDimens.roundButton), verticalAlignment = Alignment.CenterVertically) {
             if (onPlus != null) {
-                ComposerRoundButton(CursorIcons.Plus, "Add context", onClick = onPlus)
-                Spacer(Modifier.width(10.dp))
+                ComposerRoundButton(CursorIcons.Plus, "Attach image", onClick = onPlus)
+                Spacer(Modifier.width(14.dp))
             }
             if (modelLabel != null) {
                 SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null)
@@ -125,7 +132,7 @@ fun ComposerBox(
     }
 }
 
-/** Plain-text selector with a chevron: "codex-poly-bot ⌄", "master ⌄", "Claude Fable 5.1 1M Max ⌄". */
+/** Plain-text selector with an 8px chevron: "codex-poly-bot ⌄", "master ⌄", "Claude Fable 5.1 1M Max ⌄". */
 @Composable
 fun SelectorChip(
     label: String,
@@ -139,29 +146,31 @@ fun SelectorChip(
     val type = CursorTheme.typography
     Row(
         modifier
-            .pressable(onClick, CursorTheme.shapes.base, enabled = enabled)
-            .padding(horizontal = 4.dp, vertical = 3.dp),
+            .pressable(onClick, CursorTheme.shapes.sm, enabled = enabled)
+            .padding(horizontal = 6.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        if (icon != null) Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
-        Text(
-            label,
-            style = if (mono) type.code.copy(fontSize = type.base.fontSize) else type.base,
-            color = colors.textSecondary,
-            maxLines = 1,
-        )
-        Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
+        if (icon != null) Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
+        if (label.isNotEmpty()) {
+            Text(
+                label,
+                style = if (mono) type.code.copy(fontSize = type.base.fontSize) else type.base,
+                color = colors.textSecondary,
+                maxLines = 1,
+            )
+        }
+        Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(CursorDimens.chevron))
     }
 }
 
-/** The row of context selectors that sits above the home composer. */
+/** The row of context selectors that sits 12px above the home composer. */
 @Composable
 fun SelectorRow(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
     Row(
-        modifier.fillMaxWidth().padding(start = 2.dp, bottom = 6.dp),
+        modifier.fillMaxWidth().padding(start = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         content = content,
     )
 }

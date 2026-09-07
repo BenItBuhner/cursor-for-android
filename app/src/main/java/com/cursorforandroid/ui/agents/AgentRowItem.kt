@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -50,8 +51,8 @@ data class AgentRowActions(
 )
 
 /**
- * Sidebar row as on the web: 32dp, leading 16dp state glyph, 14sp title, optional trailing metadata (runtime,
- * self-hosted machine glyph). Selected rows get a 6 % fill with radius 8.
+ * Sidebar row as measured on the web: 32px tall; selection is a 6 % fill inset 6px with radius 6; the state
+ * glyph is centred at x=20, the 14px title starts at x=36, trailing text ends 16px from the edge.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -65,12 +66,12 @@ fun AgentRowItem(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val shape = CursorTheme.shapes.lg
+    val shape = CursorTheme.shapes.base
     var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
-    Box(modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+    Box(modifier.fillMaxWidth().padding(horizontal = CursorDimens.selectionInset)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -83,11 +84,11 @@ fun AgentRowItem(
                     onLongClick = { menuOpen = true },
                 )
                 .height(CursorDimens.sidebarRow)
-                .padding(horizontal = 8.dp),
+                .padding(start = 6.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             StateGlyph(row.indicator, hasBranch = agent.hasBranch)
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(8.dp))
             Text(
                 agent.name,
                 style = type.row,
@@ -102,11 +103,11 @@ fun AgentRowItem(
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
-                Text(trailing.joinToString(" · "), style = type.small, color = colors.textQuaternary, maxLines = 1)
+                Text(trailing.joinToString(" · "), style = type.base, color = colors.textQuaternary, maxLines = 1)
             }
             if (prefs.showBranchStatus && agent.envType == EnvType.MACHINE) {
                 Spacer(Modifier.width(8.dp))
-                Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
+                Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
         }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
@@ -129,9 +130,9 @@ fun AgentRowItem(
 internal fun MenuItem(label: String, icon: ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
     DropdownMenuItem(
         text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(14.dp)) },
+        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(13.dp)) },
         onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
-        modifier = Modifier.height(32.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp),
+        modifier = Modifier.height(30.dp),
     )
 }

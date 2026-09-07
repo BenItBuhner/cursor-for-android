@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -20,8 +21,8 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * Compact desktop-style header: 44dp, flat icon buttons, start-aligned 14sp medium title. No centred nav-bar
- * title, no circular buttons.
+ * 36px header row like the sidebar's: 14px flat icons (first one 13px from the edge, like the logo) and an
+ * optional start-aligned 14sp title. No centred nav-bar title, no filled buttons.
  */
 @Composable
 fun CursorHeader(
@@ -38,13 +39,13 @@ fun CursorHeader(
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
             .height(CursorDimens.headerHeight)
-            .padding(horizontal = 8.dp),
+            .padding(start = 6.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         leading?.invoke(this)
         if (title != null) {
-            Spacer(Modifier.width(if (leading != null) 4.dp else 8.dp))
-            androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
+            Spacer(Modifier.width(if (leading != null) 2.dp else 8.dp))
+            Column(Modifier.weight(1f)) {
                 Text(title, style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (subtitle != null) Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }

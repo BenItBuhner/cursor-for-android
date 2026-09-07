@@ -72,7 +72,7 @@ fun SignInScreen(graph: AppGraph) {
             Modifier.widthIn(max = 360.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.Start,
         ) {
-            Icon(CursorIcons.Cube, null, tint = colors.iconPrimary, modifier = Modifier.size(28.dp))
+            Icon(CursorIcons.Cube, null, tint = colors.iconPrimary, modifier = Modifier.size(36.dp))
             Spacer(Modifier.height(20.dp))
             Text("Sign in", style = type.pageTitle, color = colors.textPrimary)
             Spacer(Modifier.height(6.dp))
@@ -98,7 +98,7 @@ fun SignInScreen(graph: AppGraph) {
                     modifier = Modifier.weight(1f),
                     decorationBox = { inner -> Box { if (key.isEmpty()) Text("key_…", style = type.code.copy(fontSize = type.base.fontSize), color = colors.textQuaternary); inner() } },
                 )
-                FlatIconButton(if (reveal) CursorIcons.EyeOff else CursorIcons.Eye, if (reveal) "Hide key" else "Show key", onClick = { reveal = !reveal }, size = 26.dp, iconSize = 14.dp)
+                FlatIconButton(if (reveal) CursorIcons.EyeOff else CursorIcons.Eye, if (reveal) "Hide key" else "Show key", onClick = { reveal = !reveal }, size = 26.dp, iconSize = 18.dp)
             }
             if (error != null) {
                 Spacer(Modifier.height(6.dp))

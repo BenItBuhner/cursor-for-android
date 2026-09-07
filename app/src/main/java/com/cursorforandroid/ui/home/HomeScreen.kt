@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -34,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
@@ -58,6 +57,7 @@ import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -83,20 +83,22 @@ fun HomeScreen(
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
-    var optionsMenu by remember { mutableStateOf(false) }
     var editingRef by remember { mutableStateOf(false) }
 
     val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
+    val pickImages = rememberImagePicker(
+        currentCount = state.attachments.size,
+        onPicked = viewModel::addAttachments,
+        onError = viewModel::reportError,
+    )
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
-        } else {
-            Spacer(Modifier.height(24.dp))
         }
         LazyColumn(
             Modifier.fillMaxSize().imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 12.dp else 24.dp, bottom = 32.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 12.dp else 50.dp, bottom = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item("composer") {
@@ -120,52 +122,45 @@ fun HomeScreen(
                                         cursorBrush = SolidColor(colors.textPrimary),
                                         modifier = Modifier.widthIn(min = 56.dp, max = 160.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 3.dp),
                                     )
-                                    FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 24.dp, iconSize = 13.dp)
+                                    FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 24.dp, iconSize = 16.dp)
                                 }
                             } else {
                                 SelectorChip(state.ref.ifBlank { "default" }, onClick = { editingRef = true })
                             }
                         }
                         SelectorChip("", onClick = {}, icon = CursorIcons.Cloud, enabled = false)
+                        Spacer(Modifier.weight(1f))
                     }
-                    Box {
-                        ComposerBox(
-                            value = state.prompt,
-                            onValueChange = viewModel::setPrompt,
-                            placeholder = "Ask Cursor to build, fix bugs, explore",
-                            onSend = { viewModel.launch(onLaunched) },
-                            canSend = state.canLaunch,
-                            minLines = 3,
-                            onPlus = { optionsMenu = true },
-                            modelLabel = state.modelLabel,
-                            onModel = { modelSheet = true },
-                            footerExtra = {
-                                if (state.planMode) {
-                                    Spacer(Modifier.width(8.dp))
-                                    Pill("Plan", tint = colors.orange, fill = colors.orange.copy(alpha = 0.14f))
-                                }
-                                if (state.isLaunching) {
-                                    Spacer(Modifier.width(8.dp))
-                                    SpinnerRing()
-                                }
-                            },
-                        )
-                        DropdownMenu(expanded = optionsMenu, onDismissRequest = { optionsMenu = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-                            OptionRow("Plan mode", state.planMode) { viewModel.setPlanMode(it) }
-                            OptionRow("Auto-create PR", state.autoCreatePr) { viewModel.setAutoCreatePr(it) }
-                        }
-                    }
+                    ComposerBox(
+                        value = state.prompt,
+                        onValueChange = viewModel::setPrompt,
+                        placeholder = "Ask Cursor to build, fix bugs, explore",
+                        onSend = { viewModel.launch(onLaunched) },
+                        canSend = state.canLaunch,
+                        minLines = 3,
+                        onPlus = pickImages,
+                        attachments = state.attachments,
+                        onRemoveAttachment = viewModel::removeAttachment,
+                        modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
+                        onModel = { modelSheet = true },
+                        footerExtra = {
+                            if (state.isLaunching) {
+                                Spacer(Modifier.width(8.dp))
+                                SpinnerRing()
+                            }
+                        },
+                    )
                     state.error?.let { Text(it, style = type.small, color = colors.red, modifier = Modifier.padding(top = 8.dp, start = 2.dp)) }
                 }
             }
-            item("gap") { Spacer(Modifier.height(28.dp)) }
+            item("gap") { Spacer(Modifier.height(30.dp)) }
             if (recent.isEmpty() && listState.hasLoaded) {
                 item("empty") {
                     Text("No chats yet", style = type.base, color = colors.textQuaternary, modifier = Modifier.padding(top = 24.dp))
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth())
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().padding(horizontal = 7.dp))
             }
         }
     }
@@ -187,6 +182,10 @@ fun HomeScreen(
             models = state.models,
             selectedModel = state.selectedModel,
             selectedVariant = state.selectedVariant,
+            planMode = state.planMode,
+            autoCreatePr = state.autoCreatePr,
+            onPlanMode = viewModel::setPlanMode,
+            onAutoCreatePr = viewModel::setAutoCreatePr,
             onSelect = { m, v -> viewModel.selectModel(m, v); modelSheet = false },
             onDismiss = { modelSheet = false },
         )
@@ -195,12 +194,13 @@ fun HomeScreen(
 
 @Composable
 private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary) },
-        trailingIcon = { CursorToggle(checked, onChange) },
-        onClick = { onChange(!checked) },
-        modifier = Modifier.height(36.dp),
-    )
+    Row(
+        Modifier.fillMaxWidth().pressable({ onChange(!checked) }, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary, modifier = Modifier.weight(1f))
+        CursorToggle(checked, onChange)
+    }
 }
 
 /**
@@ -215,30 +215,30 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
     Row(
         modifier
             .pressable(onClick, CursorTheme.shapes.lg)
-            .padding(vertical = 8.dp),
+            .padding(vertical = CursorDimens.recentRowGap / 2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PreviewCard(row)
-        Spacer(Modifier.width(18.dp))
+        Spacer(Modifier.width(CursorDimens.previewToTitle))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(agent.name, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 if (row.indicator == AgentIndicator.Unread) {
-                    Spacer(Modifier.width(8.dp))
-                    Dot(colors.unreadDot)
+                    Spacer(Modifier.width(7.dp))
+                    Dot(colors.unreadDot, size = CursorDimens.recentDot)
                 }
                 if (row.indicator == AgentIndicator.Error) {
-                    Spacer(Modifier.width(8.dp))
-                    Dot(colors.red)
+                    Spacer(Modifier.width(7.dp))
+                    Dot(colors.red, size = CursorDimens.recentDot)
                 }
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
-                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(13.dp))
-                    agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
-                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 12.dp, color = colors.iconTertiary)
-                    else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
+                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(16.dp))
+                    agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 16.dp, color = colors.iconTertiary)
+                    else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
                 }
                 agent.modelDisplayName?.let { Text(it, style = type.base, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
@@ -254,25 +254,22 @@ private fun PreviewCard(row: AgentRow) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent = row.agent
-    CursorCard(Modifier.size(width = 120.dp, height = 80.dp), shape = CursorTheme.shapes.xl) {
+    CursorCard(Modifier.size(width = CursorDimens.previewCardWidth, height = CursorDimens.previewCardHeight), shape = CursorTheme.shapes.lg) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
             when {
                 agent.hasPullRequest -> Pill("Open", icon = CursorIcons.GitPullRequest, tint = colors.gitAdded, fill = colors.gitAdded.copy(alpha = 0.14f))
-                row.indicator == AgentIndicator.Running -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    RunningGlyph(size = 12.dp)
-                    Text("Working", style = type.small, color = colors.textTertiary)
-                }
+                row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
                 row.indicator == AgentIndicator.Error -> Pill("Failed", tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)
                 !agent.summary.isNullOrBlank() -> Text(
                     agent.summary!!,
-                    style = type.tiny,
+                    style = type.code.copy(fontSize = 10.sp, lineHeight = 13.sp),
                     color = colors.textTertiary,
-                    maxLines = 4,
+                    maxLines = 5,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.fillMaxSize(),
                 )
-                else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(18.dp))
+                else -> Icon(CursorIcons.Cube, null, tint = colors.iconQuaternary, modifier = Modifier.size(24.dp))
             }
         }
     }
@@ -335,6 +332,10 @@ private fun ModelSheet(
     models: List<ModelOption>,
     selectedModel: ModelOption?,
     selectedVariant: ModelVariant?,
+    planMode: Boolean,
+    autoCreatePr: Boolean,
+    onPlanMode: (Boolean) -> Unit,
+    onAutoCreatePr: (Boolean) -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -357,6 +358,12 @@ private fun ModelSheet(
                             Text("Loading models…", style = type.small, color = colors.textQuaternary)
                         }
                     }
+                }
+                item("options") {
+                    Text("Options", style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 2.dp))
+                    OptionRow("Plan mode", planMode, onPlanMode)
+                    OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
+                    HairlineDivider(Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                 }
                 models.forEach { model ->
                     if (model.variants.size <= 1) {
@@ -386,13 +393,13 @@ private fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: a
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
+            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        if (checked) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
     }
 }

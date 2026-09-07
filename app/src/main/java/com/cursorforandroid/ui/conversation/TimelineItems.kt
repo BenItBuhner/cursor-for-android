@@ -128,7 +128,7 @@ private fun DisclosureRow(
             Text(value, style = CursorTheme.typography.base, color = colors.textQuaternary)
         }
         Spacer(Modifier.width(4.dp))
-        if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp).rotate(if (expanded) 180f else 0f))
+        if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp).rotate(if (expanded) 180f else 0f))
     }
 }
 
@@ -188,7 +188,7 @@ private fun ToolCallRow(call: ToolCall) {
     val colors = CursorTheme.colors
     val mono = call.kind == ToolKind.Shell || call.kind == ToolKind.Read || call.kind == ToolKind.Edit || call.kind == ToolKind.List
     Row(Modifier.fillMaxWidth().height(30.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(call.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
+        Icon(call.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(8.dp))
         Text(ToolNames.verb(call.kind, call.status), style = CursorTheme.typography.small, color = colors.textTertiary)
         Spacer(Modifier.width(6.dp))
@@ -240,7 +240,7 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
     }
     CursorCard(modifier.fillMaxWidth(), fill = colors.fillFaint, border = Color.Transparent) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
+            Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
             Column {
                 Text(item.title, style = CursorTheme.typography.base, color = colors.textSecondary)

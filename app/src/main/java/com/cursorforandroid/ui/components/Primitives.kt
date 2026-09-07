@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -67,8 +68,8 @@ fun Modifier.pressable(onClick: () -> Unit, shape: Shape, enabled: Boolean = tru
 }
 
 /**
- * Cursor's icon button: no fill, no border, just the glyph at 66 % (`--cursor-icon-secondary`) that brightens
- * on press. 32dp box (28–32px on desktop), radius 6.
+ * Cursor's icon button: no fill, no border, a 14px glyph at 66 % (`--cursor-icon-secondary`). The 28dp box is
+ * only the hit area; nothing is painted until pressed.
  */
 @Composable
 fun FlatIconButton(
@@ -77,14 +78,12 @@ fun FlatIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     size: Dp = CursorDimens.iconButton,
-    iconSize: Dp = CursorDimens.iconLarge,
+    iconSize: Dp = CursorDimens.headerIcon,
     tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
 ) {
     Box(
-        modifier
-            .size(size)
-            .pressable(onClick = onClick, shape = CursorTheme.shapes.base, enabled = enabled),
+        modifier.size(size).pressable(onClick = onClick, shape = CursorTheme.shapes.base, enabled = enabled),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
@@ -92,8 +91,8 @@ fun FlatIconButton(
 }
 
 /**
- * The small round buttons that do exist in Cursor's composer footer: the "+" (8 % fill) and the mic / send
- * (foreground fill with a canvas-coloured glyph). 28dp on desktop; 30dp here for touch.
+ * The round buttons of Cursor's composer footer, measured at 24px with 12px glyphs: "+" on an 8 % fill, mic / send
+ * on a foreground fill with a canvas-coloured glyph.
  */
 @Composable
 fun ComposerRoundButton(
@@ -103,7 +102,7 @@ fun ComposerRoundButton(
     modifier: Modifier = Modifier,
     prominent: Boolean = false,
     enabled: Boolean = true,
-    size: Dp = 30.dp,
+    size: Dp = CursorDimens.roundButton,
 ) {
     val colors = CursorTheme.colors
     val fill = if (prominent) colors.textPrimary else colors.fill
@@ -115,11 +114,11 @@ fun ComposerRoundButton(
             .pressable(onClick = onClick, shape = CircleShape, enabled = enabled),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.5f), modifier = Modifier.size(16.dp))
+        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.5f), modifier = Modifier.size(CursorDimens.roundButtonGlyph))
     }
 }
 
-/** Elevated card: `--cursor-editor` fill, 8 % stroke, radius 8 (12 for previews). */
+/** Elevated card: `--cursor-editor` fill, 8 % stroke, radius 8. */
 @Composable
 fun CursorCard(
     modifier: Modifier = Modifier,
@@ -140,13 +139,13 @@ fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.co
 /** Group label such as "Pinned" / "Today" / "Chats": 12sp at 60 %, sentence case, no chevron. */
 @Composable
 fun GroupLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
-    Row(modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
         trailing?.invoke()
     }
 }
 
-/** Neutral pill: 8 % fill, radius 6, 12sp — "Branch", "Early Beta", inline branch names. */
+/** Capsule pill measured at 20px tall with 12px text — "Branch", "Open", "Early Beta", branch names. */
 @Composable
 fun Pill(
     text: String,
@@ -157,20 +156,21 @@ fun Pill(
     mono: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
-    val shape = CursorTheme.shapes.base
+    val shape = CursorTheme.shapes.full
     Row(
         modifier
+            .height(CursorDimens.pillHeight)
             .clip(shape)
             .background(fill, shape)
             .then(if (onClick != null) Modifier.pressable(onClick, shape) else Modifier)
-            .padding(horizontal = 7.dp, vertical = 3.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(12.dp))
+        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(14.dp))
         Text(
             text,
-            style = if (mono) CursorTheme.typography.code else CursorTheme.typography.small,
+            style = (if (mono) CursorTheme.typography.code else CursorTheme.typography.small).copy(lineHeight = 14.sp),
             color = tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -178,41 +178,41 @@ fun Pill(
     }
 }
 
-/** Desktop-sized toggle (34 x 18): green track when on, 14 % fill when off, white knob. */
+/** Desktop-sized toggle (30 x 16): green track when on, 14 % fill when off, white knob. */
 @Composable
 fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val track by animateColorAsState(if (checked) colors.green else colors.fillMedium, label = "track")
-    val knobOffset by animateDpAsState(if (checked) 17.dp else 2.dp, label = "knob")
+    val knobOffset by animateDpAsState(if (checked) 16.dp else 2.dp, label = "knob")
     Box(
         modifier
-            .size(width = 34.dp, height = 18.dp)
+            .size(width = 30.dp, height = 16.dp)
             .background(track, CircleShape)
             .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch),
     ) {
         Box(
             Modifier
                 .offset { IntOffset(knobOffset.roundToPx(), 2.dp.roundToPx()) }
-                .size(14.dp)
+                .size(12.dp)
                 .background(Color.White, CircleShape),
         )
     }
 }
 
 /**
- * Leading state glyph of a sidebar row (16dp slot). Web semantics: running sparkle, unread blue dot, error red
+ * Leading state glyph of a sidebar row (12px slot). Web semantics: running sparkle, unread blue dot, error red
  * dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
  */
 @Composable
 fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    Box(modifier.size(CursorDimens.icon), contentAlignment = Alignment.Center) {
+    Box(modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
         when (indicator) {
-            AgentIndicator.Running -> RunningGlyph(color = colors.iconSecondary, size = 14.dp)
+            AgentIndicator.Running -> RunningGlyph(color = colors.iconSecondary, size = 16.dp)
             AgentIndicator.Unread -> Dot(colors.unreadDot)
             AgentIndicator.Error -> Dot(colors.red)
-            AgentIndicator.Read -> if (hasBranch) Icon(CursorIcons.GitBranch, null, tint = colors.branchGlyph, modifier = Modifier.size(14.dp))
-            AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+            AgentIndicator.Read -> if (hasBranch) Icon(CursorIcons.GitBranch, null, tint = colors.branchGlyph, modifier = Modifier.size(16.dp))
+            AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
         }
     }
 }
@@ -222,17 +222,17 @@ fun Dot(color: Color, size: Dp = CursorDimens.unreadDot, modifier: Modifier = Mo
     Box(modifier.size(size).background(color, CircleShape))
 }
 
-/** Cursor's "agent is working" glyph: a slowly rotating four-point sparkle. */
+/** The web sidebar's "working" glyph: a slowly rotating cluster of dots. */
 @Composable
-fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconSecondary, size: Dp = 14.dp) {
+fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconSecondary, size: Dp = 16.dp) {
     val transition = rememberInfiniteTransition(label = "running")
     val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(2800, easing = LinearEasing), RepeatMode.Restart), label = "angle")
-    Icon(CursorIcons.Sparkle, null, tint = color, modifier = modifier.size(size).rotate(angle))
+    Icon(CursorIcons.Working, null, tint = color, modifier = modifier.size(size).rotate(angle))
 }
 
 /** Thin indeterminate ring for in-flight tool calls. */
 @Composable
-fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconTertiary, size: Dp = 12.dp, strokeWidth: Dp = 1.5.dp) {
+fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconTertiary, size: Dp = 11.dp, strokeWidth: Dp = 1.5.dp) {
     val transition = rememberInfiniteTransition(label = "spinner")
     val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "spin")
     Box(
@@ -244,7 +244,7 @@ fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors
     )
 }
 
-/** Desktop buttons: ghost (8 % stroke, transparent) and primary (accent fill). 28dp tall, radius 6. */
+/** Desktop buttons: ghost (12 % stroke, 4 % fill) and primary (accent fill). 26dp tall, radius 6, 13sp. */
 @Composable
 fun CursorButton(
     text: String,
@@ -254,7 +254,7 @@ fun CursorButton(
     primary: Boolean = false,
     destructive: Boolean = false,
     icon: ImageVector? = null,
-    height: Dp = 30.dp,
+    height: Dp = 26.dp,
 ) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.base
@@ -274,14 +274,14 @@ fun CursorButton(
             .cursorSurface(fill, border, shape)
             .pressable(onClick, shape, enabled = enabled)
             .height(height)
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 10.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = label, modifier = Modifier.size(14.dp))
-            Box(Modifier.width(6.dp))
+            Icon(icon, null, tint = label, modifier = Modifier.size(16.dp))
+            Box(Modifier.width(4.dp))
         }
-        Text(text, style = CursorTheme.typography.baseMedium, color = label, maxLines = 1)
+        Text(text, style = CursorTheme.typography.base, color = label, maxLines = 1)
     }
 }

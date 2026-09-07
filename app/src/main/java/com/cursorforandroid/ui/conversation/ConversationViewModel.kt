@@ -7,6 +7,8 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +29,7 @@ data class ConversationUiState(
 class ConversationViewModel(private val graph: AppGraph, val agentId: String) : ViewModel() {
 
     private val draft = MutableStateFlow("")
+    private val attachments = MutableStateFlow<List<PendingAttachment>>(emptyList())
     private val sending = MutableStateFlow(false)
     private val toast = MutableStateFlow<String?>(null)
 
@@ -35,6 +38,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     val conversation: StateFlow<ConversationState> = graph.conversations.state(agentId)
     val draftText: StateFlow<String> = draft.asStateFlow()
+    val pendingAttachments: StateFlow<List<PendingAttachment>> = attachments.asStateFlow()
     val isSending: StateFlow<Boolean> = sending.asStateFlow()
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
     val isPinned: StateFlow<Boolean> = graph.prefs.localAgentState.map { agentId in it.pinnedIds }
@@ -51,14 +55,21 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun setDraft(value: String) { draft.value = value }
 
+    fun addAttachments(items: List<PendingAttachment>) { attachments.value = (attachments.value + items).take(PromptImage.MAX_COUNT) }
+    fun removeAttachment(item: PendingAttachment) { attachments.value = attachments.value.filterNot { it.id == item.id } }
+    fun showMessage(message: String) { toast.value = message }
+
     fun send() {
         val text = draft.value.trim()
-        if (text.isEmpty() || sending.value) return
+        val images = attachments.value
+        if ((text.isEmpty() && images.isEmpty()) || sending.value) return
         viewModelScope.launch {
             sending.value = true
             draft.value = ""
-            graph.conversations.sendFollowUp(agentId, text).onFailure {
+            attachments.value = emptyList()
+            graph.conversations.sendFollowUp(agentId, text.ifEmpty { "See the attached image." }, images.map { it.image }).onFailure {
                 draft.value = text
+                attachments.value = images
                 toast.value = it.userMessage()
             }
             sending.value = false

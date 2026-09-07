@@ -82,6 +82,16 @@ object CursorIcons {
         }
     }
 
+    /** The web sidebar's "working" glyph: a cluster of four dots that rotates while a run is active. */
+    val Working: ImageVector by lazy {
+        stroke("Working") {
+            fill("M12 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
+            fill("M18.2 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
+            fill("M12 16.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
+            fill("M5.8 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
+        }
+    }
+
     val NewAgent: ImageVector by lazy {
         stroke("NewAgent") {
             line("M4 12l16-8-4 16-4-6-8-2z")
@@ -92,7 +102,7 @@ object CursorIcons {
 
     val Cloud: ImageVector by lazy {
         stroke("Cloud") {
-            line("M7 18a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 8.5a3.75 3.75 0 0 1 .5 7.5H7z")
+            line("M6 18a4.5 4.5 0 0 1-.6-8.95A6.5 6.5 0 0 1 17.5 7.5a4.25 4.25 0 0 1 .5 8.5H6z")
         }
     }
 
@@ -164,14 +174,14 @@ object CursorIcons {
 
     val Stop: ImageVector by lazy {
         stroke("Stop") {
-            line("M7 7h10v10H7z")
+            line("M6.5 6.5h11v11h-11z", 2f)
         }
     }
 
     val ArrowUp: ImageVector by lazy {
         stroke("ArrowUp") {
-            line("M12 19V5", 1.8f)
-            line("M6 11l6-6 6 6", 1.8f)
+            line("M12 20V4", 2f)
+            line("M5 11l7-7 7 7", 2f)
         }
     }
 
@@ -210,16 +220,16 @@ object CursorIcons {
 
     val Plus: ImageVector by lazy {
         stroke("Plus") {
-            line("M12 5v14")
-            line("M5 12h14")
+            line("M12 5v14", 1.8f)
+            line("M5 12h14", 1.8f)
         }
     }
 
     val Mic: ImageVector by lazy {
         stroke("Mic") {
-            line("M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z")
-            line("M6 11a6 6 0 0 0 12 0")
-            line("M12 17v4")
+            line("M12 2.5a3.5 3.5 0 0 1 3.5 3.5v6a3.5 3.5 0 0 1-7 0V6A3.5 3.5 0 0 1 12 2.5z", 1.8f)
+            line("M5 11.5a7 7 0 0 0 14 0", 1.8f)
+            line("M12 18.5v3", 1.8f)
         }
     }
 

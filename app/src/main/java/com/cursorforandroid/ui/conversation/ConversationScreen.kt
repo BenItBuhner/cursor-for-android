@@ -57,6 +57,7 @@ import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -78,6 +79,8 @@ fun ConversationScreen(
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
+    val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -163,7 +166,7 @@ fun ConversationScreen(
                 if (isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }) {
                     item("working") {
                         Row(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            RunningGlyph(size = 12.dp)
+                            RunningGlyph(size = 16.dp)
                             Spacer(Modifier.width(8.dp))
                             Text(if (conversation.runStatus == RunStatus.CREATING) "Starting…" else "Working…", style = type.base, color = colors.textTertiary)
                         }
@@ -184,7 +187,7 @@ fun ConversationScreen(
                         .pressable({ scope.launch { listState.animateScrollToItem(items.lastIndex.coerceAtLeast(0)) } }, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(CursorIcons.ChevronDown, "Scroll to bottom", tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
+                    Icon(CursorIcons.ChevronDown, "Scroll to bottom", tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
                 }
             }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)) { data ->
@@ -202,9 +205,12 @@ fun ConversationScreen(
                 onValueChange = viewModel::setDraft,
                 placeholder = if (agent?.isArchived == true) "Unarchive to follow up" else "Follow up…",
                 onSend = viewModel::send,
-                canSend = draft.isNotBlank() && !isSending && agent?.isArchived != true,
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && agent?.isArchived != true,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
+                onPlus = pickImages,
+                attachments = attachments,
+                onRemoveAttachment = viewModel::removeAttachment,
                 modelLabel = agent?.modelDisplayName,
                 onModel = null,
                 footerExtra = { if (isSending) { Spacer(Modifier.width(8.dp)); SpinnerRing() } },

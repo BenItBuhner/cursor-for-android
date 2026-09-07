@@ -84,6 +84,8 @@ fun AppNavHost(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
+    // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
+    var sidebarCollapsed by remember { mutableStateOf(false) }
     val colors = CursorTheme.colors
 
     LaunchedEffect(deepLinkAgentId) {
@@ -138,7 +140,7 @@ fun AppNavHost(
                 onNewChat = { navigateTop(Routes.HOME) },
                 onSettings = { navigateTop(Routes.SETTINGS) },
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ scope.launch { drawerState.close() } }) else null,
+                onToggleSidebar = if (inDrawer) ({ scope.launch { drawerState.close() } }) else ({ sidebarCollapsed = true }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
             ),
@@ -146,7 +148,11 @@ fun AppNavHost(
         )
     }
 
-    val openSidebar: (() -> Unit)? = if (wide) null else ({ scope.launch { drawerState.open() } })
+    val openSidebar: (() -> Unit)? = when {
+        !wide -> ({ scope.launch { drawerState.open() } })
+        sidebarCollapsed -> ({ sidebarCollapsed = false })
+        else -> null
+    }
 
     @Composable
     fun detailHost(modifier: Modifier) {
@@ -185,8 +191,10 @@ fun AppNavHost(
 
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
-            sidebar(inDrawer = false, modifier = Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight())
-            Box(Modifier.fillMaxHeight().width(1.dp).background(colors.strokeSubtle))
+            if (!sidebarCollapsed) {
+                sidebar(inDrawer = false, modifier = Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight())
+                Box(Modifier.fillMaxHeight().width(1.dp).background(colors.strokeSubtle))
+            }
             detailHost(Modifier.weight(1f).fillMaxHeight())
         }
     } else {
