@@ -337,6 +337,36 @@ class LiveRunMonitorTest {
     }
 
     @Test
+    fun `a follow-up on an agent without a transcript still lands after its history`() = runBlocking {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        api.transcripts.remove("bc-1")
+        agents.refresh()
+        expireStream("run-1")
+        val conversations = ConversationRepository(session, agents, prefs, hub)
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && "run-1" in streamer.connections }
+        delay(100)
+        // Without a transcript the run is shown from its record: a header, its result and the footer.
+        assertThat(conversations.state("bc-1").value.items.map { it.id }).containsExactly("hdr-run-1", "res-run-1", "run-run-1").inOrder()
+
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 2").isSuccess).isTrue()
+        val runId = conversations.state("bc-1").value.activeRunId!!
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, tool("f1", "read_file", "completed", "README.md"))
+        streamer.emit(runId, RunStreamEvent.Assistant("Reply 2"))
+        streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply 2", 5_000, null))
+        streamer.emit(runId, RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && !conversations.state("bc-1").value.isStreaming }
+        val items = conversations.state("bc-1").value.items
+        assertThat(items.map { it::class.simpleName }).containsExactly(
+            "DateHeader", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "ToolActivity", "AssistantMessage", "RunFooter",
+        ).inOrder()
+        assertThat((items[4] as UserMessage).text).isEqualTo("Prompt 2")
+        assertThat((items[7] as RunFooter).runId).isEqualTo(runId)
+    }
+
+    @Test
     fun `hub releases the stream after the last subscriber leaves and replays on resubscribe`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         val first = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }

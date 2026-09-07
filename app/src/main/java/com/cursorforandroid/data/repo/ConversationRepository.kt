@@ -52,24 +52,30 @@ class ConversationRepository(
     private val prefs: PreferencesStore,
     private val hub: LiveRunHub,
 ) {
+    /** A follow-up sent from this device: its prompt and its run, a placeholder until the server has answered. */
+    private class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto)
+
     /**
-     * Everything shown for one agent is derived from three inputs, so a trace that lands, a follow-up that is sent
+     * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
      * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
      */
     private inner class Entry(agentId: String) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val state = MutableStateFlow(ConversationState(agentId))
-        /** The legacy transcript, plus an optimistic prompt until the server confirms the follow-up. */
+        /** The legacy transcript as the server returned it. */
         var messages: List<V0ConversationMessageDto> = emptyList()
-        /** The v1 runs, plus a placeholder for a follow-up in flight. */
+        /** The v1 runs as the server returned them. */
         var runs: List<RunDto> = emptyList()
+        /** Follow-ups sent from here that the server's run list has not caught up with; shown after the history. */
+        var local: List<LocalPrompt> = emptyList()
         /** Per run: the items its stream produced, replayed for finished runs and updated live for the active one. */
         var traces: Map<String, List<TimelineItem>> = emptyMap()
         var streamJob: Job? = null
         var traceJob: Job? = null
         var attached = 0
 
-        fun items(): List<TimelineItem> = TimelineBuilder.fromHistory(messages, runs, traces)
+        fun items(): List<TimelineItem> =
+            TimelineBuilder.fromHistory(messages, runs, traces) + TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, traces)
     }
 
     private val entries = mutableMapOf<String, Entry>()
@@ -137,11 +143,12 @@ class ConversationRepository(
                 val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                 val latestStatus = latest?.statusEnum()
                 // Traces already known are kept: a finished run's log does not change, and the active run's is
-                // overwritten by the first live snapshot.
+                // overwritten by the first live snapshot. Local follow-ups hand over to the server once it lists their run.
                 e.publish(
                     mutate = {
                         messages = transcript
                         runs = runList
+                        local = local.filter { prompt -> runList.none { it.id == prompt.run.id } }
                     },
                     transform = {
                         copy(
@@ -224,26 +231,20 @@ class ConversationRepository(
         val nowIso = Instant.ofEpochMilli(now).toString()
         val placeholder = RunDto(id = localId, agentId = agentId, status = RunStatus.CREATING.name, createdAt = nowIso, updatedAt = nowIso)
         e.publish(
-            mutate = {
-                messages = messages + V0ConversationMessageDto(localId, "user_message", trimmed)
-                runs = runs + placeholder
-            },
+            mutate = { local = local + LocalPrompt(V0ConversationMessageDto(localId, "user_message", trimmed), placeholder) },
             transform = { copy(error = null) },
         )
 
         val result = agents.followUp(agentId, trimmed, images)
         return result.fold(
             onSuccess = { run ->
-                e.publish(mutate = { runs = runs.map { if (it.id == localId) run else it } })
+                e.publish(mutate = { local = local.map { if (it.run.id == localId) LocalPrompt(it.message, run) else it } })
                 startStreaming(e, agentId, run)
                 Result.success(Unit)
             },
             onFailure = { t ->
                 e.publish(
-                    mutate = {
-                        messages = messages.filterNot { it.id == localId }
-                        runs = runs.filterNot { it.id == localId }
-                    },
+                    mutate = { local = local.filterNot { it.run.id == localId } },
                     transform = { copy(error = t.userMessage()) },
                 )
                 Result.failure(t)
