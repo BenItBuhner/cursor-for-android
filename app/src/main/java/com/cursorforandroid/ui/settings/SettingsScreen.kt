@@ -164,7 +164,7 @@ private fun NotificationRows(graph: AppGraph) {
         Column(Modifier.weight(1f)) {
             Text("Live notifications", style = type.base, color = colors.textPrimary)
             Text(
-                "Follow running agents from the lock screen, like Live Activities on iOS. Up to eight at once; a card when one agent finishes.",
+                "Follow running agents from the lock screen, like Live Activities on iOS. Live detail for up to eight at once; a card when one agent finishes.",
                 style = type.small, color = colors.textTertiary,
             )
         }
