@@ -33,17 +33,23 @@ import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+
+private fun toolEvent(id: String, name: String, status: String, vararg args: Pair<String, String>) = RunStreamEvent.ToolCall(
+    SseToolCallDto(callId = id, name = name, status = status, args = buildJsonObject { args.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }),
+)
 
 /** Shared mutable state behind the demo API and streamer. */
 internal class DemoStore {
@@ -58,6 +64,8 @@ internal class DemoStore {
     val transcripts: MutableMap<String, MutableList<V0ConversationMessageDto>> = linkedMapOf()
     val scripts: MutableMap<String, String> = linkedMapOf()
     val prompts: MutableMap<String, String> = linkedMapOf()
+    /** Each run's retained event log: pre-built for finished seeds, recorded as live scripts play. */
+    private val eventLogs: MutableMap<String, MutableList<RunStreamEvent>> = linkedMapOf()
     private var counter = 100
 
     init {
@@ -69,7 +77,48 @@ internal class DemoStore {
             transcripts[seed.id] = DemoData.transcript(seed).toMutableList()
             seed.liveScript?.let { scripts[run.id] = it }
             prompts[run.id] = seed.prompt
+            if (seed.trace.isNotEmpty()) eventLogs[run.id] = seedEventLog(seed, run).toMutableList()
         }
+    }
+
+    @Synchronized
+    fun startLog(runId: String) { eventLogs[runId] = mutableListOf() }
+
+    @Synchronized
+    fun record(runId: String, event: RunStreamEvent) { eventLogs.getOrPut(runId) { mutableListOf() } += event }
+
+    @Synchronized
+    fun eventLog(runId: String): List<RunStreamEvent>? = eventLogs[runId]?.toList()
+
+    /** Turns a seed's scripted steps into the events its stream would have carried, mirroring the transcript. */
+    private fun seedEventLog(seed: DemoData.Seed, run: RunDto): List<RunStreamEvent> = buildList {
+        add(RunStreamEvent.Status(run.id, RunStatus.RUNNING))
+        val replies = seed.replies.iterator()
+        var calls = 0
+        seed.trace.forEach { step ->
+            when (step) {
+                is DemoData.Step.Thought -> add(RunStreamEvent.Thinking(step.text))
+                is DemoData.Step.Tool -> {
+                    val id = "c${++calls}"
+                    val key = when (step.name) {
+                        "grep" -> "pattern"
+                        "codebase_search", "web_search" -> "query"
+                        "run_terminal_cmd" -> "command"
+                        else -> "path"
+                    }
+                    add(toolEvent(id, step.name, "running", key to step.arg))
+                    add(toolEvent(id, step.name, "completed", key to step.arg))
+                }
+                is DemoData.Step.Delegate -> {
+                    val id = "s${++calls}"
+                    add(toolEvent(id, "task", "running", "subagent_type" to "explore", "description" to step.description))
+                    add(toolEvent(id, "task", "completed", "subagent_type" to "explore", "description" to step.description))
+                }
+                DemoData.Step.Reply -> if (replies.hasNext()) add(RunStreamEvent.Assistant(replies.next()))
+            }
+        }
+        replies.forEachRemaining { add(RunStreamEvent.Assistant(it)) }
+        add(RunStreamEvent.Result(run.id, RunStatus.parse(run.status), run.result, run.durationMs, run.git))
     }
 
     @Synchronized
@@ -249,26 +298,37 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
     private fun notFound(code: String) = CursorApiException(404, code, "Not found.")
 }
 
-/** Replays scripted streams with realistic pacing and mutates the store when a run finishes. */
+/**
+ * Replays scripted streams with realistic pacing and mutates the store when a run finishes. Like the real endpoint,
+ * a finished run's stream replays its retained event log until the retention window lapses, then reports it expired.
+ */
 internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         val script = store.scripts[runId] ?: "generic"
-        val alreadyDone = store.runs[agentId]?.firstOrNull { it.id == runId }?.let { RunStatus.parse(it.status).isTerminal } == true
-        if (alreadyDone) {
-            emit(RunStreamEvent.Error("stream_expired", "This run's live stream has expired."))
+        val run = store.runs[agentId]?.firstOrNull { it.id == runId }
+        if (run != null && RunStatus.parse(run.status).isTerminal) {
+            replay(run)
             return@flow
         }
-        emit(RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        // Every event of the live run is retained, so a later visit can replay it the way the API would.
+        store.startLog(runId)
+        val recorder = object : FlowCollector<RunStreamEvent> {
+            override suspend fun emit(value: RunStreamEvent) {
+                store.record(runId, value)
+                this@flow.emit(value)
+            }
+        }
+        recorder.emit(RunStreamEvent.Status(runId, RunStatus.RUNNING))
         store.updateRun(agentId, runId) { it.copy(status = "RUNNING") }
         store.setV0Status(agentId, "RUNNING")
         val startedAt = AppClock.now()
         val outcome = when (script) {
-            "cesium" -> cesium()
-            "codex" -> codex()
-            "limbs" -> limbs()
-            "plan" -> plan(store.prompts[runId].orEmpty())
-            else -> generic(store.prompts[runId].orEmpty())
+            "cesium" -> recorder.cesium()
+            "codex" -> recorder.codex()
+            "limbs" -> recorder.limbs()
+            "plan" -> recorder.plan(store.prompts[runId].orEmpty())
+            else -> recorder.generic(store.prompts[runId].orEmpty())
         }
         val elapsed = AppClock.now() - startedAt
         val duration = outcome.reportedDurationMs ?: elapsed
@@ -277,15 +337,25 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
         store.updateRun(agentId, runId) { it.copy(status = "FINISHED", updatedAt = store.iso(), durationMs = duration, result = outcome.finalText, git = git ?: it.git) }
         store.setLifecycle(agentId, "IDLE")
         store.setV0Status(agentId, "FINISHED", branch = outcome.branch, prUrl = outcome.prUrl)
-        emit(RunStreamEvent.Result(runId, RunStatus.FINISHED, outcome.finalText, duration, git))
+        recorder.emit(RunStreamEvent.Result(runId, RunStatus.FINISHED, outcome.finalText, duration, git))
+        emit(RunStreamEvent.Done)
+    }
+
+    private suspend fun FlowCollector<RunStreamEvent>.replay(run: RunDto) {
+        val log = store.eventLog(run.id)
+        val finishedAt = parseIsoMillis(run.updatedAt)
+        if (log == null || AppClock.now() - finishedAt > DemoData.STREAM_RETENTION_MS) {
+            emit(RunStreamEvent.Error("stream_expired", "This run's live stream has expired."))
+            return
+        }
+        delay(200)
+        log.forEach { emit(it) }
         emit(RunStreamEvent.Done)
     }
 
     private class Outcome(val finalText: String, val branch: String? = null, val prUrl: String? = null, val reportedDurationMs: Long? = null)
 
-    private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = RunStreamEvent.ToolCall(
-        SseToolCallDto(callId = id, name = name, status = status, args = buildJsonObject { args.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }),
-    )
+    private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = toolEvent(id, name, status, *args)
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.type(text: String, chunk: Int = 18, delayMs: Long = 22) {
         var i = 0

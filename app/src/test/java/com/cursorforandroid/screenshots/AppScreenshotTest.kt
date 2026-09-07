@@ -26,6 +26,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.RunFooter
+import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -182,6 +183,11 @@ class AppScreenshotTest {
         capture("09_tablet_home")
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
+        // The finished run's thinking / tool / subagent trace is replayed from its retained stream a beat after the
+        // transcript; capture once it has been spliced in.
+        val revenueId = graph.agents.state.value.agents.first { it.name == "Revenue Scaling Pipeline Research" }.id
+        compose.waitUntil(30_000) { graph.conversations.state(revenueId).value.items.any { it is ToolActivity } }
+        compose.waitForIdle()
         capture("10_tablet_conversation")
     }
 
