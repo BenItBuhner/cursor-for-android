@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.RunStatus
@@ -58,7 +59,7 @@ class AgentRepositoryLaunchTest {
         val backend = CursorBackend(api, FakeRunStreamer(), isDemo = true)
         val session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
         session.enterDemo()
-        agents = AgentRepository(session, prefs)
+        agents = AgentRepository(session, prefs, AttachmentStore(context))
     }
 
     @After

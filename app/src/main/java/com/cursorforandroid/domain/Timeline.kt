@@ -13,7 +13,20 @@ data class UserMessage(
     override val id: String,
     val text: String,
     val timestampMillis: Long? = null,
+    val attachments: List<MessageAttachment> = emptyList(),
 ) : TimelineItem
+
+/**
+ * An image that was attached to a prompt, as kept on this device. The transcript endpoint only returns the text of a
+ * `user_message`, so the copy written when the prompt was sent is the only one there is; [path] points at it.
+ */
+data class MessageAttachment(
+    val path: String,
+    val width: Int,
+    val height: Int,
+) {
+    val aspectRatio: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 1f
+}
 
 data class AssistantMessage(
     override val id: String,

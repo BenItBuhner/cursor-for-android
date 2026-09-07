@@ -4,8 +4,11 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.domain.McpServer
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -45,13 +48,15 @@ data class ConversationState(
  *
  * The legacy transcript is text only. Every run's thinking, tool calls and subagents live in its event log, which
  * the hub replays for finished runs as long as the API retains it, so the same trace the live view showed is
- * there to dig into after the fact. Runs whose log has expired keep their text.
+ * there to dig into after the fact. Runs whose log has expired keep their text. The images a prompt carried never
+ * come back from the server at all; they are filled in from the on-device [AttachmentStore].
  */
 class ConversationRepository(
     private val session: SessionManager,
     private val agents: AgentRepository,
     private val prefs: PreferencesStore,
     private val hub: LiveRunHub,
+    private val attachments: AttachmentStore,
 ) {
     /** A follow-up sent from this device: its prompt and its run, a placeholder until the server has answered. */
     private class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto)
@@ -71,12 +76,15 @@ class ConversationRepository(
         var local: List<LocalPrompt> = emptyList()
         /** Per run: the items its stream produced, replayed for finished runs and updated live for the active one. */
         var traces: Map<String, List<TimelineItem>> = emptyMap()
+        /** Per run: the images its prompt carried. A follow-up in flight is keyed by its placeholder run. */
+        var promptImages: Map<String, List<MessageAttachment>> = emptyMap()
         var streamJob: Job? = null
         var traceJob: Job? = null
         var attached = 0
 
         fun items(): List<TimelineItem> =
-            TimelineBuilder.fromHistory(messages, runs, traces) + TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, traces)
+            TimelineBuilder.fromHistory(messages, runs, traces, promptImages) +
+                TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, traces, promptImages)
     }
 
     private val entries = mutableMapOf<String, Entry>()
@@ -136,9 +144,11 @@ class ConversationRepository(
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
                 val runPage = async { runCatching { api.listRuns(agentId, limit = 50).items } }
                 val detail = async { agents.loadDetail(agentId) }
+                val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
                 val runList = runPage.await().getOrElse { emptyList() }
                 detail.await()
+                val onDevice = stored.await()
                 val transcript = convResult.getOrNull()?.messages ?: emptyList()
                 val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
                 val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
@@ -150,6 +160,8 @@ class ConversationRepository(
                         messages = transcript
                         runs = runList
                         local = local.filter { prompt -> runList.none { it.id == prompt.run.id } }
+                        // The disk knows every filed prompt; only follow-ups still in flight exist solely in memory.
+                        promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
                     },
                     transform = {
                         copy(
@@ -236,21 +248,38 @@ class ConversationRepository(
         val localId = "local-$now"
         val nowIso = Instant.ofEpochMilli(now).toString()
         val placeholder = RunDto(id = localId, agentId = agentId, status = RunStatus.CREATING.name, createdAt = nowIso, updatedAt = nowIso)
+        // Written before the request so the bubble shows its images from the first frame, like the text. Storage
+        // trouble costs the previews, never the send.
+        val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
         e.publish(
-            mutate = { local = local + LocalPrompt(V0ConversationMessageDto(localId, "user_message", trimmed), placeholder) },
+            mutate = {
+                local = local + LocalPrompt(V0ConversationMessageDto(localId, "user_message", trimmed), placeholder)
+                if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
+            },
             transform = { copy(error = null) },
         )
 
         val result = agents.followUp(agentId, trimmed, images, mcpServers = mcpServers)
         return result.fold(
             onSuccess = { run ->
-                e.publish(mutate = { local = local.map { if (it.run.id == localId) LocalPrompt(it.message, run) else it } })
+                // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
+                val kept = runCatching { attachments.commit(agentId, run.id, staged) }.getOrDefault(staged.attachments)
+                e.publish(
+                    mutate = {
+                        local = local.map { if (it.run.id == localId) LocalPrompt(it.message, run) else it }
+                        promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
+                    },
+                )
                 startStreaming(e, agentId, run)
                 Result.success(Unit)
             },
             onFailure = { t ->
+                attachments.discard(staged)
                 e.publish(
-                    mutate = { local = local.filterNot { it.run.id == localId } },
+                    mutate = {
+                        local = local.filterNot { it.run.id == localId }
+                        promptImages = promptImages - localId
+                    },
                     transform = { copy(error = t.userMessage()) },
                 )
                 Result.failure(t)

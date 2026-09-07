@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.google.common.truth.Truth.assertThat
@@ -32,7 +33,7 @@ class AgentRepositoryTest {
         val demo = CursorBackend(demoApi, FakeRunStreamer(), isDemo = true)
         session = SessionManager(SecureKeyStore(context), prefs, real, demo)
         session.enterDemo()
-        agents = AgentRepository(session, prefs)
+        agents = AgentRepository(session, prefs, AttachmentStore(context))
         demoApi.addRunningAgent("bc-demo", "Demo agent", "run-demo")
         realApi.addRunningAgent("bc-real", "Real agent", "run-real")
     }
