@@ -188,10 +188,17 @@ fun ConversationScreen(
             ) {
                 if (showWorking) {
                     item("working") {
+                        // A dropped connection is not the run's problem: the agent keeps working while the stream is
+                        // re-established, so the glyph keeps stepping and only the caption says what is going on.
+                        val caption = when {
+                            conversation.runStatus == RunStatus.CREATING -> "Starting…"
+                            conversation.isReconnecting -> "Reconnecting…"
+                            else -> "Working…"
+                        }
                         Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
                             RunningGlyph(size = 16.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (conversation.runStatus == RunStatus.CREATING) "Starting…" else "Working…", style = type.base, color = colors.textTertiary)
+                            Text(caption, style = type.base, color = colors.textTertiary)
                         }
                     }
                 }

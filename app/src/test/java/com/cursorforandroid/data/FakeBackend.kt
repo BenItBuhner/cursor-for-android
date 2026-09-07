@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.transformWhile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -75,6 +76,8 @@ open class FakeCursorApi : CursorApi {
     @Volatile var failListAgentsV0: Throwable? = null
     @Volatile var failConversation: Throwable? = null
     @Volatile var failListRuns: Throwable? = null
+    /** Runs the list endpoint does not return yet, although they exist: the list lagging behind a fresh follow-up. */
+    val runsHiddenFromList: MutableSet<String> = ConcurrentHashMap.newKeySet()
     @Volatile var failModels: Throwable? = null
     @Volatile var failRepositories: Throwable? = null
     /** When set, the v0 list waits for it before answering. */
@@ -194,7 +197,7 @@ open class FakeCursorApi : CursorApi {
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
-        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id })
+        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList })
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++
@@ -238,14 +241,33 @@ open class FakeCursorApi : CursorApi {
     }
 }
 
-/** Scriptable streamer: tests push events per run; [RunStreamEvent.Done] closes the stream like the server does. */
+/**
+ * Scriptable streamer: tests push events per run; [RunStreamEvent.Done] closes the stream like the server does.
+ * Like the server, a connection without a `lastEventId` replays the run from its first event and one with an id
+ * continues after it (ids here are `<runId>#<position>`). [dropNextConnection] scripts the server ending a
+ * connection early with an in-band `error`, the way a worker that went away or a machine still waking up does.
+ */
 class FakeRunStreamer : RunStreamer {
     private val channels = ConcurrentHashMap<String, MutableSharedFlow<RunStreamEvent>>()
     val connections = CopyOnWriteArrayList<String>()
+    /** The `lastEventId` each connection was opened with, in order. */
+    val resumes = CopyOnWriteArrayList<String?>()
+    private val drops = ConcurrentHashMap<String, ArrayDeque<Drop>>()
+
+    private class Drop(val code: String, val message: String, val afterEvents: Int)
 
     private fun channel(runId: String) = channels.getOrPut(runId) { MutableSharedFlow(replay = 256) }
 
     suspend fun emit(runId: String, event: RunStreamEvent) = channel(runId).emit(event)
+
+    /**
+     * The next connection to [runId] delivers [afterEvents] events past the point it resumed from and then ends with
+     * an in-band error; zero ends it before anything arrives. A rejected resume position (`invalid_last_event_id`)
+     * comes without one, like the real thing.
+     */
+    fun dropNextConnection(runId: String, code: String = "stream_unavailable", message: String = "Run stream is no longer available", afterEvents: Int = 0) {
+        synchronized(drops) { drops.getOrPut(runId) { ArrayDeque() }.addLast(Drop(code, message, afterEvents)) }
+    }
 
     /**
      * Forgets what was emitted for [runId], so the next connection sees only what is emitted afterwards — the way a
@@ -257,6 +279,30 @@ class FakeRunStreamer : RunStreamer {
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         connections += runId
-        channel(runId).takeWhile { it != RunStreamEvent.Done }.collect { emit(it) }
+        resumes += lastEventId
+        val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
+        val drop = synchronized(drops) { drops[runId]?.removeFirstOrNull() }
+        if (drop != null && drop.afterEvents == 0) {
+            emit(RunStreamEvent.Error(drop.code, drop.message, resumeFrom = lastEventId))
+            return@flow
+        }
+        var position = 0
+        var delivered = 0
+        channel(runId)
+            .takeWhile { it != RunStreamEvent.Done }
+            .transformWhile { event ->
+                position++
+                if (position <= skip) return@transformWhile true
+                emit(event)
+                delivered++
+                if (drop != null && delivered >= drop.afterEvents) {
+                    val resumeFrom = if (drop.code == RunStreamEvent.Error.INVALID_LAST_EVENT_ID) null else "$runId#$position"
+                    emit(RunStreamEvent.Error(drop.code, drop.message, resumeFrom = resumeFrom))
+                    false
+                } else {
+                    true
+                }
+            }
+            .collect { emit(it) }
     }
 }

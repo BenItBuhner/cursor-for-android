@@ -27,9 +27,15 @@ import kotlinx.coroutines.launch
 /**
  * One shared live stream per (agent, run). The conversation screen and the live-notification monitor both
  * subscribe here, so a run is streamed exactly once no matter how many observers it has. The hub also owns the
- * terminal bookkeeping every observer relied on: when a stream ends without a `result` it polls the run until it
- * is terminal, it folds the outcome into the cached agent row, and it reports the finish on [finishes] so the
+ * terminal bookkeeping every observer relied on: when a stream is gone for good it polls the run until it is
+ * terminal, it folds the outcome into the cached agent row, and it reports the finish on [finishes] so the
  * transcript learns of it even when no screen was watching.
+ *
+ * A stream is a connection, not the run: it drops when the phone changes networks, when the agent's machine wakes
+ * from hibernation after a follow-up (`stream_unavailable`), or when the server's side of it fails
+ * (`upstream_error`). None of that ends the run, so none of it ends the hub's interest. While a run has subscribers
+ * the hub keeps coming back — first with the run record, which is the only thing that can say the run is over,
+ * then with a fresh connection resumed from the last event it saw, waiting a little longer each time.
  *
  * The same endpoint serves runs that already finished: the API keeps each run's event log for a retention window
  * and replays it from the first event on a fresh connection, so [replay] rebuilds the thinking / tool / subagent
@@ -41,6 +47,9 @@ class LiveRunHub(
     private val nowProvider: () -> Long = AppClock::now,
     private val pollIntervalMs: Long = 20_000L,
     private val releaseGraceMs: Long = 5_000L,
+    /** First wait before reconnecting to a dropped stream; doubles per consecutive drop up to [reconnectMaxMs]. */
+    private val reconnectBaseMs: Long = 1_000L,
+    private val reconnectMaxMs: Long = 30_000L,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     /** Everything known about a run right now. Items are the same timeline entries the conversation renders. */
@@ -67,6 +76,11 @@ class LiveRunHub(
          * arrived, and a [replay] reads the retained log from the start to fill it in.
          */
         val streamed: Boolean = false,
+        /**
+         * The connection dropped and the hub is on its way back to it. [items] are the story up to the drop; the run
+         * itself is still going as far as anyone knows. Cleared by the first event of the next connection.
+         */
+        val reconnecting: Boolean = false,
     ) {
         /** True when [items] are the run's complete story as the stream told it, ending with its own `result` event. */
         val hasTrace: Boolean get() = finished && !expired && streamed
@@ -78,6 +92,20 @@ class LiveRunHub(
         var subscribers = 0
         var job: Job? = null
         var releaseJob: Job? = null
+        /**
+         * Content events the previous connection had applied. A connection that starts over replays the run from its
+         * first event, and nothing is published until it has caught up with this, so the reader never sees the trace
+         * collapse and grow back.
+         */
+        var catchUp = 0
+    }
+
+    /** What one connection to the stream came to. */
+    private class Pass {
+        /** The connection delivered part of the run's story (text, thinking or a tool call), not just framing. */
+        var progressed = false
+        /** Why the connection ended before the run did; null when the run finished, or when the flow just ended. */
+        var error: RunStreamEvent.Error? = null
     }
 
     private val entries = LinkedHashMap<String, Entry>()
@@ -85,7 +113,7 @@ class LiveRunHub(
     private val _finishes = MutableSharedFlow<Snapshot>(extraBufferCapacity = 64)
     /**
      * The terminal snapshot of every run this hub followed live to its end — through its own `result` or, after
-     * the stream broke, through polling. Reading history ([replay]) is not a finish and is not reported.
+     * the stream broke, through the run record. Reading history ([replay]) is not a finish and is not reported.
      */
     val finishes: SharedFlow<Snapshot> = _finishes.asSharedFlow()
 
@@ -114,7 +142,7 @@ class LiveRunHub(
      */
     suspend fun replay(agentId: String, runId: String, startedAtMillis: Long? = null): Snapshot {
         var snapshot = pass(agentId, runId, startedAtMillis)
-        // A live pass that ended by polling left an incomplete trace; a second pass reads the retained log whole.
+        // A live pass that ended on the run record left an incomplete trace; a second pass reads the retained log whole.
         if (snapshot.finished && !snapshot.streamed && !snapshot.expired) snapshot = pass(agentId, runId, startedAtMillis)
         return snapshot
     }
@@ -152,15 +180,15 @@ class LiveRunHub(
         entry.releaseJob?.cancel()
         entry.releaseJob = null
         val snapshot = entry.state.value
-        // A run followed live to an outcome read by polling has an incomplete trace; only a replay reads the log
-        // again for it. An expired log stays expired: only live subscribers have anything left to learn (through
+        // A run followed live to an outcome read from the record has an incomplete trace; only a replay reads the
+        // log again for it. An expired log stays expired: only live subscribers have anything left to learn (through
         // polling).
         val incomplete = !snapshot.finished || (replay && !snapshot.streamed)
         if (entry.job == null && incomplete && !(replay && snapshot.expired)) {
             // A fresh connection replays the run from its first event, so start from an empty accumulator. Replayed
             // events arrive as fast as the network delivers them, so thinking durations measured against the clock
             // would be fiction; only a live pass times them.
-            entry.live = TimelineBuilder.LiveRun(runId, timed = !replay, nowProvider = nowProvider)
+            restartAccumulator(entry, timed = !replay)
             entry.job = scope.launch { stream(entry, historical = replay) }
         }
         entry
@@ -191,56 +219,122 @@ class LiveRunHub(
     }
 
     /**
-     * One connection to the run's stream. A live pass publishes every event and settles the outcome; a
-     * [historical] pass reads a finished run's log and publishes only its end, so a failed read never replaces a
-     * snapshot with a fragment: connection trouble is not part of the run's story, an expired log is reported
-     * instead of polled around, and the agent row is left alone.
+     * Follows the run until it finishes or the job is cancelled. Every connection that ends early is answered the
+     * same way: the run record decides whether there is anything left to stream; if there is, the next connection
+     * resumes where the last one stopped (or starts over when the server rejected that position).
+     *
+     * A [historical] pass reads a finished run's log and makes one attempt, publishing only its end, so a failed
+     * read never replaces a snapshot with a fragment: connection trouble is not part of the run's story, an expired
+     * log is reported instead of polled around, and the agent row is left alone. History that cannot be read right
+     * now is simply not there yet, and the caller asks again later.
      */
     private suspend fun stream(entry: Entry, historical: Boolean) {
         val self = currentCoroutineContext()[Job]
         val backend = session.current
+        var resumeFrom: String? = null
+        var drops = 0
         try {
-            backend.streamer.stream(entry.agentId, entry.runId).collect { event ->
-                // An expired stream is not part of the run's story; the poll below reads the terminal state instead.
-                if (event is RunStreamEvent.Error && event.code == "stream_expired") {
-                    entry.state.update { it.copy(expired = true) }
-                    return@collect
+            while (currentCoroutineContext().isActive && !entry.live.finished) {
+                val pass = follow(entry, backend, resumeFrom, historical)
+                if (entry.live.finished || historical) break
+                if (pass.error?.isFatal == true) {
+                    // This stream will never say more (its log expired, or we may not read it); only the record can
+                    // tell how the run ends.
+                    pollUntilTerminal(entry, backend)
+                    break
                 }
-                if (historical && event is RunStreamEvent.Error) return@collect
-                entry.live.apply(event)
-                when {
-                    event is RunStreamEvent.Result -> finish(entry, event, historical, streamed = true)
-                    !historical -> publish(entry)
-                }
+                // The connection is gone for now. Whether the run is too, the record knows; if not, come back to the
+                // stream — right away after a healthy connection, more patiently after repeated failures.
+                if (settleFromRecord(entry, backend)) break
+                drops = if (pass.progressed) 1 else drops + 1
+                resumeFrom = pass.error?.resumeFrom
+                if (resumeFrom == null) restartAccumulator(entry, timed = true)
+                entry.state.update { it.copy(reconnecting = true) }
+                delay(reconnectDelay(drops))
             }
         } catch (t: CancellationException) {
             throw t
         } catch (_: Throwable) {
-            // Treated like a stream that ended early: fall through to polling.
+            // The record could not be read and the loop gave up on this pass; a later subscriber starts a fresh one.
         }
-        if (!entry.live.finished && !historical && currentCoroutineContext().isActive) pollUntilTerminal(entry)
-        // Whether the run finished or polling gave up, a later subscriber may start a fresh connection.
+        // Whether the run finished or the loop ended, a later subscriber may start a fresh connection.
         synchronized(entries) { if (entry.job === self) entry.job = null }
     }
 
-    private suspend fun pollUntilTerminal(entry: Entry) {
-        val api = session.current.api
-        var attempts = 0
-        while (currentCoroutineContext().isActive && !entry.live.finished && attempts < MAX_POLL_ATTEMPTS) {
-            val run = runCatching { api.getRun(entry.agentId, entry.runId) }.getOrNull()
-            if (run != null && run.statusEnum().isTerminal) {
-                val result = RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git)
-                entry.live.apply(result)
-                finish(entry, result, historical = false, streamed = false)
-                return
+    /** One connection: applies what arrives and reports how it ended. Never throws except to cancel. */
+    private suspend fun follow(entry: Entry, backend: CursorBackend, resumeFrom: String?, historical: Boolean): Pass {
+        val pass = Pass()
+        try {
+            backend.streamer.stream(entry.agentId, entry.runId, resumeFrom).collect { event ->
+                when (event) {
+                    is RunStreamEvent.Error -> {
+                        // The last event of the pass. An expired log is a fact about the run; the rest is about the
+                        // connection, and the accumulator only keeps the message in case the run ends in ERROR.
+                        pass.error = event
+                        if (event.isExpired) entry.state.update { it.copy(expired = true) }
+                        entry.live.apply(event)
+                    }
+                    is RunStreamEvent.Result -> {
+                        entry.live.apply(event)
+                        finish(entry, event, historical, streamed = true)
+                    }
+                    else -> {
+                        if (event is RunStreamEvent.Assistant || event is RunStreamEvent.Thinking || event is RunStreamEvent.ToolCall) pass.progressed = true
+                        entry.live.apply(event)
+                        if (!historical) publish(entry)
+                    }
+                }
             }
-            attempts++
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            // A streamer that blew up mid-pass is a dropped connection whose position is unknown.
+            pass.error = pass.error ?: RunStreamEvent.Error("stream_failed", t.message ?: "The run's stream failed.", resumeFrom = null)
+        }
+        return pass
+    }
+
+    /**
+     * Reads the run record and, when the run is over, finishes the entry from it: the final reply, duration and
+     * branches the record carries stand in for the `result` event the stream never delivered.
+     */
+    private suspend fun settleFromRecord(entry: Entry, backend: CursorBackend): Boolean {
+        val run = runCatching { backend.api.getRun(entry.agentId, entry.runId) }.getOrNull() ?: return false
+        if (!run.statusEnum().isTerminal) return false
+        val result = RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git)
+        entry.live.apply(result)
+        finish(entry, result, historical = false, streamed = false)
+        return true
+    }
+
+    /**
+     * For runs whose stream is gone for good: the record is the only source left, so it is read until the run is
+     * terminal, for as long as anyone is subscribed. Giving up earlier would leave a screen saying "Working…" about
+     * a run that finished an hour ago.
+     */
+    private suspend fun pollUntilTerminal(entry: Entry, backend: CursorBackend) {
+        entry.state.update { it.copy(reconnecting = false) }
+        while (currentCoroutineContext().isActive && !entry.live.finished) {
+            if (settleFromRecord(entry, backend)) return
             delay(pollIntervalMs)
         }
     }
 
+    /**
+     * The next connection replays the run from its first event, so the story is rebuilt from nothing; what is
+     * published stays as it is until the rebuild has caught up (see [Entry.catchUp]).
+     */
+    private fun restartAccumulator(entry: Entry, timed: Boolean) {
+        entry.catchUp = entry.live.applied
+        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider)
+    }
+
+    private fun reconnectDelay(drops: Int): Long = (reconnectBaseMs shl (drops - 1).coerceIn(0, 10)).coerceAtMost(reconnectMaxMs)
+
     private fun publish(entry: Entry) {
-        entry.state.update { it.copy(items = entry.live.snapshot(), status = entry.live.status, eventCount = it.eventCount + 1) }
+        if (entry.live.applied < entry.catchUp) return
+        entry.catchUp = 0
+        entry.state.update { it.copy(items = entry.live.snapshot(), status = entry.live.status, eventCount = it.eventCount + 1, reconnecting = false) }
     }
 
     /**
@@ -248,12 +342,13 @@ class LiveRunHub(
      * that reacts to `finished` before the row changes still knows the `updatedAt` the list is about to show. The
      * finish is reported last, once both are in place. A replay changes nothing about the agent: the row already
      * reflects this run, or a later one. Nor does a result that arrives once the row has moved on to a newer run (a
-     * poll that landed after a follow-up was sent, a stream read to its end after the list picked up a run started
+     * record read after a follow-up was sent, a stream read to its end after the list picked up a run started
      * elsewhere): marking that row idle and finished would show the running follow-up as done. Only the branches,
      * which are per-agent state, are still worth taking.
      */
     private fun finish(entry: Entry, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean) {
         val now = nowProvider()
+        entry.catchUp = 0
         entry.state.update {
             it.copy(
                 items = entry.live.snapshot(),
@@ -264,6 +359,7 @@ class LiveRunHub(
                 // A replay of a run that already finished here keeps the moment it did.
                 finishedAtMillis = it.finishedAtMillis ?: now,
                 streamed = streamed,
+                reconnecting = false,
             )
         }
         if (historical) return
@@ -283,6 +379,5 @@ class LiveRunHub(
 
     private companion object {
         const val MAX_ENTRIES = 32
-        const val MAX_POLL_ATTEMPTS = 45
     }
 }
