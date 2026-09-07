@@ -23,12 +23,14 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /** In-memory API for repository tests: agents and runs are plain maps the test mutates directly. */
 class FakeCursorApi : CursorApi {
@@ -36,8 +38,14 @@ class FakeCursorApi : CursorApi {
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
+    val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     var failCancel = false
+    /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
+    @Volatile var failNextCreate: Throwable? = null
+    /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
+    @Volatile var listGate: CompletableDeferred<Unit>? = null
     @Volatile var getRunCalls = 0
+    private val ids = AtomicInteger()
 
     fun addRunningAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z") {
         agents[id] = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = createdAt, updatedAt = createdAt, latestRunId = runId)
@@ -50,11 +58,26 @@ class FakeCursorApi : CursorApi {
     override suspend fun me() = ApiKeyInfoDto(apiKeyName = "test")
     override suspend fun models() = ListModelsResponseDto()
     override suspend fun repositories() = ListRepositoriesResponseDto()
-    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean) = ListAgentsResponseDto(
-        items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) },
-    )
+    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+        // Snapshot first, then wait: the answer reflects the server as it was when the request went out.
+        val items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) }
+        listGate?.await()
+        return ListAgentsResponseDto(items = items)
+    }
     override suspend fun getAgent(id: String): AgentDto = agents[id] ?: throw notFound()
-    override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = throw UnsupportedOperationException()
+    override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
+        createRequests += body
+        failNextCreate?.let { failNextCreate = null; throw it }
+        val id = body.agentId ?: "bc-fake-${ids.incrementAndGet()}"
+        if (agents.containsKey(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
+        val runId = "run-fake-${ids.incrementAndGet()}"
+        val now = "2026-04-13T18:30:00.000Z"
+        val agent = AgentDto(id = id, name = body.name ?: body.prompt.text.take(60), status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
+        val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = now, updatedAt = now)
+        agents[id] = agent
+        runs[runId] = run
+        return CreateAgentResponseDto(agent, run)
+    }
     override suspend fun archive(id: String) = IdResponseDto(id)
     override suspend fun unarchive(id: String) = IdResponseDto(id)
     override suspend fun delete(id: String) = IdResponseDto(id)

@@ -4,6 +4,7 @@ import android.content.Intent
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,10 +17,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,14 +35,21 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.delay
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (12 % focused),
  * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" (attach) on the left, mic /
  * send / stop on the right — with the 13px model selector next to the "+".
+ *
+ * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
+ * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
+ * nervous double-tap cancelling one that is about to succeed.
  */
 @Composable
 fun ComposerBox(
@@ -51,6 +61,8 @@ fun ComposerBox(
     canSend: Boolean = value.isNotBlank(),
     isRunning: Boolean = false,
     onStop: (() -> Unit)? = null,
+    isSending: Boolean = false,
+    onCancelSend: (() -> Unit)? = null,
     onPlus: (() -> Unit)? = null,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
@@ -65,6 +77,14 @@ fun ComposerBox(
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.xl
     var focused by remember { mutableStateOf(false) }
+    var cancelOffered by remember { mutableStateOf(false) }
+    LaunchedEffect(isSending, onCancelSend != null) {
+        cancelOffered = false
+        if (isSending && onCancelSend != null) {
+            delay(CancelOfferDelayMillis)
+            cancelOffered = true
+        }
+    }
     val context = LocalContext.current
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return@rememberLauncherForActivityResult
@@ -113,6 +133,8 @@ fun ComposerBox(
             footerExtra?.invoke(this)
             Spacer(Modifier.weight(1f))
             when {
+                isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
+                isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
                 canSend -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = true)
                 enableSpeech && speechAvailable -> ComposerRoundButton(
@@ -131,6 +153,24 @@ fun ComposerBox(
         }
     }
 }
+
+/** The send slot while a prompt is in flight: the prominent disc with a canvas-coloured ring instead of a glyph. */
+@Composable
+private fun ComposerBusyButton(modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    Box(
+        modifier
+            .size(CursorDimens.roundButton)
+            .background(colors.textPrimary, CircleShape)
+            .semantics { contentDescription = "Sending" },
+        contentAlignment = Alignment.Center,
+    ) {
+        SpinnerRing(color = colors.canvas, size = CursorDimens.roundButtonGlyph, strokeWidth = 1.5.dp)
+    }
+}
+
+/** How long a send has to be in flight before the busy ring becomes a cancel button. */
+private const val CancelOfferDelayMillis = 2_500L
 
 /** Plain-text selector with an 8px chevron: "codex-poly-bot ⌄", "master ⌄", "Claude Fable 5.1 1M Max ⌄". */
 @Composable

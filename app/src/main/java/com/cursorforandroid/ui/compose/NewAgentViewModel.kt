@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
@@ -13,12 +14,15 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class NewAgentUiState(
     val prompt: String = "",
@@ -45,6 +49,10 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
+
+    private var launchJob: Job? = null
+    /** Rotated after each successful launch so an identical prompt sent again on purpose gets its own agent. */
+    private var launchNonce: String = LaunchIdempotency.newNonce()
 
     init {
         viewModelScope.launch {
@@ -108,9 +116,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun launch(onLaunched: (Agent) -> Unit) {
         val s = _state.value
         if (!s.canLaunch) return
-        viewModelScope.launch {
+        launchJob = viewModelScope.launch {
             _state.update { it.copy(isLaunching = true, error = null) }
-            val request = LaunchRequest(
+            val draft = LaunchRequest(
                 prompt = s.prompt.trim(),
                 images = s.attachments.map { it.image },
                 repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
@@ -120,8 +128,12 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
             )
+            // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
+            // created instead of launching a duplicate.
+            val request = draft.copy(agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, launchNonce) })
             graph.agents.launch(request, s.modelLabel).fold(
                 onSuccess = { agent ->
+                    launchNonce = LaunchIdempotency.newNonce()
                     graph.prefs.setComposerDefaults(
                         repoUrl = request.repoUrl,
                         ref = request.ref,
@@ -135,6 +147,13 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 onFailure = { t -> _state.update { it.copy(isLaunching = false, error = t.userMessage()) } },
             )
         }
+    }
+
+    /** Abandons a launch that is taking too long. The draft stays in the composer so it can be sent again. */
+    fun cancelLaunch() {
+        launchJob?.cancel()
+        launchJob = null
+        _state.update { it.copy(isLaunching = false) }
     }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {

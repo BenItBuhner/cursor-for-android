@@ -48,8 +48,12 @@ class CursorApiException(
     val isRateLimited: Boolean get() = httpCode == 429
 }
 
-/** Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. */
+/**
+ * Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. An exception
+ * that already is one (the demo backend raises them directly) passes through.
+ */
 fun Throwable.toCursorError(): CursorApiException? {
+    if (this is CursorApiException) return this
     val http = this as? HttpException ?: return null
     val body = runCatching { http.response()?.errorBody()?.string() }.getOrNull()
     val parsed = body?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
