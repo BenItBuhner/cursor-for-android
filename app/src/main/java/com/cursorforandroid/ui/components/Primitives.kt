@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -82,11 +84,41 @@ fun FlatIconButton(
     tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
 ) {
-    Box(
-        modifier.size(size).pressable(onClick = onClick, shape = CursorTheme.shapes.base, enabled = enabled),
-        contentAlignment = Alignment.Center,
-    ) {
+    TouchTarget(size = size, touchSize = 40.dp, shape = CursorTheme.shapes.base, onClick = onClick, enabled = enabled, modifier = modifier) {
         Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
+    }
+}
+
+/**
+ * A control that occupies [size] in the layout but accepts touches over [touchSize]: the larger hit layer uses
+ * `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The press
+ * ripple stays on the visual box.
+ */
+@Composable
+fun TouchTarget(
+    size: Dp,
+    touchSize: Dp,
+    shape: Shape,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    role: Role? = Role.Button,
+    content: @Composable () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .requiredSize(maxOf(size, touchSize))
+                .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = role, onClick = onClick),
+        )
+        Box(
+            Modifier
+                .size(size)
+                .clip(shape)
+                .indication(interaction, ripple(color = CursorTheme.colors.base, bounded = true)),
+            contentAlignment = Alignment.Center,
+        ) { content() }
     }
 }
 
@@ -107,14 +139,13 @@ fun ComposerRoundButton(
     val colors = CursorTheme.colors
     val fill = if (prominent) colors.textPrimary else colors.fill
     val tint = if (prominent) colors.canvas else colors.iconSecondary
-    Box(
-        modifier
-            .size(size)
-            .background(if (enabled) fill else fill.copy(alpha = fill.alpha * 0.5f), CircleShape)
-            .pressable(onClick = onClick, shape = CircleShape, enabled = enabled),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.5f), modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+    TouchTarget(size = size, touchSize = 36.dp, shape = CircleShape, onClick = onClick, enabled = enabled, modifier = modifier) {
+        Box(
+            Modifier.size(size).background(if (enabled) fill else fill.copy(alpha = fill.alpha * 0.5f), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.5f), modifier = Modifier.size(CursorDimens.roundButtonGlyph))
+        }
     }
 }
 
