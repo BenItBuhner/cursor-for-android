@@ -2,24 +2,26 @@ package com.cursorforandroid.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.preferencesDataStoreFile
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.ui.theme.ThemeMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
-
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "cursor_settings")
 
 @Serializable
 private data class CachedUser(
@@ -33,7 +35,10 @@ private data class CachedUser(
 /** Everything that is device-local: theme, list customization, pins, read markers and composer defaults. */
 class PreferencesStore(context: Context) {
 
-    private val store = context.dataStore
+    private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+        produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
+    )
 
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
@@ -96,6 +101,10 @@ class PreferencesStore(context: Context) {
 
     suspend fun setListPreferences(prefs: ListPreferences) = store.edit {
         it[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), prefs)
+    }
+
+    suspend fun pinIfNonePinned(agentIds: Collection<String>) = store.edit { p ->
+        if ((p[Keys.pinned] ?: emptySet()).isEmpty()) p[Keys.pinned] = agentIds.toSet()
     }
 
     suspend fun togglePinned(agentId: String) = store.edit { p ->

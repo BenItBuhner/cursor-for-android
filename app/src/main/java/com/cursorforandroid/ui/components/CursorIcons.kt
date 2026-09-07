@@ -6,7 +6,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.dp
 
 /**
@@ -18,18 +18,20 @@ object CursorIcons {
     private fun stroke(name: String, block: androidx.compose.ui.graphics.vector.ImageVector.Builder.() -> Unit): ImageVector =
         ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f).apply(block).build()
 
-    private fun ImageVector.Builder.line(data: String, width: Float = 1.6f) = path(
+    private fun nodes(data: String) = PathParser().parsePathString(data).toNodes()
+
+    private fun ImageVector.Builder.line(data: String, width: Float = 1.6f) = addPath(
+        pathData = nodes(data),
+        pathFillType = PathFillType.NonZero,
         fill = null,
         stroke = SolidColor(Color.Black),
         strokeLineWidth = width,
         strokeLineCap = StrokeCap.Round,
         strokeLineJoin = StrokeJoin.Round,
-        pathFillType = PathFillType.NonZero,
-    ) { addPath(androidx.compose.ui.graphics.vector.PathParser().parsePathString(data).toNodes()) }
+    )
 
-    private fun ImageVector.Builder.fill(data: String) = path(fill = SolidColor(Color.Black)) {
-        addPath(androidx.compose.ui.graphics.vector.PathParser().parsePathString(data).toNodes())
-    }
+    @Suppress("unused")
+    private fun ImageVector.Builder.fill(data: String) = addPath(pathData = nodes(data), fill = SolidColor(Color.Black))
 
     val GitBranch: ImageVector by lazy {
         stroke("GitBranch") {

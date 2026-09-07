@@ -34,7 +34,9 @@ import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.domain.RunStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonPrimitive
@@ -107,16 +109,19 @@ internal class DemoStore {
 
 internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
+    /** Simulated network latency must behave like real IO, never a main-thread delay. */
+    private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) { block() }
+
     private fun AgentDto.summary() = AgentSummaryDto(id, name, status, env, url, createdAt, updatedAt, latestRunId)
 
-    override suspend fun me(): ApiKeyInfoDto {
+    override suspend fun me(): ApiKeyInfoDto = io {
         delay(150)
-        return ApiKeyInfoDto(apiKeyName = "Demo key", createdAt = store.iso(), userId = 42, userEmail = "demo@cursor.local", userFirstName = "Demo", userLastName = "User")
+        ApiKeyInfoDto(apiKeyName = "Demo key", createdAt = store.iso(), userId = 42, userEmail = "demo@cursor.local", userFirstName = "Demo", userLastName = "User")
     }
 
-    override suspend fun models(): ListModelsResponseDto {
+    override suspend fun models(): ListModelsResponseDto = io {
         delay(120)
-        return ListModelsResponseDto(
+        ListModelsResponseDto(
             items = listOf(
                 ModelListItemDto(
                     id = "claude-fable-5.1-thinking", displayName = "Claude Fable 5.1", description = "Best for complex, long-horizon coding.",
@@ -134,23 +139,23 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
         )
     }
 
-    override suspend fun repositories(): ListRepositoriesResponseDto {
+    override suspend fun repositories(): ListRepositoriesResponseDto = io {
         delay(400)
-        return ListRepositoriesResponseDto(store.v0.values.mapNotNull { it.source?.repository }.distinct().map { RepositoryDto(it) })
+        ListRepositoriesResponseDto(store.v0.values.mapNotNull { it.source?.repository }.distinct().map { RepositoryDto(it) })
     }
 
-    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto = io {
         delay(250)
         val all = store.agents.values.filter { includeArchived || it.status != "ARCHIVED" }.sortedByDescending { it.updatedAt }
-        return ListAgentsResponseDto(items = all.map { it.summary() })
+        ListAgentsResponseDto(items = all.map { it.summary() })
     }
 
-    override suspend fun getAgent(id: String): AgentDto {
+    override suspend fun getAgent(id: String): AgentDto = io {
         delay(100)
-        return store.agents[id] ?: throw notFound("agent_not_found")
+        store.agents[id] ?: throw notFound("agent_not_found")
     }
 
-    override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
+    override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = io {
         delay(500)
         val id = store.nextId("bc")
         val runId = store.nextId("run")
@@ -178,30 +183,30 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             store.scripts[runId] = if (body.mode == "plan") "plan" else "generic"
             store.prompts[runId] = body.prompt.text
         }
-        return CreateAgentResponseDto(agent, run)
+        CreateAgentResponseDto(agent, run)
     }
 
-    override suspend fun archive(id: String): IdResponseDto { delay(150); store.setLifecycle(id, "ARCHIVED"); return IdResponseDto(id) }
-    override suspend fun unarchive(id: String): IdResponseDto { delay(150); store.setLifecycle(id, "IDLE"); return IdResponseDto(id) }
-    override suspend fun delete(id: String): IdResponseDto {
+    override suspend fun archive(id: String): IdResponseDto = io { delay(150); store.setLifecycle(id, "ARCHIVED"); IdResponseDto(id) }
+    override suspend fun unarchive(id: String): IdResponseDto = io { delay(150); store.setLifecycle(id, "IDLE"); IdResponseDto(id) }
+    override suspend fun delete(id: String): IdResponseDto = io {
         delay(150)
         synchronized(store) { store.agents.remove(id); store.v0.remove(id); store.runs.remove(id); store.transcripts.remove(id) }
-        return IdResponseDto(id)
+        IdResponseDto(id)
     }
 
     override suspend fun usage(id: String): AgentUsageResponseDto = AgentUsageResponseDto()
     override suspend fun artifacts(id: String): ListArtifactsResponseDto = ListArtifactsResponseDto()
     override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto = DownloadArtifactResponseDto(url = "")
 
-    override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
+    override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto = io {
         delay(120)
-        return ListRunsResponseDto(items = (store.runs[id] ?: throw notFound("agent_not_found")).sortedByDescending { it.createdAt })
+        ListRunsResponseDto(items = (store.runs[id] ?: throw notFound("agent_not_found")).sortedByDescending { it.createdAt })
     }
 
     override suspend fun getRun(id: String, runId: String): RunDto =
         store.runs[id]?.firstOrNull { it.id == runId } ?: throw notFound("run_not_found")
 
-    override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
+    override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto = io {
         delay(350)
         val agent = store.agents[id] ?: throw notFound("agent_not_found")
         if (agent.status == "ARCHIVED") throw CursorApiException(409, "agent_archived", "Agent is archived.")
@@ -217,27 +222,27 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             store.prompts[runId] = body.prompt.text
         }
         store.setV0Status(id, "RUNNING")
-        return CreateRunResponseDto(run)
+        CreateRunResponseDto(run)
     }
 
-    override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
+    override suspend fun cancelRun(id: String, runId: String): IdResponseDto = io {
         delay(150)
         val run = store.runs[id]?.firstOrNull { it.id == runId } ?: throw notFound("run_not_found")
         if (RunStatus.parse(run.status).isTerminal) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
         store.updateRun(id, runId) { it.copy(status = "CANCELLED", updatedAt = store.iso(), durationMs = 0) }
         store.setLifecycle(id, "IDLE")
         store.setV0Status(id, "CANCELLED")
-        return IdResponseDto(runId)
+        IdResponseDto(runId)
     }
 
-    override suspend fun listAgentsV0(limit: Int, cursor: String?): V0ListAgentsResponseDto {
+    override suspend fun listAgentsV0(limit: Int, cursor: String?): V0ListAgentsResponseDto = io {
         delay(200)
-        return V0ListAgentsResponseDto(agents = store.v0.values.toList())
+        V0ListAgentsResponseDto(agents = store.v0.values.toList())
     }
 
-    override suspend fun conversationV0(id: String): V0ConversationResponseDto {
+    override suspend fun conversationV0(id: String): V0ConversationResponseDto = io {
         delay(180)
-        return V0ConversationResponseDto(id, store.transcripts[id] ?: throw notFound("agent_not_found"))
+        V0ConversationResponseDto(id, store.transcripts[id] ?: throw notFound("agent_not_found"))
     }
 
     private fun notFound(code: String) = CursorApiException(404, code, "Not found.")

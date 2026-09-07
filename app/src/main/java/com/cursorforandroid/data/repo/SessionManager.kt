@@ -85,6 +85,8 @@ class SessionManager(
 
     suspend fun enterDemo() {
         prefs.setDemoMode(true)
+        // Mirror the reference layout: the three showcase agents start pinned.
+        prefs.pinIfNonePinned(listOf("bc-demo-0001", "bc-demo-0002", "bc-demo-0003"))
         _backend.value = demoBackend
         _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
     }

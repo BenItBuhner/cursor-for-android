@@ -208,6 +208,8 @@ fun AppNavHost(
             gesturesEnabled = route != Routes.AGENTS,
             scrimColor = Color.Black.copy(alpha = 0.5f),
             drawerContent = {
+                // Keep the sheet width stable so the drag anchors never collapse; only the inner content is
+                // skipped on the home route, which already shows the sidebar full-screen.
                 ModalDrawerSheet(
                     drawerState = drawerState,
                     drawerContainerColor = colors.surface,
@@ -215,7 +217,7 @@ fun AppNavHost(
                     drawerShape = androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
                     modifier = Modifier.width(CursorDimens.sidebarWidth),
                 ) {
-                    sidebar(inDrawer = true, modifier = Modifier.fillMaxSize())
+                    if (route != Routes.AGENTS) sidebar(inDrawer = true, modifier = Modifier.fillMaxSize())
                 }
             },
         ) {

@@ -110,7 +110,7 @@ fun Sidebar(
                 if (callbacks.onCloseDrawer != null) {
                     CursorIconButton(CursorIcons.Sidebar, "Close sidebar", onClick = callbacks.onCloseDrawer)
                 } else {
-                    CursorIconButton(CursorIcons.Sidebar, "Sidebar", onClick = {}, filled = true, enabled = false)
+                    CursorIconButton(CursorIcons.NewAgent, "New agent", onClick = callbacks.onNewAgent)
                 }
             }
         }
