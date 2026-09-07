@@ -33,7 +33,7 @@ Everything runs on GitHub Actions (`.github/workflows/`); the shared toolchain (
 
 | Workflow | Runs on | Does |
 | --- | --- | --- |
-| `ci.yml` | pushes to `main`, pull requests | `lintDebug`, debug + release APKs (downloadable from the run's artifacts, stamped `0.1.0-dev.<run>+g<sha>`), JVM unit tests, screenshot verification against `screenshots/` |
+| `ci.yml` | pushes to `main`, pull requests | `lintDebug`, debug + release APKs (downloadable from the run's artifacts, stamped `<app.versionName>-dev.<run>+g<sha>`, e.g. `0.2.0-dev.42+gabc1234`), JVM unit tests, screenshot verification against `screenshots/` |
 | `release.yml` | tags `vX.Y.Z`, or manually for an existing tag | lint + tests, then a signed release APK and AAB, the R8 `mapping.txt`, `SHA256SUMS.txt` and a GitHub Release with generated notes (`.github/release.yml` groups them by label) |
 | `update-screenshots.yml` | manually | re-records `screenshots/` on a clean runner and opens a pull request |
 
