@@ -6,13 +6,16 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +52,8 @@ class PreferencesStore(context: Context) {
         val launchedHere = stringSetPreferencesKey("launched_here_ids")
         val demoMode = booleanPreferencesKey("demo_mode")
         val cachedUser = stringPreferencesKey("cached_user")
+        val signInMethod = stringPreferencesKey("sign_in_method")
+        val apiKeyExpiresAt = longPreferencesKey("api_key_expires_at")
         val lastRepo = stringPreferencesKey("last_repo")
         val lastRef = stringPreferencesKey("last_ref")
         val lastModel = stringPreferencesKey("last_model")
@@ -102,6 +107,12 @@ class PreferencesStore(context: Context) {
     val cachedUser: Flow<CursorUser?> = store.data.map { p ->
         p[Keys.cachedUser]?.let { runCatching { CursorJson.decodeFromString(CachedUser.serializer(), it) }.getOrNull() }
             ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId) }
+    }
+
+    /** How the stored key was obtained and when it lapses. A key stored before this was recorded counts as pasted. */
+    val credentialInfo: Flow<CredentialInfo?> = store.data.map { p ->
+        val method = p[Keys.signInMethod]?.let { raw -> SignInMethod.entries.firstOrNull { it.name == raw } }
+        method?.let { CredentialInfo(it, p[Keys.apiKeyExpiresAt]) }
     }
 
     data class ComposerDefaults(
@@ -167,6 +178,16 @@ class PreferencesStore(context: Context) {
         }
     }
 
+    suspend fun setCredentialInfo(info: CredentialInfo?) = store.edit { p ->
+        if (info == null) {
+            p.remove(Keys.signInMethod)
+            p.remove(Keys.apiKeyExpiresAt)
+        } else {
+            p[Keys.signInMethod] = info.method.name
+            if (info.expiresAtMs == null) p.remove(Keys.apiKeyExpiresAt) else p[Keys.apiKeyExpiresAt] = info.expiresAtMs
+        }
+    }
+
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
     suspend fun setComposerDefaults(repoUrl: String?, ref: String?, modelId: String?, params: Map<String, String>, autoCreatePr: Boolean) =
         store.edit { p ->
@@ -180,6 +201,8 @@ class PreferencesStore(context: Context) {
     suspend fun clearSession() = store.edit { p ->
         p.remove(Keys.demoMode)
         p.remove(Keys.cachedUser)
+        p.remove(Keys.signInMethod)
+        p.remove(Keys.apiKeyExpiresAt)
     }
 
     private fun decodeMarkers(raw: String): Map<String, Long> =

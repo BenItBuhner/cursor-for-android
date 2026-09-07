@@ -34,7 +34,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.CursorEndpoints
+import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.agents.Avatar
 import com.cursorforandroid.ui.components.CursorButton
@@ -48,6 +50,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
 
 /** Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of 38dp rows. */
@@ -65,6 +68,8 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
+    val session by graph.session.state.collectAsStateWithLifecycle()
+    val credential = (session as? SessionState.SignedIn)?.credential
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
@@ -90,8 +95,23 @@ fun SettingsScreen(
                         )
                     }
                 }
+                if (credential != null) {
+                    HairlineDivider()
+                    InfoRow(
+                        "Signed in with",
+                        when (credential.method) {
+                            SignInMethod.Cursor -> "Cursor account"
+                            SignInMethod.ApiKey -> "API key"
+                        },
+                    )
+                    if (credential.expiresAtMs != null) {
+                        HairlineDivider()
+                        // The key this app minted lapses on its own; a fresh sign-in issues a new one.
+                        InfoRow("Key expires", TimeFormat.date(credential.expiresAtMs))
+                    }
+                }
                 HairlineDivider()
-                LinkRow("Manage API keys", CursorEndpoints.DASHBOARD_API_KEYS, uriHandler::openUri)
+                LinkRow(if (credential?.method == SignInMethod.Cursor) "Manage this app's key" else "Manage API keys", CursorEndpoints.DASHBOARD_API_KEYS, uriHandler::openUri)
                 HairlineDivider()
                 LinkRow("Open cursor.com/agents", "https://cursor.com/agents", uriHandler::openUri)
             }

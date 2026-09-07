@@ -1,10 +1,12 @@
 package com.cursorforandroid
 
 import android.content.Context
+import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
+import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -43,7 +45,15 @@ class AppGraph(context: Context) {
     )
     private val demoBackend = DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
 
-    val session = SessionManager(keyStore, prefs, realBackend, demoBackend)
+    val session = SessionManager(
+        keyStore,
+        prefs,
+        realBackend,
+        demoBackend,
+        browserLogin = CursorLogin(CursorApiFactory.loginClient()),
+        // What the key is called on cursor.com/dashboard/api, so the user can tell this phone's key from others.
+        mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
+    )
     val agents = AgentRepository(session, prefs, attachments, caches.agents)
     val catalog = CatalogRepository(session, caches.catalog)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */

@@ -41,6 +41,13 @@ object TimeFormat {
         }
     }
 
+    /** "Dec 6" this year, "Jan 3, 2027" otherwise — an absolute date for something that is going to happen. */
+    fun date(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
+        val then = Instant.ofEpochMilli(epochMillis).atZone(zone)
+        val now = Instant.ofEpochMilli(nowMillis).atZone(zone)
+        return if (then.year == now.year) dateFormatter.format(then) else dateYearFormatter.format(then)
+    }
+
     /** "3m 5s", "45s", "1h 12m" — matches the "Worked 3m 5s" row. */
     fun duration(durationMs: Long?): String? {
         if (durationMs == null || durationMs < 0) return null
