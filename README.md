@@ -10,6 +10,7 @@ Not affiliated with Anysphere, Inc.
 - New Chat pane as home: repository / branch / environment selectors, the composer ("+" image attachments via the system photo picker, model picker with plan mode and auto-PR, dictation / send), then the recent chats with preview cards.
 - Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
 - Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop.
+- Media in replies: the `<img>`, `<video>` and `![alt](src)` an agent writes for its screenshots and recordings render inline. `/opt/cursor/artifacts/…` paths are exchanged for presigned URLs through `GET /v1/agents/{id}/artifacts/download` (cached and refreshed before their 15-minute expiry); images are laid out at one source pixel per dp within the message width and open in a zoomable full-screen viewer, videos show a poster frame and play inline with ExoPlayer.
 - Live notifications, the Android counterpart of the iOS app's Live Activities: while agents run, an ongoing notification shows the status, title, current step and a Stop action for one agent, or one condensed line per agent (up to eight) for several; when an agent finishes, a card with "Finished", `+80 −230 · 3 Files` (or the duration when no tool reported line counts), the final reply, Review and View PR. On Android 16 it is a promoted Live Update (status-bar chip, lock screen). Backed by a `dataSync` foreground service that only runs while something is running; toggle in Settings › Notifications.
 - Settings with Cursor Dark / Cursor Light / system theme; demo mode with an in-memory backend so the UI can be explored without an API key.
 - Predictive back (Android 14+): screens recede with the gesture to reveal the one underneath, the drawer and bottom sheets shrink with it, the filter sheet's drill-in pages slide back under the finger, and from the New Chat pane the system's back-to-home animation plays. Cancelling a gesture rewinds; releasing it commits.
@@ -52,7 +53,7 @@ Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). I
 
 ### Screenshots
 
-`AppScreenshotTest` pins the clock (`AppClock`) to 2025-01-15 14:00 UTC, the zone and the locale, and disables ripples, so the PNGs render identically on every machine. After an intentional UI change, re-record with `./gradlew :app:recordRoborazziDebug` or the "Update screenshots" workflow and commit `screenshots/`.
+`AppScreenshotTest` pins the clock (`AppClock`) to 2025-01-15 14:00 UTC, the zone and the locale, and disables ripples, so the PNGs render identically on every machine. After an intentional UI change, re-record with `./gradlew :app:recordRoborazziDebug` or the "Update screenshots" workflow and commit `screenshots/`. The demo backend serves its sample artifacts (`app/src/main/assets/demo/`) as `file:///android_asset/` URLs, so `11_conversation_media.png` exercises the real image pipeline without a network.
 
 ## API surface used
 
@@ -65,6 +66,7 @@ Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). I
 | Transcript | `GET /v0/agents/{id}/conversation` (v1 has no equivalent) |
 | Runs | `GET /v1/agents/{id}/runs`, `GET /v1/agents/{id}/runs/{runId}` |
 | Live stream | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, `Last-Event-ID` reconnect) |
+| Media in replies | `GET /v1/agents/{id}/artifacts/download?path=artifacts/…` (presigned URL for an `/opt/cursor/artifacts/…` reference) |
 | Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs`, `POST …/cancel` |
 | Lifecycle | `POST …/archive`, `POST …/unarchive`, `DELETE /v1/agents/{id}` |
 | Pickers | `GET /v1/models`, `GET /v1/repositories` |
