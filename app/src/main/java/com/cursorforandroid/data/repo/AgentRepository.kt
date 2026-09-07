@@ -122,7 +122,7 @@ class AgentRepository(
                 // and the sidebar keys its rows on the id.
                 val summaries = v1.await().distinctBy { it.id }
                 val legacy: Map<String, V0AgentDto> = v0.await().associateBy { it.id }
-                if (generation != startedIn || session.current !== backend) return@coroutineScope
+                if (generation != startedIn || session.current !== backend) return@coroutineScope discard()
                 val previous = _state.value.agents.associateBy { it.id }
                 val merged = summaries.map { it.toAgent(legacy[it.id], previous[it.id]) }
                 _state.update { it.copy(agents = merged, isRefreshing = false, hasLoaded = true, error = null) }
@@ -131,10 +131,13 @@ class AgentRepository(
             }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
-            if (generation != startedIn || session.current !== backend) return@withLock
+            if (generation != startedIn || session.current !== backend) return@withLock discard()
             _state.update { it.copy(isRefreshing = false, hasLoaded = true, error = t.userMessage()) }
         }
     }
+
+    /** The session moved on while this fetch ran: leave the (already reset) list alone, but never a stuck spinner. */
+    private fun discard() = _state.update { it.copy(isRefreshing = false) }
 
     /** Loads the full agent record plus its latest run and folds them into the cached row. */
     suspend fun loadDetail(id: String): Result<Agent> = runCatching {
