@@ -218,7 +218,8 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = io {
         delay(500)
-        val id = store.nextId("bc")
+        val id = body.agentId ?: store.nextId("bc")
+        if (store.agents.containsKey(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
         val runId = store.nextId("run")
         val nowIso = store.iso()
         val repo = body.repos?.firstOrNull()
