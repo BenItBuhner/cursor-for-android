@@ -59,6 +59,8 @@ fun AppNavHost(
     isDemo: Boolean,
     deepLinkAgentId: String?,
     onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
 ) {
     val activity = LocalContext.current as Activity
     val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
@@ -96,6 +98,13 @@ fun AppNavHost(
         deepLinkAgentId?.let {
             openAgent(it)
             onDeepLinkConsumed()
+        }
+    }
+    // The widget's "+": the New Chat pane, as the sidebar's "+" reaches it.
+    LaunchedEffect(newChatRequested) {
+        if (newChatRequested) {
+            navigateTop(Screen.Home)
+            onNewChatConsumed()
         }
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
