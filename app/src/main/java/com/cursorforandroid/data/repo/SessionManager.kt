@@ -208,6 +208,7 @@ class SessionManager(
     }
 
     suspend fun signOut() {
+        cancelCursorLogin()
         storeKey(null)
         prefs.clearSession()
         runCatching { onSignedOut() }

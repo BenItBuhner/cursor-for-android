@@ -1,11 +1,11 @@
 package com.cursorforandroid.ui.auth
 
 import android.content.Context
-import android.net.Uri
 import androidx.browser.customtabs.CustomTabColorSchemeParams
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.net.toUri
 
 /**
  * Opens the cursor.com confirmation page in a Custom Tab: it shares the browser's cursor.com session, so a user who
@@ -19,5 +19,5 @@ fun openLoginPage(context: Context, url: String, toolbar: Color): Boolean {
         .setShareState(CustomTabsIntent.SHARE_STATE_OFF)
         .setDefaultColorSchemeParams(CustomTabColorSchemeParams.Builder().setToolbarColor(toolbar.toArgb()).build())
         .build()
-    return runCatching { intent.launchUrl(context, Uri.parse(url)) }.isSuccess
+    return runCatching { intent.launchUrl(context, url.toUri()) }.isSuccess
 }
