@@ -249,12 +249,12 @@ fun ConversationScreen(
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && agent?.isArchived != true,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
+                isSending = isSending,
                 onPlus = pickImages,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
                 modelLabel = agent?.modelDisplayName,
                 onModel = null,
-                footerExtra = { if (isSending) { Spacer(Modifier.width(8.dp)); SpinnerRing() } },
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }

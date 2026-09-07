@@ -105,6 +105,11 @@ data class ModelRefDto(
 @Serializable
 data class CreateAgentRequestDto(
     val prompt: PromptDto,
+    /**
+     * Client-minted `bc-<uuid>`. Re-posting it returns `409 agent_id_conflict` instead of a second agent, which
+     * is what makes retrying a launch whose reply never arrived safe.
+     */
+    val agentId: String? = null,
     val model: ModelRefDto? = null,
     val name: String? = null,
     val env: AgentEnvDto? = null,
