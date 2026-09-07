@@ -12,6 +12,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
@@ -47,6 +48,8 @@ data class LaunchRequest(
     val autoCreatePr: Boolean,
     val planMode: Boolean,
     val name: String? = null,
+    /** Sent inline as `mcpServers[]`; only the enabled ones go out. */
+    val mcpServers: List<McpServer> = emptyList(),
 )
 
 class AgentRepository(
@@ -133,6 +136,7 @@ class AgentRepository(
             env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
             repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
             autoCreatePR = request.autoCreatePr.takeIf { it },
+            mcpServers = request.mcpServers.toInlineServers(),
             mode = if (request.planMode) "plan" else null,
         )
         val response = api.createAgent(body)
@@ -147,10 +151,24 @@ class AgentRepository(
         agent
     }
 
-    suspend fun followUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), planMode: Boolean? = null): Result<RunDto> = runCatching {
+    /**
+     * Enabled [mcpServers] ride along inline and replace the agent's create-time inline servers for this run; with
+     * none enabled the field is omitted and the agent keeps whatever it was created with.
+     */
+    suspend fun followUp(
+        agentId: String,
+        text: String,
+        images: List<PromptImage> = emptyList(),
+        planMode: Boolean? = null,
+        mcpServers: List<McpServer> = emptyList(),
+    ): Result<RunDto> = runCatching {
         val response = session.current.api.createRun(
             agentId,
-            CreateRunRequestDto(PromptEncoding.toPromptDto(text, images), mode = planMode?.let { if (it) "plan" else "agent" }),
+            CreateRunRequestDto(
+                prompt = PromptEncoding.toPromptDto(text, images),
+                mcpServers = mcpServers.toInlineServers(),
+                mode = planMode?.let { if (it) "plan" else "agent" },
+            ),
         )
         agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())) }
         response.run

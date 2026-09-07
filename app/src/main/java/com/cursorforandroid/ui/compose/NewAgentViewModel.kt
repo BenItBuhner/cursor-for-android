@@ -119,6 +119,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 modelParams = s.selectedVariant?.params ?: emptyList(),
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
+                mcpServers = graph.mcpServers.enabled(),
             )
             graph.agents.launch(request, s.modelLabel).fold(
                 onSuccess = { agent ->

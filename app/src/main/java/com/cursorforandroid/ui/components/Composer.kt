@@ -33,8 +33,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (12 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" (attach) on the left, send / stop
- * on the right — with the 13px model selector next to the "+".
+ * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" on the left, opening the
+ * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
+ * model selector next to the "+".
  */
 @Composable
 fun ComposerBox(
@@ -46,7 +47,8 @@ fun ComposerBox(
     canSend: Boolean = value.isNotBlank(),
     isRunning: Boolean = false,
     onStop: (() -> Unit)? = null,
-    onPlus: (() -> Unit)? = null,
+    /** Shows the "+" button and backs its menu; null hides the button. */
+    plusMenu: ComposerMenuActions? = null,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
     modelLabel: String? = null,
@@ -91,8 +93,19 @@ fun ComposerBox(
         )
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.roundButton), verticalAlignment = Alignment.CenterVertically) {
-            if (onPlus != null) {
-                ComposerRoundButton(CursorIcons.Plus, "Attach image", onClick = onPlus)
+            if (plusMenu != null) {
+                var menuOpen by remember { mutableStateOf(false) }
+                // The Box is the anchor: the menu drops from the "+" like the web's popover.
+                Box {
+                    ComposerRoundButton(CursorIcons.Plus, "Add to prompt", onClick = { menuOpen = true })
+                    ComposerPlusMenu(
+                        expanded = menuOpen,
+                        onDismiss = { menuOpen = false },
+                        prompt = value,
+                        onPromptChange = onValueChange,
+                        actions = plusMenu,
+                    )
+                }
                 Spacer(Modifier.width(14.dp))
             }
             if (modelLabel != null) {

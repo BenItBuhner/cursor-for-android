@@ -34,6 +34,7 @@ import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -58,6 +59,8 @@ internal class DemoStore {
     val transcripts: MutableMap<String, MutableList<V0ConversationMessageDto>> = linkedMapOf()
     val scripts: MutableMap<String, String> = linkedMapOf()
     val prompts: MutableMap<String, String> = linkedMapOf()
+    /** Names of the inline MCP servers a run was created with, so its script can show a tool call against one. */
+    val mcpServers: MutableMap<String, List<String>> = linkedMapOf()
     private var counter = 100
 
     init {
@@ -181,10 +184,18 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             store.v0[id] = V0AgentDto(id, agent.name, "CREATING", repo?.let { V0SourceDto(it.url, it.startingRef) }, V0TargetDto(url = agent.url, autoCreatePr = body.autoCreatePR), null, nowIso)
             store.runs[id] = mutableListOf(run)
             store.transcripts[id] = mutableListOf(V0ConversationMessageDto(store.nextId("msg"), "user_message", body.prompt.text))
-            store.scripts[runId] = if (body.mode == "plan") "plan" else "generic"
+            store.scripts[runId] = scriptFor(body.prompt.text, body.mode)
             store.prompts[runId] = body.prompt.text
+            store.mcpServers[runId] = body.mcpServers.orEmpty().map { it.name }
         }
         CreateAgentResponseDto(agent, run)
+    }
+
+    /** Plan mode has its own script; otherwise a `/multitask` prompt fans out to subagents, anything else is generic. */
+    private fun scriptFor(prompt: String, mode: String?): String = when {
+        mode == "plan" -> "plan"
+        SlashCommands.has(prompt, SlashCommands.MULTITASK) -> "multitask"
+        else -> "generic"
     }
 
     override suspend fun archive(id: String): IdResponseDto = io { delay(150); store.setLifecycle(id, "ARCHIVED"); IdResponseDto(id) }
@@ -219,8 +230,10 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             store.runs.getOrPut(id) { mutableListOf() } += run
             store.agents[id] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = nowIso)
             store.transcripts.getOrPut(id) { mutableListOf() } += V0ConversationMessageDto(store.nextId("msg"), "user_message", body.prompt.text)
-            store.scripts[runId] = if (body.mode == "plan") "plan" else "generic"
+            store.scripts[runId] = scriptFor(body.prompt.text, body.mode)
             store.prompts[runId] = body.prompt.text
+            // Omitted on a follow-up means "keep the agent's configuration", so inherit the previous run's list.
+            store.mcpServers[runId] = body.mcpServers?.map { it.name } ?: agent.latestRunId?.let { store.mcpServers[it] }.orEmpty()
         }
         store.setV0Status(id, "RUNNING")
         CreateRunResponseDto(run)
@@ -268,7 +281,8 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
             "codex" -> codex()
             "limbs" -> limbs()
             "plan" -> plan(store.prompts[runId].orEmpty())
-            else -> generic(store.prompts[runId].orEmpty())
+            "multitask" -> multitask(store.prompts[runId].orEmpty(), store.mcpServers[runId].orEmpty())
+            else -> generic(store.prompts[runId].orEmpty(), store.mcpServers[runId].orEmpty())
         }
         val elapsed = AppClock.now() - startedAt
         val duration = outcome.reportedDurationMs ?: elapsed
@@ -370,15 +384,40 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
         return Outcome(finalText = text, branch = "cursor/limb-rigging-3e4f")
     }
 
-    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.generic(prompt: String): Outcome {
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.generic(prompt: String, mcpServers: List<String>): Outcome {
         think("Let me look at the relevant files before changing anything.")
         emit(tool("g1", "list_dir", "running", "path" to ".")); delay(400)
         emit(tool("g1", "list_dir", "completed", "path" to "."))
         emit(tool("g2", "grep", "running", "pattern" to prompt.split(" ").firstOrNull { it.length > 4 }.orEmpty().ifBlank { "TODO" })); delay(500)
         emit(tool("g2", "grep", "completed", "pattern" to "TODO"))
+        mcpTool(mcpServers)
         val text = "Done. I handled \"${prompt.lines().first().take(80)}\" and pushed the change to a branch — this is the demo backend, so nothing left your device."
         type(text)
         return Outcome(finalText = text, branch = "cursor/demo-follow-up")
+    }
+
+    /** `/multitask`: the task is split and three subagents work at once, the way the web describes the mode. */
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.multitask(prompt: String, mcpServers: List<String>): Outcome {
+        val task = SlashCommands.remove(prompt, SlashCommands.MULTITASK).lines().first().take(60).ifBlank { "the request" }
+        think("Multitask mode: split \"$task\" into independent pieces and hand each to its own subagent so they run in parallel instead of queueing.")
+        delay(300)
+        mcpTool(mcpServers)
+        emit(tool("m1", "task", "running", "subagent_type" to "generalPurpose", "description" to "Implement: $task")); delay(200)
+        emit(tool("m2", "task", "running", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(200)
+        emit(tool("m3", "task", "running", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(1500)
+        emit(tool("m2", "task", "completed", "subagent_type" to "explore", "description" to "Find the tests that cover it")); delay(700)
+        emit(tool("m3", "task", "completed", "subagent_type" to "generalPurpose", "description" to "Update the docs")); delay(600)
+        emit(tool("m1", "task", "completed", "subagent_type" to "generalPurpose", "description" to "Implement: $task"))
+        val text = "Three subagents ran in parallel: one implemented \"$task\", one found and ran the tests that cover it, one updated the docs. Their changes are merged on `cursor/demo-multitask` — this is the demo backend, so nothing left your device."
+        type(text)
+        return Outcome(finalText = text, branch = "cursor/demo-multitask")
+    }
+
+    /** One `mcp` tool call against the first attached server, so inline servers show up in the transcript. */
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.mcpTool(mcpServers: List<String>) {
+        val server = mcpServers.firstOrNull() ?: return
+        emit(tool("mcp1", "mcp", "running", "server" to server, "tool" to "list_tools")); delay(500)
+        emit(tool("mcp1", "mcp", "completed", "server" to server, "tool" to "list_tools"))
     }
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.plan(prompt: String): Outcome {

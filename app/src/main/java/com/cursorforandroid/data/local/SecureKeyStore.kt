@@ -6,7 +6,10 @@ import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
-/** Stores the Cursor API key encrypted with an Android Keystore-backed master key. */
+/**
+ * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key and the MCP server definitions
+ * (their headers and environment variables hold credentials).
+ */
 class SecureKeyStore(private val context: Context) {
 
     private val prefs: SharedPreferences by lazy { create() }
@@ -40,7 +43,17 @@ class SecureKeyStore(private val context: Context) {
         }.apply()
     }
 
+    /** The MCP server list as JSON; the shape is owned by [McpServerStore]. */
+    fun mcpServersJson(): String? = prefs.getString(KEY_MCP_SERVERS, null)
+
+    fun setMcpServersJson(json: String?) {
+        prefs.edit().apply {
+            if (json.isNullOrBlank()) remove(KEY_MCP_SERVERS) else putString(KEY_MCP_SERVERS, json)
+        }.apply()
+    }
+
     private companion object {
         const val KEY_API_KEY = "api_key"
+        const val KEY_MCP_SERVERS = "mcp_servers"
     }
 }

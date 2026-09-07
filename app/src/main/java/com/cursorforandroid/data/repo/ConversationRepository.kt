@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.DateHeader
+import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -155,7 +156,12 @@ class ConversationRepository(
         }
     }
 
-    suspend fun sendFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList()): Result<Unit> {
+    suspend fun sendFollowUp(
+        agentId: String,
+        text: String,
+        images: List<PromptImage> = emptyList(),
+        mcpServers: List<McpServer> = emptyList(),
+    ): Result<Unit> {
         val e = entry(agentId)
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
@@ -167,7 +173,7 @@ class ConversationRepository(
         e.history = e.history + optimistic
         e.state.update { it.copy(items = e.history + e.liveItems, error = null) }
 
-        val result = agents.followUp(agentId, trimmed, images)
+        val result = agents.followUp(agentId, trimmed, images, mcpServers = mcpServers)
         return result.fold(
             onSuccess = { run ->
                 startStreaming(e, agentId, run)

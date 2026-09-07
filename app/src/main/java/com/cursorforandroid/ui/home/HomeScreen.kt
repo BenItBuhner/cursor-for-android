@@ -59,6 +59,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.compose.NewAgentViewModel
+import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -92,6 +93,7 @@ fun HomeScreen(
         onPicked = viewModel::addAttachments,
         onError = viewModel::reportError,
     )
+    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         if (onOpenSidebar != null) {
@@ -139,7 +141,7 @@ fun HomeScreen(
                         onSend = { viewModel.launch(onLaunched) },
                         canSend = state.canLaunch,
                         minLines = 3,
-                        onPlus = pickImages,
+                        plusMenu = plusMenu,
                         attachments = state.attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",

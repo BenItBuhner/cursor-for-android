@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
@@ -55,6 +56,18 @@ class PreferencesStore(context: Context) {
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
+        val recentSkills = stringPreferencesKey("recent_skills")
+    }
+
+    /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
+    val recentSkills: Flow<List<String>> = store.data.map { p ->
+        p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+    }
+
+    suspend fun rememberSkill(name: String) = store.edit { p ->
+        val current = p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+        val next = (listOf(name) + current.filterNot { it == name }).take(MAX_RECENT_SKILLS)
+        p[Keys.recentSkills] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
     }
 
     /** Live notification for running agents (the Android counterpart of iOS Live Activities). On by default. */
@@ -174,4 +187,8 @@ class PreferencesStore(context: Context) {
 
     private fun encodeStringMap(map: Map<String, String>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), String.serializer()), map)
+
+    private companion object {
+        const val MAX_RECENT_SKILLS = 8
+    }
 }

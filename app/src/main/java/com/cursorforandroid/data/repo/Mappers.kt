@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
 import com.cursorforandroid.data.api.dto.ApiKeyInfoDto
+import com.cursorforandroid.data.api.dto.McpServerDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.RunGitDto
@@ -12,6 +13,8 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
+import com.cursorforandroid.domain.McpServer
+import com.cursorforandroid.domain.McpTransport
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
@@ -116,3 +119,23 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
 }
 
 fun RunDto.statusEnum(): RunStatus = RunStatus.parse(status)
+
+/** The inline `mcpServers[]` entry: only the fields of the server's transport, empty maps and lists omitted. */
+fun McpServer.toDto(): McpServerDto = when (transport) {
+    McpTransport.Http -> McpServerDto(
+        name = name.trim(),
+        type = transport.wire,
+        url = url.trim(),
+        headers = headers.takeIf { it.isNotEmpty() },
+    )
+    McpTransport.Stdio -> McpServerDto(
+        name = name.trim(),
+        type = transport.wire,
+        command = command.trim(),
+        args = args.takeIf { it.isNotEmpty() },
+        env = env.takeIf { it.isNotEmpty() },
+    )
+}
+
+/** Enabled servers as the request field, or null so the field is omitted and the agent keeps its configuration. */
+fun List<McpServer>.toInlineServers(): List<McpServerDto>? = filter { it.enabled }.map { it.toDto() }.takeIf { it.isNotEmpty() }

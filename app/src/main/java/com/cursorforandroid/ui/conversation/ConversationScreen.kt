@@ -58,6 +58,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -81,6 +82,7 @@ fun ConversationScreen(
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
+    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -208,7 +210,7 @@ fun ConversationScreen(
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && agent?.isArchived != true,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
-                onPlus = pickImages,
+                plusMenu = plusMenu,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
                 modelLabel = agent?.modelDisplayName,

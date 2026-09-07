@@ -102,6 +102,21 @@ data class ModelRefDto(
     val params: List<ModelParamDto>? = null,
 )
 
+/**
+ * Inline MCP server definition (`mcpServers[]`). Remote servers carry `url` (+ `headers`); stdio servers carry
+ * `command` (+ `args`, `env`) and start inside the cloud VM.
+ */
+@Serializable
+data class McpServerDto(
+    val name: String,
+    val type: String? = null,
+    val url: String? = null,
+    val headers: Map<String, String>? = null,
+    val command: String? = null,
+    val args: List<String>? = null,
+    val env: Map<String, String>? = null,
+)
+
 @Serializable
 data class CreateAgentRequestDto(
     val prompt: PromptDto,
@@ -112,6 +127,7 @@ data class CreateAgentRequestDto(
     val workOnCurrentBranch: Boolean? = null,
     val autoCreatePR: Boolean? = null,
     val skipReviewerRequest: Boolean? = null,
+    val mcpServers: List<McpServerDto>? = null,
     val mode: String? = null,
 )
 
@@ -124,6 +140,8 @@ data class CreateAgentResponseDto(
 @Serializable
 data class CreateRunRequestDto(
     val prompt: PromptDto,
+    /** Replaces the agent's create-time inline servers for this run; omitted, the agent keeps its configuration. */
+    val mcpServers: List<McpServerDto>? = null,
     val mode: String? = null,
 )
 

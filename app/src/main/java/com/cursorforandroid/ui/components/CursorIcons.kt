@@ -327,4 +327,39 @@ object CursorIcons {
             line("M20 4v7h-7")
         }
     }
+
+    /** The "+" menu's Multitask glyph: a ring with a second loop peeling off its top right. */
+    val Multitask: ImageVector by lazy {
+        stroke("Multitask") {
+            line("M9.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 1 0 0-11z")
+            line("M12.3 9.7a3.7 3.7 0 1 1 6.3 2.7")
+        }
+    }
+
+    /** Upright paperclip, as on the web's "Files" row. */
+    val Paperclip: ImageVector by lazy {
+        stroke("Paperclip") {
+            line("M15.5 8.5v8a3.5 3.5 0 0 1-7 0V6.5a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V8.5")
+        }
+    }
+
+    /** Open book for Skills: two arched pages meeting at the spine. */
+    val Book: ImageVector by lazy {
+        stroke("Book") {
+            line("M4 8.5c2-2.4 5-2.4 8 0 3-2.4 6-2.4 8 0v9.5c-2-1.9-5-1.9-8 0-3-1.9-6-1.9-8 0V8.5z")
+            line("M12 8.5v9.5")
+        }
+    }
+
+    /** Plug for MCP servers, drawn upright then turned 45° so the prongs point up-right like the web glyph. */
+    val Plug: ImageVector by lazy {
+        stroke("Plug") {
+            group(rotate = 45f, pivotX = 12f, pivotY = 12f) {
+                line("M10 3.5v3.5")
+                line("M14 3.5v3.5")
+                line("M8.5 7h7a1 1 0 0 1 1 1v3a4.5 4.5 0 0 1-9 0V8a1 1 0 0 1 1-1z")
+                line("M12 15.5v5")
+            }
+        }
+    }
 }
