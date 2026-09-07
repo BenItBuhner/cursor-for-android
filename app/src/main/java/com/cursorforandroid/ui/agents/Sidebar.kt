@@ -47,7 +47,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,7 +75,7 @@ data class SidebarCallbacks(
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo, flat
- * search + sidebar-toggle icons, "New Chat", a "Chats" label with the filter icon, Pinned / date groups of
+ * sidebar-toggle + search + new-chat ("+") icons, a "Chats" label with the filter icon, Pinned / date groups of
  * 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -112,6 +111,7 @@ fun Sidebar(
                 onClick = { searching = !searching; if (!searching) onQueryChange("") },
                 tint = if (searching) colors.iconPrimary else colors.iconSecondary,
             )
+            FlatIconButton(CursorIcons.Plus, "New chat", onClick = callbacks.onNewChat)
         }
 
         AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
@@ -125,9 +125,6 @@ fun Sidebar(
         if (searching) LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
         Spacer(Modifier.height(4.dp))
-        NavRow(CursorIcons.NewAgent, "New Chat", selected = selectedDestination == SidebarDestination.NewChat, onClick = callbacks.onNewChat)
-
-        Spacer(Modifier.height(6.dp))
         GroupLabel("Chats", Modifier.padding(start = 16.dp, end = 6.dp).height(32.dp)) {
             FlatIconButton(
                 CursorIcons.Filter,
@@ -176,28 +173,6 @@ fun Sidebar(
 
         HairlineDivider()
         AccountFooter(user, isDemo, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
-    }
-}
-
-@Composable
-private fun NavRow(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val shape = CursorTheme.shapes.base
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = CursorDimens.selectionInset)
-            .background(if (selected) colors.fillSoft else Color.Transparent, shape)
-            .pressable(onClick, shape)
-            .height(CursorDimens.sidebarRow)
-            .padding(start = 8.dp, end = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(CursorDimens.rowIcon))
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = CursorTheme.typography.row, color = colors.textPrimary, modifier = Modifier.weight(1f))
     }
 }
 
