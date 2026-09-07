@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
@@ -165,8 +166,9 @@ class ConversationRepository(
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
         val localId = "local-$now"
-        // Written before the request so the bubble shows its images from the first frame, like the text.
-        val staged = attachments.stage(images)
+        // Written before the request so the bubble shows its images from the first frame, like the text. Storage
+        // trouble costs the previews, never the send.
+        val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
         val optimistic = listOf(
             DateHeader("hdr-$localId", TimeFormat.conversationStamp(now)),
             UserMessage(localId, trimmed, now, staged.attachments),
@@ -178,7 +180,7 @@ class ConversationRepository(
         return result.fold(
             onSuccess = { run ->
                 // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
-                val kept = attachments.commit(agentId, run.id, staged)
+                val kept = runCatching { attachments.commit(agentId, run.id, staged) }.getOrDefault(staged.attachments)
                 e.history = e.history.map { if (it.id == localId && it is UserMessage) it.copy(attachments = kept) else it }
                 startStreaming(e, agentId, run)
                 Result.success(Unit)

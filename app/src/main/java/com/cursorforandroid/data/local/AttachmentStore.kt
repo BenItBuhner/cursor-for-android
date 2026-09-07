@@ -3,6 +3,7 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import androidx.core.graphics.scale
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptImage
@@ -142,8 +143,8 @@ class AttachmentStore(context: Context) {
     private fun Bitmap.shrinkToEdge(maxEdge: Int): Bitmap {
         val edge = maxOf(width, height)
         if (edge <= maxEdge) return this
-        val scale = maxEdge.toFloat() / edge
-        return Bitmap.createScaledBitmap(this, maxOf(1, (width * scale).toInt()), maxOf(1, (height * scale).toInt()), true)
+        val factor = maxEdge.toFloat() / edge
+        return scale(maxOf(1, (width * factor).toInt()), maxOf(1, (height * factor).toInt()))
     }
 
     private fun Bitmap.hasTransparentPixels(): Boolean {
