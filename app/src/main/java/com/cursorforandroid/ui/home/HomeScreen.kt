@@ -7,10 +7,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,18 +21,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,9 +104,11 @@ fun HomeScreen(
         if (onOpenSidebar != null) {
             CursorHeader(leading = { FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) })
         }
+        // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
+        val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         LazyColumn(
             Modifier.fillMaxSize().imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 12.dp else 50.dp, bottom = 32.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 12.dp else 50.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item("composer") {
@@ -112,6 +123,9 @@ fun HomeScreen(
                         SelectorChip(repoLabel, onClick = { repoSheet = true })
                         if (!state.noRepo) {
                             if (editingRef) {
+                                // Tapping the branch chip means "type a branch": focus the field and open the keyboard.
+                                val refFocus = remember { FocusRequester() }
+                                LaunchedEffect(Unit) { refFocus.requestFocus() }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     BasicTextField(
                                         value = state.ref,
@@ -119,7 +133,13 @@ fun HomeScreen(
                                         singleLine = true,
                                         textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
                                         cursorBrush = SolidColor(colors.textPrimary),
-                                        modifier = Modifier.widthIn(min = 56.dp, max = 160.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 3.dp),
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
+                                        keyboardActions = KeyboardActions(onDone = { editingRef = false }),
+                                        modifier = Modifier
+                                            .widthIn(min = 56.dp, max = 160.dp)
+                                            .background(colors.fillFaint, CursorTheme.shapes.base)
+                                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                                            .focusRequester(refFocus),
                                     )
                                     FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 24.dp, iconSize = 16.dp)
                                 }
