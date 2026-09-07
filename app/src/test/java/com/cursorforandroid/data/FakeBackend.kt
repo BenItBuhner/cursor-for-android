@@ -29,7 +29,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
-import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -40,7 +39,7 @@ open class FakeCursorApi : CursorApi {
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
     /** `user_message` / `assistant_message` rows per agent, text only, exactly like the real endpoint. */
-    val transcripts: MutableMap<String, MutableList<V0ConversationMessageDto>> = ConcurrentHashMap()
+    val transcripts: MutableMap<String, List<V0ConversationMessageDto>> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     var failCancel = false
@@ -52,8 +51,6 @@ open class FakeCursorApi : CursorApi {
     @Volatile var getRunCalls = 0
     @Volatile var listAgentsCalls = 0
     private val ids = AtomicInteger()
-    /** Follow-up runs count separately (`run-new-N` / `msg-new-N`) so tests can predict them whatever [createAgent] did. */
-    private val created = AtomicInteger()
 
     fun addRunningAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z") {
         agents[id] = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = createdAt, updatedAt = createdAt, latestRunId = runId)
@@ -61,12 +58,21 @@ open class FakeCursorApi : CursorApi {
         runs[runId] = RunDto(id = runId, agentId = id, status = "RUNNING", createdAt = createdAt, updatedAt = createdAt)
     }
 
-    /** An idle agent whose first run finished, with the matching two-line transcript. */
-    fun addFinishedAgent(id: String, name: String, runId: String, prompt: String = "Add a README", createdAt: String = "2026-04-13T18:30:00.000Z") {
-        agents[id] = AgentDto(id = id, name = name, status = "IDLE", createdAt = createdAt, updatedAt = createdAt, latestRunId = runId)
+    /** An idle agent whose runs all finished; [prompts] pair each run (oldest first) with its transcript prompt and reply. */
+    fun addFinishedAgent(id: String, name: String, vararg prompts: Triple<String, String, String>, firstRunAt: String = "2026-04-13T18:30:00.000Z") {
+        var at = java.time.Instant.parse(firstRunAt)
+        val messages = mutableListOf<V0ConversationMessageDto>()
+        prompts.forEachIndexed { index, (runId, prompt, reply) ->
+            val iso = at.toString()
+            runs[runId] = RunDto(id = runId, agentId = id, status = "FINISHED", createdAt = iso, updatedAt = iso, durationMs = 60_000L * (index + 1), result = reply)
+            messages += V0ConversationMessageDto("$runId-u", "user_message", prompt)
+            messages += V0ConversationMessageDto("$runId-a", "assistant_message", reply)
+            at = at.plusSeconds(3600)
+        }
+        val last = prompts.last().first
+        agents[id] = AgentDto(id = id, name = name, status = "IDLE", createdAt = firstRunAt, updatedAt = runs.getValue(last).updatedAt, latestRunId = last)
         v0[id] = V0AgentDto(id = id, name = name, status = "FINISHED")
-        runs[runId] = RunDto(id = runId, agentId = id, status = "FINISHED", createdAt = createdAt, updatedAt = createdAt, durationMs = 60_000, result = "Done.")
-        transcripts[id] = CopyOnWriteArrayList(listOf(V0ConversationMessageDto("$runId-user", "user_message", prompt), V0ConversationMessageDto("$runId-asst", "assistant_message", "Done.")))
+        transcripts[id] = messages
     }
 
     private fun notFound() = CursorApiException(404, "not_found", "Not found.")
@@ -106,18 +112,20 @@ open class FakeCursorApi : CursorApi {
         getRunCalls++
         return runs[runId] ?: throw notFound()
     }
-    /** Starts a run a minute after the newest one and appends the prompt's text (never its images) to the transcript. */
+    /**
+     * Starts `run-followup-<n>` on the agent and appends the prompt's text (never its images) to the transcript; the
+     * test streams the run through the fake streamer like any other.
+     */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         val agent = agents[id] ?: throw notFound()
-        val n = created.incrementAndGet()
-        val latest = runs.values.filter { it.agentId == id }.maxOfOrNull { Instant.parse(it.createdAt).toEpochMilli() } ?: 0L
-        val createdAt = Instant.ofEpochMilli(latest + 60_000L * n).toString()
-        val runId = "run-new-$n"
-        val run = RunDto(id = runId, agentId = id, status = "RUNNING", createdAt = createdAt, updatedAt = createdAt)
+        val sequence = ids.incrementAndGet()
+        val runId = "run-followup-$sequence"
+        val now = java.time.Instant.parse("2026-04-14T09:00:00.000Z").plusSeconds(sequence.toLong()).toString()
+        val run = RunDto(id = runId, agentId = id, status = "RUNNING", createdAt = now, updatedAt = now)
         runs[runId] = run
-        agents[id] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = createdAt)
-        transcripts.getOrPut(id) { CopyOnWriteArrayList() } += V0ConversationMessageDto("msg-new-$n", "user_message", body.prompt.text)
+        agents[id] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
+        transcripts[id] = transcripts[id].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", body.prompt.text)
         return CreateRunResponseDto(run)
     }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
@@ -126,7 +134,7 @@ open class FakeCursorApi : CursorApi {
         return IdResponseDto(runId)
     }
     override suspend fun listAgentsV0(limit: Int, cursor: String?) = V0ListAgentsResponseDto(agents = v0.values.toList())
-    override suspend fun conversationV0(id: String) = V0ConversationResponseDto(id, transcripts[id]?.toList() ?: emptyList())
+    override suspend fun conversationV0(id: String) = V0ConversationResponseDto(id, transcripts[id].orEmpty())
 }
 
 /** Scriptable streamer: tests push events per run; [RunStreamEvent.Done] closes the stream like the server does. */

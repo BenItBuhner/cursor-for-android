@@ -82,13 +82,15 @@ class ConversationAttachmentsTest {
 
     @Test
     fun `images sent with a follow-up stay on its bubble after history is reloaded from the server`() = runBlocking {
-        api.addFinishedAgent("bc-1", "Merge chat state sync", "run-1")
+        api.addFinishedAgent("bc-1", "Merge chat state sync", Triple("run-1", "Add a README", "Done."))
         conversations.attach("bc-1")
         awaitUntil { !state().isLoading && prompts().size == 1 }
         assertThat(prompts().single().attachments).isEmpty()
 
         val result = conversations.sendFollowUp("bc-1", "merge and chat states often fail to sync between these two", listOf(png(200, 400), png(300, 300)))
         assertThat(result.isSuccess).isTrue()
+        val runId = api.agents.getValue("bc-1").latestRunId!!
+        assertThat(runId).isNotEqualTo("run-1")
 
         // The bubble shows both screenshots as soon as the follow-up is sent…
         val sent = prompts().last()
@@ -97,12 +99,12 @@ class ConversationAttachmentsTest {
         assertThat(sent.attachments.map { it.aspectRatio }).containsExactly(0.5f, 1f).inOrder()
         sent.attachments.forEach { assertThat(File(it.path).isFile).isTrue() }
         // …filed under the run the API created, not the scratch directory.
-        sent.attachments.forEach { assertThat(it.path).contains("${File.separator}run-new-1${File.separator}") }
+        sent.attachments.forEach { assertThat(it.path).contains("${File.separator}$runId${File.separator}") }
 
         // The server's transcript has the text only; the images must survive the swap to server-side history.
         assertThat(api.transcripts.getValue("bc-1").last().text).isEqualTo(sent.text)
         conversations.reload("bc-1")
-        awaitUntil { !state().isLoading && prompts().size == 2 && prompts().last().id == "msg-new-1" }
+        awaitUntil { !state().isLoading && prompts().size == 2 && prompts().last().id == "$runId-u" }
         val reloaded = prompts().last()
         assertThat(reloaded.text).isEqualTo(sent.text)
         assertThat(reloaded.attachments).isEqualTo(sent.attachments)
@@ -111,7 +113,7 @@ class ConversationAttachmentsTest {
 
     @Test
     fun `a follow-up the server rejects leaves no bubble and no files behind`() = runBlocking {
-        api.addFinishedAgent("bc-1", "Agent", "run-1")
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Add a README", "Done."))
         api.failCreateRun = true
         conversations.attach("bc-1")
         awaitUntil { !state().isLoading && prompts().size == 1 }

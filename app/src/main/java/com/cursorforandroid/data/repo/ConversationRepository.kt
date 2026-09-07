@@ -1,18 +1,17 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.StagedAttachments
-import com.cursorforandroid.domain.DateHeader
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
-import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,6 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 data class ConversationState(
     val agentId: String,
@@ -40,9 +42,13 @@ data class ConversationState(
 
 /**
  * Owns the transcript for each open agent. History comes from `/v0/agents/{id}/conversation` and
- * `/v1/agents/{id}/runs`, with the images of each prompt filled in from the on-device [AttachmentStore]; anything
- * happening right now arrives through the [LiveRunHub], which shares one SSE stream per run with the
- * live-notification monitor.
+ * `/v1/agents/{id}/runs`; anything happening right now arrives through the [LiveRunHub], which shares one SSE
+ * stream per run with the live-notification monitor.
+ *
+ * The legacy transcript is text only. Every run's thinking, tool calls and subagents live in its event log, which
+ * the hub replays for finished runs as long as the API retains it, so the same trace the live view showed is
+ * there to dig into after the fact. Runs whose log has expired keep their text. The images a prompt carried never
+ * come back from the server at all; they are filled in from the on-device [AttachmentStore].
  */
 class ConversationRepository(
     private val session: SessionManager,
@@ -51,14 +57,33 @@ class ConversationRepository(
     private val hub: LiveRunHub,
     private val attachments: AttachmentStore,
 ) {
+    /** A follow-up sent from this device: its prompt and its run, a placeholder until the server has answered. */
+    private class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto)
+
+    /**
+     * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
+     * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
+     */
     private inner class Entry(agentId: String) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val state = MutableStateFlow(ConversationState(agentId))
-        var history: List<TimelineItem> = emptyList()
-        /** Items of the run in progress; folded into [history] the moment the run finishes. */
-        var liveItems: List<TimelineItem> = emptyList()
+        /** The legacy transcript as the server returned it. */
+        var messages: List<V0ConversationMessageDto> = emptyList()
+        /** The v1 runs as the server returned them. */
+        var runs: List<RunDto> = emptyList()
+        /** Follow-ups sent from here that the server's run list has not caught up with; shown after the history. */
+        var local: List<LocalPrompt> = emptyList()
+        /** Per run: the items its stream produced, replayed for finished runs and updated live for the active one. */
+        var traces: Map<String, List<TimelineItem>> = emptyMap()
+        /** Per run: the images its prompt carried. A follow-up in flight is keyed by its placeholder run. */
+        var promptImages: Map<String, List<MessageAttachment>> = emptyMap()
         var streamJob: Job? = null
+        var traceJob: Job? = null
         var attached = 0
+
+        fun items(): List<TimelineItem> =
+            TimelineBuilder.fromHistory(messages, runs, traces, promptImages) +
+                TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, traces, promptImages)
     }
 
     private val entries = mutableMapOf<String, Entry>()
@@ -85,6 +110,8 @@ class ConversationRepository(
         if (e.attached == 0) {
             e.streamJob?.cancel()
             e.streamJob = null
+            e.traceJob?.cancel()
+            e.traceJob = null
             e.state.update { it.copy(isStreaming = false) }
         }
     }
@@ -96,7 +123,16 @@ class ConversationRepository(
     fun reload(agentId: String) {
         val e = entry(agentId)
         e.streamJob?.cancel()
+        e.traceJob?.cancel()
         e.scope.launch { load(e, agentId) }
+    }
+
+    /** Rebuilds the visible items from the entry's inputs after [mutate] has changed them. */
+    private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }) {
+        synchronized(this) {
+            mutate()
+            state.update { it.copy(items = items()).transform() }
+        }
     }
 
     private suspend fun load(e: Entry, agentId: String) {
@@ -105,30 +141,40 @@ class ConversationRepository(
         try {
             coroutineScope {
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
-                val runs = async { runCatching { api.listRuns(agentId, limit = 50).items } }
+                val runPage = async { runCatching { api.listRuns(agentId, limit = 50).items } }
                 val detail = async { agents.loadDetail(agentId) }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
-                val runList = runs.await().getOrElse { emptyList() }
+                val runList = runPage.await().getOrElse { emptyList() }
                 detail.await()
-                val messages = convResult.getOrNull()?.messages ?: emptyList()
+                val onDevice = stored.await()
+                val transcript = convResult.getOrNull()?.messages ?: emptyList()
                 val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
                 val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                 val latestStatus = latest?.statusEnum()
-                e.history = TimelineBuilder.fromHistory(messages, runList, stored.await())
-                e.liveItems = emptyList()
-                e.state.update {
-                    it.copy(
-                        items = e.history,
-                        isLoading = false,
-                        error = if (convResult.isFailure && runList.isEmpty()) convResult.exceptionOrNull()?.userMessage() else null,
-                        activeRunId = latest?.id,
-                        runStatus = latestStatus,
-                        transcriptUnavailable = transcriptUnavailable && messages.isEmpty(),
-                    )
-                }
+                // Traces already known are kept: a finished run's log does not change, and the active run's is
+                // overwritten by the first live snapshot. Local follow-ups hand over to the server once it lists their run.
+                e.publish(
+                    mutate = {
+                        messages = transcript
+                        runs = runList
+                        local = local.filter { prompt -> runList.none { it.id == prompt.run.id } }
+                        // The disk knows every filed prompt; only follow-ups still in flight exist solely in memory.
+                        promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
+                    },
+                    transform = {
+                        copy(
+                            isLoading = false,
+                            error = if (convResult.isFailure && runList.isEmpty()) convResult.exceptionOrNull()?.userMessage() else null,
+                            activeRunId = latest?.id,
+                            runStatus = latestStatus,
+                            transcriptUnavailable = transcriptUnavailable && transcript.isEmpty(),
+                        )
+                    },
+                )
                 agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
                 if (latest != null && latestStatus?.isActive == true) startStreaming(e, agentId, latest)
+                loadTraces(e, agentId, runList.filter { it.statusEnum().isTerminal })
             }
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
@@ -136,25 +182,52 @@ class ConversationRepository(
         }
     }
 
+    /**
+     * Replays the retained stream of every finished run that has no trace yet, newest first: the retention window
+     * is time-based, so once one run's log has expired every older run's has too and the rest are skipped. A few
+     * workers pull from the ordered queue, so the newest runs are always the first ones asked.
+     */
+    private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
+        e.traceJob?.cancel()
+        val pending = synchronized(e) { finishedRuns.filter { it.id !in e.traces } }.sortedByDescending { parseIsoMillis(it.createdAt) }
+        if (pending.isEmpty()) return
+        e.traceJob = e.scope.launch {
+            val next = AtomicInteger(0)
+            val newestExpired = AtomicLong(Long.MIN_VALUE)
+            repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
+                launch {
+                    while (true) {
+                        val run = pending.getOrNull(next.getAndIncrement()) ?: return@launch
+                        val createdAt = parseIsoMillis(run.createdAt)
+                        if (createdAt < newestExpired.get()) continue
+                        val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
+                        when {
+                            snapshot.hasTrace -> e.publish(mutate = { traces = traces + (run.id to snapshot.items) })
+                            snapshot.expired -> newestExpired.updateAndGet { maxOf(it, createdAt) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun startStreaming(e: Entry, agentId: String, run: RunDto) {
         e.streamJob?.cancel()
-        e.liveItems = emptyList()
-        e.state.update { it.copy(activeRunId = run.id, runStatus = RunStatus.parse(run.status), isStreaming = true, items = e.history) }
+        e.publish(transform = { copy(activeRunId = run.id, runStatus = RunStatus.parse(run.status), isStreaming = true) })
         e.streamJob = e.scope.launch {
             val startedAt = parseIsoMillis(run.createdAt).takeIf { it > 0 }
             hub.snapshots(agentId, run.id, startedAt)
                 .transformWhile { snapshot -> emit(snapshot); !snapshot.finished }
                 .collect { snapshot ->
+                    // The live snapshot is this run's trace; the builder places it after the run's prompt.
+                    e.publish(
+                        mutate = { traces = traces + (run.id to snapshot.items) },
+                        transform = { copy(runStatus = snapshot.status, isStreaming = !snapshot.finished) },
+                    )
                     if (snapshot.finished) {
-                        e.history = e.history + snapshot.items
-                        e.liveItems = emptyList()
-                        e.state.update { it.copy(items = e.history, runStatus = snapshot.status, isStreaming = false) }
                         // The screen is open, so the finished turn counts as read. finishedAtMillis is the updatedAt
                         // the hub writes to the agent row, whether or not that patch has landed yet.
                         prefs.markRead(agentId, snapshot.finishedAtMillis ?: AppClock.now())
-                    } else {
-                        e.liveItems = snapshot.items
-                        e.state.update { it.copy(items = e.history + snapshot.items, runStatus = snapshot.status, isStreaming = true) }
                     }
                 }
         }
@@ -165,30 +238,44 @@ class ConversationRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
+        // The prompt shows up right away, paired with a placeholder run so it gets a timestamp like every other turn.
         val localId = "local-$now"
+        val nowIso = Instant.ofEpochMilli(now).toString()
+        val placeholder = RunDto(id = localId, agentId = agentId, status = RunStatus.CREATING.name, createdAt = nowIso, updatedAt = nowIso)
         // Written before the request so the bubble shows its images from the first frame, like the text. Storage
         // trouble costs the previews, never the send.
         val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
-        val optimistic = listOf(
-            DateHeader("hdr-$localId", TimeFormat.conversationStamp(now)),
-            UserMessage(localId, trimmed, now, staged.attachments),
+        e.publish(
+            mutate = {
+                local = local + LocalPrompt(V0ConversationMessageDto(localId, "user_message", trimmed), placeholder)
+                if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
+            },
+            transform = { copy(error = null) },
         )
-        e.history = e.history + optimistic
-        e.state.update { it.copy(items = e.history + e.liveItems, error = null) }
 
         val result = agents.followUp(agentId, trimmed, images)
         return result.fold(
             onSuccess = { run ->
                 // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
                 val kept = runCatching { attachments.commit(agentId, run.id, staged) }.getOrDefault(staged.attachments)
-                e.history = e.history.map { if (it.id == localId && it is UserMessage) it.copy(attachments = kept) else it }
+                e.publish(
+                    mutate = {
+                        local = local.map { if (it.run.id == localId) LocalPrompt(it.message, run) else it }
+                        promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
+                    },
+                )
                 startStreaming(e, agentId, run)
                 Result.success(Unit)
             },
             onFailure = { t ->
                 attachments.discard(staged)
-                e.history = e.history.filterNot { it.id == "hdr-$localId" || it.id == localId }
-                e.state.update { it.copy(items = e.history + e.liveItems, error = t.userMessage()) }
+                e.publish(
+                    mutate = {
+                        local = local.filterNot { it.run.id == localId }
+                        promptImages = promptImages - localId
+                    },
+                    transform = { copy(error = t.userMessage()) },
+                )
                 Result.failure(t)
             },
         )
@@ -209,5 +296,10 @@ class ConversationRepository(
             entries.values.forEach { it.scope.cancel() }
             entries.clear()
         }
+    }
+
+    private companion object {
+        /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
+        const val MAX_PARALLEL_REPLAYS = 3
     }
 }

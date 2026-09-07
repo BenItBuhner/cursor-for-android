@@ -36,46 +36,61 @@ object TimelineBuilder {
      * ("Worked 3m 5s" + branches) is placed right before the next user message, and after the final assistant
      * message when that run has finished.
      *
-     * The transcript carries no images, so [attachments] (kept on this device, keyed by run ID) are attached to the
-     * user message that started each run.
+     * The transcript only carries text. When a run's stream has been replayed (or is being followed live), its
+     * items in [traces] — thinking, tool calls, subagents, the assistant text and the footer — stand in for the
+     * transcript's replies to that prompt. The images a prompt carried live in [attachments] (kept on this device,
+     * keyed by run ID) and are attached to the user message that started each run.
      */
     fun fromHistory(
         messages: List<V0ConversationMessageDto>,
         runs: List<RunDto>,
+        traces: Map<String, List<TimelineItem>> = emptyMap(),
         attachments: Map<String, List<MessageAttachment>> = emptyMap(),
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         val items = mutableListOf<TimelineItem>()
+
+        /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
+        fun closeRun(run: RunDto?, replies: List<TimelineItem>) {
+            val trace = run?.let { traces[it.id] }
+            if (trace != null) {
+                items += trace
+                return
+            }
+            items += replies
+            if (run != null && run.statusEnum().isTerminal) items += footer(run)
+        }
+
+        fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
+
         if (messages.isEmpty()) {
             ordered.forEach { run ->
                 items += DateHeader("hdr-${run.id}", TimeFormat.conversationStamp(parseIsoMillis(run.createdAt), nowMillis, zone))
-                run.result?.takeIf { it.isNotBlank() }?.let { items += AssistantMessage("res-${run.id}", it) }
-                if (run.statusEnum().isTerminal) items += footer(run)
+                closeRun(run, resultReply(run))
             }
             return items
         }
         var userIndex = -1
+        var replies = mutableListOf<TimelineItem>()
         messages.forEach { msg ->
             when (msg.type) {
                 "user_message" -> {
-                    if (userIndex >= 0) ordered.getOrNull(userIndex)?.takeIf { it.statusEnum().isTerminal }?.let { items += footer(it) }
+                    if (userIndex >= 0) closeRun(ordered.getOrNull(userIndex), replies) else items += replies
+                    replies = mutableListOf()
                     userIndex++
                     val run = ordered.getOrNull(userIndex)
                     val stamp = run?.let { parseIsoMillis(it.createdAt) }
                     if (stamp != null) items += DateHeader("hdr-${msg.id}", TimeFormat.conversationStamp(stamp, nowMillis, zone))
                     items += UserMessage(msg.id, msg.text, stamp, attachments = run?.let { attachments[it.id] } ?: emptyList())
                 }
-                else -> items += AssistantMessage(msg.id, msg.text)
+                else -> replies += AssistantMessage(msg.id, msg.text)
             }
         }
-        if (userIndex >= 0) ordered.getOrNull(userIndex)?.takeIf { it.statusEnum().isTerminal }?.let { items += footer(it) }
+        if (userIndex >= 0) closeRun(ordered.getOrNull(userIndex), replies) else items += replies
         // Runs without a matching transcript message (e.g. transcript truncated) still surface their result.
-        ordered.drop(userIndex + 1).forEach { run ->
-            run.result?.takeIf { it.isNotBlank() }?.let { items += AssistantMessage("res-${run.id}", it) }
-            if (run.statusEnum().isTerminal) items += footer(run)
-        }
+        ordered.drop(userIndex + 1).forEach { run -> closeRun(run, resultReply(run)) }
         return items.withUniqueIds()
     }
 
@@ -166,8 +181,15 @@ object TimelineBuilder {
         )
     }
 
-    /** Accumulates live SSE events for one run into timeline items. */
-    class LiveRun(private val runId: String, private val nowProvider: () -> Long = AppClock::now) {
+    /**
+     * Accumulates the SSE events of one run into timeline items. [timed] measures how long each thinking block
+     * streamed for ("Thought for 3s"); turn it off when the events are a replay rather than happening now.
+     */
+    class LiveRun(
+        private val runId: String,
+        private val timed: Boolean = true,
+        private val nowProvider: () -> Long = AppClock::now,
+    ) {
         private val items = mutableListOf<TimelineItem>()
         private var seq = 0
         private var thinkingStartedAt: Long? = null
@@ -225,7 +247,7 @@ object TimelineBuilder {
             if (idx < 0) return
             val block = items[idx] as ThinkingBlock
             if (!block.isStreaming) return
-            val started = thinkingStartedAt
+            val started = thinkingStartedAt?.takeIf { timed }
             val duration = started?.let { ((nowProvider() - it) / 1000).coerceAtLeast(1) }
             items[idx] = block.copy(isStreaming = false, durationSeconds = duration)
             thinkingStartedAt = null
