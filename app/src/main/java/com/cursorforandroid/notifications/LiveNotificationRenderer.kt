@@ -15,6 +15,8 @@ import com.cursorforandroid.R
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.LiveActivityState
 import com.cursorforandroid.domain.LivePhase
+import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.MediaSegment
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.util.AppClock
@@ -96,7 +98,7 @@ object LiveNotificationRenderer {
 
     fun finished(context: Context, run: TrackedRun): Notification {
         val stats = styledStats(run)
-        val summary = run.summary?.trim()?.takeIf { it.isNotEmpty() }?.let { firstParagraph(it) }
+        val summary = run.summary?.trim()?.takeIf { it.isNotEmpty() }?.let { firstParagraph(it) }?.takeIf { it.isNotEmpty() }
         val firstLine: CharSequence? = stats ?: summary?.lineSequence()?.firstOrNull()
         val builder = NotificationCompat.Builder(context, LiveNotifications.CHANNEL_FINISHED)
             .setSmallIcon(R.drawable.ic_stat_agent)
@@ -187,7 +189,12 @@ object LiveNotificationRenderer {
     }
 
     private fun firstParagraph(text: String): String {
-        val paragraph = text.split(Regex("\\n\\s*\\n")).firstOrNull { it.isNotBlank() }?.trim() ?: text
+        // Replies often open with a screenshot or recording; a notification wants the first paragraph of words, and
+        // only falls back to an image's alt text when there is nothing else.
+        val paragraphs = text.split(Regex("\\n\\s*\\n"))
+        val paragraph = paragraphs.firstOrNull { p -> MediaMarkup.split(p).any { it is MediaSegment.Text } }?.let { MediaMarkup.stripped(it) }
+            ?: paragraphs.asSequence().map { MediaMarkup.stripped(it) }.firstOrNull { it.isNotBlank() }
+            ?: return ""
         val plain = paragraph.replace(Regex("[*_`#>]+"), "").trim()
         return if (plain.length > SUMMARY_MAX) plain.take(SUMMARY_MAX - 1).trimEnd() + "\u2026" else plain
     }

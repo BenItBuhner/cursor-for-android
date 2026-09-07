@@ -30,6 +30,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -53,6 +54,8 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
@@ -108,6 +111,8 @@ fun ConversationScreen(
     }
 
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
+    val markdownMedia = remember(agentId) { MarkdownMediaContext(agentId, graph.media) }
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
@@ -162,7 +167,11 @@ fun ConversationScreen(
                         )
                     }
                 }
-                items(items, key = { it.id }) { item -> TimelineItemView(item, Modifier.widthIn(max = CursorDimens.composerMaxWidth)) }
+                items(items, key = { it.id }) { item ->
+                    CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                        TimelineItemView(item, Modifier.widthIn(max = CursorDimens.composerMaxWidth))
+                    }
+                }
                 if (isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }) {
                     item("working") {
                         Row(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

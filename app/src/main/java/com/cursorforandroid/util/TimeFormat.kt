@@ -54,4 +54,13 @@ object TimeFormat {
             else -> "${seconds}s"
         }
     }
+
+    /** "0:07", "12:30", "1:05:09" — the length badge on a video poster. */
+    fun clock(durationMs: Long): String {
+        val totalSeconds = (durationMs.coerceAtLeast(0) + 500) / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) "%d:%02d:%02d".format(Locale.US, hours, minutes, seconds) else "%d:%02d".format(Locale.US, minutes, seconds)
+    }
 }

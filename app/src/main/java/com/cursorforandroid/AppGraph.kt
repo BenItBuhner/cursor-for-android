@@ -6,7 +6,9 @@ import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
@@ -34,6 +36,9 @@ class AppGraph(context: Context) {
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
     val conversations = ConversationRepository(session, agents, prefs, liveRuns)
+    /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
+    val artifacts = ArtifactRepository(session)
+    val media = MediaLoader(context, CursorApiFactory.mediaClient(), artifacts)
     val runMonitor = RunMonitor(
         agents = agents,
         hub = liveRuns,
@@ -45,6 +50,8 @@ class AppGraph(context: Context) {
         liveRuns.resetAll()
         conversations.resetAll()
         catalog.reset()
+        artifacts.resetAll()
+        media.clearCaches()
         session.signOut()
     }
 }

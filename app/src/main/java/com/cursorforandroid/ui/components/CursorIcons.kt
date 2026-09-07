@@ -30,7 +30,6 @@ object CursorIcons {
         strokeLineJoin = StrokeJoin.Round,
     )
 
-    @Suppress("unused")
     private fun ImageVector.Builder.fill(data: String) = addPath(pathData = nodes(data), fill = SolidColor(Color.Black))
 
     val GitBranch: ImageVector by lazy {
@@ -332,6 +331,28 @@ object CursorIcons {
         stroke("Refresh") {
             line("M20 11a8 8 0 1 0 2 5.3")
             line("M20 4v7h-7")
+        }
+    }
+
+    /** Solid play triangle for the video poster button. */
+    val Play: ImageVector by lazy {
+        stroke("Play") {
+            fill("M9 5.5v13a.5.5 0 0 0 .77.42l10-6.5a.5.5 0 0 0 0-.84l-10-6.5A.5.5 0 0 0 9 5.5z")
+        }
+    }
+
+    val Image: ImageVector by lazy {
+        stroke("Image") {
+            line("M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z")
+            line("M3.5 16.5l4.5-4.5 4 4 3-3 5.5 5.5")
+            line("M15.5 9.5a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 1 0 0 2.6z")
+        }
+    }
+
+    val Video: ImageVector by lazy {
+        stroke("Video") {
+            line("M3 8a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z")
+            line("M16 10.5l5-3v9l-5-3")
         }
     }
 }
