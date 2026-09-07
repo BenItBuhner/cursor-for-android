@@ -76,10 +76,11 @@ class MediaLoader(
         return poster
     }
 
-    fun clearCaches() {
+    /** Forgets everything fetched for the signed-out account; the disk cache is wiped off the main thread. */
+    suspend fun clearCaches() {
         posters.evictAll()
         imageLoader.memoryCache?.clear()
-        imageLoader.diskCache?.clear()
+        withContext(Dispatchers.IO) { imageLoader.diskCache?.clear() }
     }
 
     private suspend fun dataFor(ref: MediaRef): Any = when (ref) {
