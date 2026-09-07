@@ -1,6 +1,7 @@
 package com.cursorforandroid.ui.components
 
 import android.view.LayoutInflater
+import android.widget.FrameLayout
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,6 +65,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.cursorforandroid.R
@@ -81,8 +84,8 @@ class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader)
 
 val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null }
 
-/** Figures never grow past this; anything taller is shown fitted and opens full size on tap. */
-private val MediaMaxHeight = 420.dp
+/** Figures never grow past this (or 45 % of the screen on short displays); taller media is fitted and opens full size on tap. */
+private val MediaMaxHeightCap = 420.dp
 private val PlaceholderHeight = 140.dp
 private val FallbackWidth = 360.dp
 private const val VIDEO_DEFAULT_ASPECT = 16f / 9f
@@ -93,9 +96,12 @@ private sealed interface ImageLoad {
     data class Failed(val title: String, val retryable: Boolean) : ImageLoad
 }
 
+@Composable
+private fun mediaMaxHeight(): Dp = minOf(MediaMaxHeightCap, (LocalConfiguration.current.screenHeightDp * 0.45f).dp)
+
 /**
  * An image from a reply. Laid out the way a browser lays out `<img>`: one source pixel per dp, shrunk to fit the
- * message width and [MediaMaxHeight]. Tapping opens a zoomable full-screen view.
+ * message width and [mediaMaxHeight]. Tapping opens a zoomable full-screen view.
  */
 @Composable
 fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
@@ -106,9 +112,10 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
+        val maxHeight = mediaMaxHeight()
         val density = LocalDensity.current
         val maxWidthPx = with(density) { maxWidth.roundToPx() }
-        val maxHeightPx = with(density) { MediaMaxHeight.roundToPx() }
+        val maxHeightPx = with(density) { maxHeight.roundToPx() }
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
         var lightbox by rememberSaveable(ref.cacheKey) { mutableStateOf(false) }
@@ -136,7 +143,7 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
                 onRetry = if (s.retryable) ({ attempt++ }) else null,
             )
             is ImageLoad.Ready -> {
-                val size = fitted(s.bitmap.width, s.bitmap.height, maxWidth, MediaMaxHeight)
+                val size = fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight)
                 Image(
                     bitmap = s.bitmap,
                     contentDescription = alt ?: "Image",
@@ -171,11 +178,15 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier) {
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
+        val maxHeight = mediaMaxHeight()
         val density = LocalDensity.current
-        val maxPx = with(density) { maxOf(maxWidth, MediaMaxHeight).roundToPx() }
+        val maxPx = with(density) { maxOf(maxWidth, maxHeight).roundToPx() }
         var frame by remember(ref) { mutableStateOf<ImageBitmap?>(null) }
         var durationMs by remember(ref) { mutableStateOf<Long?>(null) }
-        var playing by rememberSaveable(ref.cacheKey) { mutableStateOf(false) }
+        /** Width / height reported by the decoder once playback starts; corrects a card sized from a poster or the default. */
+        var playbackAspect by remember(ref) { mutableStateOf<Float?>(null) }
+        // Plain remember: a video scrolled out of the list stops and comes back as its poster, not auto-playing.
+        var playing by remember(ref) { mutableStateOf(false) }
 
         LaunchedEffect(ref, posterRef, maxPx) {
             val explicitPoster = posterRef?.takeIf { it !is MediaRef.Unavailable }
@@ -188,14 +199,14 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier) {
             }
         }
 
-        val aspect = frame?.let { it.width.toFloat() / it.height } ?: VIDEO_DEFAULT_ASPECT
-        val width = minOf(maxWidth, MediaMaxHeight * aspect)
+        val aspect = playbackAspect ?: frame?.let { it.width.toFloat() / it.height } ?: VIDEO_DEFAULT_ASPECT
+        val width = minOf(maxWidth, maxHeight * aspect)
         val cardSize = DpSize(width, width / aspect)
         val label = "Video: ${ref.label}"
 
         Box(Modifier.size(cardSize).cursorSurface(Color.Black, colors.strokeSubtle, shape)) {
             if (playing) {
-                InlineVideoPlayer(ref, loader, Modifier.fillMaxSize())
+                InlineVideoPlayer(ref, loader, onAspect = { playbackAspect = it }, modifier = Modifier.fillMaxSize())
             } else {
                 frame?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
                 Box(
@@ -297,7 +308,7 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap, alt: String?, loa
         val targetH = with(density) { (configuration.screenHeightDp * 2).dp.roundToPx() }
         runCatching { loader.image(ref, targetW, targetH) }.onSuccess { if (it.width >= bitmap.width) bitmap = it.asImageBitmap() }
     }
-    var scale by remember { mutableStateOf(1f) }
+    var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 6f)
@@ -351,7 +362,7 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap, alt: String?, loa
  * the composition; it pauses whenever the screen does.
  */
 @Composable
-private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, modifier: Modifier = Modifier) {
+private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, onAspect: (Float) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var url by remember(ref) { mutableStateOf<String?>(null) }
     var error by remember(ref) { mutableStateOf<String?>(null) }
@@ -373,6 +384,12 @@ private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, modifier: Modi
             addListener(object : Player.Listener {
                 override fun onPlayerError(e: PlaybackException) {
                     error = "Couldn't play this video."
+                }
+
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    if (videoSize.width > 0 && videoSize.height > 0) {
+                        onAspect(videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height)
+                    }
                 }
             })
             prepare()
@@ -398,7 +415,7 @@ private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, modifier: Modi
             }
             current == null -> SpinnerRing(size = 16.dp, color = Color.White.copy(alpha = 0.7f))
             else -> AndroidView(
-                factory = { ctx -> LayoutInflater.from(ctx).inflate(R.layout.view_video_player, null) as PlayerView },
+                factory = { ctx -> LayoutInflater.from(ctx).inflate(R.layout.view_video_player, FrameLayout(ctx), false) as PlayerView },
                 update = { view -> view.player = current },
                 onRelease = { view -> view.player = null },
                 modifier = Modifier.fillMaxSize().clip(RectangleShape),

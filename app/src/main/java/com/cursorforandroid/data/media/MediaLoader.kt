@@ -3,9 +3,9 @@ package com.cursorforandroid.data.media
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
-import android.net.Uri
 import android.os.Build
 import android.util.LruCache
+import androidx.core.net.toUri
 import coil3.ImageLoader
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
@@ -111,7 +111,7 @@ class MediaLoader(
                 url.startsWith(ASSET_PREFIX) -> context.assets.openFd(url.removePrefix(ASSET_PREFIX)).use { fd ->
                     retriever.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
                 }
-                url.startsWith("file://") -> retriever.setDataSource(Uri.parse(url).path)
+                url.startsWith("file://") -> retriever.setDataSource(url.toUri().path)
                 else -> retriever.setDataSource(url, emptyMap())
             }
             val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
