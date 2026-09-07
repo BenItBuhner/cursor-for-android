@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Gradle dependencies and plugins declared in gradle/libs.versions.toml.
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      androidx:
+        patterns:
+          - "androidx.*"
+          - "com.google.android.material*"
+      kotlin:
+        patterns:
+          - "org.jetbrains.kotlin*"
+          - "org.jetbrains.kotlinx*"
+      android-gradle-plugin:
+        patterns:
+          - "com.android.application"
+          - "com.android.tools.build*"
+      test:
+        patterns:
+          - "org.robolectric*"
+          - "io.github.takahirom.roborazzi*"
+          - "androidx.test*"
+          - "junit*"
+          - "com.google.truth*"
+
+  # Actions referenced by the workflows and the composite action.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
