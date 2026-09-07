@@ -1,0 +1,246 @@
+package com.cursorforandroid.ui.agents
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.GroupLabel
+import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.theme.CursorDimens
+import com.cursorforandroid.ui.theme.CursorTheme
+
+enum class SidebarDestination { NewChat, Settings }
+
+data class SidebarCallbacks(
+    val onNewChat: () -> Unit,
+    val onSettings: () -> Unit,
+    val onCustomize: () -> Unit,
+    /** Present when the sidebar is a drawer; drives the sidebar-toggle glyph top-right. */
+    val onToggleSidebar: (() -> Unit)?,
+    val onRefresh: () -> Unit,
+    val rowActions: AgentRowActions,
+)
+
+/**
+ * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo, flat
+ * search + sidebar-toggle icons, "New Chat", a "Chats" label with the filter icon, Pinned / date groups of
+ * 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun Sidebar(
+    state: AgentListUiState,
+    user: CursorUser,
+    isDemo: Boolean,
+    selectedAgentId: String?,
+    selectedDestination: SidebarDestination?,
+    onQueryChange: (String) -> Unit,
+    callbacks: SidebarCallbacks,
+    modifier: Modifier = Modifier,
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    var searching by rememberSaveable { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
+        Row(
+            Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 13.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(CursorIcons.Cube, "Cursor", tint = colors.iconPrimary, modifier = Modifier.size(CursorDimens.logo))
+            Spacer(Modifier.weight(1f))
+            FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar ?: {}, enabled = callbacks.onToggleSidebar != null)
+            FlatIconButton(CursorIcons.Search, "Search chats", onClick = { searching = !searching; if (!searching) onQueryChange("") })
+        }
+
+        if (searching) {
+            SearchField(
+                value = state.query,
+                onValueChange = onQueryChange,
+                onClose = { searching = false; onQueryChange("") },
+                focusRequester = focusRequester,
+            )
+            LaunchedEffect(Unit) { focusRequester.requestFocus() }
+        }
+
+        Spacer(Modifier.height(6.dp))
+        NavRow(CursorIcons.NewAgent, "New Chat", selected = selectedDestination == SidebarDestination.NewChat, onClick = callbacks.onNewChat)
+
+        // Web: "Chats" label centre sits 18px below the last nav row.
+        Spacer(Modifier.height(4.dp))
+        GroupLabel("Chats", Modifier.padding(start = 13.dp, end = 8.dp).height(28.dp)) {
+            FlatIconButton(CursorIcons.Filter, "Filter and group chats", onClick = callbacks.onCustomize)
+        }
+
+        PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
+                if (!state.hasLoaded && state.sections.isEmpty()) {
+                    item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
+                }
+                if (state.hasLoaded && state.sections.isEmpty()) {
+                    item("empty") {
+                        Text(
+                            when {
+                                state.query.isNotBlank() -> "No chats match \"${state.query}\""
+                                !state.prefs.isDefault -> "No chats match the current filters"
+                                else -> "No chats yet"
+                            },
+                            style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        )
+                    }
+                }
+                state.error?.let { err ->
+                    item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+                }
+                state.sections.forEach { section ->
+                    item("hdr-${section.key}") {
+                        // Group labels sit on the same 33px pitch as rows.
+                        GroupLabel(section.title, Modifier.padding(start = 13.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
+                    }
+                    items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                        AgentRowItem(
+                            row = row,
+                            selected = row.agent.id == selectedAgentId,
+                            prefs = state.prefs,
+                            actions = callbacks.rowActions,
+                            modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                        )
+                    }
+                }
+            }
+        }
+
+        HairlineDivider()
+        AccountFooter(user, isDemo, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
+    }
+}
+
+@Composable
+private fun NavRow(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val shape = CursorTheme.shapes.base
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = CursorDimens.selectionInset)
+            .background(if (selected) colors.fillSoft else Color.Transparent, shape)
+            .pressable(onClick, shape)
+            .height(CursorDimens.sidebarRow)
+            .padding(start = 8.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(CursorDimens.rowIcon))
+        Spacer(Modifier.width(5.dp))
+        Text(label, style = CursorTheme.typography.row, color = colors.textPrimary, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose: () -> Unit, focusRequester: FocusRequester) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.base
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = CursorDimens.selectionInset, vertical = 2.dp)
+            .background(colors.fillFaint, shape)
+            .height(CursorDimens.sidebarRow)
+            .padding(start = 8.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            textStyle = type.base.copy(color = colors.textPrimary),
+            cursorBrush = SolidColor(colors.textPrimary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {}),
+            modifier = Modifier.weight(1f).focusRequester(focusRequester),
+            decorationBox = { inner ->
+                Box { if (value.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
+            },
+        )
+        FlatIconButton(CursorIcons.Close, "Close search", onClick = onClose, size = 24.dp, iconSize = 12.dp)
+    }
+}
+
+@Composable
+private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(if (selected) colors.fillSoft else Color.Transparent)
+            .pressable(onClick, CursorTheme.shapes.base)
+            .navigationBarsPadding()
+            .padding(start = 16.dp, end = 10.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(user, CursorDimens.avatar)
+        Spacer(Modifier.width(9.dp))
+        Column(Modifier.weight(1f)) {
+            Text(user.displayName, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(if (isDemo) "Demo" else user.apiKeyName, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
+    }
+}
+
+@Composable
+fun Avatar(user: CursorUser, size: Dp = CursorDimens.avatar) {
+    val colors = CursorTheme.colors
+    Box(Modifier.size(size).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
+        Text(user.initials, style = CursorTheme.typography.tiny.copy(fontWeight = FontWeight.Medium), color = colors.textPrimary)
+    }
+}

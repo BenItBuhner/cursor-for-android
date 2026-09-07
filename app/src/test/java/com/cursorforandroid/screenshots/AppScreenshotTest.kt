@@ -1,0 +1,159 @@
+package com.cursorforandroid.screenshots
+
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.espresso.Espresso
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.domain.RunFooter
+import com.cursorforandroid.ui.CursorRoot
+import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.ui.theme.ThemeMode
+import com.github.takahirom.roborazzi.RoborazziOptions
+import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
+
+/**
+ * Drives the real app (demo backend) through Robolectric's native renderer and writes PNGs to `screenshots/`.
+ * Run with `./gradlew :app:recordRoborazziDebug --tests '*AppScreenshotTest*'`.
+ */
+@RunWith(AndroidJUnit4::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
+class AppScreenshotTest {
+
+    @get:Rule
+    val compose = createAndroidComposeRule<ComponentActivity>()
+
+    private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
+
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
+    }
+
+    @Composable
+    private fun App(graph: AppGraph) {
+        var pending by remember { mutableStateOf<String?>(null) }
+        val mode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.Dark)
+        CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode) {
+            CursorRoot(graph = graph, deepLinkAgentId = pending, onDeepLinkConsumed = { pending = null })
+        }
+    }
+
+    private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
+        compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    private fun scrollListTo(text: String, timeoutMillis: Long = 30_000) {
+        compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasScrollToNodeAction()).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(timeoutMillis) {
+            runCatching { compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText(text, substring = true)) }.isSuccess
+        }
+        waitForText(text, timeoutMillis)
+    }
+
+    private fun enterDemo(graph: AppGraph) {
+        waitForText("Try the demo")
+        compose.onNodeWithText("Try the demo").performClick()
+        compose.waitUntil(20_000) { graph.session.state.value is SessionState.SignedIn }
+        waitForText("Ask Cursor to build, fix bugs, explore", 30_000)
+        waitForText("Claude Fable 5.1 1M Max", 30_000)
+        scrollListTo("Cesium Revenue Strategy")
+    }
+
+    @Test
+    fun phoneWalkthrough() {
+        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        compose.setContent { App(graph) }
+
+        waitForText("Sign in")
+        compose.onNodeWithText("key_", substring = true).performTextInput("key_demo_1234567890abcdef")
+        capture("01_sign_in")
+
+        // Home: composer on top, recent chats below.
+        enterDemo(graph)
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Ask Cursor to build, fix bugs, explore"))
+        compose.waitForIdle()
+        capture("02_home")
+
+        // Sidebar drawer.
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("New Chat")
+        capture("03_sidebar")
+
+        // Chats filter sheet from the filter icon next to "Chats".
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        waitForText("Grouping")
+        capture("04_chats_filter")
+        compose.onNodeWithText("Status").performClick()
+        waitForText("Archived")
+        capture("05_status_filter")
+        Espresso.pressBack()
+        compose.waitForIdle()
+        Espresso.pressBack()
+        compose.waitForIdle()
+        Espresso.pressBack() // close the drawer
+        compose.waitForIdle()
+
+        // Conversation with a live-streamed run.
+        scrollListTo("Cesium Revenue Strategy")
+        compose.onAllNodesWithText("Cesium Revenue Strategy").onFirst().performClick()
+        waitForText("Follow up")
+        val cesiumId = graph.agents.state.value.agents.first { it.name == "Cesium Revenue Strategy" }.id
+        compose.waitUntil(90_000) { graph.conversations.state(cesiumId).value.items.any { it is RunFooter } }
+        compose.waitForIdle()
+        capture("06_conversation")
+
+        // Settings + light theme.
+        Espresso.pressBack()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText("Appearance")
+        compose.onNodeWithText("Cursor Light").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Light }
+        compose.waitForIdle()
+        capture("07_settings_light")
+        compose.onNodeWithContentDescription("Back").performClick()
+        scrollListTo("Ask Cursor to build, fix bugs, explore")
+        capture("08_home_light")
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
+    fun tabletTwoPane() {
+        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        compose.setContent { App(graph) }
+        enterDemo(graph)
+        capture("09_tablet_home")
+        compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
+        waitForText("Worked", 30_000)
+        capture("10_tablet_conversation")
+    }
+}

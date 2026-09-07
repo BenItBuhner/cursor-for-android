@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Isometric cube glyph in the spirit of the Cursor mark. Drawn on a 108dp adaptive-icon canvas. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- top face -->
+    <path
+        android:fillColor="#E4E4E4"
+        android:pathData="M54,26 L78,40 L54,54 L30,40 Z" />
+    <!-- left face -->
+    <path
+        android:fillColor="#9A9A9A"
+        android:pathData="M30,40 L54,54 L54,82 L30,68 Z" />
+    <!-- right face -->
+    <path
+        android:fillColor="#C4C4C4"
+        android:pathData="M78,40 L54,54 L54,82 L78,68 Z" />
+    <!-- inner edge highlight -->
+    <path
+        android:strokeColor="#141414"
+        android:strokeWidth="1.2"
+        android:fillColor="#00000000"
+        android:pathData="M30,40 L54,54 L78,40 M54,54 L54,82" />
+</vector>
