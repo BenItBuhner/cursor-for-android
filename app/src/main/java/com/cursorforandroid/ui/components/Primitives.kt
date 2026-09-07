@@ -193,7 +193,6 @@ fun Pill(
     icon: ImageVector? = null,
     tint: Color = CursorTheme.colors.textSecondary,
     fill: Color = CursorTheme.colors.fill,
-    mono: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
     val shape = CursorTheme.shapes.full
@@ -210,7 +209,7 @@ fun Pill(
         if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
         Text(
             text,
-            style = (if (mono) CursorTheme.typography.code else CursorTheme.typography.small).copy(lineHeight = 14.sp),
+            style = CursorTheme.typography.small.copy(lineHeight = 14.sp),
             color = tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

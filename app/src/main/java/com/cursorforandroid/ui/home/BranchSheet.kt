@@ -70,15 +70,15 @@ internal fun BranchSheet(
             }
             if (currentUnlisted) {
                 item("current") {
-                    SheetRow(title = current, subtitle = null, checked = true, icon = CursorIcons.GitBranch, mono = true) { pick(current) }
+                    SheetRow(title = current, subtitle = null, checked = true, icon = CursorIcons.GitBranch) { pick(current) }
                 }
             }
             items(visible, key = { "branch:${it.name}" }) { branch ->
-                SheetRow(title = branch.name, subtitle = branch.description, checked = branch.name == current, icon = CursorIcons.GitBranch, mono = true) { pick(branch.name) }
+                SheetRow(title = branch.name, subtitle = branch.description, checked = branch.name == current, icon = CursorIcons.GitBranch) { pick(branch.name) }
             }
             if (offerTyped) {
                 item("typed") {
-                    SheetRow(title = typed, subtitle = "Use this branch name", checked = false, icon = CursorIcons.Plus, mono = true) { pick(typed) }
+                    SheetRow(title = typed, subtitle = "Use this branch name", checked = false, icon = CursorIcons.Plus) { pick(typed) }
                 }
             }
             if (nothingToShow) {

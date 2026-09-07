@@ -310,11 +310,10 @@ private fun RunFooterView(item: RunFooter, modifier: Modifier) {
                             icon = CursorIcons.GitPullRequest,
                             tint = colors.gitAdded,
                             fill = colors.gitAdded.copy(alpha = 0.14f),
-                            mono = true,
                             onClick = { uriHandler.openUri(b.prUrl) },
                         )
                     } else if (b.branch != null) {
-                        Pill(text = b.branch, icon = CursorIcons.GitBranch, mono = true)
+                        Pill(text = b.branch, icon = CursorIcons.GitBranch)
                     }
                 }
             }
