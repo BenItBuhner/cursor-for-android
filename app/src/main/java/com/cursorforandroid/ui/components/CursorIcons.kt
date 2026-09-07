@@ -89,12 +89,6 @@ object CursorIcons {
         }
     }
 
-    val Inbox: ImageVector by lazy {
-        stroke("Inbox") {
-            line("M4 13h4l2 3h4l2-3h4")
-            line("M5.5 5h13a1 1 0 0 1 1 .8l1.5 7.2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5l1.5-7.2a1 1 0 0 1 1-.8z")
-        }
-    }
 
     val Cloud: ImageVector by lazy {
         stroke("Cloud") {
