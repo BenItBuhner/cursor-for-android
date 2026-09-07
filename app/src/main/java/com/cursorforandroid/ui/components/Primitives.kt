@@ -176,12 +176,11 @@ fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.co
     Box(modifier.fillMaxWidth().height(CursorDimens.hairline).background(color))
 }
 
-/** Group label such as "Pinned" / "Today" / "Chats": 12sp at 60 %, sentence case, no chevron. */
+/** Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case, no chevron. */
 @Composable
-fun GroupLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
+fun GroupLabel(text: String, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
-        trailing?.invoke()
     }
 }
 

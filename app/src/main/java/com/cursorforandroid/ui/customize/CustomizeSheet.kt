@@ -68,7 +68,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * The "Chats" filter menu (the filter icon next to the "Chats" label) as a bottom sheet: grouping, sort, the
+ * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: grouping, sort, the
  * Repo / Status / Git / Source filters and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)
