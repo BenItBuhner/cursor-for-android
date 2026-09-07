@@ -225,14 +225,6 @@ object CursorIcons {
         }
     }
 
-    val Mic: ImageVector by lazy {
-        stroke("Mic") {
-            line("M12 2.5a3.5 3.5 0 0 1 3.5 3.5v6a3.5 3.5 0 0 1-7 0V6A3.5 3.5 0 0 1 12 2.5z", 1.8f)
-            line("M5 11.5a7 7 0 0 0 14 0", 1.8f)
-            line("M12 18.5v3", 1.8f)
-        }
-    }
-
     val Close: ImageVector by lazy {
         stroke("Close") {
             line("M6 6l12 12")
