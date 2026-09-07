@@ -57,47 +57,84 @@ fun ModelListItemDto.toModel(): ModelOption = ModelOption(
 )
 
 /** Builds the list-row model from the v1 summary, optionally enriched with the legacy v0 record. */
-fun AgentSummaryDto.toAgent(v0: V0AgentDto?, previous: Agent?): Agent {
-    val v0Branch = v0?.target?.branchName
-    val v0Pr = v0?.target?.prUrl
-    val v0Repo = v0?.source?.repository
-    val branches = when {
-        previous?.branches?.isNotEmpty() == true -> previous.branches
-        v0Branch != null || v0Pr != null -> listOf(GitBranch(v0Repo ?: "", v0Branch, v0Pr))
-        else -> emptyList()
-    }
-    val runStatus = v0?.status?.let { RunStatus.parse(it) }?.takeIf { it != RunStatus.UNKNOWN } ?: previous?.runStatus
+fun AgentSummaryDto.toAgent(v0: V0AgentDto?, previous: Agent?): Agent =
+    toAgent(previous).let { if (v0 != null) it.withLegacy(v0) else it }
+
+/**
+ * Builds the list-row model from the v1 summary alone, carrying over what only richer sources knew (repo, branch,
+ * summary, model, duration) from the row it replaces — which may have been restored from disk and be hours old.
+ * The v1 lifecycle is authoritative for whether anything is running: a remembered run status only survives when it
+ * still describes the same run and does not contradict the lifecycle, so a row cached as RUNNING cannot keep
+ * spinning after the agent went idle, and a new run started elsewhere shows as running through the lifecycle.
+ */
+fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
+    val lifecycle = AgentLifecycle.parse(status)
+    val runId = latestRunId ?: previous?.latestRunId
+    val sameRun = previous != null && (latestRunId == null || previous.latestRunId == null || latestRunId == previous.latestRunId)
+    val carried = previous?.runStatus?.takeIf { sameRun && !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) }
     return Agent(
         id = id,
-        name = name?.ifBlank { null } ?: v0?.name?.ifBlank { null } ?: "Untitled agent",
-        lifecycle = AgentLifecycle.parse(status),
-        runStatus = runStatus,
+        name = name?.ifBlank { null } ?: previous?.name?.takeIf { it != UNTITLED } ?: UNTITLED,
+        lifecycle = lifecycle,
+        runStatus = carried,
         envType = EnvType.parse(env.type),
         envName = env.name,
         url = url.ifBlank { "https://cursor.com/agents/$id" },
-        createdAtMillis = parseIsoMillis(createdAt, parseIsoMillis(v0?.createdAt)),
-        updatedAtMillis = parseIsoMillis(updatedAt, parseIsoMillis(createdAt)),
-        latestRunId = latestRunId ?: previous?.latestRunId,
-        repoUrl = v0Repo ?: previous?.repoUrl,
-        startingRef = v0?.source?.ref ?: previous?.startingRef,
-        branches = branches,
-        summary = v0?.summary ?: previous?.summary,
-        autoCreatePr = v0?.target?.autoCreatePr ?: previous?.autoCreatePr,
+        createdAtMillis = parseIsoMillis(createdAt, previous?.createdAtMillis ?: 0L),
+        updatedAtMillis = maxOf(parseIsoMillis(updatedAt, parseIsoMillis(createdAt)), previous?.updatedAtMillis?.takeIf { sameRun } ?: 0L),
+        latestRunId = runId,
+        repoUrl = previous?.repoUrl,
+        startingRef = previous?.startingRef,
+        branches = previous?.branches ?: emptyList(),
+        summary = previous?.summary,
+        autoCreatePr = previous?.autoCreatePr,
         workOnCurrentBranch = previous?.workOnCurrentBranch,
         modelDisplayName = previous?.modelDisplayName,
         durationMs = previous?.durationMs,
     )
 }
 
+/**
+ * Folds the legacy `GET /v0/agents` record (repo, branch, PR, summary, per-run status) into a v1 row. The v0 list
+ * is fetched independently and may be older than the v1 lifecycle, so an active v0 status is ignored for an agent
+ * v1 already reports as idle or archived.
+ */
+fun Agent.withLegacy(v0: V0AgentDto): Agent {
+    val v0Branch = v0.target?.branchName
+    val v0Pr = v0.target?.prUrl
+    val v0Repo = v0.source?.repository
+    val v0Status = v0.status?.let { RunStatus.parse(it) }
+        ?.takeIf { it != RunStatus.UNKNOWN }
+        ?.takeIf { !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) }
+    return copy(
+        name = if (name == UNTITLED) v0.name?.ifBlank { null } ?: name else name,
+        runStatus = v0Status ?: runStatus,
+        createdAtMillis = if (createdAtMillis == 0L) parseIsoMillis(v0.createdAt) else createdAtMillis,
+        repoUrl = v0Repo ?: repoUrl,
+        startingRef = v0.source?.ref ?: startingRef,
+        branches = when {
+            branches.isNotEmpty() -> branches
+            v0Branch != null || v0Pr != null -> listOf(GitBranch(v0Repo ?: "", v0Branch, v0Pr))
+            else -> emptyList()
+        },
+        summary = v0.summary ?: summary,
+        autoCreatePr = v0.target?.autoCreatePr ?: autoCreatePr,
+    )
+}
+
+private const val UNTITLED = "Untitled agent"
+
 /** Merges the full `GET /v1/agents/{id}` record and its latest run into an existing list row. */
 fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
     val repo = repos.firstOrNull()
     val runBranches = latestRun?.git.toBranches()
+    val lifecycle = AgentLifecycle.parse(status)
     return Agent(
         id = id,
-        name = name?.ifBlank { null } ?: previous?.name ?: "Untitled agent",
-        lifecycle = AgentLifecycle.parse(status),
-        runStatus = latestRun?.let { RunStatus.parse(it.status) } ?: previous?.runStatus,
+        name = name?.ifBlank { null } ?: previous?.name ?: UNTITLED,
+        lifecycle = lifecycle,
+        runStatus = latestRun?.let { RunStatus.parse(it.status) }
+            ?: previous?.runStatus?.takeIf { !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) },
         envType = EnvType.parse(env.type),
         envName = env.name,
         url = url.ifBlank { previous?.url ?: "https://cursor.com/agents/$id" },
