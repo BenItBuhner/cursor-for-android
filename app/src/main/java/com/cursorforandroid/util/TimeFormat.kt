@@ -7,9 +7,10 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 object TimeFormat {
-    private val timeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
-    private val dateFormatter = DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())
-    private val dateYearFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
+    // Resolved on every call so a runtime locale change is honoured.
+    private val timeFormatter get() = DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
+    private val dateFormatter get() = DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())
+    private val dateYearFormatter get() = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
 
     /** "Yesterday at 12:14 AM" — the header above a user message in the conversation view. */
     fun conversationStamp(epochMillis: Long, nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): String {

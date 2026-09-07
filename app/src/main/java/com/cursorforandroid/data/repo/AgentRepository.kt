@@ -134,7 +134,8 @@ class AgentRepository(
         )
         upsert(agent)
         prefs.markLaunchedHere(agent.id)
-        prefs.markRead(agent.id, Long.MAX_VALUE / 2)
+        // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
+        prefs.markRead(agent.id, System.currentTimeMillis())
         agent
     }
 

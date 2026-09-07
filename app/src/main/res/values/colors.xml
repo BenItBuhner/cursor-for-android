@@ -2,6 +2,5 @@
 <resources>
     <!-- Cursor canvas (matches web + iOS conversation canvas). -->
     <color name="cursor_canvas">#141414</color>
-    <color name="cursor_canvas_light">#FCFCFC</color>
     <color name="ic_launcher_background">#141414</color>
 </resources>
