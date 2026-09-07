@@ -290,6 +290,35 @@ class LiveRunMonitorTest {
     }
 
     @Test
+    fun `a replay through an entry once followed live reads history too and leaves the agent row alone`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        // A screen follows the run for a moment and leaves; the hub lets go of the stream after its grace period.
+        val follower = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { streamer.connections.size == 1 }
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Thinking("Reading the code first."))
+        awaitUntil { hub.current("bc-1", "run-1")?.eventCount == 2 }
+        follower.cancel()
+        delay(200)
+
+        // The run finishes unobserved; its retained log is complete. The row is whatever the last list fetch said.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Done.", durationMs = 42_000)
+        val rowBefore = agents.agent("bc-1")!!
+        streamer.emit("run-1", RunStreamEvent.Assistant("Done."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 42_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val snapshot = hub.replay("bc-1", "run-1")
+        assertThat(snapshot.hasTrace).isTrue()
+        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(streamer.connections).containsExactly("run-1", "run-1").inOrder()
+        // Reading history is not news about the agent: no poll, no patch, no "updated just now".
+        assertThat(api.getRunCalls).isEqualTo(0)
+        assertThat(agents.agent("bc-1")).isEqualTo(rowBefore)
+    }
+
+    @Test
     fun `replay reports an expired log instead of polling around it`() = runBlocking {
         api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Add a README", "Added it."))
         agents.refresh()
