@@ -10,10 +10,12 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.MessageAttachment
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
@@ -370,5 +372,124 @@ class TimelineBuilderTest {
         val items = live.snapshot()
         assertThat(items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Only the summary.")
         assertThat(items.last()).isInstanceOf(RunFooter::class.java)
+    }
+
+    @Test
+    fun `a stream error is not part of the run's story and the story continues after it`() {
+        var clock = 1_000L
+        val live = TimelineBuilder.LiveRun("run-1") { clock }
+        live.apply(RunStreamEvent.Thinking("Reading the code"))
+        live.apply(RunStreamEvent.Error("upstream_error", "Run stream failed", resumeFrom = "1-0"))
+        // Nothing was added, and the thought is still open: the run is still thinking while the connection returns.
+        assertThat(live.snapshot().map { it::class.simpleName }).containsExactly("ActivityGroup")
+        assertThat(live.group().isThinking).isTrue()
+        assertThat(live.applied).isEqualTo(1)
+
+        clock += 5_000
+        live.apply(RunStreamEvent.Thinking(" first."))
+        live.apply(RunStreamEvent.Assistant("Done."))
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 5_000, null))
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        // One thought, continued across the drop rather than split in two.
+        assertThat((items[0] as ActivityGroup).thoughts.single().text).isEqualTo("Reading the code first.")
+        assertThat(items.none { it is NoticeCard }).isTrue()
+    }
+
+    @Test
+    fun `a terminal result settles tool calls and subagents the stream never closed`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(tool("c2", "run_terminal_cmd", "running", "command" to "./gradlew test"))
+        live.apply(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey"))
+        // The `completed` events were lost with the connection; the run record says the run finished.
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "All green.", 30_000, null))
+        val tools = live.group()
+        assertThat(tools.isBusy).isFalse()
+        assertThat(tools.calls.map { it.status }).containsExactly("completed", "completed").inOrder()
+        assertThat(tools.verb).isEqualTo("Explored")
+        assertThat(live.snapshot().filterIsInstance<SubagentsCard>().single().subagents.single().status).isEqualTo("Done")
+
+        // A run that did not finish interrupted whatever was still running.
+        val cut = TimelineBuilder.LiveRun("run-2", timed = false)
+        cut.apply(tool("c1", "run_terminal_cmd", "running", "command" to "sleep 100"))
+        cut.apply(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey"))
+        cut.apply(RunStreamEvent.Result("run-2", RunStatus.CANCELLED, null, 3_000, null))
+        val interrupted = cut.group().calls.single()
+        assertThat(interrupted.isRunning).isFalse()
+        assertThat(interrupted.status).isEqualTo(ToolCall.STATUS_INTERRUPTED)
+        assertThat(cut.snapshot().filterIsInstance<SubagentsCard>().single().subagents.single().status).isEqualTo("Stopped")
+        assertThat(cut.snapshot().filterIsInstance<NoticeCard>().single().title).isEqualTo("Run cancelled")
+    }
+
+    @Test
+    fun `a run that fails without a final text is explained by the stream's last error`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Assistant("Starting on it."))
+        live.apply(RunStreamEvent.Error("upstream_error", "Worker disconnected", resumeFrom = "3-0"))
+        // The record has no reason of its own (`result` is null for failed runs).
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.ERROR, null, 9_000, null))
+        val notice = live.snapshot().filterIsInstance<NoticeCard>().single()
+        assertThat(notice.title).isEqualTo("Run failed")
+        assertThat(notice.subtitle).isEqualTo("Worker disconnected")
+        assertThat((live.snapshot().last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
+
+        // An expired log says nothing about why the run failed.
+        val expired = TimelineBuilder.LiveRun("run-2", timed = false)
+        expired.apply(RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        expired.apply(RunStreamEvent.Result("run-2", RunStatus.ERROR, null, null, null))
+        assertThat(expired.snapshot().filterIsInstance<NoticeCard>().single().subtitle).isNull()
+    }
+
+    @Test
+    fun `the final reply is appended when the stream only carried remarks between tool calls`() {
+        // The shape of the API's own example: a remark, a tool call, then the reply arrives with the result alone.
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Assistant("I'll update the README now."))
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Added README.md with installation instructions.", 12_357, null))
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown })
+            .containsExactly("I'll update the README now.", "Added README.md with installation instructions.").inOrder()
+    }
+
+    @Test
+    fun `a final reply the stream already delivered is not repeated by the result`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Assistant("Looking first."))
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(RunStreamEvent.Assistant("Added the\nREADME."))
+        // Same words, different whitespace: still the same reply.
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Added the README.\n", 1_000, null))
+        val items = live.snapshot()
+        assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Looking first.", "Added the\nREADME.").inOrder()
+        assertThat(items.last()).isInstanceOf(RunFooter::class.java)
+    }
+
+    @Test
+    fun `a reply the stream cut off is completed in place by the result`() {
+        // The connection dropped mid-reply and the outcome was read from the run record.
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(tool("c1", "edit_file", "completed", "path" to "README.md"))
+        live.apply(RunStreamEvent.Assistant("Added the RE"))
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Added the README and a troubleshooting section.", 1_000, null))
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        val reply = items.filterIsInstance<AssistantMessage>().single()
+        assertThat(reply.markdown).isEqualTo("Added the README and a troubleshooting section.")
+        assertThat(reply.isStreaming).isFalse()
+    }
+
+    @Test
+    fun `a failed run still gets its final reply, ahead of the notice`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Assistant("Trying the build."))
+        live.apply(tool("c1", "run_terminal_cmd", "completed", "command" to "./gradlew build"))
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.ERROR, "The build failed on a missing dependency.", 9_000, null))
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
+        assertThat((items[2] as AssistantMessage).markdown).isEqualTo("The build failed on a missing dependency.")
+        assertThat((items.last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
     }
 }

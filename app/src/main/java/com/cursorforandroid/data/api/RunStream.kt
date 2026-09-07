@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.api
 
+import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseErrorDto
 import com.cursorforandroid.data.api.dto.SseResultDto
@@ -36,10 +37,42 @@ sealed interface RunStreamEvent {
         val durationMs: Long?,
         val git: RunGitDto?,
     ) : RunStreamEvent
-    data class Error(val code: String, val message: String) : RunStreamEvent
+    /**
+     * The stream stopped before the run did. Always the last event of a pass. [resumeFrom] is the id of the last
+     * event delivered, to hand back as `lastEventId` when reconnecting; null means a reconnect has to start from
+     * the run's first event again (nothing identified arrived, or the server rejected the id we had).
+     */
+    data class Error(val code: String, val message: String, val resumeFrom: String? = null) : RunStreamEvent {
+        /** The log is past its retention window: reconnecting can never bring it back. */
+        val isExpired: Boolean get() = code == STREAM_EXPIRED
+        /** Nothing about this stream will change on a retry; only the run record can say how the run ended. */
+        val isFatal: Boolean get() = isExpired || code in FATAL_CODES || code.startsWith("http_4")
+
+        companion object {
+            const val STREAM_EXPIRED = "stream_expired"
+            const val INVALID_LAST_EVENT_ID = "invalid_last_event_id"
+            /**
+             * Codes after which asking the same stream again is pointless: the log is gone, or the request is one we
+             * may not (or cannot) make. Everything else — the server's own `stream_unavailable` / `upstream_error` /
+             * `internal_error`, a dropped socket, an exhausted retry budget — describes the connection, not the run,
+             * and is worth another attempt once the run record confirms the run is still going.
+             */
+            val FATAL_CODES: Set<String> = setOf(
+                STREAM_EXPIRED,
+                "unauthorized", "api_key_not_found", "forbidden", "role_forbidden", "plan_required", "feature_unavailable",
+                "service_account_required", "validation_error", "not_found", "run_not_found", "agent_not_found",
+            )
+        }
+    }
     data object Done : RunStreamEvent
 }
 
+/**
+ * Follows one run over its SSE stream. A pass ends after the run's `result` / `done`, or with exactly one
+ * [RunStreamEvent.Error] saying why it stopped early. Implementations may ride out short transport failures
+ * themselves (resuming with `Last-Event-ID`); anything the server says in-band is left to the caller, which is the
+ * only party that can check the run record to tell a dead stream from a finished run.
+ */
 interface RunStreamer {
     fun stream(agentId: String, runId: String, lastEventId: String? = null): Flow<RunStreamEvent>
 }
@@ -95,13 +128,16 @@ object SseParser {
 }
 
 /**
- * Streams a run over SSE, reconnecting with `Last-Event-ID` after transient failures until the run reports a
- * terminal `result`/`done`, the stream expires (410) or the collector cancels.
+ * Streams a run over SSE. Transport trouble — a dropped socket, a `429` / `5xx`, a connection the server closed
+ * before the run ended — is retried a few times with `Last-Event-ID`, so a blip costs nothing. Anything the server
+ * says in-band (an `error` frame, a `410`, a rejected `Last-Event-ID`) ends the pass with one [RunStreamEvent.Error]
+ * carrying the position to resume from; the caller decides whether the run is worth reconnecting to.
  */
 class SseRunStreamer(
     private val client: OkHttpClient,
     private val apiKeyProvider: () -> String?,
     private val urlFor: (agentId: String, runId: String) -> String = CursorEndpoints::streamUrl,
+    private val maxAttempts: Int = MAX_ATTEMPTS,
 ) : RunStreamer {
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
@@ -110,18 +146,24 @@ class SseRunStreamer(
         while (currentCoroutineContext().isActive) {
             val outcome = connectOnce(agentId, runId, lastId) { frame ->
                 frame.id?.let { lastId = it }
-                SseParser.toEvent(frame)?.let { emit(it) }
+                SseParser.toEvent(frame)?.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
             }
             when (outcome) {
                 is Outcome.Terminal -> return@flow
-                is Outcome.Fatal -> {
-                    emit(RunStreamEvent.Error(outcome.code, outcome.message))
+                is Outcome.Stopped -> {
+                    emit(RunStreamEvent.Error(outcome.code, outcome.message, resumeFrom = lastId))
+                    return@flow
+                }
+                is Outcome.Restart -> {
+                    // The id we held is not one of this run's (or the server forgot it): the next connection replays
+                    // the run from its first event, and the caller must rebuild from nothing.
+                    emit(RunStreamEvent.Error(RunStreamEvent.Error.INVALID_LAST_EVENT_ID, outcome.message, resumeFrom = null))
                     return@flow
                 }
                 is Outcome.Retry -> {
                     attempt++
-                    if (attempt > MAX_ATTEMPTS) {
-                        emit(RunStreamEvent.Error("stream_unavailable", outcome.reason))
+                    if (attempt > maxAttempts) {
+                        emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
                     delay(backoffMillis(attempt))
@@ -131,9 +173,14 @@ class SseRunStreamer(
     }.flowOn(Dispatchers.IO)
 
     private sealed interface Outcome {
+        /** The run's `result` (and `done`) came through. */
         data object Terminal : Outcome
+        /** Transport trouble; worth another connection right away. */
         data class Retry(val reason: String) : Outcome
-        data class Fatal(val code: String, val message: String) : Outcome
+        /** The server ended the stream on purpose: an in-band `error` frame, a `410`, a `4xx`. */
+        data class Stopped(val code: String, val message: String) : Outcome
+        /** `400 invalid_last_event_id`: only a connection without a `Last-Event-ID` can help. */
+        data class Restart(val message: String) : Outcome
     }
 
     private suspend fun FlowCollector<RunStreamEvent>.connectOnce(
@@ -163,31 +210,42 @@ class SseRunStreamer(
             response.use { resp ->
                 if (!resp.isSuccessful) {
                     val body = runCatching { resp.body?.string() }.getOrNull().orEmpty()
+                    val error = body.takeIf { it.isNotBlank() }?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
                     return when (resp.code) {
-                        410 -> Outcome.Fatal("stream_expired", "This run's live stream has expired.")
-                        401, 403 -> Outcome.Fatal("unauthorized", "Not authorized to stream this run.")
-                        404 -> Outcome.Fatal("run_not_found", "Run not found.")
-                        429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}")
-                        else -> Outcome.Fatal("http_${resp.code}", body.ifBlank { "Stream request failed (${resp.code})" })
+                        410 -> Outcome.Stopped(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired.")
+                        401, 403 -> Outcome.Stopped("unauthorized", "Not authorized to stream this run.")
+                        404 -> Outcome.Stopped("run_not_found", "Run not found.")
+                        400 -> if (lastId != null && error?.code == RunStreamEvent.Error.INVALID_LAST_EVENT_ID) {
+                            Outcome.Restart(error.message.ifBlank { "The server rejected the resume position." })
+                        } else {
+                            Outcome.Stopped(error?.code ?: "http_400", error?.message?.ifBlank { null } ?: "Stream request failed (400)")
+                        }
+                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}")
+                        else -> Outcome.Stopped(error?.code ?: "http_${resp.code}", error?.message?.ifBlank { null } ?: "Stream request failed (${resp.code})")
                     }
                 }
                 val source = resp.body?.source() ?: return Outcome.Retry("empty body")
-                var terminal = false
+                var sawResult = false
                 try {
                     while (true) {
                         val frame = SseParser.readFrame(source) ?: break
                         onFrame(frame)
-                        if (frame.event == "result") terminal = true
-                        if (frame.event == "done") {
-                            terminal = true
-                            break
+                        when (frame.event) {
+                            // The server's word on why it is stopping. Not part of the run: the caller checks the
+                            // run record and, unless the log is gone for good, comes back with `Last-Event-ID`.
+                            "error" -> {
+                                val error = SseParser.toEvent(frame) as? RunStreamEvent.Error
+                                return Outcome.Stopped(error?.code ?: "stream_error", error?.message?.ifBlank { null } ?: "The run's stream reported an error.")
+                            }
+                            "result" -> sawResult = true
+                            "done" -> return if (sawResult) Outcome.Terminal else Outcome.Stopped("stream_closed", "The stream ended before the run did.")
                         }
                     }
                 } catch (e: IOException) {
                     if (!currentCoroutineContext().isActive) return Outcome.Terminal
-                    if (!terminal) return Outcome.Retry(e.message ?: "stream interrupted")
+                    if (!sawResult) return Outcome.Retry(e.message ?: "stream interrupted")
                 }
-                return if (terminal) Outcome.Terminal else Outcome.Retry("stream closed before result")
+                return if (sawResult) Outcome.Terminal else Outcome.Retry("stream closed before result")
             }
         } finally {
             handle?.dispose()
@@ -197,6 +255,10 @@ class SseRunStreamer(
     private fun backoffMillis(attempt: Int): Long = (1000L shl (attempt - 1).coerceAtMost(4)).coerceAtMost(15_000L)
 
     private companion object {
-        const val MAX_ATTEMPTS = 8
+        /**
+         * Short: a blip is ridden out here (1 + 2 + 4 + 8 s), anything longer is the caller's decision, which it
+         * takes with the run record in hand rather than blindly reconnecting to a run that may have finished.
+         */
+        const val MAX_ATTEMPTS = 4
     }
 }

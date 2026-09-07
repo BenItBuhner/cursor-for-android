@@ -99,7 +99,7 @@ object TimelineBuilder {
      * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
      * above come straight from the transcript and run records; a repeated server id gets a positional suffix.
      */
-    private fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
+    fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
         val seen = HashSet<String>(size)
         return map { item ->
             var id = item.id
@@ -185,6 +185,10 @@ object TimelineBuilder {
      * Accumulates the SSE events of one run into timeline items. The agent's reasoning and tool calls between two
      * messages collect, in order, into one [ActivityGroup]. [timed] measures how long each thought streamed for
      * ("thought for 3s"); turn it off when the events are a replay rather than happening now.
+     *
+     * A stream [RunStreamEvent.Error] is about the connection, not the run — the run keeps going on the server while
+     * the client reconnects — so it adds nothing to the items. Its message is kept: when the run then ends in
+     * `ERROR` without a final text, it is the only account of what went wrong (the run record carries none).
      */
     class LiveRun(
         private val runId: String,
@@ -195,9 +199,13 @@ object TimelineBuilder {
         private var seq = 0
         private var thinkingStartedAt: Long? = null
         private var assistantText = StringBuilder()
+        private var streamError: RunStreamEvent.Error? = null
         var status: RunStatus = RunStatus.RUNNING
             private set
         var finished: Boolean = false
+            private set
+        /** Content events applied so far (text, thinking, tool calls): how far along the run's story this is. */
+        var applied: Int = 0
             private set
 
         fun snapshot(): List<TimelineItem> = items.toList()
@@ -207,14 +215,11 @@ object TimelineBuilder {
         fun apply(event: RunStreamEvent) {
             when (event) {
                 is RunStreamEvent.Status -> status = event.status
-                is RunStreamEvent.Assistant -> appendAssistant(event.text)
-                is RunStreamEvent.Thinking -> appendThinking(event.text)
-                is RunStreamEvent.ToolCall -> applyTool(event.call)
+                is RunStreamEvent.Assistant -> { applied++; appendAssistant(event.text) }
+                is RunStreamEvent.Thinking -> { applied++; appendThinking(event.text) }
+                is RunStreamEvent.ToolCall -> { applied++; applyTool(event.call) }
                 is RunStreamEvent.Result -> finish(event)
-                is RunStreamEvent.Error -> {
-                    closeStreaming()
-                    items += NoticeCard(nextId("err"), "Stream error", event.message.ifBlank { event.code }, NoticeTone.Error)
-                }
+                is RunStreamEvent.Error -> if (!event.isExpired) streamError = event
                 RunStreamEvent.Heartbeat, RunStreamEvent.Done -> Unit
             }
         }
@@ -305,27 +310,68 @@ object TimelineBuilder {
             }
         }
 
-        private fun closeStreaming() {
+        /**
+         * The run is over, so nothing in it is still happening: text and thinking stop streaming, and a tool call or
+         * subagent the stream never reported the end of (its `completed` event was lost with the connection, or the
+         * run was cut short) stops spinning. A run that finished did finish its tools; any other ending interrupted them.
+         */
+        private fun closeStreaming(status: RunStatus) {
             closeThinking()
+            val toolStatus = if (status == RunStatus.FINISHED) ToolCall.STATUS_COMPLETED else ToolCall.STATUS_INTERRUPTED
+            val subagentStatus = if (status == RunStatus.FINISHED) "Done" else "Stopped"
             items.replaceAll {
                 when (it) {
                     is AssistantMessage -> it.copy(isStreaming = false)
-                    is ActivityGroup -> it.copy(steps = it.steps.map { step -> if (step is ThinkingBlock) step.copy(isStreaming = false) else step })
+                    is ActivityGroup -> it.copy(
+                        steps = it.steps.map { step ->
+                            when {
+                                step is ThinkingBlock && step.isStreaming -> step.copy(isStreaming = false)
+                                step is ToolCall && step.isRunning -> step.copy(status = toolStatus)
+                                else -> step
+                            }
+                        },
+                    )
+                    is SubagentsCard -> if (it.subagents.any { s -> s.status == "Running" }) it.copy(subagents = it.subagents.map { s -> if (s.status == "Running") s.copy(status = subagentStatus) else s }) else it
                     else -> it
                 }
             }
         }
 
         private fun finish(event: RunStreamEvent.Result) {
-            closeStreaming()
+            closeStreaming(event.status)
             status = event.status
             finished = true
             val finalText = event.text?.trim().orEmpty()
-            val hasAssistant = items.any { it is AssistantMessage && it.markdown.isNotBlank() }
-            if (finalText.isNotEmpty() && !hasAssistant) items += AssistantMessage(nextId("asst"), finalText)
-            if (event.status == RunStatus.ERROR) items += NoticeCard(nextId("notice"), "Run failed", finalText.ifBlank { null }, NoticeTone.Error)
+            placeFinalReply(finalText)
+            if (event.status == RunStatus.ERROR) {
+                // The record has no reason of its own for a failed run; the stream's last error is the only account.
+                val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
+                items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
+            }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
         }
+
+        /**
+         * The `result` carries the final reply verbatim. When the stream already delivered it as assistant deltas
+         * nothing is added; when it did not — the stream broke and the outcome was read from the run record, or
+         * the reply only ever came with the result, after intermediate remarks between tool calls — it is appended,
+         * and a reply the stream cut off half-way is completed in place.
+         */
+        private fun placeFinalReply(finalText: String) {
+            if (finalText.isEmpty()) return
+            val wanted = normalize(finalText)
+            if (items.any { it is AssistantMessage && normalize(it.markdown) == wanted }) return
+            val last = items.lastOrNull()
+            if (last is AssistantMessage && wanted.startsWith(normalize(last.markdown))) {
+                items[items.lastIndex] = last.copy(markdown = finalText)
+                return
+            }
+            items += AssistantMessage(nextId("asst"), finalText)
+        }
+
+        private fun normalize(text: String) = text.trim().replace(WHITESPACE, " ")
     }
+
+    private val WHITESPACE = Regex("\\s+")
 }

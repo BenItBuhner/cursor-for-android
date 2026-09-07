@@ -340,9 +340,7 @@ class AgentRepository(
                 val body = CreateAgentRequestDto(
                     prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
                     agentId = request.agentId,
-                    model = request.modelId?.let { id ->
-                        ModelRefDto(id = id, params = request.modelParams.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
-                    },
+                    model = modelRef(request.modelId, request.modelParams),
                     name = request.name,
                     env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
                     repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
@@ -360,6 +358,8 @@ class AgentRepository(
         val agent = dto.mergeInto(null, run).copy(
             runStatus = run?.let { RunStatus.parse(it.status) } ?: RunStatus.CREATING,
             modelDisplayName = modelDisplayName,
+            modelId = request.modelId,
+            modelParams = if (request.modelId != null) request.modelParams else emptyList(),
         )
         upsert(agent)
         // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
@@ -373,7 +373,10 @@ class AgentRepository(
 
     /**
      * Enabled [mcpServers] ride along inline and replace the agent's create-time inline servers for this run; with
-     * none enabled the field is omitted and the agent keeps whatever it was created with.
+     * none enabled the field is omitted and the agent keeps whatever it was created with. A [modelId] switches the
+     * agent to that model — for this run and, as the server keeps the override, every run after it — so the row
+     * records it (under [modelDisplayName]) once the server has accepted the run; null keeps the current model.
+     * [planMode] asks for plan or agent mode explicitly; null keeps the conversation's mode.
      */
     suspend fun followUp(
         agentId: String,
@@ -381,6 +384,9 @@ class AgentRepository(
         images: List<PromptImage> = emptyList(),
         planMode: Boolean? = null,
         mcpServers: List<McpServer> = emptyList(),
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
     ): Result<RunDto> = runCatching {
         val api = session.current.api
         val response = withContext(Dispatchers.IO) {
@@ -389,12 +395,26 @@ class AgentRepository(
                 CreateRunRequestDto(
                     prompt = PromptEncoding.toPromptDto(text, images),
                     mcpServers = mcpServers.toInlineServers(),
+                    model = modelRef(modelId, modelParams),
                     mode = planMode?.let { if (it) "plan" else "agent" },
                 ),
             )
         }
-        agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())) }
+        agent(agentId)?.let { current ->
+            // The old label would describe the old model, so without a new one the id stands in.
+            val switched = if (modelId != null) {
+                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
+            } else {
+                current
+            }
+            upsert(switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now()))
+        }
         response.run
+    }
+
+    /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
+    private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
+        ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
     }
 
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {

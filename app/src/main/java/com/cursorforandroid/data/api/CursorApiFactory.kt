@@ -113,11 +113,18 @@ object CursorApiFactory {
         }
         .build()
 
-    /** SSE connections need no read or call timeout — heartbeats keep the socket alive indefinitely. */
+    /**
+     * SSE connections have no call timeout — a run streams for as long as it takes. The read timeout is a heartbeat
+     * watchdog: the server sends `heartbeat` frames on a quiet stream, so a socket that goes this long without a
+     * byte is one the network dropped without telling us (a Wi-Fi to cellular handoff, Doze). Reading it fails with
+     * an [java.io.IOException], which the streamer answers by resuming with `Last-Event-ID`; nothing is lost.
+     */
     fun sseClient(base: OkHttpClient): OkHttpClient = base.newBuilder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(SSE_SILENCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+
+    private const val SSE_SILENCE_TIMEOUT_MS = 120_000L
 
     /**
      * For media bytes: artifact downloads are presigned S3 URLs, which reject a request that also carries an

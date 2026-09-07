@@ -56,7 +56,15 @@ data class Agent(
     val summary: String? = null,
     val autoCreatePr: Boolean? = null,
     val workOnCurrentBranch: Boolean? = null,
+    /**
+     * The model the chat runs on, as far as this device knows. The API never reports an agent's model, so these are
+     * what was last sent from here — at launch, or with a follow-up that switched it — and stay null for chats
+     * started elsewhere. [modelDisplayName] is the label it was shown under; [modelId] and [modelParams] are the
+     * request's `model.id` and `model.params`, so the picker can find the same entry again.
+     */
     val modelDisplayName: String? = null,
+    val modelId: String? = null,
+    val modelParams: List<ModelParam> = emptyList(),
     val durationMs: Long? = null,
 ) {
     /** `owner/name` derived from the GitHub URL, or null for no-repo agents. */
@@ -67,7 +75,12 @@ data class Agent(
     val hasBranch: Boolean get() = branchName != null
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
-    val isRunning: Boolean get() = !isArchived && (runStatus?.isActive == true || (runStatus == null && lifecycle == AgentLifecycle.ACTIVE))
+    /**
+     * A known run status decides; without one — or with one this build does not recognise — the lifecycle does, as
+     * `ACTIVE` means a turn is running, about to start, or waiting on background work.
+     */
+    val isRunning: Boolean
+        get() = !isArchived && (runStatus?.isActive == true || ((runStatus == null || runStatus == RunStatus.UNKNOWN) && lifecycle == AgentLifecycle.ACTIVE))
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
 
     companion object {
@@ -241,6 +254,29 @@ data class ModelAxisValue(val value: String, val displayName: String)
 
 @Serializable
 data class ModelParam(val id: String, val value: String)
+
+/** One entry of the model picker: a model and, when it has variants, the variant — what a request's `model` is built from. */
+data class ModelChoice(val model: ModelOption, val variant: ModelVariant?) {
+    val label: String get() = model.labelFor(variant)
+    val params: List<ModelParam> get() = variant?.params.orEmpty()
+}
+
+/**
+ * The picker entry a request with `model.id` [id] and `model.params` [params] was built from, or null when this
+ * catalog has no such entry (the model is gone, or its variants changed): a variant is matched on its exact
+ * parameters, and a model without variants only when no parameters were sent.
+ */
+fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoice? {
+    val model = firstOrNull { it.id == id } ?: return null
+    if (model.variants.isEmpty()) return ModelChoice(model, null).takeIf { params.isEmpty() }
+    return model.variantWithParams(params.associate { it.id to it.value })?.let { ModelChoice(model, it) }
+}
+
+/** The picker entry shown as [label], for chats recorded before the id and parameters were kept alongside it. */
+fun List<ModelOption>.choiceLabelled(label: String): ModelChoice? = firstNotNullOfOrNull { model ->
+    if (model.variants.isEmpty()) ModelChoice(model, null).takeIf { model.displayName == label }
+    else model.variants.firstOrNull { model.labelFor(it) == label }?.let { ModelChoice(model, it) }
+}
 
 @Serializable
 data class Repository(val url: String) {
