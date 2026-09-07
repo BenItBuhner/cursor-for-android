@@ -85,7 +85,10 @@ object CursorApiFactory {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // Bounds the whole call, retries included, so nothing can hang a screen for longer than this.
+        .callTimeout(90, TimeUnit.SECONDS)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
+        .addInterceptor(RetryInterceptor())
         .apply {
             if (BuildConfig.DEBUG) {
                 addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
@@ -93,9 +96,10 @@ object CursorApiFactory {
         }
         .build()
 
-    /** SSE connections need no read timeout — heartbeats keep the socket alive indefinitely. */
+    /** SSE connections need no read or call timeout — heartbeats keep the socket alive indefinitely. */
     fun sseClient(base: OkHttpClient): OkHttpClient = base.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
