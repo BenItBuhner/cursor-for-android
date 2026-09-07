@@ -67,7 +67,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             sending.value = true
             draft.value = ""
             attachments.value = emptyList()
-            graph.conversations.sendFollowUp(agentId, text.ifEmpty { "See the attached image." }, images.map { it.image }).onFailure {
+            graph.conversations.sendFollowUp(
+                agentId,
+                text.ifEmpty { "See the attached image." },
+                images.map { it.image },
+                mcpServers = graph.mcpServers.enabled(),
+            ).onFailure {
                 draft.value = text
                 attachments.value = images
                 toast.value = it.userMessage()

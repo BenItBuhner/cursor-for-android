@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
@@ -24,6 +25,8 @@ class AppGraph(context: Context) {
     val prefs = PreferencesStore(context)
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     val attachments = AttachmentStore(context)
+    /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
+    val mcpServers = McpServerStore(keyStore)
 
     private val okHttp = CursorApiFactory.okHttp { keyStore.apiKey() }
     private val realBackend = CursorBackend(

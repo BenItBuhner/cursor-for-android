@@ -134,6 +134,17 @@ class AppScreenshotTest {
         compose.waitForIdle()
         capture("02_home")
 
+        // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        waitForText("Orchestrate multiple subagents in parallel")
+        capture("12_composer_menu")
+        compose.onNodeWithText("Skills").performClick()
+        waitForText("/autopilot")
+        capture("13_composer_skills")
+        Espresso.pressBack() // dismiss the popup
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("/autopilot")).fetchSemanticsNodes().isEmpty() }
+        compose.waitForIdle()
+
         // Sidebar drawer.
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         waitForText("New Chat")

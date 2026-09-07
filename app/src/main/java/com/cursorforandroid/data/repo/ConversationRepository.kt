@@ -7,6 +7,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.StagedAttachments
+import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
@@ -233,7 +234,12 @@ class ConversationRepository(
         }
     }
 
-    suspend fun sendFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList()): Result<Unit> {
+    suspend fun sendFollowUp(
+        agentId: String,
+        text: String,
+        images: List<PromptImage> = emptyList(),
+        mcpServers: List<McpServer> = emptyList(),
+    ): Result<Unit> {
         val e = entry(agentId)
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
@@ -253,7 +259,7 @@ class ConversationRepository(
             transform = { copy(error = null) },
         )
 
-        val result = agents.followUp(agentId, trimmed, images)
+        val result = agents.followUp(agentId, trimmed, images, mcpServers = mcpServers)
         return result.fold(
             onSuccess = { run ->
                 // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.

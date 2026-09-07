@@ -7,7 +7,8 @@ Not affiliated with Anysphere, Inc.
 ## Features
 
 - Sign in with a Cursor user API key (validated against `GET /v1/me`), stored encrypted with the Android Keystore and excluded from backups.
-- New Chat pane as home: repository / branch / environment selectors, the composer ("+" image attachments via the system photo picker, model picker with plan mode and auto-PR, send), then the recent chats with preview cards.
+- New Chat pane as home: repository / branch / environment selectors, the composer (the "+" menu, model picker with plan mode and auto-PR, send), then the recent chats with preview cards.
+- The composer's "+" menu, as on cursor.com/agents: Multitask (toggles `/multitask` at the front of the prompt), Files (image attachments via the system photo picker), Skills (the built-in cloud skills — `/autopilot`, `/review`, `/review-bugbot`, `/review-security`, `/split-to-prs`, `/subscribe`, `/loop`, … — plus any project or synced skill typed by name, inserted as `/name`), and MCP Servers (HTTP or stdio servers defined in the app, stored encrypted, toggled per server and sent inline as `mcpServers[]` with every prompt while enabled). The same menu sits on the follow-up composer.
 - Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
 - Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop. Finished runs replay their retained event stream, so the same thinking / tool / subagent trace is there to dig into after the fact; runs past the API's retention window (`410 stream_expired`) keep the text-only transcript.
 - Media in replies: the `<img>`, `<video>` and `![alt](src)` an agent writes for its screenshots and recordings render inline. `/opt/cursor/artifacts/…` paths are exchanged for presigned URLs through `GET /v1/agents/{id}/artifacts/download` (cached and refreshed before their 15-minute expiry); images are laid out at one source pixel per dp within the message width and open in a zoomable full-screen viewer, videos show a poster frame and play inline with ExoPlayer.
@@ -67,7 +68,7 @@ Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). I
 | Runs | `GET /v1/agents/{id}/runs`, `GET /v1/agents/{id}/runs/{runId}` |
 | Live stream, and the retained event log of finished runs | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, `Last-Event-ID` reconnect; a fresh connection replays the run from its first event until `410 stream_expired`) |
 | Media in replies | `GET /v1/agents/{id}/artifacts/download?path=artifacts/…` (presigned URL for an `/opt/cursor/artifacts/…` reference) |
-| Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs`, `POST …/cancel` |
+| Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs` (both with `prompt.images`, `mode` and inline `mcpServers`), `POST …/cancel` |
 | Lifecycle | `POST …/archive`, `POST …/unarchive`, `DELETE /v1/agents/{id}` |
 | Pickers | `GET /v1/models`, `GET /v1/repositories` |
 
