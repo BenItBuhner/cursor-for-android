@@ -25,10 +25,14 @@ val CursorJson: Json = Json {
 class AuthInterceptor(private val apiKeyProvider: () -> String?) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val key = apiKeyProvider()
-        val request = chain.request().newBuilder()
-            .header("Accept", "application/json")
+        val original = chain.request()
+        val request = original.newBuilder()
             .header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}")
-            .apply { if (!key.isNullOrBlank()) header("Authorization", "Bearer $key") }
+            .apply {
+                // The SSE client sets `Accept: text/event-stream` itself; never clobber an explicit Accept.
+                if (original.header("Accept") == null) header("Accept", "application/json")
+                if (original.header("Authorization") == null && !key.isNullOrBlank()) header("Authorization", "Bearer $key")
+            }
             .build()
         return chain.proceed(request)
     }

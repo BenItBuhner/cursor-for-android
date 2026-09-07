@@ -86,7 +86,8 @@ class SseParserTest {
             ),
         )
         server.start()
-        val client = OkHttpClient()
+        // Go through the production client factory so the auth interceptor is exercised too.
+        val client = CursorApiFactory.sseClient(CursorApiFactory.okHttp { "key_test" })
         val streamer = SseRunStreamer(client, { "key_test" }, urlFor = { _, _ -> server.url("/v1/agents/bc-1/runs/run-1/stream").toString() })
 
         val events = streamer.stream("bc-1", "run-1").toList()
@@ -99,6 +100,7 @@ class SseParserTest {
         val second = server.takeRequest()
         assertThat(first.getHeader("Authorization")).isEqualTo("Bearer key_test")
         assertThat(first.getHeader("Accept")).isEqualTo("text/event-stream")
+        assertThat(first.getHeader("User-Agent")).startsWith("cursor-for-android/")
         assertThat(first.getHeader("Last-Event-ID")).isNull()
         assertThat(second.getHeader("Last-Event-ID")).isEqualTo("10-0")
         server.shutdown()
