@@ -110,7 +110,10 @@ class AppScreenshotTest {
         compose.onNodeWithText("Try the demo").performClick()
         compose.waitUntil(20_000) { graph.session.state.value is SessionState.SignedIn }
         waitForText("Ask Cursor to build, fix bugs, explore", 30_000)
+        // Repositories and models load in parallel; both selectors must have settled before a capture. The repo chip
+        // is matched exactly because the slug also occurs inside a workspace name in the list.
         waitForText("Claude Fable 5.1 1M Max", 30_000)
+        compose.waitUntil(30_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
         scrollListTo("Cesium Revenue Strategy")
     }
 
