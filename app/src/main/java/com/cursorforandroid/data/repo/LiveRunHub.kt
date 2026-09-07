@@ -41,6 +41,8 @@ class LiveRunHub(
         val items: List<TimelineItem> = emptyList(),
         val status: RunStatus = RunStatus.RUNNING,
         val finished: Boolean = false,
+        /** Stream events applied so far; zero means nothing has arrived for this run yet. */
+        val eventCount: Int = 0,
         /** Best-effort start of the run: the caller's timestamp (run `createdAt`) or the first observation. */
         val startedAtMillis: Long,
         val result: RunStreamEvent.Result? = null,
@@ -161,7 +163,7 @@ class LiveRunHub(
     }
 
     private fun publish(entry: Entry) {
-        entry.state.update { it.copy(items = entry.live.snapshot(), status = entry.live.status) }
+        entry.state.update { it.copy(items = entry.live.snapshot(), status = entry.live.status, eventCount = it.eventCount + 1) }
     }
 
     /**
@@ -171,7 +173,7 @@ class LiveRunHub(
     private fun finish(entry: Entry, result: RunStreamEvent.Result) {
         val now = nowProvider()
         entry.state.update {
-            it.copy(items = entry.live.snapshot(), status = result.status, finished = true, result = result, finishedAtMillis = now)
+            it.copy(items = entry.live.snapshot(), status = result.status, finished = true, eventCount = it.eventCount + 1, result = result, finishedAtMillis = now)
         }
         agents.patch(entry.agentId) { a ->
             a.copy(

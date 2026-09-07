@@ -169,7 +169,7 @@ class RunMonitor(
         val phase = when {
             snapshot.finished -> LivePhase.Finished
             agent.id in stopping -> LivePhase.Stopping
-            snapshot.items.isEmpty() && snapshot.status != RunStatus.RUNNING -> LivePhase.Starting
+            snapshot.eventCount == 0 -> LivePhase.Starting
             else -> LivePhase.Running
         }
         val branches = result?.git.toBranches().ifEmpty { agent.branches }

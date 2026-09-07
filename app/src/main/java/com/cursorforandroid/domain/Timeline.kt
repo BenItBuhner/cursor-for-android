@@ -108,8 +108,9 @@ object ToolNames {
         return when {
             n.contains("read") || n == "cat" -> ToolKind.Read
             n.contains("list") || n.contains("glob") || n == "ls" -> ToolKind.List
-            n.contains("grep") || n.contains("search") || n.contains("rg") -> if (n.contains("web")) ToolKind.Web else ToolKind.Search
+            // Before the search check: Cursor's edit tool is literally `search_replace`.
             n.contains("edit") || n.contains("write") || n.contains("delete") || n.contains("replace") || n.contains("patch") -> ToolKind.Edit
+            n.contains("grep") || n.contains("search") || n.contains("rg") -> if (n.contains("web")) ToolKind.Web else ToolKind.Search
             n.contains("terminal") || n.contains("shell") || n.contains("bash") || n.contains("cmd") -> ToolKind.Shell
             n.contains("fetch") || n.contains("web") -> ToolKind.Web
             n == "task" || n.contains("subagent") -> ToolKind.Task

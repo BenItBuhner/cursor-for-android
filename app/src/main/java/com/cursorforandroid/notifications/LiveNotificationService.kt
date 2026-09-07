@@ -104,7 +104,7 @@ class LiveNotificationService : Service() {
         // A cancel was requested by the user somewhere; nothing to announce.
         if (run.status == RunStatus.CANCELLED) return
         // The user is looking at this very conversation: the transcript already shows the result.
-        val foreground = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        val foreground = runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(false)
         if (foreground && graph.conversations.isAttached(run.agentId)) return
         post(LiveNotificationRenderer.finishedId(run.agentId), LiveNotificationRenderer.finished(this, run))
     }
