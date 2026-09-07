@@ -176,12 +176,11 @@ fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.co
     Box(modifier.fillMaxWidth().height(CursorDimens.hairline).background(color))
 }
 
-/** Group label such as "Pinned" / "Today" / "Chats": 12sp at 60 %, sentence case, no chevron. */
+/** Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case, no chevron. */
 @Composable
-fun GroupLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
+fun GroupLabel(text: String, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
-        trailing?.invoke()
     }
 }
 
@@ -193,7 +192,6 @@ fun Pill(
     icon: ImageVector? = null,
     tint: Color = CursorTheme.colors.textSecondary,
     fill: Color = CursorTheme.colors.fill,
-    mono: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
     val shape = CursorTheme.shapes.full
@@ -210,7 +208,7 @@ fun Pill(
         if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
         Text(
             text,
-            style = (if (mono) CursorTheme.typography.code else CursorTheme.typography.small).copy(lineHeight = 14.sp),
+            style = CursorTheme.typography.small.copy(lineHeight = 14.sp),
             color = tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

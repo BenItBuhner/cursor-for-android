@@ -74,9 +74,9 @@ data class SidebarCallbacks(
 )
 
 /**
- * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo, flat
- * new-chat ("+") + search + filter + sidebar-toggle icons, a "Chats" label, Pinned / date groups of 32dp rows, and
- * the account footer. Surface is `--cursor-sidebar` (#181818).
+ * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
+ * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
+ * folded into it), Pinned / date groups of 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -129,9 +129,6 @@ fun Sidebar(
             )
         }
         if (searching) LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
-        Spacer(Modifier.height(4.dp))
-        GroupLabel("Chats", Modifier.padding(horizontal = 16.dp).height(32.dp))
 
         PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
