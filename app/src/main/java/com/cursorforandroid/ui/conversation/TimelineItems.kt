@@ -84,19 +84,26 @@ private fun DateHeaderView(item: DateHeader, modifier: Modifier) {
 /**
  * `.composer-human-message` from the desktop build: `align-self: flex-end`, `width: fit-content`,
  * `min-width: 150px`, `background: input.background` (4 %), `border: 1px solid stroke-secondary` (12 %),
- * radius xl, padding 8px 10px, inset 32px from the opposite edge, 14/22 text.
+ * radius xl, padding 8px 10px, inset 32px from the opposite edge, 14/22 text. Attached images sit above the text,
+ * as they do on the web.
  */
 @Composable
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
     Box(modifier.fillMaxWidth().padding(start = 32.dp), contentAlignment = Alignment.CenterEnd) {
-        Box(
+        Column(
             Modifier
                 .widthIn(min = 150.dp, max = 640.dp)
                 .cursorSurface(colors.fillFaint, colors.stroke, CursorTheme.shapes.xl)
                 .padding(horizontal = 10.dp, vertical = 8.dp),
         ) {
-            MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+            val hasText = item.text.isNotBlank()
+            if (item.attachments.isNotEmpty()) {
+                MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp))
+            }
+            if (hasText || item.attachments.isEmpty()) {
+                MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+            }
         }
     }
 }

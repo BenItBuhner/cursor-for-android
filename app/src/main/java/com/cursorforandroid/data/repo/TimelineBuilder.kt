@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
@@ -37,12 +38,14 @@ object TimelineBuilder {
      *
      * The transcript only carries text. When a run's stream has been replayed (or is being followed live), its
      * items in [traces] — thinking, tool calls, subagents, the assistant text and the footer — stand in for the
-     * transcript's replies to that prompt.
+     * transcript's replies to that prompt. The images a prompt carried live in [attachments] (kept on this device,
+     * keyed by run ID) and are attached to the user message that started each run.
      */
     fun fromHistory(
         messages: List<V0ConversationMessageDto>,
         runs: List<RunDto>,
         traces: Map<String, List<TimelineItem>> = emptyMap(),
+        attachments: Map<String, List<MessageAttachment>> = emptyMap(),
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimelineItem> {
@@ -80,7 +83,7 @@ object TimelineBuilder {
                     val run = ordered.getOrNull(userIndex)
                     val stamp = run?.let { parseIsoMillis(it.createdAt) }
                     if (stamp != null) items += DateHeader("hdr-${msg.id}", TimeFormat.conversationStamp(stamp, nowMillis, zone))
-                    items += UserMessage(msg.id, msg.text, stamp)
+                    items += UserMessage(msg.id, msg.text, stamp, attachments = run?.let { attachments[it.id] } ?: emptyList())
                 }
                 else -> replies += AssistantMessage(msg.id, msg.text)
             }

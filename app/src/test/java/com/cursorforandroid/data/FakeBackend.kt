@@ -45,10 +45,12 @@ open class FakeCursorApi : CursorApi {
     val agents: MutableMap<String, AgentDto> = ConcurrentHashMap()
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
+    /** `user_message` / `assistant_message` rows per agent, text only, exactly like the real endpoint. */
     val transcripts: MutableMap<String, List<V0ConversationMessageDto>> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     var failCancel = false
+    var failCreateRun = false
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
@@ -187,8 +189,12 @@ open class FakeCursorApi : CursorApi {
         getRunCalls++
         return runs[runId] ?: throw notFound()
     }
-    /** Starts `run-<n>` on the agent; the test streams it through the fake streamer like any other run. */
+    /**
+     * Starts `run-followup-<n>` on the agent and appends the prompt's text (never its images) to the transcript; the
+     * test streams the run through the fake streamer like any other.
+     */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
+        if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         val agent = agents[id] ?: throw notFound()
         val sequence = ids.incrementAndGet()
         val runId = "run-followup-$sequence"

@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunGitBranchDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.AssistantMessage
@@ -53,6 +54,7 @@ class LiveRunMonitorTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var prefs: PreferencesStore
+    private lateinit var attachments: AttachmentStore
     private lateinit var session: SessionManager
     private lateinit var agents: AgentRepository
     private lateinit var hub: LiveRunHub
@@ -67,7 +69,8 @@ class LiveRunMonitorTest {
         val backend = CursorBackend(api, streamer, isDemo = true)
         session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
         session.enterDemo()
-        agents = AgentRepository(session, prefs)
+        attachments = AttachmentStore(context)
+        agents = AgentRepository(session, prefs, attachments)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
         monitor = RunMonitor(agents, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
         finishedJob = scope.launch { monitor.finished.collect { finished += it } }
@@ -106,7 +109,7 @@ class LiveRunMonitorTest {
         assertThat(running().first { it.agentId == "bc-1" }.phase).isEqualTo(LivePhase.Running)
 
         // A conversation screen opens the same agent: it must ride the monitor's stream, not open a second one.
-        val conversations = ConversationRepository(session, agents, prefs, hub)
+        val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.items.any { it is ToolActivity } }
         assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
@@ -297,7 +300,7 @@ class LiveRunMonitorTest {
         retainStream("run-5", "Reply 5")
         listOf("run-4", "run-3", "run-2", "run-1").forEach { expireStream(it) }
 
-        val conversations = ConversationRepository(session, agents, prefs, hub)
+        val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.items.any { it is ToolActivity } }
         awaitUntil { "run-4" in streamer.connections }
@@ -357,7 +360,7 @@ class LiveRunMonitorTest {
         api.transcripts.remove("bc-1")
         agents.refresh()
         expireStream("run-1")
-        val conversations = ConversationRepository(session, agents, prefs, hub)
+        val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
         conversations.attach("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isLoading && "run-1" in streamer.connections }
         delay(100)

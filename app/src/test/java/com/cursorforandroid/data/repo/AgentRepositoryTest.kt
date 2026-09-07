@@ -6,6 +6,7 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.JsonDiskCache
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
@@ -68,7 +69,8 @@ class AgentRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(persistDelayMs: Long = 10) = AgentRepository(session, prefs, cache, scope, persistDelayMs)
+    private fun repository(persistDelayMs: Long = 10) =
+        AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs)
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)

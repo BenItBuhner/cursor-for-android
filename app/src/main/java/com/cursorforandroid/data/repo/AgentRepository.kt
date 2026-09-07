@@ -13,6 +13,7 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
@@ -85,6 +86,7 @@ data class LaunchRequest(
 class AgentRepository(
     private val session: SessionManager,
     private val prefs: PreferencesStore,
+    private val attachments: AttachmentStore,
     private val cache: AgentListCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val persistDelayMs: Long = PERSIST_DELAY_MS,
@@ -360,6 +362,9 @@ class AgentRepository(
             modelDisplayName = modelDisplayName,
         )
         upsert(agent)
+        // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
+        // already created files the images under the same run, so this stays idempotent.
+        run?.let { runCatching { attachments.save(agent.id, it.id, request.images) } }
         prefs.markLaunchedHere(agent.id)
         // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
         prefs.markRead(agent.id, AppClock.now())
@@ -410,6 +415,7 @@ class AgentRepository(
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
         session.current.api.delete(agentId)
         _state.update { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
+        attachments.delete(agentId)
     }
 
     fun upsert(agent: Agent) {

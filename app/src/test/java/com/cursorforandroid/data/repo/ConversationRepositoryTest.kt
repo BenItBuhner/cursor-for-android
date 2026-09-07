@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.local.AgentListCache
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -49,6 +50,7 @@ class ConversationRepositoryTest {
     private var now = 1_800_000_000_000L
     private lateinit var prefs: PreferencesStore
     private lateinit var session: SessionManager
+    private lateinit var attachments: AttachmentStore
     private lateinit var agents: AgentRepository
     private lateinit var hub: LiveRunHub
     private lateinit var cache: ConversationCache
@@ -60,7 +62,8 @@ class ConversationRepositoryTest {
         val backend = CursorBackend(api, streamer, isDemo = false)
         session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
         val disk = JsonDiskCache(folder.newFolder("cache"), dispatcher = Dispatchers.Unconfined)
-        agents = AgentRepository(session, prefs, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
+        attachments = AttachmentStore(context)
+        agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
         cache = ConversationCache(disk.child("conversations"))
         AppClock.nowMillis = { now }
@@ -74,7 +77,7 @@ class ConversationRepositoryTest {
 
     /** Prefetching is off unless a test is about it, so request counters only reflect the explicit open. */
     private fun repository(prefetchLimit: Int = 0) =
-        ConversationRepository(session, agents, prefs, hub, cache, isForeground = { true }, prefetchLimit = prefetchLimit, prefetchSpacingMs = 0, scope = scope)
+        ConversationRepository(session, agents, prefs, hub, attachments, cache, isForeground = { true }, prefetchLimit = prefetchLimit, prefetchSpacingMs = 0, scope = scope)
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
