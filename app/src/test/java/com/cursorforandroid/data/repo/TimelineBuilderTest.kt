@@ -6,15 +6,14 @@ import com.cursorforandroid.data.api.dto.RunGitBranchDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
-import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
@@ -133,21 +132,21 @@ class TimelineBuilderTest {
         )
         val items = TimelineBuilder.fromHistory(messages, runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
         assertThat(items.map { it::class.simpleName }).containsExactly(
-            "DateHeader", "UserMessage", "ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
             "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "ThinkingBlock", "ToolActivity", "AssistantMessage",
+            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage",
         ).inOrder()
         // The transcript's copies of run-1's replies are gone; the trace's own text and footer took their place.
         assertThat(items.none { it.id == "m2" || it.id == "m3" || it.id == "run-run-1" }).isTrue()
-        assertThat((items[4] as AssistantMessage).markdown).isEqualTo("Done, README added.")
-        assertThat((items[5] as RunFooter).runId).isEqualTo("run-1")
-        assertThat((items[5] as RunFooter).durationMs).isEqualTo(42_000L)
+        assertThat((items[3] as AssistantMessage).markdown).isEqualTo("Done, README added.")
+        assertThat((items[4] as RunFooter).runId).isEqualTo("run-1")
+        assertThat((items[4] as RunFooter).durationMs).isEqualTo(42_000L)
         // The expired run keeps the transcript text and a footer built from the run record.
-        assertThat(items[8].id).isEqualTo("m5")
-        assertThat((items[9] as RunFooter).durationMs).isEqualTo(185_000L)
-        // The live run has no footer yet, and its tools sit right after its prompt rather than after the older runs.
-        assertThat((items[11] as UserMessage).text).isEqualTo("And a FAQ")
-        assertThat((items[13] as ToolActivity).calls.map { it.callId }).containsExactly("run-3-c1", "run-3-c2").inOrder()
+        assertThat(items[7].id).isEqualTo("m5")
+        assertThat((items[8] as RunFooter).durationMs).isEqualTo(185_000L)
+        // The live run has no footer yet, and its work sits right after its prompt rather than after the older runs.
+        assertThat((items[10] as UserMessage).text).isEqualTo("And a FAQ")
+        assertThat((items[11] as ActivityGroup).calls.map { it.callId }).containsExactly("run-3-c1", "run-3-c2").inOrder()
     }
 
     @Test
@@ -155,7 +154,7 @@ class TimelineBuilderTest {
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z", result = "Final answer"))
         val traces = mapOf("run-1" to trace("run-1", "Final answer"))
         val items = TimelineBuilder.fromHistory(emptyList(), runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
-        assertThat(items.map { it::class.simpleName }).containsExactly("DateHeader", "ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("DateHeader", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(items.none { it.id == "res-run-1" }).isTrue()
     }
 
@@ -166,9 +165,153 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Thinking("Replayed thought."))
         clock += 30_000
         live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
-        val thinking = live.snapshot().filterIsInstance<ThinkingBlock>().single()
+        val work = live.snapshot().filterIsInstance<ActivityGroup>().single()
+        val thinking = work.thoughts.single()
         assertThat(thinking.isStreaming).isFalse()
         assertThat(thinking.durationSeconds).isNull()
+        // With no time to report, the row is the tool summary alone; the thought is there once the row is opened.
+        assertThat(work.detail).isEqualTo("1 file")
+        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall").inOrder()
+    }
+
+    private fun TimelineBuilder.LiveRun.group(): ActivityGroup = snapshot().filterIsInstance<ActivityGroup>().single()
+
+    @Test
+    fun `reasoning and tool calls between two replies interleave in one group`() {
+        var clock = 1_000L
+        val live = TimelineBuilder.LiveRun("run-1") { clock }
+        live.apply(RunStreamEvent.Thinking("Where does the picker live?"))
+        clock += 2_000
+        live.apply(tool("c1", "grep", "running", "pattern" to "ModelSheet"))
+        live.apply(tool("c1", "grep", "completed", "pattern" to "ModelSheet"))
+        live.apply(tool("c2", "read_file", "completed", "path" to "ModelSheet.kt"))
+        live.apply(RunStreamEvent.Thinking("Found it; now the screen that hosts it."))
+        clock += 5_000
+        live.apply(tool("c3", "read_file", "completed", "path" to "HomeScreen.kt"))
+        live.apply(tool("c4", "edit_file", "completed", "path" to "HomeScreen.kt"))
+        live.apply(RunStreamEvent.Assistant("Wired the sheet into HomeScreen."))
+        // Work after a reply is a new stretch, with its own row.
+        live.apply(RunStreamEvent.Thinking("Any imports left behind?"))
+        clock += 1_000
+        live.apply(tool("c5", "grep", "completed", "pattern" to "import androidx.compose.material3.TextField"))
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Wired the sheet into HomeScreen.", 9_000, null))
+
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "ActivityGroup", "RunFooter").inOrder()
+        assertThat(items.map { it.id }).containsNoDuplicates()
+
+        val first = items[0] as ActivityGroup
+        assertThat(first.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall", "ThinkingBlock", "ToolCall", "ToolCall").inOrder()
+        assertThat(first.thoughts.map { it.text }).containsExactly("Where does the picker live?", "Found it; now the screen that hosts it.").inOrder()
+        assertThat(first.thoughts.map { it.durationSeconds }).containsExactly(2L, 5L).inOrder()
+        assertThat(first.calls.map { it.callId }).containsExactly("c1", "c2", "c3", "c4").inOrder()
+        assertThat(first.calls.map { it.status }).doesNotContain("running")
+        assertThat(first.isBusy).isFalse()
+        assertThat(first.verb).isEqualTo("Explored")
+        assertThat(first.detail).isEqualTo("3 files, 1 search · thought for 7s")
+
+        val second = items[2] as ActivityGroup
+        assertThat(second.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall").inOrder()
+        assertThat(second.detail).isEqualTo("1 search · thought for 1s")
+    }
+
+    @Test
+    fun `the row narrates the step in progress and settles into a summary once the stretch is over`() {
+        var clock = 1_000L
+        val live = TimelineBuilder.LiveRun("run-1") { clock }
+
+        live.apply(RunStreamEvent.Thinking("Let me see."))
+        with(live.group()) {
+            assertThat(verb).isEqualTo("Thinking")
+            assertThat(detail).isNull()
+            assertThat(isThinking).isTrue()
+            assertThat(isBusy).isTrue()
+        }
+
+        clock += 3_000
+        live.apply(tool("c1", "read_file", "running", "path" to "README.md"))
+        with(live.group()) {
+            assertThat(verb).isEqualTo("Exploring")
+            // The thinking time waits for the row to go quiet, so the counts hold still while the agent works.
+            assertThat(detail).isEqualTo("1 file")
+            assertThat(runningCall?.callId).isEqualTo("c1")
+        }
+
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        assertThat(live.group().isBusy).isFalse()
+        assertThat(live.group().detail).isEqualTo("1 file · thought for 3s")
+
+        live.apply(RunStreamEvent.Thinking("And the build file."))
+        with(live.group()) {
+            assertThat(verb).isEqualTo("Exploring")
+            assertThat(detail).isEqualTo("1 file")
+            assertThat(isThinking).isTrue()
+            assertThat(isRunning).isFalse()
+        }
+
+        clock += 2_000
+        live.apply(RunStreamEvent.Assistant("Both read."))
+        with(live.group()) {
+            assertThat(isBusy).isFalse()
+            assertThat(verb).isEqualTo("Explored")
+            assertThat(detail).isEqualTo("1 file · thought for 5s")
+        }
+    }
+
+    @Test
+    fun `a stretch of nothing but thinking keeps its thought row`() {
+        var clock = 1_000L
+        val live = TimelineBuilder.LiveRun("run-1") { clock }
+        live.apply(RunStreamEvent.Thinking("Just weighing the options."))
+        clock += 4_000
+        live.apply(RunStreamEvent.Assistant("Go with the sheet."))
+        with(live.group()) {
+            assertThat(verb).isEqualTo("Thought")
+            assertThat(detail).isEqualTo("for 4s")
+            assertThat(headline).isNull()
+        }
+
+        val replayed = TimelineBuilder.LiveRun("run-2", timed = false)
+        replayed.apply(RunStreamEvent.Thinking("Replayed."))
+        replayed.apply(RunStreamEvent.Assistant("Reply."))
+        assertThat(replayed.group().verb).isEqualTo("Thought")
+        assertThat(replayed.group().detail).isNull()
+    }
+
+    @Test
+    fun `delegating to subagents does not split the stretch of work around it`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Thinking("Split the survey."))
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey the cloud layer"))
+        live.apply(tool("c2", "grep", "completed", "pattern" to "TODO"))
+        live.apply(RunStreamEvent.Thinking("Meanwhile, the build."))
+        live.apply(tool("c3", "run_terminal_cmd", "completed", "command" to "./gradlew build"))
+        live.apply(tool("s1", "task", "completed", "subagent_type" to "explore", "description" to "Survey the cloud layer"))
+        live.apply(tool("s2", "task", "running", "subagent_type" to "explore", "description" to "Survey the API"))
+        live.apply(RunStreamEvent.Assistant("Here is what I found."))
+
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "SubagentsCard", "AssistantMessage").inOrder()
+        val work = items[0] as ActivityGroup
+        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall", "ThinkingBlock", "ToolCall").inOrder()
+        assertThat(work.detail).isEqualTo("1 file, 1 search, 1 command")
+        val card = items[1] as SubagentsCard
+        assertThat(card.subagents.map { it.title to it.status }).containsExactly("Survey the cloud layer" to "Done", "Survey the API" to "Running").inOrder()
+    }
+
+    @Test
+    fun `a late status update lands on its call instead of opening a new group`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(tool("c1", "run_terminal_cmd", "running", "command" to "./gradlew test"))
+        live.apply(RunStreamEvent.Assistant("Tests are running; "))
+        live.apply(tool("c1", "run_terminal_cmd", "completed", "command" to "./gradlew test"))
+        live.apply(RunStreamEvent.Assistant("they pass."))
+
+        val items = live.snapshot()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage").inOrder()
+        assertThat((items[0] as ActivityGroup).calls.single().status).isEqualTo("completed")
+        assertThat((items[1] as AssistantMessage).markdown).isEqualTo("Tests are running; they pass.")
     }
 
     @Test
@@ -189,17 +332,22 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Result("run-9", RunStatus.FINISHED, "Hello world.", 42_000, RunGitDto(listOf(RunGitBranchDto("github.com/o/r", "cursor/x", null)))))
 
         val items = live.snapshot()
-        val thinking = items.filterIsInstance<ThinkingBlock>().single()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "SubagentsCard", "AssistantMessage", "RunFooter").inOrder()
+
+        val work = items.filterIsInstance<ActivityGroup>().single()
+        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall").inOrder()
+        val thinking = work.thoughts.single()
         assertThat(thinking.text).isEqualTo("Let me look at the repo.")
         assertThat(thinking.isStreaming).isFalse()
         assertThat(thinking.durationSeconds).isEqualTo(3L)
 
-        val tools = items.filterIsInstance<ToolActivity>().single()
-        assertThat(tools.calls.map { it.callId }).containsExactly("c1", "c2").inOrder()
-        assertThat(tools.calls.first().status).isEqualTo("completed")
-        assertThat(tools.fileCount).isEqualTo(1)
-        assertThat(tools.searchCount).isEqualTo(1)
-        assertThat(tools.headline).isEqualTo("1 file, 1 search")
+        assertThat(work.calls.map { it.callId }).containsExactly("c1", "c2").inOrder()
+        assertThat(work.calls.first().status).isEqualTo("completed")
+        assertThat(work.fileCount).isEqualTo(1)
+        assertThat(work.searchCount).isEqualTo(1)
+        assertThat(work.headline).isEqualTo("1 file, 1 search")
+        assertThat(work.verb).isEqualTo("Explored")
+        assertThat(work.detail).isEqualTo("1 file, 1 search · thought for 3s")
 
         val subs = items.filterIsInstance<SubagentsCard>().single()
         assertThat(subs.subagents.single().status).isEqualTo("Done")
@@ -232,7 +380,7 @@ class TimelineBuilderTest {
         live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
         live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Added README.md with installation instructions.", 12_357, null))
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown })
             .containsExactly("I'll update the README now.", "Added README.md with installation instructions.").inOrder()
     }
@@ -258,7 +406,7 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Assistant("Added the RE"))
         live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Added the README and a troubleshooting section.", 1_000, null))
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         val reply = items.filterIsInstance<AssistantMessage>().single()
         assertThat(reply.markdown).isEqualTo("Added the README and a troubleshooting section.")
         assertThat(reply.isStreaming).isFalse()
@@ -271,7 +419,7 @@ class TimelineBuilderTest {
         live.apply(tool("c1", "run_terminal_cmd", "completed", "command" to "./gradlew build"))
         live.apply(RunStreamEvent.Result("run-1", RunStatus.ERROR, "The build failed on a missing dependency.", 9_000, null))
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ToolActivity", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
         assertThat((items[2] as AssistantMessage).markdown).isEqualTo("The build failed on a missing dependency.")
         assertThat((items.last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
     }

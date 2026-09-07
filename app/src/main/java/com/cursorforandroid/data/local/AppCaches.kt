@@ -5,8 +5,9 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolActivity
+import com.cursorforandroid.domain.ToolCall
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -131,7 +132,7 @@ class TraceCache(
 
     private fun CachedTrace.compact() = copy(
         items = items.map { item ->
-            if (item is ToolActivity) item.copy(calls = item.calls.map { it.copy(args = null, result = null) }) else item
+            if (item is ActivityGroup) item.copy(steps = item.steps.map { step -> if (step is ToolCall) step.copy(args = null, result = null) else step }) else item
         },
     )
 

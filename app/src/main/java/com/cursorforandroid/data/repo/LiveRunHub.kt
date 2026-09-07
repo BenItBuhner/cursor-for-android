@@ -247,7 +247,10 @@ class LiveRunHub(
      * Publishes the terminal snapshot first, then patches the agent row with the same timestamp, so a subscriber
      * that reacts to `finished` before the row changes still knows the `updatedAt` the list is about to show. The
      * finish is reported last, once both are in place. A replay changes nothing about the agent: the row already
-     * reflects this run, or a later one.
+     * reflects this run, or a later one. Nor does a result that arrives once the row has moved on to a newer run (a
+     * poll that landed after a follow-up was sent, a stream read to its end after the list picked up a run started
+     * elsewhere): marking that row idle and finished would show the running follow-up as done. Only the branches,
+     * which are per-agent state, are still worth taking.
      */
     private fun finish(entry: Entry, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean) {
         val now = nowProvider()
@@ -265,6 +268,7 @@ class LiveRunHub(
         }
         if (historical) return
         agents.patch(entry.agentId) { a ->
+            if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
             a.copy(
                 runStatus = result.status,
                 lifecycle = AgentLifecycle.IDLE,

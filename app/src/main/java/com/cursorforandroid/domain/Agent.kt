@@ -67,7 +67,12 @@ data class Agent(
     val hasBranch: Boolean get() = branchName != null
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
-    val isRunning: Boolean get() = !isArchived && (runStatus?.isActive == true || (runStatus == null && lifecycle == AgentLifecycle.ACTIVE))
+    /**
+     * A known run status decides; without one — or with one this build does not recognise — the lifecycle does, as
+     * `ACTIVE` means a turn is running, about to start, or waiting on background work.
+     */
+    val isRunning: Boolean
+        get() = !isArchived && (runStatus?.isActive == true || ((runStatus == null || runStatus == RunStatus.UNKNOWN) && lifecycle == AgentLifecycle.ACTIVE))
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
 
     companion object {
@@ -111,6 +116,16 @@ data class ModelOption(
     /** The `parameters` definitions from `GET /v1/models`: what each variant's `params` mean in words. */
     val parameters: List<ModelParameter> = emptyList(),
 ) {
+    /** A parameter's name in words — "Effort", "Fast" — from the API's definition when it has one. */
+    fun parameterName(parameterId: String): String =
+        parameters.firstOrNull { it.id == parameterId }?.displayName?.takeIf { it.isNotBlank() } ?: humanize(parameterId)
+
+    /** A value's name in words — "High", "1M", "Fast" — from the API's definition when it has one. */
+    fun valueName(parameterId: String, value: String): String = declaredValueName(parameterId, value) ?: humanize(value)
+
+    private fun declaredValueName(parameterId: String, value: String): String? =
+        parameters.firstOrNull { it.id == parameterId }?.values?.firstOrNull { it.value == value }?.displayName?.takeIf { it.isNotBlank() }
+
     /**
      * The variant's parameters in words — "Fast", "Fast off", "1M context · Max effort" — resolved through
      * [parameters] where the API provides display names; null for a variant without parameters.
@@ -118,9 +133,8 @@ data class ModelOption(
     fun qualifier(variant: ModelVariant): String? {
         if (variant.params.isEmpty()) return null
         return variant.params.joinToString(" · ") { param ->
-            val definition = parameters.firstOrNull { it.id == param.id }
-            val name = definition?.displayName?.takeIf { it.isNotBlank() } ?: humanize(param.id)
-            val valueName = definition?.values?.firstOrNull { it.value == param.value }?.displayName?.takeIf { it.isNotBlank() }
+            val name = parameterName(param.id)
+            val valueName = declaredValueName(param.id, param.value)
             when {
                 valueName != null -> if (valueName.equals(name, ignoreCase = true)) valueName else "$valueName ${name.lowercase()}"
                 param.value.equals("true", ignoreCase = true) -> name
@@ -128,6 +142,40 @@ data class ModelOption(
                 else -> "${humanize(param.value)} ${name.lowercase()}"
             }
         }
+    }
+
+    /**
+     * The knobs the picker offers for this model — "Effort", "Fast", "Context" — one per parameter that takes more
+     * than one value across [variants]. Parameters keep the order and names of the API's definitions, with any the
+     * variants use but the definitions omit appended; a value no variant carries is left out, so every choice the
+     * picker offers resolves to a combination the API accepts. A parameter every variant agrees on is not a knob
+     * (the row's subtitle still spells it out).
+     */
+    val axes: List<ModelAxis>
+        get() {
+            val ids = (parameters.map { it.id } + variants.flatMap { v -> v.params.map { it.id } }).distinct()
+            return ids.mapNotNull { id ->
+                val used = variants.mapNotNull { it.param(id) }.distinct()
+                if (used.size < 2) return@mapNotNull null
+                val declared = parameters.firstOrNull { it.id == id }?.values?.map { it.value }.orEmpty()
+                val ordered = declared.filter { it in used } + used.filter { it !in declared }
+                ModelAxis(id, parameterName(id), ordered.map { ModelAxisValue(it, valueName(id, it)) })
+            }
+        }
+
+    /**
+     * The variant to move to when [parameterId] is set to [value] while [current] is selected: the one that differs
+     * from [current] in that parameter alone when the API lists it, else the closest one that has the value (fewest
+     * other parameters changed, then the one nearest the API's default); null when no variant has the value at all.
+     */
+    fun variantWith(current: ModelVariant?, parameterId: String, value: String): ModelVariant? {
+        fun ModelVariant.others() = params.filterNot { it.id == parameterId }.toSet()
+        fun distance(a: Set<ModelParam>, b: Set<ModelParam>) = (a - b).size + (b - a).size
+        val kept = current?.others() ?: emptySet()
+        val preferred = defaultVariant?.others() ?: emptySet()
+        return variants
+            .filter { it.param(parameterId) == value }
+            .minWithOrNull(compareBy<ModelVariant> { distance(it.others(), kept) }.thenBy { distance(it.others(), preferred) })
     }
 
     /**
@@ -170,7 +218,31 @@ data class ModelVariant(
     val params: List<ModelParam>,
     val isDefault: Boolean,
     val description: String? = null,
-)
+) {
+    /** The value this variant sets for [parameterId], or null when it leaves the parameter unset. */
+    fun param(parameterId: String): String? = params.firstOrNull { it.id == parameterId }?.value
+}
+
+/**
+ * One tunable parameter of a model as the picker shows it — "Effort" with Low / Medium / High, "Fast" on or off —
+ * limited to the values the model's variants actually use.
+ */
+data class ModelAxis(
+    val id: String,
+    val displayName: String,
+    val values: List<ModelAxisValue>,
+) {
+    /** A `true` / `false` parameter, shown as a toggle rather than a row of choices. */
+    val isSwitch: Boolean get() = values.size == 2 && values.map { it.value.lowercase() }.toSet() == setOf("true", "false")
+
+    /** The value that switches an [isSwitch] parameter on, as the API spells it. */
+    val onValue: String get() = values.first { it.value.equals("true", ignoreCase = true) }.value
+
+    /** The value that switches an [isSwitch] parameter off, as the API spells it. */
+    val offValue: String get() = values.first { it.value.equals("false", ignoreCase = true) }.value
+}
+
+data class ModelAxisValue(val value: String, val displayName: String)
 
 @Serializable
 data class ModelParam(val id: String, val value: String)
