@@ -84,16 +84,6 @@ object CursorIcons {
         }
     }
 
-    /** The web sidebar's "working" glyph: a cluster of four dots that rotates while a run is active. */
-    val Working: ImageVector by lazy {
-        stroke("Working") {
-            fill("M12 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M18.2 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M12 16.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M5.8 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-        }
-    }
-
     val NewAgent: ImageVector by lazy {
         stroke("NewAgent") {
             line("M4 12l16-8-4 16-4-6-8-2z")
