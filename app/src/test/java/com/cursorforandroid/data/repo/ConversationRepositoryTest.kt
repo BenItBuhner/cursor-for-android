@@ -16,11 +16,11 @@ import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -188,7 +188,7 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.isStreaming }
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
         streamer.emit("run-1", RunStreamEvent.Thinking("Looking around."))
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ThinkingBlock } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
 
         // The reader leaves while the run is still going; the hub lets go of the stream after its grace period...
         conversations.detach("bc-1")
@@ -215,9 +215,9 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ThinkingBlock } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         val traced = conversations.state("bc-1").value
-        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ThinkingBlock", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
