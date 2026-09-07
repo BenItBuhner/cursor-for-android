@@ -2,9 +2,12 @@ package com.cursorforandroid.data.local
 
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.McpServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 
 /**
@@ -15,6 +18,12 @@ import kotlinx.serialization.builtins.ListSerializer
 class McpServerStore(private val secure: SecureKeyStore) {
 
     private val state: MutableStateFlow<List<McpServer>> by lazy { MutableStateFlow(load()) }
+
+    init {
+        // Opening the encrypted prefs can cost tens of milliseconds the first time; do it off the main thread. A
+        // concurrent first read waits on this initialisation rather than starting its own (lazy is synchronized).
+        CoroutineScope(Dispatchers.IO).launch { state }
+    }
 
     val servers: StateFlow<List<McpServer>> get() = state
 
