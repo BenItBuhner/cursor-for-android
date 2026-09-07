@@ -53,6 +53,10 @@ open class FakeCursorApi : CursorApi {
     var failCreateRun = false
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
+    /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
+    @Volatile var createGate: CompletableDeferred<Unit>? = null
+    /** When set, [createAgent] answers without a name, as the server does before it has generated a title. */
+    @Volatile var blankCreatedNames = false
     /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
     @Volatile var listGate: CompletableDeferred<Unit>? = null
     @Volatile var getRunCalls = 0
@@ -161,14 +165,20 @@ open class FakeCursorApi : CursorApi {
         getAgentGate?.await()
         return agents[id] ?: throw notFound()
     }
+    /**
+     * Creates the agent and its `CREATING` run. Like the real API, the transcript endpoint knows nothing of the prompt
+     * yet: [transcripts] is left alone, so `conversationV0` answers with an empty list until a test fills it in.
+     */
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
         createRequests += body
         failNextCreate?.let { failNextCreate = null; throw it }
+        createGate?.await()
         val id = body.agentId ?: "bc-fake-${ids.incrementAndGet()}"
         if (agents.containsKey(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
         val runId = "run-fake-${ids.incrementAndGet()}"
         val now = "2026-04-13T18:30:00.000Z"
-        val agent = AgentDto(id = id, name = body.name ?: body.prompt.text.take(60), status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
+        val name = if (blankCreatedNames) null else body.name ?: body.prompt.text.take(60)
+        val agent = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = now, updatedAt = now)
         agents[id] = agent
         runs[runId] = run

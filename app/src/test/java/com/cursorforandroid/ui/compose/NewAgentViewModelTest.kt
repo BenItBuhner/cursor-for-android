@@ -4,9 +4,12 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -20,8 +23,9 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The composer remembers what the last agent was launched with. Runs against the demo backend, whose catalogue
- * mirrors the live one: "Composer 2.5" has two variants of the same name, `fast` on (the default) and off.
+ * The composer remembers what the last agent was launched with, and opens the chat it launches before the server has
+ * answered. Runs against the demo backend, whose catalogue mirrors the live one — "Composer 2.5" has two variants of
+ * the same name, `fast` on (the default) and off — and which answers a create after half a second, like a real server.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -50,8 +54,58 @@ class NewAgentViewModelTest {
 
     private fun NewAgentViewModel.launchAndWait() = runBlocking {
         setPrompt("Do the thing")
-        launch {}
+        launch(onOpen = {}, onFailed = {})
         withTimeout(10_000) { state.first { !it.isLaunching && it.prompt.isEmpty() } }
+    }
+
+    private suspend fun awaitUntil(timeoutMs: Long = 10_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
+        while (!condition()) delay(10)
+    }
+
+    @Test
+    fun `sending opens the chat on its prompt before the server has answered`() = runBlocking {
+        val vm = loaded()
+        vm.setPrompt("Do the thing")
+        var opened: String? = null
+        var failed: String? = null
+
+        vm.launch(onOpen = { opened = it }, onFailed = { failed = it })
+        awaitUntil { opened != null }
+
+        // The chat is open and showing the prompt while the request is still in flight; the draft stays until it lands.
+        val id = opened!!
+        assertThat(vm.state.value.isLaunching).isTrue()
+        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(graph.conversations.state(id).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Do the thing")
+        assertThat(graph.conversations.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
+        assertThat(graph.agents.agent(id)?.name).isEqualTo("Do the thing")
+
+        awaitUntil { !vm.state.value.isLaunching }
+        assertThat(vm.state.value.prompt).isEmpty()
+        assertThat(vm.state.value.error).isNull()
+        assertThat(failed).isNull()
+        assertThat(graph.agents.agent(id)?.latestRunId).isNotNull()
+        assertThat(graph.conversations.state(id).value.activeRunId).isEqualTo(graph.agents.agent(id)?.latestRunId)
+    }
+
+    @Test
+    fun `stopping the chat before the server has answered returns to the composer with the draft`() = runBlocking {
+        val vm = loaded()
+        vm.setPrompt("Do the thing")
+        var opened: String? = null
+        var failed: String? = null
+
+        vm.launch(onOpen = { opened = it }, onFailed = { failed = it })
+        awaitUntil { opened != null }
+        graph.conversations.attach(opened!!)
+        assertThat(graph.conversations.cancelActiveRun(opened!!).isSuccess).isTrue()
+
+        awaitUntil { !vm.state.value.isLaunching }
+        assertThat(failed).isEqualTo(opened)
+        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(vm.state.value.error).isNull()
+        assertThat(graph.conversations.state(opened!!).value.items).isEmpty()
+        assertThat(graph.agents.agent(opened!!)).isNull()
     }
 
     @Test

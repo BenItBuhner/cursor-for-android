@@ -6,9 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
+import com.cursorforandroid.data.repo.LaunchCancelledException
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
-import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
@@ -151,7 +151,12 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun refreshModels() = viewModelScope.launch { loadModels(force = true) }
 
-    fun launch(onLaunched: (Agent) -> Unit) {
+    /**
+     * Sends the draft. The chat opens through [onOpen] as soon as its prompt is on screen — before the server has
+     * answered — so sending feels immediate; the request completes behind it. Should it fail, or be stopped from the
+     * chat, [onFailed] takes the user back here, where the draft is still intact and, for a failure, the reason shows.
+     */
+    fun launch(onOpen: (agentId: String) -> Unit, onFailed: (agentId: String) -> Unit) {
         val s = _state.value
         if (!s.canLaunch) return
         launchJob = viewModelScope.launch {
@@ -168,10 +173,11 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 mcpServers = graph.mcpServers.enabled(),
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
-            // created instead of launching a duplicate.
-            val request = draft.copy(agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, launchNonce) })
-            graph.agents.launch(request, s.modelLabel).fold(
-                onSuccess = { agent ->
+            // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.
+            val agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, launchNonce) }
+            val request = draft.copy(agentId = agentId)
+            graph.conversations.launch(request, s.modelLabel, onStaged = { onOpen(agentId) }).fold(
+                onSuccess = {
                     // The agent exists now: a cancel arriving this late must not strand it behind an intact draft, and
                     // the composer only reports the launch done once the defaults it will restore next time are saved.
                     withContext(NonCancellable) {
@@ -184,15 +190,21 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                             autoCreatePr = request.autoCreatePr,
                         )
                         _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
-                        onLaunched(agent)
                     }
                 },
-                onFailure = { t -> _state.update { it.copy(isLaunching = false, error = t.userMessage()) } },
+                onFailure = { t ->
+                    // Stopped on purpose from the chat: nothing to explain, the draft is simply back.
+                    _state.update { it.copy(isLaunching = false, error = if (t is LaunchCancelledException) null else t.userMessage()) }
+                    onFailed(agentId)
+                },
             )
         }
     }
 
-    /** Abandons a launch that is taking too long. The draft stays in the composer so it can be sent again. */
+    /**
+     * Abandons a launch that is taking too long, request included. The draft stays in the composer so it can be
+     * sent again; the chat it had opened is taken down by the repository.
+     */
     fun cancelLaunch() {
         launchJob?.cancel()
         launchJob = null

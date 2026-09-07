@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.CachedConversation
+import com.cursorforandroid.data.local.CachedLocalPrompt
 import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.StagedAttachments
@@ -18,12 +19,15 @@ import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,7 +37,9 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -50,6 +56,9 @@ data class ConversationState(
     val transcriptUnavailable: Boolean = false,
 )
 
+/** The failure of a [ConversationRepository.launch] that was stopped from the chat before the server had answered. */
+class LaunchCancelledException : RuntimeException("The chat was stopped before it started.")
+
 /**
  * Owns the transcript for each open agent. History comes from `/v0/agents/{id}/conversation` and
  * `/v1/agents/{id}/runs`; anything happening right now arrives through the [LiveRunHub], which shares one SSE
@@ -64,6 +73,10 @@ data class ConversationState(
  * renders immediately and the network only revalidates it. What is written back is the transcript's inputs in the
  * shape the server will report them — never the rendered items, whose date headers are relative, and never the
  * traces, which the hub replays.
+ *
+ * Prompts sent from this device are on screen before the server has answered — a new chat [launch]es around its
+ * prompt, a follow-up appears the moment it is sent — and stay there while the server's transcript and run list
+ * catch up with them, each at its own pace.
  */
 class ConversationRepository(
     private val session: SessionManager,
@@ -79,8 +92,9 @@ class ConversationRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     /**
-     * A follow-up sent from this device: its prompt and its run, a placeholder until the server has answered, and
-     * — once the run finished while we watched — the reply the transcript will carry, for the disk copy.
+     * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
+     * placeholder until the server has answered, and — once the run finished while we watched — the reply the
+     * transcript will carry, for the disk copy.
      */
     private data class LocalPrompt(val message: V0ConversationMessageDto, val run: RunDto, val reply: V0ConversationMessageDto? = null)
 
@@ -95,7 +109,7 @@ class ConversationRepository(
         var messages: List<V0ConversationMessageDto> = emptyList()
         /** The v1 runs as the server returned them (or as the disk remembered them). */
         var runs: List<RunDto> = emptyList()
-        /** Follow-ups sent from here that the server's run list has not caught up with; shown after the history. */
+        /** Prompts sent from here that the server has not reported in full yet (see [items]). */
         var local: List<LocalPrompt> = emptyList()
         /** Per run: the items its stream produced, replayed for finished runs and updated live for the active one. */
         var traces: Map<String, List<TimelineItem>> = emptyMap()
@@ -104,29 +118,68 @@ class ConversationRepository(
         var inputsUpdatedAt = 0L
         /** True once this session fetched the inputs from the network (as opposed to disk). */
         var fetched = false
-        /** Per run: the images its prompt carried. A follow-up in flight is keyed by its placeholder run. */
+        /** Per run: the images its prompt carried. A prompt in flight is keyed by its placeholder run. */
         var promptImages: Map<String, List<MessageAttachment>> = emptyMap()
         var streamJob: Job? = null
         var traceJob: Job? = null
         var loadJob: Job? = null
+        /** The request creating this chat, from the moment its prompt is shown until the server has answered (see [launch]). */
+        var launch: Deferred<Result<Launched>>? = null
+        @Volatile var launching = false
         var attached = 0
         var lastUsedAt = AppClock.now()
 
         val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty()
-        val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true
+        val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && !launching
 
-        fun items(): List<TimelineItem> =
-            TimelineBuilder.fromHistory(messages, runs, traces, promptImages) +
-                TimelineBuilder.fromHistory(local.map { it.message }, local.map { it.run }, traces, promptImages)
+        /**
+         * The server's view joined with the prompts sent from here. `/v0/agents/{id}/conversation` pairs its user
+         * messages with the runs by position, oldest first, and the two endpoints catch up with a new run
+         * independently: right after a launch the run list has the run while the transcript is still empty. So the
+         * transcript is laid over as many runs as it has prompts for, and every run past that is rendered on its own —
+         * with the prompt sent from here when there is one, headed by the run alone when there is none (an agent
+         * without a transcript, a run started elsewhere the transcript has not caught up with). Whichever endpoint
+         * reports a prompt sent from here first, it shows once and never goes missing.
+         */
+        fun items(): List<TimelineItem> {
+            val ordered = allRuns()
+            val covered = coveredCount()
+            val items = TimelineBuilder.fromHistory(messages, ordered.take(covered), traces, promptImages).toMutableList()
+            ordered.drop(covered).forEach { run ->
+                val prompt = local.firstOrNull { it.run.id == run.id }
+                items += TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), traces, promptImages)
+            }
+            return items
+        }
 
-        /** The inputs as the server will report them once it has caught up, which is what the disk keeps. */
-        fun flattened(): CachedConversation = CachedConversation(
+        /** Every run known, oldest first: the server's, then the placeholders of prompts the server has not listed yet. */
+        fun allRuns(): List<RunDto> {
+            val listed = runs.mapTo(HashSet()) { it.id }
+            return (runs + local.map { it.run }.filter { it.id !in listed }).sortedBy { parseIsoMillis(it.createdAt) }
+        }
+
+        /** How many runs, oldest first, the server's transcript has a prompt for. */
+        fun coveredCount(): Int = messages.count { it.type == USER_MESSAGE }
+
+        /** True when this run's message is shown from a prompt sent from here rather than from the server's transcript. */
+        fun standsIn(runId: String): Boolean = local.any { it.run.id == runId } && allRuns().drop(coveredCount()).any { it.id == runId }
+
+        /**
+         * What the disk keeps: the server's inputs as reported, and the prompts sent from here — those the server has
+         * answered with a run; one still awaiting its answer has nothing the disk could pair it with — so the next
+         * start can go on standing them in for what the server has still not caught up with.
+         */
+        fun toCached(): CachedConversation = CachedConversation(
             agentId = agentId,
-            messages = messages + local.flatMap { listOfNotNull(it.message, it.reply) },
-            runs = runs + local.map { it.run },
+            messages = messages,
+            runs = runs,
             transcriptUnavailable = transcriptUnavailable,
             agentUpdatedAtMillis = inputsUpdatedAt,
+            local = local.filter { !it.run.isPlaceholder }.map { CachedLocalPrompt(it.message, it.run, it.reply) },
         )
+
+        /** Runs the placeholder of a prompt sent now must sort after, whatever the device clock says relative to the server's. */
+        fun newestRunAt(): Long = (runs + local.map { it.run }).maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
     }
 
     private val entries = LinkedHashMap<String, Entry>()
@@ -169,11 +222,19 @@ class ConversationRepository(
     /** True while at least one conversation screen shows this agent. */
     fun isAttached(agentId: String): Boolean = synchronized(entries) { (entries[agentId]?.attached ?: 0) > 0 }
 
-    /** Attach a screen. Loads history on first attach and keeps streaming while at least one screen is attached. */
+    /**
+     * Attach a screen. Loads history on first attach and keeps streaming while at least one screen is attached. A
+     * chat whose launch is still in flight has nothing on the server to load: its prompt is already on screen, and the
+     * launch starts the stream when the server answers.
+     */
     fun attach(agentId: String) {
         val e = entry(agentId)
-        e.attached++
-        if (e.attached == 1) {
+        val launching: Boolean
+        synchronized(e) {
+            e.attached++
+            launching = e.launching
+        }
+        if (e.attached == 1 && !launching) {
             e.loadJob?.cancel()
             e.loadJob = e.scope.launch {
                 agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
@@ -232,21 +293,24 @@ class ConversationRepository(
                 val onDevice = stored.await()
                 val transcript = convResult.getOrNull()?.messages ?: emptyList()
                 val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
-                val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
+                // A run the server created for a prompt sent from here counts even while its run list lags behind
+                // (a placeholder awaiting the server's answer does not: there is nothing to stream for it yet).
+                val confirmedLocal = synchronized(e) { e.local.map { it.run }.filter { !it.isPlaceholder && runList.none { listed -> listed.id == it.id } } }
+                val latest = (runList + confirmedLocal).maxByOrNull { parseIsoMillis(it.createdAt) }
                 val latestStatus = latest?.statusEnum()
                 val fetched = convResult.isSuccess || runList.isNotEmpty()
                 if (fetched) {
                     // Traces already known are kept: a finished run's log does not change, and the active run's is
-                    // overwritten by the first live snapshot. Local follow-ups hand over to the server once it lists
-                    // their run.
+                    // overwritten by the first live snapshot. Local prompts hand over to the server once it reports
+                    // them in full.
                     e.publish(
                         mutate = {
                             messages = transcript
                             runs = runList
                             this.transcriptUnavailable = transcriptUnavailable && transcript.isEmpty()
                             inputsUpdatedAt = agents.agent(agentId)?.updatedAtMillis ?: 0L
-                            local = local.filter { prompt -> runList.none { it.id == prompt.run.id } }
-                            // The disk knows every filed prompt; only follow-ups still in flight exist solely in memory.
+                            pruneLocal()
+                            // The disk knows every filed prompt; only prompts still in flight exist solely in memory.
                             promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
                             this.fetched = true
                         },
@@ -262,7 +326,7 @@ class ConversationRepository(
                         },
                     )
                 } else {
-                    e.state.update { it.copy(isLoading = false, error = convResult.exceptionOrNull()?.userMessage()) }
+                    e.reportLoadFailure(convResult.exceptionOrNull())
                 }
                 // The full agent record only enriches the row (repo, PR, duration); it never holds up the transcript,
                 // and the latest run is already known from the list above, saving a round-trip.
@@ -276,15 +340,36 @@ class ConversationRepository(
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
-            e.state.update { it.copy(isLoading = false, error = t.userMessage()) }
+            e.reportLoadFailure(t)
         }
+    }
+
+    /**
+     * Nothing came back from the server. That is the chat's error when there is nothing else to show; with a prompt
+     * sent from here on screen it is a revalidation that did not work out, and the next one will.
+     */
+    private fun Entry.reportLoadFailure(cause: Throwable?) {
+        val standingIn = synchronized(this) { local.isNotEmpty() }
+        state.update { it.copy(isLoading = false, error = if (standingIn) it.error else cause?.userMessage()) }
+    }
+
+    /**
+     * Drops the local prompts the server now reports in full — the run listed and, going by position, its message in
+     * the transcript. Only ever applied to the server's answer: the disk copy is these prompts' own flattened form and
+     * proves nothing about what the server knows.
+     */
+    private fun Entry.pruneLocal() {
+        if (local.isEmpty()) return
+        val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
+        val covered = messages.count { it.type == USER_MESSAGE }
+        local = local.filter { prompt -> ordered.indexOfFirst { it.id == prompt.run.id }.let { it < 0 || it >= covered } }
     }
 
     /** Shows the transcript saved by an earlier visit, if any, while the network answers. */
     private suspend fun restoreFromCache(e: Entry, agentId: String) {
         val cached = readCache(agentId) ?: return
         if (e.hasInputs || e.fetched) return
-        val latest = cached.runs.maxByOrNull { parseIsoMillis(it.createdAt) }
+        val latest = (cached.runs + cached.local.map { it.run }).maxByOrNull { parseIsoMillis(it.createdAt) }
         // A run that was still active when the cache was written has very likely finished since; the live state
         // ("Working…", Stop) waits for the network unless a fetched agent row confirms the run is still going.
         val list = agents.state.value
@@ -298,6 +383,8 @@ class ConversationRepository(
                 runs = cached.runs
                 transcriptUnavailable = cached.transcriptUnavailable
                 inputsUpdatedAt = cached.agentUpdatedAtMillis
+                // The prompts sent from here go on standing in, exactly as they did when the copy was written.
+                local = local + cached.local.filter { saved -> local.none { it.run.id == saved.run.id } }.map { LocalPrompt(it.message, it.run, it.reply) }
                 if (promptImages.isEmpty()) promptImages = onDevice
             },
             transform = { copy(activeRunId = latest?.id, runStatus = status, transcriptUnavailable = cached.transcriptUnavailable) },
@@ -314,7 +401,7 @@ class ConversationRepository(
     private suspend fun persist(e: Entry, backend: CursorBackend) {
         val store = cache ?: return
         if (backend.isDemo) return
-        val snapshot = synchronized(e) { if (e.hasInputs || e.local.isNotEmpty()) e.flattened() else null } ?: return
+        val snapshot = synchronized(e) { if (e.hasInputs || e.local.isNotEmpty()) e.toCached() else null } ?: return
         store.write(snapshot)
         diskIndex[snapshot.agentId] = snapshot.agentUpdatedAtMillis
     }
@@ -360,10 +447,12 @@ class ConversationRepository(
             hub.snapshots(agentId, run.id, startedAt)
                 .transformWhile { snapshot -> emit(snapshot); !snapshot.finished }
                 .collect { snapshot ->
-                    // The live snapshot is this run's trace; the builder places it after the run's prompt.
+                    // The live snapshot is this run's trace; the builder places it after the run's prompt. Until the
+                    // stream has said anything the run is what the server called it — a fresh one is still CREATING
+                    // ("Starting…") while its VM boots, not RUNNING because a connection was opened.
                     e.publish(
                         mutate = { traces = traces + (run.id to snapshot.items) },
-                        transform = { copy(runStatus = snapshot.status, isStreaming = !snapshot.finished) },
+                        transform = { copy(runStatus = if (snapshot.eventCount > 0) snapshot.status else runStatus, isStreaming = !snapshot.finished) },
                     )
                     if (snapshot.finished) {
                         // The screen is open, so the finished turn counts as read. finishedAtMillis is the updatedAt
@@ -380,7 +469,8 @@ class ConversationRepository(
     /**
      * Folds a run that finished while we watched into the inputs, the way the server will report it: the run itself
      * as terminal and its final reply as an assistant message. The disk copy renders it on the next open before the
-     * hub has replayed the trace; in memory the trace stands in for the text, so nothing shows twice.
+     * hub has replayed the trace; in memory the trace stands in for the text, so nothing shows twice. The reply goes
+     * wherever this run's message is shown from — the local prompt while it stands in, else the transcript.
      */
     private fun Entry.recordFinishedRun(run: RunDto, snapshot: LiveRunHub.Snapshot, finishedAt: Long) {
         val result = snapshot.result
@@ -392,13 +482,10 @@ class ConversationRepository(
             result = text.ifEmpty { run.result },
             git = result?.git ?: run.git,
         )
-        val reply = text.takeIf { it.isNotEmpty() }?.let { V0ConversationMessageDto("res-${run.id}", "assistant_message", it) }
-        if (local.any { it.run.id == run.id }) {
-            local = local.map { if (it.run.id == run.id) it.copy(run = terminal, reply = reply) else it }
-        } else {
-            runs = runs.map { if (it.id == run.id) terminal else it }
-            if (reply != null && messages.none { it.id == reply.id }) messages = messages + reply
-        }
+        val reply = text.takeIf { it.isNotEmpty() }?.let { V0ConversationMessageDto("res-${run.id}", ASSISTANT_MESSAGE, it) }
+        runs = runs.map { if (it.id == run.id) terminal else it }
+        local = local.map { if (it.run.id == run.id) it.copy(run = terminal, reply = reply) else it }
+        if (!standsIn(run.id) && reply != null && messages.none { it.id == reply.id }) messages = messages + reply
         inputsUpdatedAt = maxOf(inputsUpdatedAt, finishedAt)
     }
 
@@ -413,15 +500,14 @@ class ConversationRepository(
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
         // The prompt shows up right away, paired with a placeholder run so it gets a timestamp like every other turn.
-        val localId = "local-$now"
-        val nowIso = Instant.ofEpochMilli(now).toString()
-        val placeholder = RunDto(id = localId, agentId = agentId, status = RunStatus.CREATING.name, createdAt = nowIso, updatedAt = nowIso)
+        val localId = "$LOCAL_RUN_PREFIX$now"
+        val placeholder = e.placeholderRun(localId, now)
         // Written before the request so the bubble shows its images from the first frame, like the text. Storage
         // trouble costs the previews, never the send.
         val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
         e.publish(
             mutate = {
-                local = local + LocalPrompt(V0ConversationMessageDto(localId, "user_message", trimmed), placeholder)
+                local = local + LocalPrompt(V0ConversationMessageDto(localId, USER_MESSAGE, trimmed), placeholder)
                 if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
             },
             transform = { copy(error = null) },
@@ -457,12 +543,136 @@ class ConversationRepository(
         )
     }
 
+    /**
+     * Launches a new chat around its prompt, so the composer can open it without waiting for the server. The message
+     * is published at once — paired with a placeholder `CREATING` run, so the chat reads "Starting…", its images staged
+     * like a follow-up's — and its row is put in the agent list; then [onStaged] runs, which is where the composer
+     * navigates to the chat; only then does the request go out. The server's reply swaps in the run it created and,
+     * while a screen is attached, starts its stream. A failure takes the prompt and the row down again and is
+     * returned. Stopping the chat before the server has answered ([cancelLaunch]) fails the launch with
+     * [LaunchCancelledException]; cancelling the caller abandons the request itself.
+     *
+     * Requires the client-minted [LaunchRequest.agentId] the composer always sends: it is what the chat is shown under
+     * before the server has named it, and what lets a retry adopt an agent the first attempt already created.
+     */
+    suspend fun launch(request: LaunchRequest, modelDisplayName: String?, onStaged: () -> Unit = {}): Result<Launched> {
+        val agentId = requireNotNull(request.agentId) { "A launch needs a client-minted agent id to show the chat under." }
+        val e = entry(agentId)
+        synchronized(e) {
+            if (e.launching) return Result.failure(IllegalStateException("This chat is already being started."))
+            e.launching = true
+        }
+        val now = AppClock.now()
+        val localId = "$LOCAL_RUN_PREFIX$now"
+        val placeholder = e.placeholderRun(localId, now)
+        // Staged before anything is shown, so the bubble has its images from its first frame. Storage trouble costs
+        // the previews, never the launch.
+        val staged = runCatching { attachments.stage(request.images) }.getOrDefault(StagedAttachments.EMPTY)
+        agents.beginLaunch(request, modelDisplayName)
+        e.publish(
+            mutate = {
+                local = local + LocalPrompt(V0ConversationMessageDto(localId, USER_MESSAGE, request.prompt.trim()), placeholder)
+                if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
+            },
+            transform = { copy(isLoading = false, error = null, activeRunId = null, runStatus = RunStatus.CREATING, isStreaming = false, transcriptUnavailable = false) },
+        )
+        onStaged()
+
+        // The request runs in the entry's scope so a Stop from the chat can cancel it without the launcher's
+        // coroutine being involved; the launcher's own cancellation takes the request down with it.
+        val inFlight = e.scope.async { agents.launch(request, modelDisplayName, saveImages = false) }
+        synchronized(e) { e.launch = inFlight }
+        val result: Result<Launched> = try {
+            inFlight.await()
+        } catch (cancelled: CancellationException) {
+            if (currentCoroutineContext().isActive) {
+                Result.failure(LaunchCancelledException())
+            } else {
+                inFlight.cancel()
+                Result.failure(cancelled)
+            }
+        }
+        // Whatever happened, the chat must be left consistent — including when the launcher is already cancelled.
+        withContext(NonCancellable) {
+            result.fold(
+                onSuccess = { launched -> settleLaunch(e, launched, localId, staged, now) },
+                onFailure = { rollbackLaunch(e, localId, staged) },
+            )
+            synchronized(e) {
+                e.launch = null
+                e.launching = false
+            }
+        }
+        result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        return result
+    }
+
+    /** The server created the chat: its run takes the placeholder's place, the images are filed under it, and its stream starts. */
+    private suspend fun settleLaunch(e: Entry, launched: Launched, localId: String, staged: StagedAttachments, sentAt: Long) {
+        val run = launched.run
+        if (run == null) {
+            // A retry adopted an agent whose run could not be read: the server owns the transcript from here on.
+            attachments.discard(staged)
+            e.publish(mutate = { local = local.filterNot { it.run.id == localId }; promptImages = promptImages - localId })
+            if (e.attached > 0) reload(e.agentId)
+            return
+        }
+        val kept = runCatching { attachments.commit(e.agentId, run.id, staged) }.getOrDefault(staged.attachments)
+        e.publish(
+            mutate = {
+                local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
+                inputsUpdatedAt = maxOf(inputsUpdatedAt, sentAt)
+            },
+            transform = { copy(activeRunId = run.id, runStatus = run.statusEnum()) },
+        )
+        // With nobody looking, the stream waits for the next attach, whose load starts it like any active run's.
+        if (e.attached > 0 && run.statusEnum().isActive) startStreaming(e, e.agentId, run)
+        persist(e, session.current)
+    }
+
+    /** The chat was not created: nothing of it stays, on screen or on disk. */
+    private suspend fun rollbackLaunch(e: Entry, localId: String, staged: StagedAttachments) {
+        attachments.discard(staged)
+        e.publish(
+            mutate = {
+                local = local.filterNot { it.run.id == localId }
+                promptImages = promptImages - localId
+            },
+            transform = { ConversationState(agentId) },
+        )
+        agents.discardLaunch(e.agentId)
+    }
+
     suspend fun cancelActiveRun(agentId: String): Result<Unit> {
         val e = entry(agentId)
+        // A chat the server has not answered for yet has no run to cancel; stopping it gives the launch up instead.
+        if (cancelLaunch(agentId)) return Result.success(Unit)
         val runId = e.state.value.activeRunId ?: return Result.failure(IllegalStateException("No active run."))
         return agents.cancelRun(agentId, runId).onSuccess {
             e.state.update { it.copy(runStatus = RunStatus.CANCELLED) }
         }
+    }
+
+    /**
+     * Abandons a [launch] the server has not answered yet, from any screen; the launcher gets a
+     * [LaunchCancelledException] and the prompt comes down. False when there is nothing in flight for this chat.
+     */
+    fun cancelLaunch(agentId: String): Boolean {
+        val e = synchronized(entries) { entries[agentId] } ?: return false
+        val inFlight = synchronized(e) { e.launch?.takeIf { it.isActive } } ?: return false
+        inFlight.cancel()
+        return true
+    }
+
+    /**
+     * The run a prompt sent now is paired with until the server has answered. Stamped now, but never before the newest
+     * run already known: the transcript is ordered by these stamps, and a device clock behind the server's must not
+     * file a new prompt under an older turn.
+     */
+    private fun Entry.placeholderRun(id: String, now: Long): RunDto {
+        val at = Instant.ofEpochMilli(maxOf(now, synchronized(this) { newestRunAt() } + 1)).toString()
+        return RunDto(id = id, agentId = agentId, status = RunStatus.CREATING.name, createdAt = at, updatedAt = at)
     }
 
     fun clearError(agentId: String) = entry(agentId).state.update { it.copy(error = null) }
@@ -531,6 +741,7 @@ class ConversationRepository(
                                 this.runs = runList
                                 transcriptUnavailable = false
                                 inputsUpdatedAt = agent.updatedAtMillis
+                                pruneLocal()
                                 fetched = true
                             },
                             transform = {
@@ -565,5 +776,12 @@ class ConversationRepository(
         const val ABSENT = -1L
         /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
         const val MAX_PARALLEL_REPLAYS = 3
+        /** The two message types of `/v0/agents/{id}/conversation`. */
+        const val USER_MESSAGE = "user_message"
+        const val ASSISTANT_MESSAGE = "assistant_message"
+        /** Ids of the runs local prompts are paired with until the server has answered. */
+        const val LOCAL_RUN_PREFIX = "local-"
+
+        val RunDto.isPlaceholder: Boolean get() = id.startsWith(LOCAL_RUN_PREFIX)
     }
 }

@@ -92,6 +92,11 @@ fun AppNavHost(
         stack.resetTo(screen)
     }
 
+    /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
+    fun leaveFailedLaunch(agentId: String) {
+        if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
+    }
+
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let {
             openAgent(it)
@@ -160,7 +165,8 @@ fun AppNavHost(
                     listState = listState,
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
-                    onLaunched = { agent -> openAgent(agent.id) },
+                    onLaunchOpen = ::openAgent,
+                    onLaunchFailed = ::leaveFailedLaunch,
                 )
                 Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
                 is Screen.Agent -> ConversationScreen(
