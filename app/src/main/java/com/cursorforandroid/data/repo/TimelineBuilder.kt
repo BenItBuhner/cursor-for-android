@@ -98,7 +98,7 @@ object TimelineBuilder {
      * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
      * above come straight from the transcript and run records; a repeated server id gets a positional suffix.
      */
-    private fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
+    fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
         val seen = HashSet<String>(size)
         return map { item ->
             var id = item.id
@@ -184,6 +184,10 @@ object TimelineBuilder {
     /**
      * Accumulates the SSE events of one run into timeline items. [timed] measures how long each thinking block
      * streamed for ("Thought for 3s"); turn it off when the events are a replay rather than happening now.
+     *
+     * A stream [RunStreamEvent.Error] is about the connection, not the run — the run keeps going on the server while
+     * the client reconnects — so it adds nothing to the items. Its message is kept: when the run then ends in
+     * `ERROR` without a final text, it is the only account of what went wrong (the run record carries none).
      */
     class LiveRun(
         private val runId: String,
@@ -194,9 +198,13 @@ object TimelineBuilder {
         private var seq = 0
         private var thinkingStartedAt: Long? = null
         private var assistantText = StringBuilder()
+        private var streamError: RunStreamEvent.Error? = null
         var status: RunStatus = RunStatus.RUNNING
             private set
         var finished: Boolean = false
+            private set
+        /** Content events applied so far (text, thinking, tool calls): how far along the run's story this is. */
+        var applied: Int = 0
             private set
 
         fun snapshot(): List<TimelineItem> = items.toList()
@@ -206,14 +214,11 @@ object TimelineBuilder {
         fun apply(event: RunStreamEvent) {
             when (event) {
                 is RunStreamEvent.Status -> status = event.status
-                is RunStreamEvent.Assistant -> appendAssistant(event.text)
-                is RunStreamEvent.Thinking -> appendThinking(event.text)
-                is RunStreamEvent.ToolCall -> applyTool(event.call)
+                is RunStreamEvent.Assistant -> { applied++; appendAssistant(event.text) }
+                is RunStreamEvent.Thinking -> { applied++; appendThinking(event.text) }
+                is RunStreamEvent.ToolCall -> { applied++; applyTool(event.call) }
                 is RunStreamEvent.Result -> finish(event)
-                is RunStreamEvent.Error -> {
-                    closeStreaming()
-                    items += NoticeCard(nextId("err"), "Stream error", event.message.ifBlank { event.code }, NoticeTone.Error)
-                }
+                is RunStreamEvent.Error -> if (!event.isExpired) streamError = event
                 RunStreamEvent.Heartbeat, RunStreamEvent.Done -> Unit
             }
         }
@@ -280,25 +285,37 @@ object TimelineBuilder {
             }
         }
 
-        private fun closeStreaming() {
+        /**
+         * The run is over, so nothing in it is still happening: text and thinking stop streaming, and a tool call or
+         * subagent the stream never reported the end of (its `completed` event was lost with the connection, or the
+         * run was cut short) stops spinning. A run that finished did finish its tools; any other ending interrupted them.
+         */
+        private fun closeStreaming(status: RunStatus) {
             closeThinking()
+            val toolStatus = if (status == RunStatus.FINISHED) ToolCall.STATUS_COMPLETED else ToolCall.STATUS_INTERRUPTED
+            val subagentStatus = if (status == RunStatus.FINISHED) "Done" else "Stopped"
             items.replaceAll {
                 when (it) {
                     is AssistantMessage -> it.copy(isStreaming = false)
                     is ThinkingBlock -> it.copy(isStreaming = false)
+                    is ToolActivity -> if (it.isRunning) it.copy(calls = it.calls.map { c -> if (c.isRunning) c.copy(status = toolStatus) else c }) else it
+                    is SubagentsCard -> if (it.subagents.any { s -> s.status == "Running" }) it.copy(subagents = it.subagents.map { s -> if (s.status == "Running") s.copy(status = subagentStatus) else s }) else it
                     else -> it
                 }
             }
         }
 
         private fun finish(event: RunStreamEvent.Result) {
-            closeStreaming()
+            closeStreaming(event.status)
             status = event.status
             finished = true
             val finalText = event.text?.trim().orEmpty()
             val hasAssistant = items.any { it is AssistantMessage && it.markdown.isNotBlank() }
             if (finalText.isNotEmpty() && !hasAssistant) items += AssistantMessage(nextId("asst"), finalText)
-            if (event.status == RunStatus.ERROR) items += NoticeCard(nextId("notice"), "Run failed", finalText.ifBlank { null }, NoticeTone.Error)
+            if (event.status == RunStatus.ERROR) {
+                val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
+                items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
+            }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
         }
