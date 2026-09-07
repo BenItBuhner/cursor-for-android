@@ -328,9 +328,12 @@ class ConversationRepository(
         e.traceJob?.cancel()
         val pending = synchronized(e) { finishedRuns.filter { it.id !in e.traces } }.sortedByDescending { parseIsoMillis(it.createdAt) }
         if (pending.isEmpty()) return
+        // A log the hub already saw expire (an earlier pass, a reload) settles every older run before any worker
+        // starts, so those are never asked again — the answer would depend on which worker happened to finish first.
+        val knownExpired = pending.filter { hub.current(agentId, it.id)?.expired == true }.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: Long.MIN_VALUE
         e.traceJob = e.scope.launch {
             val next = AtomicInteger(0)
-            val newestExpired = AtomicLong(Long.MIN_VALUE)
+            val newestExpired = AtomicLong(knownExpired)
             repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
                 launch {
                     while (true) {
