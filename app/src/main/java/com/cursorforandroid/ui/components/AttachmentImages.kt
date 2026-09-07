@@ -1,3 +1,7 @@
+// The framework ExifInterface reads the one tag needed here on every supported API level (26+); the AndroidX copy
+// is not worth a dependency for that.
+@file:Suppress("ExifInterface")
+
 package com.cursorforandroid.ui.components
 
 import android.graphics.Bitmap
@@ -6,6 +10,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.media.ExifInterface
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import com.cursorforandroid.domain.PromptImage
 import java.io.ByteArrayOutputStream
 import kotlin.math.max
@@ -49,9 +55,6 @@ object AttachmentImages {
         return if (jpeg.isNotEmpty() && jpeg.size < bytes.size) PromptImage(jpeg, "image/jpeg") else PromptImage(bytes, mime)
     }
 
-    // The framework class reads the one tag needed here on every supported API level; the AndroidX one is not
-    // worth a dependency for that.
-    @Suppress("ExifInterface")
     private fun exifOrientation(bytes: ByteArray, mime: String): Int {
         if (mime != "image/jpeg") return ExifInterface.ORIENTATION_NORMAL
         return runCatching { ExifInterface(bytes.inputStream()).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
@@ -77,13 +80,13 @@ object AttachmentImages {
     private fun Bitmap.fitWithin(maxEdge: Int): Bitmap {
         val edge = max(width, height)
         if (edge <= maxEdge) return this
-        val scale = maxEdge.toFloat() / edge
-        return Bitmap.createScaledBitmap(this, (width * scale).roundToInt().coerceAtLeast(1), (height * scale).roundToInt().coerceAtLeast(1), true)
+        val factor = maxEdge.toFloat() / edge
+        return scale((width * factor).roundToInt().coerceAtLeast(1), (height * factor).roundToInt().coerceAtLeast(1))
     }
 
     /** JPEG has no alpha; transparent regions would otherwise come out black. */
     private fun Bitmap.flattenOnWhite(): Bitmap {
-        val flat = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val flat = createBitmap(width, height)
         val canvas = Canvas(flat)
         canvas.drawColor(Color.WHITE)
         canvas.drawBitmap(this, 0f, 0f, null)
