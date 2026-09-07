@@ -36,8 +36,10 @@ data class CursorTypography(
     val small: TextStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal),
     /** `--cursor-font-size-xs` 11 / 14 — badges, kbd hints. */
     val tiny: TextStyle = TextStyle(fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.Normal),
-    /** Page / sheet titles (Cursor settings uses 20 semibold; headers in the Agents window use 14 medium). */
-    val title: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    /** Header and sheet titles: 14 medium, as in the Agents window header. */
+    val title: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
+    /** Standalone section titles inside a screen ("Sign in" stays [pageTitle]; sheet pages use this). */
+    val sectionTitle: TextStyle = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.1).sp),
     val pageTitle: TextStyle = TextStyle(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
     val code: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.sp, lineHeight = 16.sp),
     val codeBlock: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.sp, lineHeight = 18.sp),

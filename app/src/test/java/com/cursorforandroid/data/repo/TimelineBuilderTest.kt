@@ -73,6 +73,21 @@ class TimelineBuilderTest {
     }
 
     @Test
+    fun `history never repeats an id even when the transcript does`() {
+        val messages = listOf(
+            V0ConversationMessageDto("m1", "user_message", "Add a README"),
+            V0ConversationMessageDto("m2", "assistant_message", "Working on it."),
+            V0ConversationMessageDto("m2", "assistant_message", "Done."),
+            V0ConversationMessageDto("m1", "user_message", "Again"),
+        )
+        val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z"), run("run-1", "2026-04-13T18:50:00.000Z"))
+        val items = TimelineBuilder.fromHistory(messages, runs, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        assertThat(items.map { it.id }).containsNoDuplicates()
+        assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Working on it.", "Done.").inOrder()
+        assertThat(items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Add a README", "Again").inOrder()
+    }
+
+    @Test
     fun `history without transcript falls back to run results`() {
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z", result = "Final answer"))
         val items = TimelineBuilder.fromHistory(emptyList(), runs, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)

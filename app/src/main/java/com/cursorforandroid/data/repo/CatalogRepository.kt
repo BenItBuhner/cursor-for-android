@@ -36,7 +36,7 @@ class CatalogRepository(private val session: SessionManager) {
         val now = AppClock.now()
         if (!force && _repositories.value.isNotEmpty() && now - reposFetchedAt < REPO_TTL_MS) return Result.success(_repositories.value)
         if (!force && now - reposFetchedAt < REPO_MIN_INTERVAL_MS) return Result.success(_repositories.value)
-        return runCatching { session.current.api.repositories().items.map { Repository(it.url) } }
+        return runCatching { session.current.api.repositories().items.map { Repository(it.url) }.distinctBy { it.url } }
             .onSuccess {
                 _repositories.value = it.sortedBy { r -> r.slug.lowercase() }
                 reposFetchedAt = now

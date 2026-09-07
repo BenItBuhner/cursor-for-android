@@ -48,6 +48,9 @@ class AppGraph(context: Context) {
         liveRuns.resetAll()
         conversations.resetAll()
         catalog.reset()
+        // The list is only reset automatically when the backend changes; signing out of one real account and into
+        // another keeps the same backend and must not show the previous account's agents.
+        agents.reset()
         attachments.clear()
         session.signOut()
     }

@@ -1,6 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,6 +10,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -125,17 +129,22 @@ private fun DisclosureRow(
     busy: Boolean = false,
 ) {
     val colors = CursorTheme.colors
+    val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
     Row(
-        Modifier.pressable(onToggle, CursorTheme.shapes.sm).padding(vertical = 2.dp, horizontal = 2.dp),
+        Modifier
+            .offset(x = (-6).dp)
+            .pressable(onToggle, CursorTheme.shapes.base)
+            .heightIn(min = 28.dp)
+            .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = CursorTheme.typography.base, color = colors.textTertiary)
         if (value != null) {
             Spacer(Modifier.width(6.dp))
-            Text(value, style = CursorTheme.typography.base, color = colors.textQuaternary)
+            Text(value, style = CursorTheme.typography.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(4.dp))
-        if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp).rotate(if (expanded) 180f else 0f))
+        if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
     }
 }
 
@@ -194,8 +203,8 @@ private fun ToolActivityView(item: ToolActivity, modifier: Modifier) {
 private fun ToolCallRow(call: ToolCall) {
     val colors = CursorTheme.colors
     val mono = call.kind == ToolKind.Shell || call.kind == ToolKind.Read || call.kind == ToolKind.Edit || call.kind == ToolKind.List
-    Row(Modifier.fillMaxWidth().height(30.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(call.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+    Row(Modifier.fillMaxWidth().height(34.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(call.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
         Text(ToolNames.verb(call.kind, call.status), style = CursorTheme.typography.small, color = colors.textTertiary)
         Spacer(Modifier.width(6.dp))
@@ -216,22 +225,24 @@ private fun SubagentsView(item: SubagentsCard, modifier: Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     CursorCard(modifier.fillMaxWidth()) {
-        Row(Modifier.padding(horizontal = 10.dp).height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(horizontal = 12.dp).height(34.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(CursorIcons.Sparkle, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
+            Spacer(Modifier.width(7.dp))
             Text("Subagents", style = type.small, color = colors.textTertiary)
             Spacer(Modifier.width(6.dp))
             Text(item.subagents.size.toString(), style = type.small, color = colors.textQuaternary)
         }
         HairlineDivider()
         item.subagents.forEachIndexed { index, sub ->
-            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (sub.status == "Running") SpinnerRing(size = 10.dp) else Dot(colors.iconQuaternary, size = 6.dp)
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (sub.status == "Running") SpinnerRing(size = 10.dp) else Dot(if (sub.status == "Done") colors.green.copy(alpha = 0.8f) else colors.iconQuaternary, size = 6.dp)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(sub.title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${sub.status} · ${sub.kind}", style = type.small, color = colors.textQuaternary)
                 }
             }
-            if (index != item.subagents.lastIndex) HairlineDivider(Modifier.padding(start = 26.dp))
+            if (index != item.subagents.lastIndex) HairlineDivider(Modifier.padding(start = 28.dp))
         }
     }
 }
