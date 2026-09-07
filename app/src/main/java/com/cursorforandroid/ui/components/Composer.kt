@@ -27,6 +27,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -62,6 +64,11 @@ fun ComposerBox(
     val shape = CursorTheme.shapes.xl
     var focused by remember { mutableStateOf(false) }
     val pad = CursorDimens.composerPadding
+    // The field owns the selection. Text that changes from outside (a slash command from the "+" menu, the draft
+    // being cleared after send) is adopted with the cursor at the end, so typing continues after the command instead
+    // of wherever the cursor happened to be.
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
 
     Column(
         modifier
@@ -73,8 +80,11 @@ fun ComposerBox(
             AttachmentStrip(attachments, onRemoveAttachment)
         }
         BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = field,
+            onValueChange = { next ->
+                field = next
+                if (next.text != value) onValueChange(next.text)
+            },
             textStyle = type.input.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
             minLines = minLines,
