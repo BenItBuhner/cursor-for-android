@@ -127,7 +127,7 @@ fun HomeScreen(
                         SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             // A blank ref leaves the starting point to the repository's default branch.
-                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch, mono = true)
+                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
                         }
                         SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
                     }
@@ -373,12 +373,9 @@ internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pl
     }
 }
 
-/**
- * Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. [mono]
- * sets the title in JetBrains Mono at body size, as the composer chips do for branch names.
- */
+/** Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. */
 @Composable
-internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, mono: Boolean = false, onClick: () -> Unit) {
+internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
@@ -395,8 +392,7 @@ internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: 
             Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
-            val titleStyle = if (mono) type.code.copy(fontSize = type.base.fontSize, lineHeight = type.base.lineHeight) else type.base
-            Text(title, style = titleStyle, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (checked) {
