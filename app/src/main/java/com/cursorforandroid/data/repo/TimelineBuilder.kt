@@ -5,7 +5,6 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
@@ -22,12 +21,10 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
-import com.cursorforandroid.util.TimeFormat
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import java.time.ZoneId
 
 object TimelineBuilder {
 
@@ -46,8 +43,6 @@ object TimelineBuilder {
         runs: List<RunDto>,
         traces: Map<String, List<TimelineItem>> = emptyMap(),
         attachments: Map<String, List<MessageAttachment>> = emptyMap(),
-        nowMillis: Long = AppClock.now(),
-        zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         val items = mutableListOf<TimelineItem>()
@@ -66,10 +61,7 @@ object TimelineBuilder {
         fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
 
         if (messages.isEmpty()) {
-            ordered.forEach { run ->
-                items += DateHeader("hdr-${run.id}", TimeFormat.conversationStamp(parseIsoMillis(run.createdAt), nowMillis, zone))
-                closeRun(run, resultReply(run))
-            }
+            ordered.forEach { run -> closeRun(run, resultReply(run)) }
             return items
         }
         var userIndex = -1
@@ -81,9 +73,7 @@ object TimelineBuilder {
                     replies = mutableListOf()
                     userIndex++
                     val run = ordered.getOrNull(userIndex)
-                    val stamp = run?.let { parseIsoMillis(it.createdAt) }
-                    if (stamp != null) items += DateHeader("hdr-${msg.id}", TimeFormat.conversationStamp(stamp, nowMillis, zone))
-                    items += UserMessage(msg.id, msg.text, stamp, attachments = run?.let { attachments[it.id] } ?: emptyList())
+                    items += UserMessage(msg.id, msg.text, run?.let { parseIsoMillis(it.createdAt) }, attachments = run?.let { attachments[it.id] } ?: emptyList())
                 }
                 else -> replies += AssistantMessage(msg.id, msg.text)
             }
@@ -109,7 +99,6 @@ object TimelineBuilder {
     }
 
     private fun TimelineItem.withId(id: String): TimelineItem = when (this) {
-        is DateHeader -> copy(id = id)
         is UserMessage -> copy(id = id)
         is AssistantMessage -> copy(id = id)
         is ThinkingBlock -> copy(id = id)

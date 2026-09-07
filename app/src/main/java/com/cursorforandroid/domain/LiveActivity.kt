@@ -112,7 +112,7 @@ data class RunDigest(
                 if (running > 0) Activity("Delegating to", "$running ${if (running == 1) "subagent" else "subagents"}") else Activity.Working
             }
             is RunFooter, is NoticeCard -> Activity.Finishing
-            is UserMessage, is DateHeader, is SummaryRow -> Activity.Working
+            is UserMessage, is SummaryRow -> Activity.Working
         }
 
         private fun ToolCall.detail(): String? {

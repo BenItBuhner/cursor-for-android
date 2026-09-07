@@ -62,8 +62,8 @@ data class ConversationState(
  *
  * Opening a chat is cache-first: the transcript saved on disk (by an earlier visit or the background prefetch)
  * renders immediately and the network only revalidates it. What is written back is the transcript's inputs in the
- * shape the server will report them — never the rendered items, whose date headers are relative, and never the
- * traces, which the hub replays.
+ * shape the server will report them — never the rendered items, which are derived from them, and never the traces,
+ * which the hub replays.
  */
 class ConversationRepository(
     private val session: SessionManager,
@@ -412,7 +412,8 @@ class ConversationRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
-        // The prompt shows up right away, paired with a placeholder run so it gets a timestamp like every other turn.
+        // The prompt shows up right away, paired with a placeholder run so it is built like every other turn (its images
+        // are keyed by that run) until the server's run takes its place.
         val localId = "local-$now"
         val nowIso = Instant.ofEpochMilli(now).toString()
         val placeholder = RunDto(id = localId, agentId = agentId, status = RunStatus.CREATING.name, createdAt = nowIso, updatedAt = nowIso)

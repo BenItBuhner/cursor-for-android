@@ -7,8 +7,6 @@ sealed interface TimelineItem {
     val id: String
 }
 
-data class DateHeader(override val id: String, val label: String) : TimelineItem
-
 data class UserMessage(
     override val id: String,
     val text: String,

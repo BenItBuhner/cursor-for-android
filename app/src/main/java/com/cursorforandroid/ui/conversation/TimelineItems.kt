@@ -32,7 +32,6 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
@@ -61,7 +60,6 @@ import com.cursorforandroid.util.TimeFormat
 @Composable
 fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
     when (item) {
-        is DateHeader -> DateHeaderView(item, modifier)
         is UserMessage -> HumanMessage(item, modifier)
         is AssistantMessage -> MarkdownText(item.markdown, modifier.fillMaxWidth(), streaming = item.isStreaming)
         is ThinkingBlock -> ThinkingView(item, modifier)
@@ -70,14 +68,6 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
         is SubagentsCard -> SubagentsView(item, modifier)
         is NoticeCard -> NoticeView(item, modifier)
         is RunFooter -> RunFooterView(item, modifier)
-    }
-}
-
-/** Timestamp above a prompt: 11sp at 36 %, aligned with the message. */
-@Composable
-private fun DateHeaderView(item: DateHeader, modifier: Modifier) {
-    Box(modifier.fillMaxWidth().padding(top = 6.dp), contentAlignment = Alignment.CenterEnd) {
-        Text(item.label, style = CursorTheme.typography.tiny, color = CursorTheme.colors.textQuaternary)
     }
 }
 

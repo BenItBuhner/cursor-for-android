@@ -40,8 +40,8 @@ class AgentListCache(private val cache: JsonDiskCache) {
 }
 
 /**
- * The raw inputs of a transcript rather than the rendered timeline: date headers are relative ("Today at 2:00 PM")
- * and are rebuilt against the current clock on every load.
+ * The raw inputs of a transcript rather than the rendered timeline, which is rebuilt from these on every load together
+ * with the run traces the hub replays and the prompt images kept on this device.
  */
 @Serializable
 data class CachedConversation(
