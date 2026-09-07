@@ -178,16 +178,43 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
     override suspend fun models(): ListModelsResponseDto = io {
         delay(120)
+        // Shaped like the live catalogue: a model's `variants` enumerate every accepted parameter combination (a
+        // context window × effort grid, an effort × fast grid), and the `parameters` definitions name them.
+        val efforts = listOf("low" to "Low", "medium" to "Medium", "high" to "High", "xhigh" to "Extra High", "max" to "Max")
+        val contexts = listOf("300k" to "300K", "1m" to "1M")
+        val effortDefinition = { values: List<Pair<String, String>> -> ModelParameterDefinitionDto("effort", "Effort", values.map { (v, n) -> ModelParameterValueDto(v, n) }) }
         ListModelsResponseDto(
             items = listOf(
                 ModelListItemDto(
                     id = "claude-fable-5.1-thinking", displayName = "Claude Fable 5.1", description = "Best for complex, long-horizon coding.",
-                    variants = listOf(
-                        ModelVariantDto(params = listOf(ModelParamDto("context", "1m"), ModelParamDto("effort", "max")), displayName = "Claude Fable 5.1 1M Max", isDefault = true),
-                        ModelVariantDto(params = listOf(ModelParamDto("effort", "high")), displayName = "Claude Fable 5.1"),
-                    ),
+                    parameters = listOf(ModelParameterDefinitionDto("context", "Context", contexts.map { (v, n) -> ModelParameterValueDto(v, n) }), effortDefinition(efforts)),
+                    variants = contexts.reversed().flatMap { (context, contextName) ->
+                        efforts.reversed().map { (effort, effortName) ->
+                            ModelVariantDto(
+                                params = listOf(ModelParamDto("context", context), ModelParamDto("effort", effort)),
+                                displayName = "Claude Fable 5.1" + (if (context == "1m") " $contextName" else "") + " $effortName",
+                                isDefault = context == "1m" && effort == "max",
+                            )
+                        }
+                    },
                 ),
-                // Like the live catalogue, both variants carry the model's name and differ only by their parameters.
+                // Every variant carries the model's name, as in the live catalogue; they differ only by their parameters.
+                ModelListItemDto(
+                    id = "cursor-grok-4.6", displayName = "Cursor Grok 4.6", description = "Cursor's fast reasoning model.",
+                    parameters = listOf(
+                        effortDefinition(efforts.dropLast(1)),
+                        ModelParameterDefinitionDto("fast", "Fast", listOf(ModelParameterValueDto("false"), ModelParameterValueDto("true", "Fast"))),
+                    ),
+                    variants = efforts.dropLast(1).flatMap { (effort, _) ->
+                        listOf("true", "false").map { fast ->
+                            ModelVariantDto(
+                                params = listOf(ModelParamDto("effort", effort), ModelParamDto("fast", fast)),
+                                displayName = "Cursor Grok 4.6",
+                                isDefault = effort == "high" && fast == "true",
+                            )
+                        }
+                    },
+                ),
                 ModelListItemDto(
                     id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
                     parameters = listOf(ModelParameterDefinitionDto("fast", "Fast", listOf(ModelParameterValueDto("false"), ModelParameterValueDto("true", "Fast")))),
