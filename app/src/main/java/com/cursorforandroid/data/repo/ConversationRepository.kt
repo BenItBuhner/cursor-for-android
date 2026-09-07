@@ -748,8 +748,8 @@ class ConversationRepository(
     /**
      * Launches a new chat around its prompt, so the composer can open it without waiting for the server. The message
      * is published at once — paired with a placeholder `CREATING` run, so the chat reads "Starting…", its images staged
-     * like a follow-up's — and its row is put in the agent list; then [onStaged] runs, which is where the composer
-     * navigates to the chat; only then does the request go out. The server's reply swaps in the run it created and,
+     * like a follow-up's — and its row is put in the agent list; the request goes out and [onStaged] runs, which is
+     * where the composer navigates to the chat. The server's reply swaps in the run it created and,
      * while a screen is attached, starts its stream. A failure takes the prompt and the row down again and is
      * returned. Stopping the chat before the server has answered ([cancelLaunch]) fails the launch with
      * [LaunchCancelledException]; cancelling the caller abandons the request itself.
@@ -778,12 +778,13 @@ class ConversationRepository(
             },
             transform = { copy(isLoading = false, error = null, activeRunId = null, runStatus = RunStatus.CREATING, isStreaming = false, transcriptUnavailable = false) },
         )
-        onStaged()
-
         // The request runs in the entry's scope so a Stop from the chat can cancel it without the launcher's
-        // coroutine being involved; the launcher's own cancellation takes the request down with it.
+        // coroutine being involved; the launcher's own cancellation takes the request down with it. It is on the
+        // entry before the chat opens, so a Stop tapped the instant the chat is on screen still finds it.
         val inFlight = e.scope.async { agents.launch(request, modelDisplayName, saveImages = false) }
         synchronized(e) { e.launch = inFlight }
+        onStaged()
+
         val result: Result<Launched> = try {
             inFlight.await()
         } catch (cancelled: CancellationException) {

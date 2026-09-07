@@ -152,7 +152,8 @@ class ConversationRepositoryTest {
         assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
         // Connected, but the run has not said anything yet: still starting, not working.
         assertThat(live.runStatus).isEqualTo(RunStatus.CREATING)
-        assertThat(streamer.connections).contains(runId)
+        awaitUntil { runId in streamer.connections }
+        assertThat(conversations.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
         assertThat(agents.agent(id)?.latestRunId).isEqualTo(runId)
         streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
         awaitUntil { conversations.state(id).value.runStatus == RunStatus.RUNNING }
@@ -192,9 +193,11 @@ class ConversationRepositoryTest {
         awaitUntil { prompts(fresh, id).isNotEmpty() }
         assertThat(fresh.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
         api.conversationGate!!.complete(Unit)
-        awaitUntil { api.conversationCalls == 1 && !fresh.state(id).value.isLoading }
+        // The stream starts after the answer has been published and written back; wait for that, the last step.
+        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming }
+        assertThat(fresh.state(id).value.isLoading).isFalse()
         assertThat(prompts(fresh, id).map { it.text }).containsExactly("Do the thing")
-        assertThat(fresh.state(id).value.isStreaming).isTrue()
+        assertThat(fresh.state(id).value.error).isNull()
     }
 
     @Test

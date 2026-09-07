@@ -108,8 +108,10 @@ class NewAgentViewModelTest {
         graph.conversations.attach(opened!!)
         assertThat(graph.conversations.cancelActiveRun(opened!!).isSuccess).isTrue()
 
-        awaitUntil { !vm.state.value.isLaunching }
+        // The composer hears of it after it has put its own state back; wait for the last of the two.
+        awaitUntil { failed != null }
         assertThat(failed).isEqualTo(opened)
+        assertThat(vm.state.value.isLaunching).isFalse()
         assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
         assertThat(vm.state.value.error).isNull()
         assertThat(graph.conversations.state(opened!!).value.items).isEmpty()
