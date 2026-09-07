@@ -60,6 +60,9 @@ open class FakeCursorApi : CursorApi {
     @Volatile var getRunCalls = 0
     @Volatile var getAgentCalls = 0
     @Volatile var listAgentsCalls = 0
+    @Volatile var meCalls = 0
+    /** When set, [me] throws it, as the real API does for a rejected key. */
+    @Volatile var failMe: Throwable? = null
     @Volatile var listAgentsV0Calls = 0
     @Volatile var listRunsCalls = 0
     @Volatile var conversationCalls = 0
@@ -137,7 +140,11 @@ open class FakeCursorApi : CursorApi {
 
     private fun newestFirst() = agents.values.sortedWith(compareByDescending<AgentDto> { it.createdAt }.thenBy { it.id })
 
-    override suspend fun me() = ApiKeyInfoDto(apiKeyName = "test")
+    override suspend fun me(): ApiKeyInfoDto {
+        meCalls++
+        failMe?.let { throw it }
+        return ApiKeyInfoDto(apiKeyName = "test")
+    }
     override suspend fun models(): ListModelsResponseDto {
         modelsCalls++
         failModels?.let { throw it }
