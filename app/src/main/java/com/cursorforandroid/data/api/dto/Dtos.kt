@@ -147,6 +147,11 @@ data class CreateRunRequestDto(
     val prompt: PromptDto,
     /** Replaces the agent's create-time inline servers for this run; omitted, the agent keeps its configuration. */
     val mcpServers: List<McpServerDto>? = null,
+    /**
+     * Switches the agent to this model, for this run and the ones after it (the SDK's `agent.send({ model })`:
+     * the override is sticky); omitted, the agent keeps the model it has been running on.
+     */
+    val model: ModelRefDto? = null,
     val mode: String? = null,
 )
 

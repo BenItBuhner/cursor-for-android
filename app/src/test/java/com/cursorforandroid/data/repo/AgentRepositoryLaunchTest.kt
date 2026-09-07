@@ -90,6 +90,7 @@ class AgentRepositoryLaunchTest {
         assertThat(agent.runStatus).isEqualTo(RunStatus.CREATING)
         assertThat(agent.modelDisplayName).isEqualTo("Auto")
         assertThat(run?.id).isEqualTo(agent.latestRunId)
+        assertThat(agent.modelId).isEqualTo("auto-smart")
         assertThat(agents.state.value.agents.map { it.id }).containsExactly(id)
         assertThat(prefs.localAgentState.first().launchedHereIds).contains(id)
     }

@@ -101,4 +101,31 @@ class RunDigestTest {
         assertThat(digest.activity).isEqualTo(RunDigest.Activity.Working)
         assertThat(digest.subagents).isEqualTo(2)
     }
+
+    @Test
+    fun `the agent's own step outranks delegation, from the group that goes on behind a subagent card`() {
+        val live = TimelineBuilder.LiveRun("run-1") { 0L }
+        val sub = { id: String, status: String ->
+            RunStreamEvent.ToolCall(SseToolCallDto(id, "task", status, buildJsonObject { put("subagent_type", JsonPrimitive("explore")); put("description", JsonPrimitive("Survey")) }))
+        }
+        live.apply(tool("r1", "read_file", "completed", "a/One.kt"))
+        live.apply(sub("s1", "running"))
+        assertThat(RunDigest.from(live.snapshot()).activity.label).isEqualTo("Delegating to 1 subagent")
+
+        // The card sits after the group, which keeps collecting the agent's own work.
+        live.apply(tool("e1", "edit_file", "running", "a/One.kt"))
+        assertThat(live.snapshot().map { it::class.simpleName }).containsExactly("ActivityGroup", "SubagentsCard").inOrder()
+        assertThat(RunDigest.from(live.snapshot()).activity.label).isEqualTo("Editing One.kt")
+
+        live.apply(tool("e1", "edit_file", "completed", "a/One.kt"))
+        assertThat(RunDigest.from(live.snapshot()).activity.label).isEqualTo("Delegating to 1 subagent")
+
+        live.apply(RunStreamEvent.Thinking("Now what did it find?"))
+        assertThat(RunDigest.from(live.snapshot()).activity).isEqualTo(RunDigest.Activity.Thinking)
+
+        live.apply(sub("s1", "completed"))
+        assertThat(RunDigest.from(live.snapshot()).activity).isEqualTo(RunDigest.Activity.Working)
+        assertThat(RunDigest.from(live.snapshot()).filesEdited).isEqualTo(1)
+        assertThat(RunDigest.from(live.snapshot()).filesRead).isEqualTo(1)
+    }
 }

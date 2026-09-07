@@ -58,6 +58,14 @@ class NewAgentViewModelTest {
         withTimeout(10_000) { state.first { !it.isLaunching && it.prompt.isEmpty() } }
     }
 
+    /** The composer derives its branch list from the agent list, which the sidebar normally loads. */
+    private fun loadedWithAgents(): NewAgentViewModel {
+        runBlocking { graph.agents.refresh() }
+        return loaded()
+    }
+
+    private fun NewAgentViewModel.repo(shortName: String) = state.value.repositories.first { it.shortName == shortName }
+
     private suspend fun awaitUntil(timeoutMs: Long = 10_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
     }
@@ -164,5 +172,68 @@ class NewAgentViewModelTest {
         vm.selectModel(composer, null)
         assertThat(vm.state.value.selectedVariant?.isDefault).isTrue()
         assertThat(vm.state.value.modelLabel).isEqualTo("Composer 2.5 · Fast")
+    }
+
+    @Test
+    fun `the branch picker lists what agents of the selected repository started from and pushed, newest first`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+
+        val branches = vm.state.value.branches
+        assertThat(branches.map { it.name }).containsExactly(
+            "main", "cursor/cli-exploration-9c1d", "cursor/release-process-1a2b", "cursor/mobile-experience-4e5f", "cursor/deps-bump-2f3a",
+        ).inOrder()
+        assertThat(branches.first().description).isEqualTo("Starting point of 4 agents")
+        assertThat(branches[1].description).isEqualTo("Pushed by Cli exploration")
+
+        // Another repository's agents are not offered for this one.
+        vm.selectRepo(vm.repo("visual-engine"))
+        assertThat(vm.state.value.branches.map { it.name }).containsNoneOf("cursor/cli-exploration-9c1d", "cursor/deps-bump-2f3a")
+        assertThat(vm.state.value.branches.map { it.name }).contains("cursor/house-environment-7b3e")
+    }
+
+    @Test
+    fun `the branch list is empty without a repository`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(null)
+        assertThat(vm.state.value.branches).isEmpty()
+    }
+
+    @Test
+    fun `switching repositories keeps a branch the new one has and drops one it has never seen`() {
+        val vm = loadedWithAgents()
+        val android = vm.repo("cursor-for-android")
+        val cesium = vm.repo("cesium")
+
+        vm.selectRepo(android)
+        vm.setRef("cursor/cli-exploration-9c1d")
+        vm.selectRepo(cesium)
+        // Cesium has no such branch: the agent starts from the repository's default branch instead.
+        assertThat(vm.state.value.ref).isEmpty()
+
+        vm.setRef("main")
+        vm.selectRepo(android)
+        assertThat(vm.state.value.ref).isEqualTo("main")
+
+        // Re-selecting the same repository, or leaving repositories altogether, never touches a typed branch.
+        vm.setRef("feature/typed-by-hand")
+        vm.selectRepo(android)
+        assertThat(vm.state.value.ref).isEqualTo("feature/typed-by-hand")
+        vm.selectRepo(null)
+        assertThat(vm.state.value.ref).isEqualTo("feature/typed-by-hand")
+    }
+
+    @Test
+    fun `the branch launched from is restored, including the default branch`() {
+        val first = loaded()
+        first.setRef("develop")
+        first.launchAndWait()
+        assertThat(loaded().state.value.ref).isEqualTo("develop")
+
+        val second = loaded()
+        second.setRef("")
+        second.launchAndWait()
+        // Blank means "the repository's default branch", not "never launched": it must not come back as "main".
+        assertThat(loaded().state.value.ref).isEmpty()
     }
 }

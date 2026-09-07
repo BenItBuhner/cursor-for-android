@@ -6,6 +6,8 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.ModelParamDto
+import com.cursorforandroid.data.api.dto.ModelRefDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.local.AgentListCache
@@ -15,7 +17,9 @@ import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
@@ -329,6 +333,56 @@ class ConversationRepositoryTest {
         api.conversationGate!!.complete(Unit)
     }
 
+    /**
+     * The common way to start a chat on the phone: launch it, watch the first seconds, leave, come back once it is
+     * done. Whatever the earlier visit had followed so far — nothing at all, or a first thinking block — must not
+     * be left standing in for the run once it has finished, or the chat reopens as just the prompt.
+     */
+    @Test
+    fun `a chat left while its run streamed shows the reply and footer when reopened after the run finished`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking around."))
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+
+        // The reader leaves while the run is still going; the hub lets go of the stream after its grace period...
+        conversations.detach("bc-1")
+        assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+        delay(200)
+        // ...and the run finishes unobserved: the server lists it as finished, with its reply in the transcript.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", durationMs = 30_000, result = "Shipped.")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "IDLE")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it", "assistant_message" to "Shipped.")
+
+        // Reopened, the reply and the footer come from the transcript. The run's log is asked for again — the story
+        // followed so far was no replacement for it — but it cannot be read to its end yet.
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        val reopened = conversations.state("bc-1").value
+        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(reopened.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        assertThat(reopened.isStreaming).isFalse()
+        assertThat(reopened.runStatus).isEqualTo(RunStatus.FINISHED)
+        awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+
+        // Once the retained log reads to its end, the complete trace takes the reply's place. Reading it is not
+        // news about the agent: the row keeps the timestamp the server gave it.
+        streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        val traced = conversations.state("bc-1").value
+        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        delay(100)
+        assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
+    }
+
     @Test
     fun `recent idle transcripts are prefetched after a list fetch and running ones are left alone`() = runBlocking<Unit> {
         api.addIdleAgent("bc-a", "Newest", "run-a", createdAt = "2026-04-14T10:00:00.000Z")
@@ -358,6 +412,54 @@ class ConversationRepositoryTest {
         agents.refresh()
         awaitUntil { cache.read("bc-a")?.value?.messages?.size == 4 }
         assertThat(api.conversationCalls).isEqualTo(3)
+    }
+
+    @Test
+    fun `a follow-up that switches the model carries it to the run and the row, and streams the run`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+
+        val result = conversations.sendFollowUp(
+            "bc-1", "Try Composer",
+            planMode = false,
+            modelId = "composer-2", modelParams = listOf(ModelParam("fast", "true")), modelDisplayName = "Composer 2 · Fast",
+        )
+
+        assertThat(result.isSuccess).isTrue()
+        val body = api.runRequests.single()
+        assertThat(body.prompt.text).isEqualTo("Try Composer")
+        assertThat(body.model).isEqualTo(ModelRefDto("composer-2", listOf(ModelParamDto("fast", "true"))))
+        assertThat(body.mode).isEqualTo("agent")
+        val row = agents.agent("bc-1")!!
+        assertThat(row.modelId).isEqualTo("composer-2")
+        assertThat(row.modelDisplayName).isEqualTo("Composer 2 · Fast")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<UserMessage>().last().text).isEqualTo("Try Composer")
+    }
+
+    @Test
+    fun `the prefetch tells the sidebar how a turn ended, which the list alone cannot`() = runBlocking<Unit> {
+        // The run errored; v1 lists the agent as merely idle and the legacy record says finished.
+        api.addIdleAgent("bc-1", "Broke", "run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "ERROR", result = "Build failed", durationMs = 9_000)
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        repository(prefetchLimit = 1)
+
+        agents.refresh()
+        awaitUntil { agents.agent("bc-1")?.isError == true }
+        val row = agents.agent("bc-1")!!
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.summary).isEqualTo("Build failed")
+        assertThat(row.durationMs).isEqualTo(9_000)
+        awaitUntil { cache.read("bc-1") != null }
+
+        // Later list fetches, with the legacy record still saying finished, do not undo it.
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isError).isTrue()
     }
 
     @Test

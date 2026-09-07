@@ -31,6 +31,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.NoticeCard
@@ -41,7 +43,6 @@ import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
@@ -64,9 +65,8 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
         is DateHeader -> DateHeaderView(item, modifier)
         is UserMessage -> HumanMessage(item, modifier)
         is AssistantMessage -> MarkdownText(item.markdown, modifier.fillMaxWidth(), streaming = item.isStreaming)
-        is ThinkingBlock -> ThinkingView(item, modifier)
         is SummaryRow -> SummaryLine(item.label, item.value, modifier)
-        is ToolActivity -> ToolActivityView(item, modifier)
+        is ActivityGroup -> ActivityGroupView(item, modifier)
         is SubagentsCard -> SubagentsView(item, modifier)
         is NoticeCard -> NoticeView(item, modifier)
         is RunFooter -> RunFooterView(item, modifier)
@@ -141,32 +141,68 @@ private fun DisclosureRow(
         Text(label, style = CursorTheme.typography.base, color = colors.textTertiary)
         if (value != null) {
             Spacer(Modifier.width(6.dp))
-            Text(value, style = CursorTheme.typography.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Yields to the chevron: a long value ellipsizes rather than pushing the chevron off the row.
+            Text(
+                value,
+                style = CursorTheme.typography.base,
+                color = colors.textQuaternary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
         }
         Spacer(Modifier.width(4.dp))
         if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
     }
 }
 
+/**
+ * The agent's work between two messages behind one row — "Explored 6 files, 1 search · thought for 7s", with a spinner
+ * in place of the chevron while it is still going — that opens onto the trace in the order it happened: each thought
+ * as prose, each run of tool calls as a card. A thought being written is read along as it streams even while the row
+ * is closed, as it was when thoughts had rows of their own.
+ */
 @Composable
-private fun ThinkingView(item: ThinkingBlock, modifier: Modifier) {
-    val colors = CursorTheme.colors
+private fun ActivityGroupView(item: ActivityGroup, modifier: Modifier) {
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth()) {
-        DisclosureRow(
-            label = if (item.isStreaming) "Thinking" else "Thought",
-            value = if (item.isStreaming) null else item.durationSeconds?.let { "for ${it}s" },
-            expanded = expanded,
-            onToggle = { expanded = !expanded },
-            busy = item.isStreaming,
-        )
-        AnimatedVisibility(visible = expanded || item.isStreaming) {
-            Text(
-                item.text.trim(),
-                style = CursorTheme.typography.base,
-                color = colors.textTertiary,
-                modifier = Modifier.padding(start = 2.dp, top = 4.dp, bottom = 2.dp),
-            )
+        DisclosureRow(label = item.verb, value = item.detail, expanded = expanded, onToggle = { expanded = !expanded }, busy = item.isBusy)
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item.segments().forEach { segment ->
+                    when (val step = segment.first()) {
+                        is ThinkingBlock -> ThoughtText(step.text)
+                        is ToolCall -> ToolCallsCard(segment.filterIsInstance<ToolCall>())
+                    }
+                }
+            }
+        }
+        // The last thought is the one streaming; it stays the last while this fades out once it has closed.
+        AnimatedVisibility(visible = !expanded && item.isThinking) {
+            ThoughtText(item.thoughts.lastOrNull()?.text.orEmpty(), Modifier.padding(top = 4.dp, bottom = 2.dp))
+        }
+    }
+}
+
+/** The steps in display order: each thought on its own, consecutive tool calls together so they share a card. */
+private fun ActivityGroup.segments(): List<List<ActivityStep>> = buildList<MutableList<ActivityStep>> {
+    steps.forEach { step ->
+        val open = lastOrNull()
+        if (step is ToolCall && open != null && open.last() is ToolCall) open += step else add(mutableListOf(step))
+    }
+}
+
+@Composable
+private fun ThoughtText(text: String, modifier: Modifier = Modifier) {
+    Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary, modifier = modifier.padding(horizontal = 2.dp))
+}
+
+@Composable
+private fun ToolCallsCard(calls: List<ToolCall>) {
+    CursorCard(Modifier.fillMaxWidth()) {
+        calls.forEachIndexed { index, call ->
+            ToolCallRow(call)
+            if (index != calls.lastIndex) HairlineDivider(Modifier.padding(horizontal = 10.dp))
         }
     }
 }
@@ -181,22 +217,6 @@ private fun ToolKind.icon(): ImageVector = when (this) {
     ToolKind.Task -> CursorIcons.Sparkle
     ToolKind.Mcp -> CursorIcons.Layers
     ToolKind.Other -> CursorIcons.Sparkle
-}
-
-@Composable
-private fun ToolActivityView(item: ToolActivity, modifier: Modifier) {
-    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
-    Column(modifier.fillMaxWidth()) {
-        DisclosureRow(label = item.verb, value = item.headline, expanded = expanded, onToggle = { expanded = !expanded }, busy = item.isRunning)
-        AnimatedVisibility(visible = expanded) {
-            CursorCard(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                item.calls.forEachIndexed { index, call ->
-                    ToolCallRow(call)
-                    if (index != item.calls.lastIndex) HairlineDivider(Modifier.padding(horizontal = 10.dp))
-                }
-            }
-        }
-    }
 }
 
 @Composable
