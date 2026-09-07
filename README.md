@@ -9,7 +9,7 @@ Not affiliated with Anysphere, Inc.
 - Sign in with a Cursor user API key (validated against `GET /v1/me`), stored encrypted with the Android Keystore and excluded from backups.
 - New Chat pane as home: repository / branch / environment selectors, the composer ("+" image attachments via the system photo picker, model picker with plan mode and auto-PR, dictation / send), then the recent chats with preview cards.
 - Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
-- Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop.
+- Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop. Finished runs replay their retained event stream, so the same thinking / tool / subagent trace is there to dig into after the fact; runs past the API's retention window (`410 stream_expired`) keep the text-only transcript.
 - Live notifications, the Android counterpart of the iOS app's Live Activities: while agents run, an ongoing notification shows the status, title, current step and a Stop action for one agent, or one condensed line per agent (up to eight) for several; when an agent finishes, a card with "Finished", `+80 −230 · 3 Files` (or the duration when no tool reported line counts), the final reply, Review and View PR. On Android 16 it is a promoted Live Update (status-bar chip, lock screen). Backed by a `dataSync` foreground service that only runs while something is running; toggle in Settings › Notifications.
 - Settings with Cursor Dark / Cursor Light / system theme; demo mode with an in-memory backend so the UI can be explored without an API key.
 - Predictive back (Android 14+): screens recede with the gesture to reveal the one underneath, the drawer and bottom sheets shrink with it, the filter sheet's drill-in pages slide back under the finger, and from the New Chat pane the system's back-to-home animation plays. Cancelling a gesture rewinds; releasing it commits.
@@ -64,7 +64,7 @@ Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). I
 | Agent detail | `GET /v1/agents/{id}` |
 | Transcript | `GET /v0/agents/{id}/conversation` (v1 has no equivalent) |
 | Runs | `GET /v1/agents/{id}/runs`, `GET /v1/agents/{id}/runs/{runId}` |
-| Live stream | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, `Last-Event-ID` reconnect) |
+| Live stream, and the retained event log of finished runs | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, `Last-Event-ID` reconnect; a fresh connection replays the run from its first event until `410 stream_expired`) |
 | Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs`, `POST …/cancel` |
 | Lifecycle | `POST …/archive`, `POST …/unarchive`, `DELETE /v1/agents/{id}` |
 | Pickers | `GET /v1/models`, `GET /v1/repositories` |
