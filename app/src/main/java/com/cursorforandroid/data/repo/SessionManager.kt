@@ -97,7 +97,7 @@ class SessionManager(
     suspend fun signIn(apiKey: String): Result<CursorUser> {
         val trimmed = apiKey.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Paste your Cursor API key first."))
-        withContext(Dispatchers.IO) { keyStore.setApiKey(trimmed) }
+        storeKey(trimmed)
         _backend.value = realBackend
         return runCatching { realBackend.api.me().toUser() }
             .onSuccess { user ->
@@ -106,7 +106,7 @@ class SessionManager(
                 _state.value = SessionState.SignedIn(user, isDemo = false)
             }
             .onFailure {
-                withContext(Dispatchers.IO) { keyStore.setApiKey(null) }
+                storeKey(null)
             }
             .recoverCatching { throw IllegalStateException(it.userMessage(), it) }
     }
@@ -120,12 +120,15 @@ class SessionManager(
     }
 
     suspend fun signOut() {
-        withContext(Dispatchers.IO) { keyStore.setApiKey(null) }
+        storeKey(null)
         prefs.clearSession()
         runCatching { onSignedOut() }
         _backend.value = realBackend
         _state.value = SessionState.SignedOut
     }
+
+    /** The encrypted store opens the Android Keystore on first use, which is disk and IPC work, so keep it off Main. */
+    private suspend fun storeKey(key: String?) = withContext(Dispatchers.IO) { keyStore.setApiKey(key) }
 
     private fun demoUser() = CursorUser(
         apiKeyName = "Demo",

@@ -32,10 +32,11 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Follows every running agent (up to [maxTracked], like the iOS Live Activity's eight) through the [LiveRunHub]
- * and turns their snapshots into [TrackedRun]s for the live notification. Runs that finish are published once on
- * [finished]. While active it refreshes the agent list periodically so agents started from another surface, or
- * runs whose stream expired, are picked up.
+ * Follows running agents (up to [maxTracked] at a time, like the iOS Live Activity's eight) through the [LiveRunHub]
+ * and turns their snapshots into [TrackedRun]s for the live notification. The cap bounds the open streams, not what
+ * is reported: [LiveActivityState.runningCount] always carries the full number of running agents. Runs that finish
+ * are published once on [finished]. While active it refreshes the agent list periodically so agents started from
+ * another surface, or runs whose stream expired, are picked up.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RunMonitor(
@@ -116,6 +117,9 @@ class RunMonitor(
     }
 
     private fun reconcile(scope: CoroutineScope, running: List<Agent>) {
+        // The count covers every running agent, not just the [maxTracked] followed below, and is published before any
+        // tracker is dropped so an intermediate state never reports fewer agents than it lists.
+        _state.update { st -> st.copy(runningCount = running.size) }
         val wanted = running.filter { it.latestRunId != null }.take(maxTracked).associateBy { it.id }
         // Agents without a known run id come from a summary-only list: load the detail record once to learn it.
         running.filter { it.latestRunId == null && detailRequested.add(it.id) }.forEach { agent ->
@@ -212,7 +216,11 @@ class RunMonitor(
     }
 
     companion object {
-        /** Matches the iOS app, which tracks up to eight agents in its Live Activity. */
+        /**
+         * Streams followed at once; matches the iOS app, which tracks up to eight agents in its Live Activity. Each
+         * tracked run is a live connection kept open by the foreground service, so this bounds the detail lines in
+         * the notification, never the count it reports.
+         */
         const val MAX_TRACKED = 8
         private const val FULL_REFRESH_EVERY = 5
     }

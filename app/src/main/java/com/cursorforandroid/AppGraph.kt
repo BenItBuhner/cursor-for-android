@@ -60,6 +60,8 @@ class AppGraph(context: Context) {
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()
+            // Signing out of one real account and into another keeps the same backend, so the list must be
+            // reset explicitly or the previous account's agents would show.
             agents.reset()
             catalog.reset()
             caches.clear()

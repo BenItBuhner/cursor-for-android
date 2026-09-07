@@ -7,11 +7,13 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.group
 import androidx.compose.ui.unit.dp
 
 /**
  * Line icons that Material Symbols does not ship in the shape Cursor uses: the git branch / pull-request
- * glyphs, the sidebar toggle, the "agent" sparkle and the Cursor cube. All 24x24, 1.6px strokes.
+ * glyphs, the sidebar toggle and the "agent" sparkle. All 24x24, 1.6px strokes — except [Cube], which is the
+ * official filled Cursor mark.
  */
 object CursorIcons {
 
@@ -82,16 +84,6 @@ object CursorIcons {
         }
     }
 
-    /** The web sidebar's "working" glyph: a cluster of four dots that rotates while a run is active. */
-    val Working: ImageVector by lazy {
-        stroke("Working") {
-            fill("M12 4.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M18.2 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M12 16.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-            fill("M5.8 10.2a1.8 1.8 0 1 0 0 3.6 1.8 1.8 0 1 0 0-3.6z")
-        }
-    }
-
     val NewAgent: ImageVector by lazy {
         stroke("NewAgent") {
             line("M4 12l16-8-4 16-4-6-8-2z")
@@ -141,12 +133,21 @@ object CursorIcons {
         }
     }
 
-    /** Outline isometric cube — the Cursor mark as drawn at the top of the web sidebar. */
+    /**
+     * The Cursor cube: the official 2D mark from the brand kit (https://cursor.com/brand, cursor-brand-assets.zip →
+     * General Logos/Cube/SVG/CUBE_2D_*.svg), path data verbatim. Filled, so it takes the tint like every other icon;
+     * the group scales the 466.73×532.09 artwork to the 16-unit width the sidebar glyphs occupy (18.24 tall, centred).
+     */
     val Cube: ImageVector by lazy {
         stroke("Cube") {
-            line("M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z", 1.5f)
-            line("M4 7.5l8 4.5 8-4.5", 1.5f)
-            line("M12 12v9", 1.5f)
+            group(scaleX = 0.034281f, scaleY = 0.034281f, translationX = 4f, translationY = 2.8797f) {
+                fill(
+                    "M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99" +
+                        "c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11" +
+                        "v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21" +
+                        "c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z",
+                )
+            }
         }
     }
 
@@ -222,14 +223,6 @@ object CursorIcons {
         stroke("Plus") {
             line("M12 5v14", 1.8f)
             line("M5 12h14", 1.8f)
-        }
-    }
-
-    val Mic: ImageVector by lazy {
-        stroke("Mic") {
-            line("M12 2.5a3.5 3.5 0 0 1 3.5 3.5v6a3.5 3.5 0 0 1-7 0V6A3.5 3.5 0 0 1 12 2.5z", 1.8f)
-            line("M5 11.5a7 7 0 0 0 14 0", 1.8f)
-            line("M12 18.5v3", 1.8f)
         }
     }
 

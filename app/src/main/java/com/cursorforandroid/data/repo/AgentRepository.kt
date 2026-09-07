@@ -97,6 +97,10 @@ class AgentRepository(
     /** The backend the published list belongs to; a switch only clears a list that still belongs to the old one. */
     @Volatile private var owner: CursorBackend? = null
 
+    /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
+    @Volatile var lastRefreshedAt: Long = 0L
+        private set
+
     init {
         scope.launch {
             // Only actual backend switches clear the list; reacting to the initial value could race a refresh that
@@ -127,7 +131,27 @@ class AgentRepository(
 
     private fun clear() {
         owner = null
+        lastRefreshedAt = 0L
         _state.value = AgentListState()
+    }
+
+    /**
+     * Drops a list that belongs to another backend before anything is published for the current one. The switch
+     * collector above does the same, but asynchronously; a refresh or restore that follows a switch immediately
+     * must not merge the new backend's rows into the old backend's list.
+     */
+    private fun dropForeignList(backend: CursorBackend) {
+        if (owner != null && owner !== backend) clear()
+    }
+
+    /**
+     * For returning to the foreground: refreshes silently unless one is already in flight or the current backend's
+     * list was fetched less than [maxAgeMs] ago. A list from another backend, or none, is always stale.
+     */
+    suspend fun refreshIfStale(maxAgeMs: Long) {
+        if (synchronized(this) { inFlight?.job?.isActive == true }) return
+        if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return
+        refresh(silent = true)
     }
 
     /**
@@ -140,6 +164,7 @@ class AgentRepository(
         restoreMutex.withLock {
             if (restoredFor === backend) return
             restoredFor = backend
+            dropForeignList(backend)
             val entry = cache.read() ?: return
             if (session.current !== backend) return
             owner = backend
@@ -183,13 +208,15 @@ class AgentRepository(
         val backend = session.current
         val api = backend.api
         val startedAt = AppClock.now()
+        dropForeignList(backend)
         val startedIn = generation.get()
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
-        fun publish(transform: (AgentListState) -> AgentListState) {
-            if (session.current !== backend || generation.get() != startedIn) return
+        fun publish(transform: (AgentListState) -> AgentListState): Boolean {
+            if (session.current !== backend || generation.get() != startedIn) return false
             owner = backend
             _state.update(transform)
+            return true
         }
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
         try {
@@ -209,10 +236,11 @@ class AgentRepository(
                 truncated = cursor != null
                 legacy.await().takeIf { it.isNotEmpty() }?.let { v0 -> publish { it.withLegacy(v0) } }
             }
-            publish { s ->
+            val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
                 (if (complete) s.withoutUnseen(seen, startedAt) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
+            if (landed) lastRefreshedAt = AppClock.now()
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->
@@ -238,12 +266,16 @@ class AgentRepository(
 
     private fun maxPages(depth: RefreshDepth) = if (depth == RefreshDepth.Quick) 1 else MAX_PAGES
 
-    /** Merges one v1 page: known rows are refreshed in place (keeping what richer sources knew), new ones appended. */
+    /**
+     * Merges one v1 page: known rows are refreshed in place (keeping what richer sources knew), new ones appended.
+     * Pages are cursor-based over a list that changes underneath, so an agent can appear twice; the sidebar keys its
+     * rows on the id, and a row is never added twice.
+     */
     private fun AgentListState.withPage(items: List<AgentSummaryDto>): AgentListState {
         val current = agents.associateBy { it.id }
         val fresh = items.associate { it.id to it.toAgent(current[it.id]) }
         val kept = agents.map { fresh[it.id] ?: it }
-        val added = items.mapNotNull { if (it.id in current) null else fresh.getValue(it.id) }
+        val added = items.distinctBy { it.id }.mapNotNull { if (it.id in current) null else fresh.getValue(it.id) }
         return copy(agents = kept + added, hasLoaded = true)
     }
 

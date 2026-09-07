@@ -328,4 +328,79 @@ class AgentRepositoryTest {
         delay(100)
         assertThat(cache.read()!!.value.map { it.id }).containsExactly("bc-real")
     }
+
+    // -- session switches (from main's suite) --------------------------------------------------------------------------
+
+    private val demoApi = FakeCursorApi()
+    private val realApi = FakeCursorApi()
+
+    /** A session with a distinct fake per backend, signed into the demo one, with one running agent on each side. */
+    private suspend fun demoSession(): AgentRepository {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val real = CursorBackend(realApi, FakeRunStreamer(), isDemo = false)
+        val demo = CursorBackend(demoApi, FakeRunStreamer(), isDemo = true)
+        session = SessionManager(SecureKeyStore(context), prefs, real, demo)
+        session.enterDemo()
+        demoApi.addRunningAgent("bc-demo", "Demo agent", "run-demo")
+        realApi.addRunningAgent("bc-real", "Real agent", "run-real")
+        return repository()
+    }
+
+    @Test
+    fun `refreshIfStale skips a list fetched recently and fetches again after a reset`() = runBlocking<Unit> {
+        val agents = demoSession()
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-demo")
+        assertThat(agents.lastRefreshedAt).isGreaterThan(0L)
+        assertThat(demoApi.listAgentsCalls).isEqualTo(1)
+
+        agents.refreshIfStale(maxAgeMs = 60_000)
+        assertThat(demoApi.listAgentsCalls).isEqualTo(1)
+
+        agents.reset()
+        assertThat(agents.state.value.agents).isEmpty()
+        assertThat(agents.state.value.hasLoaded).isFalse()
+        assertThat(agents.lastRefreshedAt).isEqualTo(0L)
+
+        agents.refreshIfStale(maxAgeMs = 60_000)
+        assertThat(demoApi.listAgentsCalls).isEqualTo(2)
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-demo")
+    }
+
+    @Test
+    fun `signing out of one backend and into another never shows the previous list`() = runBlocking<Unit> {
+        val agents = demoSession()
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-demo")
+
+        // What AppGraph's sign-out hook does, then a sign-in with a key.
+        agents.reset()
+        session.signOut()
+        assertThat(agents.state.value.agents).isEmpty()
+        assertThat(session.signIn("key_test").isSuccess).isTrue()
+
+        // The list is stale for the new backend no matter how recently the old one was fetched.
+        agents.refreshIfStale(maxAgeMs = Long.MAX_VALUE)
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-real")
+        assertThat(realApi.listAgentsCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `a cached list from another backend is dropped before the new fetch publishes`() = runBlocking<Unit> {
+        val agents = demoSession()
+        agents.refresh()
+        session.signOut()
+        assertThat(session.signIn("key_test").isSuccess).isTrue()
+        // Without the explicit reset the demo rows linger until the next refresh, which must replace, not merge.
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-real")
+    }
+
+    @Test
+    fun `duplicate summaries across pages collapse to one row`() = runBlocking<Unit> {
+        val agents = demoSession()
+        demoApi.agents["bc-dup"] = demoApi.agents.getValue("bc-demo")
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-demo")
+    }
 }

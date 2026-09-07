@@ -86,6 +86,9 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun refresh() = viewModelScope.launch { graph.agents.refresh() }
 
+    /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
+    fun refreshIfStale() = viewModelScope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
+
     fun setQuery(value: String) { query.value = value }
 
     fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
@@ -117,6 +120,10 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
     fun filterLabel(kind: FilterKind): String = uiState.value.prefs.summaryFor(kind)
 
     private fun <T> Set<T>.toggle(item: T): Set<T> = if (item in this) this - item else this + item
+
+    private companion object {
+        const val STALE_AFTER_MS = 30_000L
+    }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

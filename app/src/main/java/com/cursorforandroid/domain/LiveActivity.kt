@@ -157,9 +157,18 @@ data class DiffStats(val additions: Int, val deletions: Int) {
 
 /** Everything the live notification renders. */
 data class LiveActivityState(
+    /** The runs being followed through their stream: at most the monitor's tracking cap, so a subset when many run. */
     val running: List<TrackedRun> = emptyList(),
     /** False until the monitor has reconciled against the agent list once; guards against an early shutdown. */
     val hasReconciled: Boolean = false,
+    /** Running agents in the last reconciled list, including the ones beyond the tracking cap. */
+    val runningCount: Int = 0,
 ) {
     val isIdle: Boolean get() = hasReconciled && running.isEmpty()
+
+    /** How many agents are running: the list's count, but never fewer than the runs actually being followed. */
+    val totalRunning: Int get() = maxOf(runningCount, running.size)
+
+    /** Running agents the notification has no line for because they are beyond the tracking cap. */
+    val untrackedCount: Int get() = totalRunning - running.size
 }

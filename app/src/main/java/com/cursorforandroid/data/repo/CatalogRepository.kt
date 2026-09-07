@@ -72,7 +72,7 @@ class CatalogRepository(
         val now = AppClock.now()
         if (!force && _repositories.value.isNotEmpty() && now - reposFetchedAt < REPO_TTL_MS) return Result.success(_repositories.value)
         if (!force && now - reposFetchedAt < REPO_MIN_INTERVAL_MS) return Result.success(_repositories.value)
-        return runCatching { backend.api.repositories().items.map { Repository(it.url) } }
+        return runCatching { backend.api.repositories().items.map { Repository(it.url) }.distinctBy { it.url } }
             .onSuccess {
                 val sorted = it.sortedBy { r -> r.slug.lowercase() }
                 _repositories.value = sorted
