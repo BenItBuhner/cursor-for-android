@@ -164,18 +164,14 @@ fun HomeScreen(
                         placeholder = "Ask Cursor to build, fix bugs, explore",
                         onSend = { viewModel.launch(onLaunched) },
                         canSend = state.canLaunch,
+                        isSending = state.isLaunching,
+                        onCancelSend = viewModel::cancelLaunch,
                         minLines = 3,
                         plusMenu = plusMenu,
                         attachments = state.attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
                         onModel = { modelSheet = true },
-                        footerExtra = {
-                            if (state.isLaunching) {
-                                Spacer(Modifier.width(8.dp))
-                                SpinnerRing()
-                            }
-                        },
                     )
                     state.error?.let {
                         Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
