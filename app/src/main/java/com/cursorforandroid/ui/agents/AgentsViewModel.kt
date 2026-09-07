@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.FilterKind
@@ -15,10 +16,12 @@ import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -59,12 +62,21 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             hasLoaded = list.hasLoaded,
             error = list.error,
             unreadCount = rows.count { it.isUnread },
-            runningCount = rows.count { it.indicator == com.cursorforandroid.domain.AgentIndicator.Running },
+            runningCount = rows.count { it.indicator == AgentIndicator.Running },
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AgentListUiState())
+    }
+        // Grouping, filtering and sorting a few hundred rows is cheap, but not free on every keystroke of the search
+        // field or every streamed patch; it runs off the main thread and only the result reaches the UI.
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AgentListUiState())
 
     init {
-        refresh()
+        viewModelScope.launch {
+            // Disk first, so the list is on screen before the network is consulted; the refresh is then silent
+            // when there was something to show and visible (pull-to-refresh indicator) on a truly cold start.
+            graph.agents.restoreFromCache()
+            graph.agents.refresh(silent = graph.agents.state.value.hasLoaded)
+        }
         viewModelScope.launch {
             graph.agents.state.collect { s ->
                 graph.catalog.seedRepositories(s.agents.mapNotNull { it.repoUrl })

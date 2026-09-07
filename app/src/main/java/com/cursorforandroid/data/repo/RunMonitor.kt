@@ -77,9 +77,13 @@ class RunMonitor(
                 .collect { reconcile(s, it) }
         }
         s.launch {
+            var tick = 0
             while (isActive) {
                 delay(refreshIntervalMs)
-                agents.refresh(silent = true)
+                tick++
+                // The newest page is where agents started elsewhere show up; a full pass every few ticks still
+                // catches follow-ups on old agents without paging through everything each minute.
+                agents.refresh(silent = true, depth = if (tick % FULL_REFRESH_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick)
             }
         }
     }
@@ -207,5 +211,6 @@ class RunMonitor(
     companion object {
         /** Matches the iOS app, which tracks up to eight agents in its Live Activity. */
         const val MAX_TRACKED = 8
+        private const val FULL_REFRESH_EVERY = 5
     }
 }
