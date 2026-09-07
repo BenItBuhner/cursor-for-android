@@ -34,6 +34,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -42,8 +44,9 @@ import kotlinx.coroutines.delay
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" (attach) on the left, send / stop on
- * the right — with the 13px model selector next to the "+".
+ * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
+ * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
+ * model selector next to the "+".
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
@@ -61,7 +64,8 @@ fun ComposerBox(
     onStop: (() -> Unit)? = null,
     isSending: Boolean = false,
     onCancelSend: (() -> Unit)? = null,
-    onPlus: (() -> Unit)? = null,
+    /** Shows the "+" button and backs its menu; null hides the button. */
+    plusMenu: ComposerMenuActions? = null,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
     modelLabel: String? = null,
@@ -84,6 +88,11 @@ fun ComposerBox(
     }
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
+    // The field owns the selection. Text that changes from outside (a slash command from the "+" menu, the draft
+    // being cleared after send) is adopted with the cursor at the end, so typing continues after the command instead
+    // of wherever the cursor happened to be.
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
 
     Column(
         modifier
@@ -95,8 +104,11 @@ fun ComposerBox(
             AttachmentStrip(attachments, onRemoveAttachment)
         }
         BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = field,
+            onValueChange = { next ->
+                field = next
+                if (next.text != value) onValueChange(next.text)
+            },
             textStyle = type.input.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
             minLines = minLines,
@@ -115,8 +127,19 @@ fun ComposerBox(
         )
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.roundButton), verticalAlignment = Alignment.CenterVertically) {
-            if (onPlus != null) {
-                ComposerRoundButton(CursorIcons.Plus, "Attach image", onClick = onPlus)
+            if (plusMenu != null) {
+                var menuOpen by remember { mutableStateOf(false) }
+                // The Box is the anchor: the menu drops from the "+" like the web's popover.
+                Box {
+                    ComposerRoundButton(CursorIcons.Plus, "Add to prompt", onClick = { menuOpen = true })
+                    ComposerPlusMenu(
+                        expanded = menuOpen,
+                        onDismiss = { menuOpen = false },
+                        prompt = value,
+                        onPromptChange = onValueChange,
+                        actions = plusMenu,
+                    )
+                }
                 Spacer(Modifier.width(10.dp))
             }
             // The model chip takes what it needs and ellipsises only when the trailing buttons would otherwise be pushed out.

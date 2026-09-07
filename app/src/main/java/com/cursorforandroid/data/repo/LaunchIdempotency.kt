@@ -11,9 +11,9 @@ import java.util.UUID
  * The API treats a repeated `agentId` as the same create (`409 agent_id_conflict`), so a launch that is retried after
  * a timeout, a dropped connection or a cancel adopts the agent the first attempt may already have created instead of
  * starting a duplicate. Hashing the request means any edit to the draft (text, images, repo, ref, model, options)
- * yields a fresh id, while an unchanged retry keeps the old one. [nonce] separates otherwise identical drafts — the
- * composer rotates it after every successful launch so that sending the same prompt twice on purpose still creates
- * two agents.
+ * yields a fresh id, while an unchanged retry keeps the old one. The enabled MCP servers count as part of the draft,
+ * hashed in the shape they are sent. [nonce] separates otherwise identical drafts — the composer rotates it after
+ * every successful launch so that sending the same prompt twice on purpose still creates two agents.
  */
 object LaunchIdempotency {
 
@@ -41,6 +41,23 @@ object LaunchIdempotency {
         request.images.forEach { image ->
             field(image.mimeType)
             bytes(image.bytes)
+        }
+        // The inline MCP servers as they go out: toggling one, or editing what it sends, is an edit to the draft too.
+        fun map(value: Map<String, String>?) {
+            field(value?.size?.toString())
+            value?.forEach { (key, entry) -> field(key); field(entry) }
+        }
+        val servers = request.mcpServers.toInlineServers().orEmpty()
+        field(servers.size.toString())
+        servers.forEach { server ->
+            field(server.name)
+            field(server.type)
+            field(server.url)
+            field(server.command)
+            field(server.args?.size?.toString())
+            server.args?.forEach { field(it) }
+            map(server.headers)
+            map(server.env)
         }
         return "bc-" + UUID.nameUUIDFromBytes(digest.digest())
     }

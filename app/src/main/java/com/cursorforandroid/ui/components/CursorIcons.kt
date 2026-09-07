@@ -16,8 +16,9 @@ import androidx.compose.ui.unit.dp
  *
  * Geometry comes from Lucide (ISC, see `app/licenses/ISC_Lucide.txt`), the open icon family closest to the thin,
  * round-capped line style of Cursor's own UI; the strokes are rendered at 1.75 instead of Lucide's 2 to match the
- * weight Cursor draws its 16px icons at. Two shapes are Cursor's own: [Cube] is the official filled brand mark, and
- * [Stop] the composer's stop square.
+ * weight Cursor draws its 16px icons at. Four shapes are Cursor's own: [Cube] is the official filled brand mark,
+ * [Stop] the composer's stop square, and the composer menu's [Multitask] loop and upright [Paperclip] follow the
+ * web glyphs Lucide has no match for.
  */
 object CursorIcons {
 
@@ -361,6 +362,45 @@ object CursorIcons {
         icon("Video") {
             path("m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5")
             rect(2f, 6f, 14f, 12f, 2f)
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------------------
+    // The composer's "+" menu
+    // ------------------------------------------------------------------------------------------------------------
+
+    /** Multitask: a ring with a second loop peeling off its top right. Cursor's own glyph; Lucide has no equivalent. */
+    val Multitask: ImageVector by lazy {
+        icon("Multitask") {
+            path("M9.5 9a5.5 5.5 0 1 0 0 11 5.5 5.5 0 1 0 0-11z")
+            path("M12.3 9.7a3.7 3.7 0 1 1 6.3 2.7")
+        }
+    }
+
+    /** Files: an upright paperclip as the web's row draws it (Lucide's leans 45°), so the geometry is our own. */
+    val Paperclip: ImageVector by lazy {
+        icon("Paperclip") {
+            path("M15.5 8.5v8a3.5 3.5 0 0 1-7 0V6.5a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V8.5")
+        }
+    }
+
+    /** Skills: Lucide `book-open`. */
+    val Book: ImageVector by lazy {
+        icon("Book") {
+            path("M12 5v16")
+            path("M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z")
+        }
+    }
+
+    /** MCP servers: Lucide `plug`, turned 45° so the prongs point up-right like the web glyph. */
+    val Plug: ImageVector by lazy {
+        icon("Plug") {
+            group(rotate = 45f, pivotX = 12f, pivotY = 12f) {
+                path("M12 22v-5")
+                path("M15 8V2")
+                path("M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z")
+                path("M9 8V2")
+            }
         }
     }
 }
