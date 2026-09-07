@@ -33,6 +33,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -57,6 +58,8 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
@@ -111,6 +114,8 @@ fun ConversationScreen(
     val items = conversation.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     val showWorking = isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
+    val markdownMedia = remember(agentId) { MarkdownMediaContext(agentId, graph.media) }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -177,7 +182,11 @@ fun ConversationScreen(
                         }
                     }
                 }
-                items(items.asReversed(), key = { it.id }) { item -> TimelineItemView(item, paneWidth) }
+                items(items.asReversed(), key = { it.id }) { item ->
+                    CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                        TimelineItemView(item, paneWidth)
+                    }
+                }
                 if (!conversation.isLoading && items.isEmpty()) {
                     item("empty") {
                         Text(
@@ -240,12 +249,12 @@ fun ConversationScreen(
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && agent?.isArchived != true,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
+                isSending = isSending,
                 onPlus = pickImages,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
                 modelLabel = agent?.modelDisplayName,
                 onModel = null,
-                footerExtra = { if (isSending) { Spacer(Modifier.width(8.dp)); SpinnerRing() } },
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }

@@ -48,8 +48,12 @@ class CursorApiException(
     val isRateLimited: Boolean get() = httpCode == 429
 }
 
-/** Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. */
+/**
+ * Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. An exception
+ * that already is one (the demo backend raises them directly) passes through.
+ */
 fun Throwable.toCursorError(): CursorApiException? {
+    if (this is CursorApiException) return this
     val http = this as? HttpException ?: return null
     val body = runCatching { http.response()?.errorBody()?.string() }.getOrNull()
     val parsed = body?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
@@ -96,6 +100,20 @@ object CursorApiFactory {
     /** SSE connections need no read timeout — heartbeats keep the socket alive indefinitely. */
     fun sseClient(base: OkHttpClient): OkHttpClient = base.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    /**
+     * For media bytes: artifact downloads are presigned S3 URLs, which reject a request that also carries an
+     * `Authorization` header, and the API key must never travel to arbitrary image hosts anyway.
+     */
+    fun mediaClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .apply {
+            if (BuildConfig.DEBUG) {
+                addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            }
+        }
         .build()
 
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()

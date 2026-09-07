@@ -63,7 +63,7 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
     when (item) {
         is DateHeader -> DateHeaderView(item, modifier)
         is UserMessage -> HumanMessage(item, modifier)
-        is AssistantMessage -> MarkdownText(item.markdown, modifier.fillMaxWidth())
+        is AssistantMessage -> MarkdownText(item.markdown, modifier.fillMaxWidth(), streaming = item.isStreaming)
         is ThinkingBlock -> ThinkingView(item, modifier)
         is SummaryRow -> SummaryLine(item.label, item.value, modifier)
         is ToolActivity -> ToolActivityView(item, modifier)
