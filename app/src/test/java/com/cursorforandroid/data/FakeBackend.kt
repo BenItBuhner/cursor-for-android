@@ -50,6 +50,7 @@ open class FakeCursorApi : CursorApi {
     val transcripts: MutableMap<String, List<V0ConversationMessageDto>> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
+    val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
     var failCreateRun = false
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
@@ -197,6 +198,7 @@ open class FakeCursorApi : CursorApi {
      * test streams the run through the fake streamer like any other.
      */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
+        runRequests += body
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         val agent = agents[id] ?: throw notFound()
         val sequence = ids.incrementAndGet()
@@ -255,6 +257,14 @@ class FakeRunStreamer : RunStreamer {
      */
     fun dropNextConnection(runId: String, code: String = "stream_unavailable", message: String = "Run stream is no longer available", afterEvents: Int = 0) {
         synchronized(drops) { drops.getOrPut(runId) { ArrayDeque() }.addLast(Drop(code, message, afterEvents)) }
+    }
+
+    /**
+     * Forgets what was emitted for [runId], so the next connection sees only what is emitted afterwards — the way a
+     * connection that dropped mid-run is followed, later, by a replay of the run's whole retained log.
+     */
+    fun reset(runId: String) {
+        channels.remove(runId)
     }
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {

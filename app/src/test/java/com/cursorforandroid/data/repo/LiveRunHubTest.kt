@@ -9,12 +9,11 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.ThinkingBlock
-import com.cursorforandroid.domain.ToolActivity
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -97,8 +96,8 @@ class LiveRunHubTest {
         val dropped = current()
         // The trace stops where the connection did — no error card, and the read that was in progress still is,
         // because as far as anyone knows it is — and the run is not over.
-        assertThat(dropped.items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolActivity").inOrder()
-        assertThat(dropped.items.filterIsInstance<ToolActivity>().single().isRunning).isTrue()
+        assertThat(dropped.items.map { it::class.simpleName }).containsExactly("ActivityGroup")
+        assertThat(dropped.items.filterIsInstance<ActivityGroup>().single().isRunning).isTrue()
         assertThat(dropped.finished).isFalse()
         assertThat(dropped.status).isEqualTo(RunStatus.RUNNING)
 
@@ -110,15 +109,16 @@ class LiveRunHubTest {
         streamer.emit("run-1", tool("c1", "read_file", "completed", "README.md"))
         awaitUntil { snapshot()?.reconnecting == false }
         val resumed = current()
-        // One thought, one tool batch: the story continued rather than starting over.
-        assertThat(resumed.items.filterIsInstance<ThinkingBlock>()).hasSize(1)
-        assertThat(resumed.items.filterIsInstance<ToolActivity>().single().calls.single().status).isEqualTo("completed")
+        // One thought, one tool call: the story continued rather than starting over.
+        val work = resumed.items.filterIsInstance<ActivityGroup>().single()
+        assertThat(work.thoughts).hasSize(1)
+        assertThat(work.calls.single().status).isEqualTo("completed")
 
         streamer.emit("run-1", RunStreamEvent.Assistant("Done."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 30_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
         awaitUntil { snapshot()?.finished == true }
-        assertThat(current().items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(current().items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(current().items.none { it is NoticeCard }).isTrue()
         assertThat(current().reconnecting).isFalse()
         assertThat(seen.any { it.reconnecting }).isTrue()
@@ -141,9 +141,9 @@ class LiveRunHubTest {
         assertThat(snapshot.result?.text).isEqualTo("All done.")
         assertThat(snapshot.result?.durationMs).isEqualTo(65_000L)
         assertThat(snapshot.reconnecting).isFalse()
-        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         // The edit the stream never reported the end of is not left spinning under a "Worked" footer.
-        val tools = snapshot.items.filterIsInstance<ToolActivity>().single()
+        val tools = snapshot.items.filterIsInstance<ActivityGroup>().single()
         assertThat(tools.isRunning).isFalse()
         assertThat(tools.calls.single().status).isEqualTo("completed")
         assertThat((snapshot.items[1] as AssistantMessage).markdown).isEqualTo("All done.")
@@ -231,7 +231,7 @@ class LiveRunHubTest {
         awaitUntil { connections() == 2 && snapshot()?.reconnecting == false }
         assertThat(streamer.resumes).containsExactly(null, null).inOrder()
         // Replayed from the first event, the story is what it was — once — and nothing shorter was published meanwhile.
-        assertThat(current().items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "AssistantMessage").inOrder()
+        assertThat(current().items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage").inOrder()
         assertThat((current().items[1] as AssistantMessage).markdown).isEqualTo("Hello")
         assertThat(sizes.drop(sizes.indexOfFirst { it == 2 })).doesNotContain(1)
 
@@ -250,19 +250,19 @@ class LiveRunHubTest {
         streamer.emit("run-1", tool("c1", "read_file", "completed", "README.md"))
         streamer.emit("run-1", RunStreamEvent.Assistant("Hi"))
         val first = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
-        awaitUntil { snapshot()?.items?.size == 3 }
+        awaitUntil { snapshot()?.items?.size == 2 }
         first.cancel()
         delay(150)
 
-        // A fresh connection replays the run from the start; the reader keeps seeing the three items throughout.
+        // A fresh connection replays the run from the start; the reader keeps seeing the two items throughout.
         val sizes = CopyOnWriteArrayList<Int>()
         val second = scope.launch { hub.snapshots("bc-1", "run-1").collect { sizes += it.items.size } }
         awaitUntil { connections() == 2 }
         streamer.emit("run-1", RunStreamEvent.Assistant(" there"))
         awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "Hi there" }
         assertThat(sizes).isNotEmpty()
-        assertThat(sizes.toSet()).containsExactly(3)
-        assertThat(current().items.filterIsInstance<ThinkingBlock>()).hasSize(1)
+        assertThat(sizes.toSet()).containsExactly(2)
+        assertThat(current().items.filterIsInstance<ActivityGroup>().single().thoughts).hasSize(1)
         second.cancel()
     }
 }

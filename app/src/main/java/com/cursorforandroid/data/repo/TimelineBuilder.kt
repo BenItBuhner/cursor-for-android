@@ -4,6 +4,8 @@ import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
+import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.MessageAttachment
@@ -16,7 +18,6 @@ import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolActivity
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
@@ -112,9 +113,8 @@ object TimelineBuilder {
         is DateHeader -> copy(id = id)
         is UserMessage -> copy(id = id)
         is AssistantMessage -> copy(id = id)
-        is ThinkingBlock -> copy(id = id)
         is SummaryRow -> copy(id = id)
-        is ToolActivity -> copy(id = id)
+        is ActivityGroup -> copy(id = id)
         is SubagentsCard -> copy(id = id)
         is NoticeCard -> copy(id = id)
         is RunFooter -> copy(id = id)
@@ -182,8 +182,9 @@ object TimelineBuilder {
     }
 
     /**
-     * Accumulates the SSE events of one run into timeline items. [timed] measures how long each thinking block
-     * streamed for ("Thought for 3s"); turn it off when the events are a replay rather than happening now.
+     * Accumulates the SSE events of one run into timeline items. The agent's reasoning and tool calls between two
+     * messages collect, in order, into one [ActivityGroup]. [timed] measures how long each thought streamed for
+     * ("thought for 3s"); turn it off when the events are a replay rather than happening now.
      *
      * A stream [RunStreamEvent.Error] is about the connection, not the run — the run keeps going on the server while
      * the client reconnects — so it adds nothing to the items. Its message is kept: when the run then ends in
@@ -236,25 +237,50 @@ object TimelineBuilder {
             }
         }
 
+        /**
+         * Index of the group still collecting steps: the latest one, unless a message or notice has closed it since.
+         * Subagent cards sit after the group they were delegated from and leave it open, so the agent's own work
+         * between two replies stays one row however often it delegates.
+         */
+        private fun openGroupIndex(): Int {
+            val idx = items.indexOfLast { it is ActivityGroup }
+            if (idx < 0) return -1
+            for (i in idx + 1 until items.size) if (items[i] !is SubagentsCard) return -1
+            return idx
+        }
+
+        /** Replaces the last step of the open group, which is what a streaming thought always is. */
+        private fun replaceLastStep(idx: Int, group: ActivityGroup, step: ActivityStep) {
+            items[idx] = group.copy(steps = group.steps.dropLast(1) + step)
+        }
+
+        private fun addStep(step: ActivityStep) {
+            val idx = openGroupIndex()
+            val group = items.getOrNull(idx) as? ActivityGroup
+            if (group != null) items[idx] = group.copy(steps = group.steps + step) else items += ActivityGroup(nextId("activity"), listOf(step))
+        }
+
         private fun appendThinking(text: String) {
             if (text.isEmpty()) return
-            val last = items.lastOrNull()
-            if (last is ThinkingBlock && last.isStreaming) {
-                items[items.lastIndex] = last.copy(text = last.text + text)
+            val idx = openGroupIndex()
+            val group = items.getOrNull(idx) as? ActivityGroup
+            val last = group?.steps?.lastOrNull()
+            if (group != null && last is ThinkingBlock && last.isStreaming) {
+                replaceLastStep(idx, group, last.copy(text = last.text + text))
             } else {
                 thinkingStartedAt = nowProvider()
-                items += ThinkingBlock(nextId("think"), text, isStreaming = true)
+                addStep(ThinkingBlock(text, isStreaming = true))
             }
         }
 
         private fun closeThinking() {
-            val idx = items.indexOfLast { it is ThinkingBlock }
-            if (idx < 0) return
-            val block = items[idx] as ThinkingBlock
-            if (!block.isStreaming) return
+            val idx = openGroupIndex()
+            val group = items.getOrNull(idx) as? ActivityGroup ?: return
+            val last = group.steps.lastOrNull() as? ThinkingBlock ?: return
+            if (!last.isStreaming) return
             val started = thinkingStartedAt?.takeIf { timed }
             val duration = started?.let { ((nowProvider() - it) / 1000).coerceAtLeast(1) }
-            items[idx] = block.copy(isStreaming = false, durationSeconds = duration)
+            replaceLastStep(idx, group, last.copy(isStreaming = false, durationSeconds = duration))
             thinkingStartedAt = null
         }
 
@@ -274,14 +300,13 @@ object TimelineBuilder {
                 return
             }
             val call = toolCall(dto)
-            val idx = items.indexOfLast { it is ToolActivity }
-            val activity = items.getOrNull(idx) as? ToolActivity
-            val existing = activity?.calls?.any { it.callId == call.callId } == true
-            if (activity != null && (idx == items.lastIndex || existing)) {
-                val calls = if (existing) activity.calls.map { if (it.callId == call.callId) call else it } else activity.calls + call
-                items[idx] = activity.copy(calls = calls)
+            // A status update lands on the call it reports on, wherever that is; a new call joins the open group.
+            val idx = items.indexOfLast { it is ActivityGroup && it.calls.any { c -> c.callId == call.callId } }
+            if (idx >= 0) {
+                val group = items[idx] as ActivityGroup
+                items[idx] = group.copy(steps = group.steps.map { if (it is ToolCall && it.callId == call.callId) call else it })
             } else {
-                items += ToolActivity(nextId("tools"), listOf(call))
+                addStep(call)
             }
         }
 
@@ -297,8 +322,15 @@ object TimelineBuilder {
             items.replaceAll {
                 when (it) {
                     is AssistantMessage -> it.copy(isStreaming = false)
-                    is ThinkingBlock -> it.copy(isStreaming = false)
-                    is ToolActivity -> if (it.isRunning) it.copy(calls = it.calls.map { c -> if (c.isRunning) c.copy(status = toolStatus) else c }) else it
+                    is ActivityGroup -> it.copy(
+                        steps = it.steps.map { step ->
+                            when {
+                                step is ThinkingBlock && step.isStreaming -> step.copy(isStreaming = false)
+                                step is ToolCall && step.isRunning -> step.copy(status = toolStatus)
+                                else -> step
+                            }
+                        },
+                    )
                     is SubagentsCard -> if (it.subagents.any { s -> s.status == "Running" }) it.copy(subagents = it.subagents.map { s -> if (s.status == "Running") s.copy(status = subagentStatus) else s }) else it
                     else -> it
                 }
@@ -310,14 +342,36 @@ object TimelineBuilder {
             status = event.status
             finished = true
             val finalText = event.text?.trim().orEmpty()
-            val hasAssistant = items.any { it is AssistantMessage && it.markdown.isNotBlank() }
-            if (finalText.isNotEmpty() && !hasAssistant) items += AssistantMessage(nextId("asst"), finalText)
+            placeFinalReply(finalText)
             if (event.status == RunStatus.ERROR) {
+                // The record has no reason of its own for a failed run; the stream's last error is the only account.
                 val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
         }
+
+        /**
+         * The `result` carries the final reply verbatim. When the stream already delivered it as assistant deltas
+         * nothing is added; when it did not — the stream broke and the outcome was read from the run record, or
+         * the reply only ever came with the result, after intermediate remarks between tool calls — it is appended,
+         * and a reply the stream cut off half-way is completed in place.
+         */
+        private fun placeFinalReply(finalText: String) {
+            if (finalText.isEmpty()) return
+            val wanted = normalize(finalText)
+            if (items.any { it is AssistantMessage && normalize(it.markdown) == wanted }) return
+            val last = items.lastOrNull()
+            if (last is AssistantMessage && wanted.startsWith(normalize(last.markdown))) {
+                items[items.lastIndex] = last.copy(markdown = finalText)
+                return
+            }
+            items += AssistantMessage(nextId("asst"), finalText)
+        }
+
+        private fun normalize(text: String) = text.trim().replace(WHITESPACE, " ")
     }
+
+    private val WHITESPACE = Regex("\\s+")
 }

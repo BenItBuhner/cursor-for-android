@@ -55,6 +55,7 @@ class AppGraph(context: Context) {
         hub = liveRuns,
         attachments = attachments,
         cache = caches.conversations,
+        traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
     )
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
