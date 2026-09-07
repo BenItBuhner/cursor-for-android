@@ -18,3 +18,9 @@
 *.log
 *.hprof
 .kotlin/
+
+# Release signing material (see scripts/release-keystore.sh)
+/keystore.properties
+*.jks
+*.keystore
+*.p12
