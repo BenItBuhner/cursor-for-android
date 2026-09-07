@@ -349,4 +349,18 @@ object CursorIcons {
             path("M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4")
         }
     }
+
+    /** Lucide `play`, filled rather than stroked: it sits on a solid disc over a video poster. */
+    val Play: ImageVector by lazy {
+        icon("Play") {
+            fill("M6 3.5a.5.5 0 0 1 .77-.42l14 8.5a.5.5 0 0 1 0 .84l-14 8.5A.5.5 0 0 1 6 20.5z")
+        }
+    }
+
+    val Video: ImageVector by lazy {
+        icon("Video") {
+            path("m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5")
+            rect(2f, 6f, 14f, 12f, 2f)
+        }
+    }
 }

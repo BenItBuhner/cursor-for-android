@@ -102,6 +102,20 @@ object CursorApiFactory {
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
+    /**
+     * For media bytes: artifact downloads are presigned S3 URLs, which reject a request that also carries an
+     * `Authorization` header, and the API key must never travel to arbitrary image hosts anyway.
+     */
+    fun mediaClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .apply {
+            if (BuildConfig.DEBUG) {
+                addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            }
+        }
+        .build()
+
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(client)

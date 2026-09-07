@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,6 +28,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.MediaSegment
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.JetBrainsMono
 
@@ -38,6 +41,10 @@ sealed interface MdBlock {
     data class Code(val language: String?, val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data object Rule : MdBlock
+    /** `<img src alt>` or `![alt](src)`; [src] is still the raw reference (artifact path, URL, data URI). */
+    data class Image(val src: String, val alt: String?) : MdBlock
+    /** `<video src poster>` (or a nested `<source src>`). */
+    data class Video(val src: String, val poster: String?) : MdBlock
 }
 
 object MarkdownParser {
@@ -50,7 +57,16 @@ object MarkdownParser {
         val blocks = mutableListOf<MdBlock>()
         val paragraph = StringBuilder()
         fun flushParagraph() {
-            if (paragraph.isNotBlank()) blocks += MdBlock.Paragraph(paragraph.toString().trim())
+            if (paragraph.isNotBlank()) {
+                // Media tags sit in running text; each becomes its own block so it can be laid out as a figure.
+                MediaMarkup.split(paragraph.toString().trim()).forEach { segment ->
+                    blocks += when (segment) {
+                        is MediaSegment.Text -> MdBlock.Paragraph(segment.text)
+                        is MediaSegment.Image -> MdBlock.Image(segment.src, segment.alt)
+                        is MediaSegment.Video -> MdBlock.Video(segment.src, segment.poster)
+                    }
+                }
+            }
             paragraph.setLength(0)
         }
         var i = 0
@@ -189,47 +205,82 @@ object InlineMarkdown {
     }
 }
 
+/**
+ * Renders agent markdown. Images and videos resolve through [LocalMarkdownMedia] (artifact paths need the
+ * agent's download endpoint); outside a conversation only absolute URLs and data URIs can be shown.
+ *
+ * [streaming] trims a half-received media tag from the end of the text so the raw markup never flashes.
+ */
 @Composable
 fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
     style: TextStyle = CursorTheme.typography.message,
     color: Color = CursorTheme.colors.textPrimary,
+    streaming: Boolean = false,
 ) {
     val colors = CursorTheme.colors
-    val blocks = remember(markdown) { MarkdownParser.parse(markdown) }
+    val blocks = remember(markdown, streaming) {
+        val source = if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown
+        // Keyed on content plus occurrence so a media block keeps its loaded state while text streams in above it.
+        val seen = HashMap<MdBlock, Int>()
+        MarkdownParser.parse(source).map { block -> block to (seen[block] ?: 0).also { seen[block] = it + 1 } }
+    }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        blocks.forEach { block ->
-            when (block) {
-                is MdBlock.Paragraph -> InlineText(block.text, style, color)
-                is MdBlock.Heading -> {
-                    val headingStyle = when (block.level) {
-                        1 -> style.copy(fontSize = style.fontSize * 1.25f, fontWeight = FontWeight.SemiBold)
-                        2 -> style.copy(fontSize = style.fontSize * 1.12f, fontWeight = FontWeight.SemiBold)
-                        else -> style.copy(fontWeight = FontWeight.SemiBold)
+        blocks.forEach { (block, occurrence) ->
+            key(block, occurrence) {
+                when (block) {
+                    is MdBlock.Paragraph -> InlineText(block.text, style, color)
+                    is MdBlock.Heading -> {
+                        val headingStyle = when (block.level) {
+                            1 -> style.copy(fontSize = style.fontSize * 1.25f, fontWeight = FontWeight.SemiBold)
+                            2 -> style.copy(fontSize = style.fontSize * 1.12f, fontWeight = FontWeight.SemiBold)
+                            else -> style.copy(fontWeight = FontWeight.SemiBold)
+                        }
+                        InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp))
                     }
-                    InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp))
-                }
-                is MdBlock.Bullets -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    block.items.forEachIndexed { index, item ->
-                        Row {
-                            Text(
-                                if (block.ordered) "${index + 1}." else "•",
-                                style = style,
-                                color = colors.textTertiary,
-                                modifier = Modifier.width(22.dp),
-                            )
-                            InlineText(item, style, color, modifier = Modifier.weight(1f))
+                    is MdBlock.Bullets -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        block.items.forEachIndexed { index, item ->
+                            Row {
+                                Text(
+                                    if (block.ordered) "${index + 1}." else "•",
+                                    style = style,
+                                    color = colors.textTertiary,
+                                    modifier = Modifier.width(22.dp),
+                                )
+                                InlineContent(item, style, color, modifier = Modifier.weight(1f))
+                            }
                         }
                     }
+                    is MdBlock.Code -> CodeBlock(block.code, block.language)
+                    is MdBlock.Quote -> Row {
+                        Box(Modifier.width(2.dp).padding(vertical = 2.dp).background(colors.strokeStrong))
+                        InlineContent(block.text, style, colors.textTertiary, modifier = Modifier.padding(start = 10.dp))
+                    }
+                    MdBlock.Rule -> HairlineDivider(Modifier.padding(vertical = 4.dp))
+                    is MdBlock.Image -> ImageBlock(block.src, block.alt)
+                    is MdBlock.Video -> VideoBlock(block.src, block.poster)
                 }
-                is MdBlock.Code -> CodeBlock(block.code, block.language)
-                is MdBlock.Quote -> Row {
-                    Box(Modifier.width(2.dp).padding(vertical = 2.dp).background(colors.strokeStrong))
-                    InlineText(block.text, style, colors.textTertiary, modifier = Modifier.padding(start = 10.dp))
-                }
-                MdBlock.Rule -> HairlineDivider(Modifier.padding(vertical = 4.dp))
+            }
+        }
+    }
+}
+
+/** Text that may still carry media markup (list items, quotes): text runs and media stacked in order. */
+@Composable
+private fun InlineContent(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    val segments = remember(text) { MediaMarkup.split(text) }
+    if (segments.size == 1 && segments[0] is MediaSegment.Text) {
+        InlineText((segments[0] as MediaSegment.Text).text, style, color, modifier)
+        return
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        segments.forEach { segment ->
+            when (segment) {
+                is MediaSegment.Text -> InlineText(segment.text, style, color)
+                is MediaSegment.Image -> ImageBlock(segment.src, segment.alt)
+                is MediaSegment.Video -> VideoBlock(segment.src, segment.poster)
             }
         }
     }

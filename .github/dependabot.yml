@@ -20,6 +20,9 @@ updates:
         patterns:
           - "com.android.application"
           - "com.android.tools.build*"
+      coil:
+        patterns:
+          - "io.coil-kt*"
       test:
         patterns:
           - "org.robolectric*"

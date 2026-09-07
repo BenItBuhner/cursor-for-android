@@ -40,7 +40,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * page like the real ones (newest first, `nextCursor` = the id that starts the next page) and can be made to fail
  * or to wait on a gate so tests can observe what is published before each answer arrives.
  */
-class FakeCursorApi : CursorApi {
+open class FakeCursorApi : CursorApi {
     val agents: MutableMap<String, AgentDto> = ConcurrentHashMap()
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
@@ -139,7 +139,7 @@ class FakeCursorApi : CursorApi {
     override suspend fun delete(id: String) = IdResponseDto(id)
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
-    override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
+    open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
