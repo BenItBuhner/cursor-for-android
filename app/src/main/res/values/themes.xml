@@ -9,7 +9,9 @@
 
     <style name="Theme.Cursor.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/cursor_canvas</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+        <!-- The launcher foreground doubles as the splash icon: both draw the inner two-thirds of a 108dp canvas, so the
+             official cube stays put as the launcher icon hands off to the splash. -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.Cursor</item>
     </style>
 </resources>

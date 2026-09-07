@@ -191,7 +191,7 @@ class LiveRunMonitorTest {
     }
 
     @Test
-    fun `tracks at most eight agents like the iOS Live Activity`() = runBlocking {
+    fun `tracks at most eight agents like the iOS Live Activity but counts every running one`() = runBlocking {
         repeat(10) { api.addRunningAgent("bc-$it", "Agent $it", "run-$it") }
         agents.refresh()
         monitor.start()
@@ -199,6 +199,21 @@ class LiveRunMonitorTest {
         delay(100)
         assertThat(running()).hasSize(8)
         assertThat(streamer.connections.distinct()).hasSize(8)
+        // The cap bounds the open streams only: the headline count must not plateau at eight.
+        with(monitor.state.value) {
+            assertThat(runningCount).isEqualTo(10)
+            assertThat(totalRunning).isEqualTo(10)
+            assertThat(untrackedCount).isEqualTo(2)
+        }
+
+        // A tracked run finishing hands its slot to one of the untracked agents; the count drops by exactly one.
+        val finishedId = running().first().agentId
+        val finishedRun = running().first().runId
+        streamer.emit(finishedRun, RunStreamEvent.Result(finishedRun, RunStatus.FINISHED, "Done", 1_000, null))
+        streamer.emit(finishedRun, RunStreamEvent.Done)
+        awaitUntil { monitor.state.value.runningCount == 9 && running().size == 8 && running().none { it.agentId == finishedId } }
+        assertThat(monitor.state.value.untrackedCount).isEqualTo(1)
+        assertThat(streamer.connections.distinct()).hasSize(9)
     }
 
     /** The retained event log of a finished run, as the server would replay it on a fresh connection. */

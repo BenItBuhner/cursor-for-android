@@ -52,8 +52,8 @@ data class AgentRowActions(
 )
 
 /**
- * Sidebar row as measured on the web: 32px tall; selection is a 6 % fill inset 6px with radius 6; the state
- * glyph is centred at x=20, the 14px title starts at x=36, trailing text ends 16px from the edge.
+ * Sidebar row in the web's proportions: selection is a 6 % fill inset from both edges with radius 6, the state glyph
+ * sits in a fixed slot so titles align whether or not a row has one, trailing metadata is at 36 %.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -85,11 +85,11 @@ fun AgentRowItem(
                     onLongClick = { menuOpen = true },
                 )
                 .height(CursorDimens.sidebarRow)
-                .padding(start = 6.dp, end = 10.dp),
+                .padding(start = 8.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             StateGlyph(row.indicator, hasBranch = agent.hasBranch)
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(10.dp))
             Text(
                 agent.name,
                 style = type.row,
@@ -127,13 +127,14 @@ fun AgentRowItem(
     }
 }
 
+/** Context-menu row: 13sp label with a 16px glyph at 66 %, tall enough to tap without care. */
 @Composable
 internal fun MenuItem(label: String, icon: ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
     DropdownMenuItem(
         text = { Text(label, style = CursorTheme.typography.base, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(13.dp)) },
+        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(16.dp)) },
         onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 10.dp),
-        modifier = Modifier.height(30.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 20.dp),
+        modifier = Modifier.height(40.dp),
     )
 }

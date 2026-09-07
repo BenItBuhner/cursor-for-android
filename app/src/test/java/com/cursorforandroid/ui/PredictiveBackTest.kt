@@ -160,6 +160,39 @@ class PredictiveBackTest {
         assertThat(onScreen(SETTINGS_PAGE)).isFalse()
     }
 
+    @Test
+    fun `a gesture that starts while the previous one is still rewinding takes the scene over`() {
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText(SETTINGS_PAGE)
+        compose.waitForIdle()
+        val dispatcher = compose.activity.onBackPressedDispatcher
+
+        dispatcher.swipe(0.3f)
+        dispatcher.dispatchOnBackCancelled()
+        // Drive the clock by hand: the next gesture starts while the rewind is mid-flight, and its finger then rests
+        // long enough for the rewind to have finished before the first progress event. The rewind must not be
+        // allowed to settle the scene underneath the new gesture.
+        compose.mainClock.autoAdvance = false
+        compose.mainClock.advanceTimeBy(48)
+        dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 600f, 0f, BackEventCompat.EDGE_LEFT))
+        compose.mainClock.advanceTimeBy(400)
+        dispatcher.dispatchOnBackProgressed(BackEventCompat(240f, 600f, 0.6f, BackEventCompat.EDGE_LEFT))
+        compose.mainClock.advanceTimeBy(32)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+
+        // The second gesture owns the scene: both screens are still composed, the rewind did not settle Home away.
+        assertThat(onScreen(SETTINGS_PAGE)).isTrue()
+        assertThat(onScreen(HOME_PLACEHOLDER)).isTrue()
+
+        dispatcher.release()
+        waitForText(HOME_PLACEHOLDER)
+        compose.waitForIdle()
+        assertThat(onScreen(SETTINGS_PAGE)).isFalse()
+    }
+
     private companion object {
         const val HOME_PLACEHOLDER = "Ask Cursor to build, fix bugs, explore"
         const val ROOT_PAGE = "Grouping"

@@ -12,6 +12,7 @@ import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.Subagent
 import com.cursorforandroid.domain.SubagentsCard
+import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolActivity
@@ -87,7 +88,33 @@ object TimelineBuilder {
         if (userIndex >= 0) closeRun(ordered.getOrNull(userIndex), replies) else items += replies
         // Runs without a matching transcript message (e.g. transcript truncated) still surface their result.
         ordered.drop(userIndex + 1).forEach { run -> closeRun(run, resultReply(run)) }
-        return items
+        return items.withUniqueIds()
+    }
+
+    /**
+     * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
+     * above come straight from the transcript and run records; a repeated server id gets a positional suffix.
+     */
+    private fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
+        val seen = HashSet<String>(size)
+        return map { item ->
+            var id = item.id
+            var n = 1
+            while (!seen.add(id)) id = "${item.id}#${++n}"
+            if (id == item.id) item else item.withId(id)
+        }
+    }
+
+    private fun TimelineItem.withId(id: String): TimelineItem = when (this) {
+        is DateHeader -> copy(id = id)
+        is UserMessage -> copy(id = id)
+        is AssistantMessage -> copy(id = id)
+        is ThinkingBlock -> copy(id = id)
+        is SummaryRow -> copy(id = id)
+        is ToolActivity -> copy(id = id)
+        is SubagentsCard -> copy(id = id)
+        is NoticeCard -> copy(id = id)
+        is RunFooter -> copy(id = id)
     }
 
     fun footer(run: RunDto) = RunFooter(

@@ -41,6 +41,7 @@ class FakeCursorApi : CursorApi {
     val cancelled = CopyOnWriteArrayList<String>()
     var failCancel = false
     @Volatile var getRunCalls = 0
+    @Volatile var listAgentsCalls = 0
     private val runCounter = AtomicInteger()
 
     fun addRunningAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z") {
@@ -71,9 +72,12 @@ class FakeCursorApi : CursorApi {
     override suspend fun me() = ApiKeyInfoDto(apiKeyName = "test")
     override suspend fun models() = ListModelsResponseDto()
     override suspend fun repositories() = ListRepositoriesResponseDto()
-    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean) = ListAgentsResponseDto(
-        items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) },
-    )
+    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+        listAgentsCalls++
+        return ListAgentsResponseDto(
+            items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) },
+        )
+    }
     override suspend fun getAgent(id: String): AgentDto = agents[id] ?: throw notFound()
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = throw UnsupportedOperationException()
     override suspend fun archive(id: String) = IdResponseDto(id)
