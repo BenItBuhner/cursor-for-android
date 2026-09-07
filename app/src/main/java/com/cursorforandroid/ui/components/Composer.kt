@@ -1,5 +1,7 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,13 +31,14 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (12 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" on the left, opening the
+ * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
+ * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector next to the "+".
  */
@@ -64,6 +67,7 @@ fun ComposerBox(
     val shape = CursorTheme.shapes.xl
     var focused by remember { mutableStateOf(false) }
     val pad = CursorDimens.composerPadding
+    val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
     // The field owns the selection. Text that changes from outside (a slash command from the "+" menu, the draft
     // being cleared after send) is adopted with the cursor at the end, so typing continues after the command instead
     // of wherever the cursor happened to be.
@@ -73,8 +77,8 @@ fun ComposerBox(
     Column(
         modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, if (focused) colors.stroke else colors.strokeSubtle, shape)
-            .padding(start = pad, end = pad, top = pad, bottom = pad),
+            .cursorSurface(colors.elevated, border, shape)
+            .padding(start = pad, end = pad, top = pad, bottom = pad - 2.dp),
     ) {
         if (attachments.isNotEmpty() && onRemoveAttachment != null) {
             AttachmentStrip(attachments, onRemoveAttachment)
@@ -96,12 +100,12 @@ fun ComposerBox(
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary)
+                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     inner()
                 }
             },
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.roundButton), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
                 var menuOpen by remember { mutableStateOf(false) }
@@ -116,13 +120,16 @@ fun ComposerBox(
                         actions = plusMenu,
                     )
                 }
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(10.dp))
             }
-            if (modelLabel != null) {
-                SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null)
+            // The model chip takes what it needs and ellipsises only when the trailing buttons would otherwise be pushed out.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                if (modelLabel != null) {
+                    SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
+                }
+                footerExtra?.invoke(this)
             }
-            footerExtra?.invoke(this)
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
             if (isRunning && onStop != null && !canSend) {
                 ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
             } else {
@@ -132,7 +139,10 @@ fun ComposerBox(
     }
 }
 
-/** Plain-text selector with an 8px chevron: "codex-poly-bot ⌄", "master ⌄", "Claude Fable 5.1 1M Max ⌄". */
+/**
+ * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 1M Max ⌄". Nothing is
+ * painted around it until pressed; a chip that cannot be changed drops the chevron instead of greying out.
+ */
 @Composable
 fun SelectorChip(
     label: String,
@@ -141,36 +151,39 @@ fun SelectorChip(
     icon: ImageVector? = null,
     mono: Boolean = false,
     enabled: Boolean = true,
+    showChevron: Boolean = enabled,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
         modifier
-            .pressable(onClick, CursorTheme.shapes.sm, enabled = enabled)
-            .padding(horizontal = 6.dp, vertical = 3.dp),
+            .pressable(onClick, CursorTheme.shapes.base, enabled = enabled)
+            .heightIn(min = 28.dp)
+            .padding(horizontal = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (icon != null) Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(18.dp))
+        if (icon != null) Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(15.dp))
         if (label.isNotEmpty()) {
             Text(
                 label,
                 style = if (mono) type.code.copy(fontSize = type.base.fontSize) else type.base,
                 color = colors.textSecondary,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(CursorDimens.chevron))
+        if (showChevron) Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
     }
 }
 
-/** The row of context selectors that sits 12px above the home composer. */
+/** The row of context selectors that sits above the home composer. */
 @Composable
 fun SelectorRow(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
     Row(
-        modifier.fillMaxWidth().padding(start = 4.dp, bottom = 8.dp),
+        modifier.fillMaxWidth().padding(start = 2.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         content = content,
     )
 }

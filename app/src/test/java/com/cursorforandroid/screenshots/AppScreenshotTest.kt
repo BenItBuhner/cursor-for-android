@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -110,7 +111,10 @@ class AppScreenshotTest {
         compose.onNodeWithText("Try the demo").performClick()
         compose.waitUntil(20_000) { graph.session.state.value is SessionState.SignedIn }
         waitForText("Ask Cursor to build, fix bugs, explore", 30_000)
+        // Repositories and models load in parallel; both selectors must have settled before a capture. The repo chip
+        // is matched exactly because the slug also occurs inside a workspace name in the list.
         waitForText("Claude Fable 5.1 1M Max", 30_000)
+        compose.waitUntil(30_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
         scrollListTo("Cesium Revenue Strategy")
     }
 
@@ -132,10 +136,10 @@ class AppScreenshotTest {
         // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         waitForText("Orchestrate multiple subagents in parallel")
-        capture("11_composer_menu")
+        capture("12_composer_menu")
         compose.onNodeWithText("Skills").performClick()
         waitForText("/autopilot")
-        capture("12_composer_skills")
+        capture("13_composer_skills")
         Espresso.pressBack() // dismiss the popup
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("/autopilot")).fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
@@ -167,6 +171,20 @@ class AppScreenshotTest {
         compose.waitUntil(90_000) { graph.conversations.state(cesiumId).value.items.any { it is RunFooter } }
         compose.waitForIdle()
         capture("06_conversation")
+
+        // A finished reply that embeds a screenshot and a recording by their /opt/cursor/artifacts paths: the image
+        // is fetched through the (demo) artifact download endpoint, the video shows its poster card.
+        Espresso.pressBack()
+        compose.waitForIdle()
+        scrollListTo("Android mobile experience")
+        compose.onAllNodesWithText("Android mobile experience").onFirst().performClick()
+        waitForText("Follow up")
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Sidebar drawer mid-gesture")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Video: predictive_back_demo.mp4")).fetchSemanticsNodes().isNotEmpty() }
+        // The reply is taller than the viewport; line its first paragraph up with the top so the figure is in frame.
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Predictive back was missing", substring = true))
+        compose.waitForIdle()
+        capture("11_conversation_media")
 
         // Settings + light theme.
         Espresso.pressBack()

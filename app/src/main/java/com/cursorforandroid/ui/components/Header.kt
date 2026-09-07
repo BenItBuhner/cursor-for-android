@@ -21,8 +21,10 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * 36px header row like the sidebar's: 14px flat icons (first one 13px from the edge, like the logo) and an
- * optional start-aligned 14sp title. No centred nav-bar title, no filled buttons.
+ * The header row shared by every pane: flat icon buttons at both ends (the first one 6dp from the edge, so its glyph
+ * lines up with the sidebar logo) and an optional start-aligned 14sp title with an 11sp detail line beneath it. No
+ * centred nav-bar title, no filled buttons, no shadow — the same chrome as the Agents window, at a height a thumb
+ * can use.
  */
 @Composable
 fun CursorHeader(
@@ -39,16 +41,19 @@ fun CursorHeader(
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
             .height(CursorDimens.headerHeight)
-            .padding(start = 6.dp, end = 6.dp),
+            .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         leading?.invoke(this)
         if (title != null) {
-            Spacer(Modifier.width(if (leading != null) 2.dp else 8.dp))
+            Spacer(Modifier.width(if (leading != null) 4.dp else 10.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (subtitle != null) Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (subtitle != null) {
+                    Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
+            Spacer(Modifier.width(4.dp))
         } else {
             Spacer(Modifier.weight(1f))
         }

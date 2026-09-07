@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
 import com.cursorforandroid.data.api.dto.AgentUsageResponseDto
 import com.cursorforandroid.data.api.dto.ApiKeyInfoDto
+import com.cursorforandroid.data.api.dto.ArtifactDto
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
 import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
 import com.cursorforandroid.data.api.dto.CreateRunRequestDto
@@ -21,6 +22,8 @@ import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.ModelParamDto
+import com.cursorforandroid.data.api.dto.ModelParameterDefinitionDto
+import com.cursorforandroid.data.api.dto.ModelParameterValueDto
 import com.cursorforandroid.data.api.dto.ModelVariantDto
 import com.cursorforandroid.data.api.dto.RepositoryDto
 import com.cursorforandroid.data.api.dto.RunDto
@@ -33,6 +36,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
@@ -134,8 +138,15 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
                         ModelVariantDto(params = listOf(ModelParamDto("effort", "high")), displayName = "Claude Fable 5.1"),
                     ),
                 ),
-                ModelListItemDto(id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
-                    variants = listOf(ModelVariantDto(params = listOf(ModelParamDto("fast", "true")), displayName = "Composer 2.5 Fast", isDefault = true), ModelVariantDto(params = emptyList(), displayName = "Composer 2.5"))),
+                // Like the live catalogue, both variants carry the model's name and differ only by their parameters.
+                ModelListItemDto(
+                    id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
+                    parameters = listOf(ModelParameterDefinitionDto("fast", "Fast", listOf(ModelParameterValueDto("false"), ModelParameterValueDto("true", "Fast")))),
+                    variants = listOf(
+                        ModelVariantDto(params = listOf(ModelParamDto("fast", "true")), displayName = "Composer 2.5", isDefault = true),
+                        ModelVariantDto(params = listOf(ModelParamDto("fast", "false")), displayName = "Composer 2.5"),
+                    ),
+                ),
                 ModelListItemDto(id = "gpt-5.6", displayName = "GPT-5.6", variants = listOf(ModelVariantDto(params = listOf(ModelParamDto("effort", "high")), displayName = "GPT-5.6 High", isDefault = true))),
                 ModelListItemDto(id = "gemini-3.8-flash", displayName = "Gemini 3.8 Flash", variants = listOf(ModelVariantDto(params = emptyList(), displayName = "Gemini 3.8 Flash", isDefault = true))),
                 ModelListItemDto(id = "auto-smart", displayName = "Auto", description = "Cursor Router picks the model."),
@@ -207,8 +218,19 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
     }
 
     override suspend fun usage(id: String): AgentUsageResponseDto = AgentUsageResponseDto()
-    override suspend fun artifacts(id: String): ListArtifactsResponseDto = ListArtifactsResponseDto()
-    override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto = DownloadArtifactResponseDto(url = "")
+
+    override suspend fun artifacts(id: String): ListArtifactsResponseDto = io {
+        delay(100)
+        if (id !in store.agents) throw notFound("agent_not_found")
+        ListArtifactsResponseDto(DemoData.artifacts[id].orEmpty().map { ArtifactDto(it.path, it.sizeBytes, store.iso()) })
+    }
+
+    /** The "presigned URL" of a demo artifact is the bundled asset, which Coil and ExoPlayer both read directly. */
+    override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto = io {
+        delay(100)
+        val artifact = DemoData.artifacts[id].orEmpty().firstOrNull { it.path == path } ?: throw notFound("artifact_not_found")
+        DownloadArtifactResponseDto(url = MediaLoader.ASSET_PREFIX + artifact.asset, expiresAt = store.iso(AppClock.now() + 15 * 60_000L))
+    }
 
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto = io {
         delay(120)

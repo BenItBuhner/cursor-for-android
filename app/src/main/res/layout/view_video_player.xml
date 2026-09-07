@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Inline player for <video> artifacts in agent replies. A TextureView surface (the only way to pick it is XML)
+  scrolls with the transcript without the tearing a SurfaceView shows inside a LazyColumn.
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:resize_mode="fit"
+    app:show_buffering="when_playing"
+    app:show_next_button="false"
+    app:show_previous_button="false"
+    app:shutter_background_color="@android:color/black"
+    app:surface_type="texture_view"
+    app:use_controller="true" />

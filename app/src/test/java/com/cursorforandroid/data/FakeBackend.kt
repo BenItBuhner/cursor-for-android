@@ -31,13 +31,14 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** In-memory API for repository tests: agents and runs are plain maps the test mutates directly. */
-class FakeCursorApi : CursorApi {
+open class FakeCursorApi : CursorApi {
     val agents: MutableMap<String, AgentDto> = ConcurrentHashMap()
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
     var failCancel = false
     @Volatile var getRunCalls = 0
+    @Volatile var listAgentsCalls = 0
 
     fun addRunningAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z") {
         agents[id] = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = createdAt, updatedAt = createdAt, latestRunId = runId)
@@ -50,9 +51,12 @@ class FakeCursorApi : CursorApi {
     override suspend fun me() = ApiKeyInfoDto(apiKeyName = "test")
     override suspend fun models() = ListModelsResponseDto()
     override suspend fun repositories() = ListRepositoriesResponseDto()
-    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean) = ListAgentsResponseDto(
-        items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) },
-    )
+    override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+        listAgentsCalls++
+        return ListAgentsResponseDto(
+            items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) },
+        )
+    }
     override suspend fun getAgent(id: String): AgentDto = agents[id] ?: throw notFound()
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = throw UnsupportedOperationException()
     override suspend fun archive(id: String) = IdResponseDto(id)
@@ -60,7 +64,7 @@ class FakeCursorApi : CursorApi {
     override suspend fun delete(id: String) = IdResponseDto(id)
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
-    override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
+    open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
     override suspend fun listRuns(id: String, limit: Int, cursor: String?) = ListRunsResponseDto(items = runs.values.filter { it.agentId == id })
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++
