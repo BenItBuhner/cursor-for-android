@@ -75,7 +75,7 @@ data class SidebarCallbacks(
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
- * sidebar-toggle + search + filter + new-chat ("+") icons in one header row (the web's separate "Chats" label is
+ * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
  * folded into it), Pinned / date groups of 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,9 +102,7 @@ fun Sidebar(
         ) {
             Icon(CursorIcons.Cube, "Cursor", tint = colors.iconPrimary, modifier = Modifier.size(CursorDimens.logo))
             Spacer(Modifier.weight(1f))
-            if (callbacks.onToggleSidebar != null) {
-                FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar)
-            }
+            FlatIconButton(CursorIcons.Plus, "New chat", onClick = callbacks.onNewChat)
             FlatIconButton(
                 CursorIcons.Search,
                 "Search chats",
@@ -117,7 +115,9 @@ fun Sidebar(
                 onClick = callbacks.onCustomize,
                 tint = if (state.prefs.isDefault) colors.iconSecondary else colors.accent,
             )
-            FlatIconButton(CursorIcons.Plus, "New chat", onClick = callbacks.onNewChat)
+            if (callbacks.onToggleSidebar != null) {
+                FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar)
+            }
         }
 
         AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
