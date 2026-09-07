@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,8 +39,6 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
-import com.cursorforandroid.domain.ModelOption
-import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.components.ComposerBox
@@ -47,7 +46,6 @@ import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
-import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -173,7 +171,7 @@ fun HomeScreen(
             noRepo = state.noRepo,
             loading = state.isLoadingRepos,
             unavailable = state.reposUnavailable,
-            onSelect = { viewModel.selectRepo(it); repoSheet = false },
+            onSelect = viewModel::selectRepo,
             onRefresh = viewModel::refreshRepositories,
             onDismiss = { repoSheet = false },
         )
@@ -185,22 +183,14 @@ fun HomeScreen(
             selectedVariant = state.selectedVariant,
             planMode = state.planMode,
             autoCreatePr = state.autoCreatePr,
+            loading = state.isLoadingModels,
+            unavailable = state.modelsUnavailable,
             onPlanMode = viewModel::setPlanMode,
             onAutoCreatePr = viewModel::setAutoCreatePr,
-            onSelect = { m, v -> viewModel.selectModel(m, v); modelSheet = false },
+            onRetry = viewModel::refreshModels,
+            onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
         )
-    }
-}
-
-@Composable
-private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().pressable({ onChange(!checked) }, CursorTheme.shapes.base).height(36.dp).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = CursorTheme.typography.base, color = CursorTheme.colors.textPrimary, modifier = Modifier.weight(1f))
-        CursorToggle(checked, onChange)
     }
 }
 
@@ -291,7 +281,11 @@ private fun RepositorySheet(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var filter by remember { mutableStateOf("") }
-    CursorSheet(onDismiss = onDismiss) {
+    CursorSheet(onDismiss = onDismiss) { dismiss ->
+        fun pick(repo: Repository?) {
+            onSelect(repo)
+            dismiss()
+        }
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Repository", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
@@ -308,9 +302,9 @@ private fun RepositorySheet(
             )
             Spacer(Modifier.height(6.dp))
             Column(Modifier.weight(1f, fill = false)) {
-                SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { onSelect(null) }
+                SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
                 HairlineDivider(Modifier.padding(horizontal = 12.dp))
-                val visible = repos.filter { it.slug.contains(filter, ignoreCase = true) }
+                val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
                 if (unavailable && repos.isEmpty()) {
                     Text(
                         "Cursor couldn't list your GitHub repositories right now (the endpoint is heavily rate limited). Refresh later or start without one.",
@@ -319,65 +313,7 @@ private fun RepositorySheet(
                 }
                 LazyColumn(Modifier.fillMaxWidth()) {
                     items(visible, key = { it.url }) { repo ->
-                        SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Folder) { onSelect(repo) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ModelSheet(
-    models: List<ModelOption>,
-    selectedModel: ModelOption?,
-    selectedVariant: ModelVariant?,
-    planMode: Boolean,
-    autoCreatePr: Boolean,
-    onPlanMode: (Boolean) -> Unit,
-    onAutoCreatePr: (Boolean) -> Unit,
-    onSelect: (ModelOption?, ModelVariant?) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    CursorSheet(onDismiss = onDismiss) {
-        Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Model", style = type.title, color = colors.textPrimary)
-            }
-            LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
-                item("default") {
-                    SheetRow(title = "Default", subtitle = "Your Cursor default model", checked = selectedModel == null) { onSelect(null, null) }
-                    HairlineDivider(Modifier.padding(horizontal = 12.dp))
-                }
-                if (models.isEmpty()) {
-                    item("loading") {
-                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing(); Spacer(Modifier.width(8.dp))
-                            Text("Loading models…", style = type.small, color = colors.textQuaternary)
-                        }
-                    }
-                }
-                item("options") {
-                    Text("Options", style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 2.dp))
-                    OptionRow("Plan mode", planMode, onPlanMode)
-                    OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
-                    HairlineDivider(Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                }
-                models.forEach { model ->
-                    if (model.variants.size <= 1) {
-                        item(model.id) { SheetRow(title = model.displayName, subtitle = model.description, checked = model.id == selectedModel?.id) { onSelect(model, model.variants.firstOrNull()) } }
-                    } else {
-                        item("hdr-${model.id}") { Text(model.displayName, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 2.dp)) }
-                        items(model.variants, key = { "${model.id}:${it.displayName}" }) { variant ->
-                            SheetRow(
-                                title = variant.displayName,
-                                subtitle = variant.params.joinToString("  ") { "${it.id}=${it.value}" }.ifBlank { model.description },
-                                checked = model.id == selectedModel?.id && variant == selectedVariant,
-                            ) { onSelect(model, variant) }
-                        }
+                        SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Folder) { pick(repo) }
                     }
                 }
             }
@@ -386,7 +322,7 @@ private fun ModelSheet(
 }
 
 @Composable
-private fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, onClick: () -> Unit) {
+internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
