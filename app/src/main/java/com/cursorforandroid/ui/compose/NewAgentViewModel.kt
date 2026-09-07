@@ -134,6 +134,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             graph.agents.launch(request, s.modelLabel).fold(
                 onSuccess = { agent ->
                     launchNonce = LaunchIdempotency.newNonce()
+                    _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
+                    onLaunched(agent)
+                    // Last, and suspending: a cancel landing here must not leave a created agent behind an intact draft.
                     graph.prefs.setComposerDefaults(
                         repoUrl = request.repoUrl,
                         ref = request.ref,
@@ -141,8 +144,6 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                         params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
                         autoCreatePr = request.autoCreatePr,
                     )
-                    _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
-                    onLaunched(agent)
                 },
                 onFailure = { t -> _state.update { it.copy(isLaunching = false, error = t.userMessage()) } },
             )
