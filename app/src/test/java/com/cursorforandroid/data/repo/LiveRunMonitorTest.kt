@@ -71,7 +71,7 @@ class LiveRunMonitorTest {
         session.enterDemo()
         attachments = AttachmentStore(context)
         agents = AgentRepository(session, prefs, attachments)
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         monitor = RunMonitor(agents, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
         finishedJob = scope.launch { monitor.finished.collect { finished += it } }
     }
@@ -149,12 +149,14 @@ class LiveRunMonitorTest {
         assertThat(replayed.items.filterIsInstance<ToolActivity>().single().calls.single().status).isEqualTo("completed")
         assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
 
-        // The second stream closes without a result: the hub polls the run until it is terminal.
+        // The second stream closes without a result: the hub reads the run record and, while the run is still going,
+        // keeps coming back to the stream; the record ending the run is what ends the tracking.
         val pollsBefore = api.getRunCalls
         streamer.emit("run-2", RunStreamEvent.Status("run-2", RunStatus.RUNNING))
         streamer.emit("run-2", RunStreamEvent.Done)
         awaitUntil { api.getRunCalls > pollsBefore }
         assertThat(finished).hasSize(1)
+        awaitUntil { streamer.connections.count { it == "run-2" } >= 2 }
         api.runs["run-2"] = api.runs.getValue("run-2").copy(status = "ERROR", result = "Build failed", durationMs = 9_000)
         awaitUntil { finished.size == 2 }
         val failed = finished.last()
