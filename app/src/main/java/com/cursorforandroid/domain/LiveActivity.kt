@@ -83,7 +83,7 @@ data class RunDigest(
 
         /** Derives the digest from the same timeline items the conversation renders. */
         fun from(items: List<TimelineItem>): RunDigest {
-            val calls = items.filterIsInstance<ToolActivity>().flatMap { it.calls }
+            val calls = items.filterIsInstance<ActivityGroup>().flatMap { it.calls }
             val edits = calls.filter { it.kind == ToolKind.Edit }
             val reads = calls.filter { it.kind == ToolKind.Read || it.kind == ToolKind.List }
             val stats = edits.mapNotNull { DiffStats.fromToolResult(it.result) }
@@ -103,16 +103,24 @@ data class RunDigest(
 
         private fun activityOf(items: List<TimelineItem>): Activity = when (val last = items.lastOrNull()) {
             null -> Activity.Starting
-            is ThinkingBlock -> if (last.isStreaming) Activity.Thinking else Activity.Working
             is AssistantMessage -> if (last.isStreaming) Activity.Writing else Activity.Working
-            is ToolActivity -> last.calls.lastOrNull { it.isRunning }?.let { call ->
-                Activity(ToolNames.verb(call.kind, call.status), call.detail())
-            } ?: Activity.Working
-            is SubagentsCard -> last.subagents.count { it.status == "Running" }.let { running ->
-                if (running > 0) Activity("Delegating to", "$running ${if (running == 1) "subagent" else "subagents"}") else Activity.Working
-            }
+            is ActivityGroup, is SubagentsCard -> currentStep(items)
             is RunFooter, is NoticeCard -> Activity.Finishing
             is UserMessage, is SummaryRow -> Activity.Working
+        }
+
+        /**
+         * The agent's own step — a thought being written, a tool running — comes first; delegation counts once it is
+         * waiting on its subagents. Subagent cards sit after the group they were delegated from while that group goes
+         * on collecting the agent's work, so both are read from the trailing activity rather than the last item alone.
+         */
+        private fun currentStep(items: List<TimelineItem>): Activity {
+            val trailing = items.takeLastWhile { it is ActivityGroup || it is SubagentsCard }
+            val group = trailing.filterIsInstance<ActivityGroup>().lastOrNull()
+            if (group?.isThinking == true) return Activity.Thinking
+            group?.runningCall?.let { call -> return Activity(ToolNames.verb(call.kind, call.status), call.detail()) }
+            val running = trailing.filterIsInstance<SubagentsCard>().sumOf { card -> card.subagents.count { it.status == "Running" } }
+            return if (running > 0) Activity("Delegating to", "$running ${if (running == 1) "subagent" else "subagents"}") else Activity.Working
         }
 
         private fun ToolCall.detail(): String? {

@@ -106,6 +106,7 @@ class PreferencesStore(context: Context) {
 
     data class ComposerDefaults(
         val repoUrl: String?,
+        /** Branch launched from last time; blank is the repository's default branch, null means no launch yet. */
         val ref: String?,
         /** Model launched with last time; null is "Default" (Cursor's configured model) once [modelChosen] is set. */
         val modelId: String?,

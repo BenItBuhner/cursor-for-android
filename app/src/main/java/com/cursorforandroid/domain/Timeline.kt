@@ -32,19 +32,21 @@ data class AssistantMessage(
     val isStreaming: Boolean = false,
 ) : TimelineItem
 
-data class ThinkingBlock(
-    override val id: String,
-    val text: String,
-    val durationSeconds: Long? = null,
-    val isStreaming: Boolean = false,
-) : TimelineItem
-
 /** Compact key/value row such as "Worked 3m 5s" or "Explored 6 files, 7 searches". */
 data class SummaryRow(
     override val id: String,
     val label: String,
     val value: String,
 ) : TimelineItem
+
+/** One step of an [ActivityGroup]: a stretch of reasoning or a tool call, in the order the agent took them. */
+sealed interface ActivityStep
+
+data class ThinkingBlock(
+    val text: String,
+    val durationSeconds: Long? = null,
+    val isStreaming: Boolean = false,
+) : ActivityStep
 
 enum class ToolKind { Read, List, Search, Edit, Shell, Web, Task, Mcp, Other }
 
@@ -56,22 +58,40 @@ data class ToolCall(
     val summary: String,
     val args: JsonElement? = null,
     val result: JsonElement? = null,
-) {
+) : ActivityStep {
     val isRunning: Boolean get() = status == "running"
 }
 
-/** A batch of consecutive tool calls, rendered as an "Explored N files, M searches" row that expands to a card. */
-data class ToolActivity(
+/**
+ * Everything the agent did between two messages — its reasoning and tool calls, interleaved as they happened — behind
+ * one "Explored 6 files, 1 search · thought for 7s" row that expands to the trace. A run's work between two replies
+ * is one thing to skim or dig into, not a stack of "Thought for 1s" / "Explored 2 files" rows.
+ */
+data class ActivityGroup(
     override val id: String,
-    val calls: List<ToolCall>,
+    val steps: List<ActivityStep>,
 ) : TimelineItem {
+    val thoughts: List<ThinkingBlock> get() = steps.filterIsInstance<ThinkingBlock>()
+    val calls: List<ToolCall> get() = steps.filterIsInstance<ToolCall>()
     val fileCount: Int get() = calls.count { it.kind == ToolKind.Read || it.kind == ToolKind.List || it.kind == ToolKind.Edit }
     val searchCount: Int get() = calls.count { it.kind == ToolKind.Search || it.kind == ToolKind.Web }
     val commandCount: Int get() = calls.count { it.kind == ToolKind.Shell }
-    val isRunning: Boolean get() = calls.any { it.isRunning }
 
-    val headline: String
+    /** The tool call in progress: the latest one still reported as running, or null. */
+    val runningCall: ToolCall? get() = calls.lastOrNull { it.isRunning }
+    val isRunning: Boolean get() = runningCall != null
+
+    /** Whether the newest step is a thought still being written. */
+    val isThinking: Boolean get() = (steps.lastOrNull() as? ThinkingBlock)?.isStreaming == true
+    val isBusy: Boolean get() = isRunning || isThinking
+
+    /** Seconds spent thinking across the group, or null when its thoughts were not timed (a replayed stream). */
+    val thoughtSeconds: Long? get() = thoughts.mapNotNull { it.durationSeconds }.takeIf { it.isNotEmpty() }?.sum()
+
+    /** "6 files, 1 search" — the tool calls by kind; null when the group is nothing but thinking. */
+    val headline: String?
         get() {
+            if (calls.isEmpty()) return null
             val parts = buildList {
                 if (fileCount > 0) add("$fileCount ${if (fileCount == 1) "file" else "files"}")
                 if (searchCount > 0) add("$searchCount ${if (searchCount == 1) "search" else "searches"}")
@@ -79,7 +99,27 @@ data class ToolActivity(
             }
             return if (parts.isEmpty()) "${calls.size} ${if (calls.size == 1) "tool call" else "tool calls"}" else parts.joinToString(", ")
         }
-    val verb: String get() = if (isRunning) "Exploring" else "Explored"
+
+    /** The row's verb: what the agent is doing while the group is busy, what it did once it has gone quiet. */
+    val verb: String
+        get() = when {
+            calls.isNotEmpty() -> if (isBusy) "Exploring" else "Explored"
+            else -> if (isBusy) "Thinking" else "Thought"
+        }
+
+    /**
+     * What follows the verb: "6 files, 1 search · thought for 7s", "for 7s", or null when there is nothing to add.
+     * The thinking time joins only once the group is quiet, so the counts hold still while the agent works.
+     */
+    val detail: String?
+        get() {
+            val thought = thoughtSeconds?.let { "for ${it}s" }
+            return when {
+                calls.isEmpty() -> if (isBusy) null else thought
+                isBusy || thought == null -> headline
+                else -> "$headline · thought $thought"
+            }
+        }
 }
 
 data class Subagent(
