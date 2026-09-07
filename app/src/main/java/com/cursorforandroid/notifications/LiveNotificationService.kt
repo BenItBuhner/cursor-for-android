@@ -48,11 +48,15 @@ class LiveNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val firstStart = !inForeground
         if (!enterForeground()) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP_RUN) {
             val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
             val runId = intent.getStringExtra(EXTRA_RUN_ID)
             if (agentId != null && runId != null) stopRun(agentId, runId)
+        } else if (!firstStart) {
+            // Re-issued start (running set changed, or notification permission was just granted): show the current state.
+            graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }?.let { post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, it)) }
         }
         return START_NOT_STICKY
     }
@@ -72,8 +76,9 @@ class LiveNotificationService : Service() {
             return false
         }
         inForeground = true
-        monitor.start()
+        // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
         scope.launch { monitor.finished.collect { onRunFinished(it) } }
+        monitor.start()
         scope.launch {
             combine(monitor.state, graph.prefs.liveNotifications) { state, enabled -> state to enabled }
                 .collect { (state, enabled) ->

@@ -65,10 +65,13 @@ class AgentRepository(
 
     fun agent(id: String): Agent? = _state.value.agents.firstOrNull { it.id == id }
 
-    /** Fetches v1 (identity + lifecycle) and v0 (repo / branch / PR / summary) in parallel and merges them. */
-    suspend fun refresh() = refreshMutex.withLock {
+    /**
+     * Fetches v1 (identity + lifecycle) and v0 (repo / branch / PR / summary) in parallel and merges them.
+     * [silent] refreshes (background polling) leave the pull-to-refresh indicator alone.
+     */
+    suspend fun refresh(silent: Boolean = false) = refreshMutex.withLock {
         val api = session.current.api
-        _state.update { it.copy(isRefreshing = true, error = null) }
+        _state.update { it.copy(isRefreshing = !silent, error = null) }
         try {
             coroutineScope {
                 val v1 = async {

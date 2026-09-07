@@ -78,7 +78,7 @@ class RunMonitor(
         s.launch {
             while (isActive) {
                 delay(refreshIntervalMs)
-                agents.refresh()
+                agents.refresh(silent = true)
             }
         }
     }
