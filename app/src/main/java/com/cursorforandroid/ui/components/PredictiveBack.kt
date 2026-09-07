@@ -17,7 +17,8 @@ val PredictiveBackEasing: Easing = CubicBezierEasing(0.1f, 0.1f, 0f, 1f)
 /**
  * Undoes a transition that was being scrubbed by a back gesture the user then cancelled: plays the fraction back
  * to zero over a duration proportional to how far it got, then snaps to [SeekableTransitionState.currentState].
- * Same recipe NavHost uses for its predictive pop, so drill-ins inside the app rewind exactly like destinations do.
+ * The same recipe the navigation host uses to rewind a cancelled pop, so drill-ins inside a sheet rewind exactly
+ * like destinations do.
  */
 suspend fun <S> SeekableTransitionState<S>.rewind(totalDurationMillis: Int) {
     val start = fraction

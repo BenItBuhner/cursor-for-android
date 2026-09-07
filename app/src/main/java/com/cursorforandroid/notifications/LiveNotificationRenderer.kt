@@ -26,8 +26,9 @@ import com.cursorforandroid.util.AppClock
  *
  *  - One running agent: a card with the status label, the agent title, the current step and a Stop action; the
  *    header chronometer counts the run up. On Android 16 it is a promoted `ProgressStyle` Live Update.
- *  - Several running agents: the same card condensed to one line per agent (up to eight), `BigTextStyle` so it
- *    still qualifies for promotion.
+ *  - Several running agents: the same card condensed to one line per agent, `BigTextStyle` so it still qualifies
+ *    for promotion. Only the tracked runs (up to eight) get a line; the headline counts every running agent and a
+ *    closing "+N more" line stands in for the rest.
  *  - A finished agent: a dismissible card with "Finished", the title, "+80 −230 · 3 Files" (or the duration when
  *    no tool reported line counts), the final reply, and Review / View PR actions.
  */
@@ -57,7 +58,8 @@ object LiveNotificationRenderer {
     fun live(context: Context, state: LiveActivityState): Notification {
         val running = state.running
         if (running.isEmpty()) return connecting(context)
-        return if (running.size == 1) single(context, running.first()) else condensed(context, running)
+        // Chosen by how many agents run, not how many are followed: a second agent beyond the tracked one still counts.
+        return if (state.totalRunning == 1) single(context, running.first()) else condensed(context, state)
     }
 
     private fun single(context: Context, run: TrackedRun): Notification {
@@ -80,9 +82,11 @@ object LiveNotificationRenderer {
         return builder.build()
     }
 
-    private fun condensed(context: Context, running: List<TrackedRun>): Notification {
-        val lines = running.map { condensedLine(context, it) }
-        val count = running.size
+    private fun condensed(context: Context, state: LiveActivityState): Notification {
+        val running = state.running
+        // The count is every running agent; the lines only cover the tracked ones, so the rest are summed up below.
+        val count = state.totalRunning
+        val lines = running.map { condensedLine(context, it) } + listOfNotNull(moreLine(context, state.untrackedCount))
         return liveBuilder(context)
             .setContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
             .setContentText(lines.first())
@@ -150,6 +154,10 @@ object LiveNotificationRenderer {
         }
         return "\u2022 ${ellipsize(run.title, CONDENSED_TITLE_MAX)} \u00B7 $step"
     }
+
+    /** "• +2 more" for the running agents beyond the tracking cap; null when every running agent has a line. */
+    private fun moreLine(context: Context, untracked: Int): String? =
+        if (untracked <= 0) null else "\u2022 " + context.resources.getQuantityString(R.plurals.notif_more_agents, untracked, untracked)
 
     private fun phaseLabel(context: Context, run: TrackedRun): String = when (run.phase) {
         LivePhase.Starting -> context.getString(R.string.notif_status_starting)

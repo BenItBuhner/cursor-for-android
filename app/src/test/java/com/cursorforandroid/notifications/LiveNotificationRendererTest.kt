@@ -99,6 +99,35 @@ class LiveNotificationRendererTest {
     }
 
     @Test
+    fun `headline counts every running agent even when only eight are tracked`() {
+        val tracked = (1..8).map { running("bc-$it", "Agent $it", activity = RunDigest.Activity.Thinking) }
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(tracked, hasReconciled = true, runningCount = 12))
+
+        assertThat(n.title()).isEqualTo("12 agents running")
+        assertThat(n.number).isEqualTo(12)
+        val lines = n.bigText()!!.lines()
+        assertThat(lines).hasSize(9)
+        assertThat(lines.take(8)).containsExactlyElementsIn((1..8).map { "\u2022 Agent $it \u00B7 Thinking" }).inOrder()
+        assertThat(lines.last()).isEqualTo("\u2022 +4 more")
+        assertThat(n.text()).isEqualTo(lines.first())
+    }
+
+    @Test
+    fun `a second running agent without a tracked stream still makes it a condensed card`() {
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "Agent")), hasReconciled = true, runningCount = 2))
+
+        assertThat(n.title()).isEqualTo("2 agents running")
+        assertThat(n.number).isEqualTo(2)
+        assertThat(n.bigText()!!.lines()).containsExactly("\u2022 Agent \u00B7 Editing", "\u2022 +1 more").inOrder()
+        assertThat(n.actionTitles()).isEmpty()
+
+        // A count that lags behind the tracked list never under-reports, and no "+N more" line appears.
+        val stale = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "A"), running("bc-2", "B")), hasReconciled = true, runningCount = 1))
+        assertThat(stale.title()).isEqualTo("2 agents running")
+        assertThat(stale.bigText()!!.lines()).hasSize(2)
+    }
+
+    @Test
     fun `finished card carries the diff stats line, the reply, Review and View PR`() {
         val n = LiveNotificationRenderer.finished(context, finished())
 

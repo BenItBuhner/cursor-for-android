@@ -94,18 +94,22 @@ class PreferencesStore(context: Context) {
     data class ComposerDefaults(
         val repoUrl: String?,
         val ref: String?,
+        /** Model launched with last time; null is "Default" (Cursor's configured model) once [modelChosen] is set. */
         val modelId: String?,
         val modelParams: Map<String, String>,
         val autoCreatePr: Boolean,
+        /** False until a launch has recorded a model choice, so a null [modelId] can be told apart from "never asked". */
+        val modelChosen: Boolean,
     )
 
     val composerDefaults: Flow<ComposerDefaults> = store.data.map { p ->
         ComposerDefaults(
             repoUrl = p[Keys.lastRepo],
             ref = p[Keys.lastRef],
-            modelId = p[Keys.lastModel],
+            modelId = p[Keys.lastModel]?.ifEmpty { null },
             modelParams = p[Keys.lastModelParams]?.let { decodeStringMap(it) } ?: emptyMap(),
             autoCreatePr = p[Keys.autoCreatePr] ?: false,
+            modelChosen = p.contains(Keys.lastModel),
         )
     }
 
@@ -149,11 +153,12 @@ class PreferencesStore(context: Context) {
         }
     }
 
+    /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
     suspend fun setComposerDefaults(repoUrl: String?, ref: String?, modelId: String?, params: Map<String, String>, autoCreatePr: Boolean) =
         store.edit { p ->
             if (repoUrl == null) p.remove(Keys.lastRepo) else p[Keys.lastRepo] = repoUrl
             if (ref == null) p.remove(Keys.lastRef) else p[Keys.lastRef] = ref
-            if (modelId == null) p.remove(Keys.lastModel) else p[Keys.lastModel] = modelId
+            p[Keys.lastModel] = modelId ?: ""
             p[Keys.lastModelParams] = encodeStringMap(params)
             p[Keys.autoCreatePr] = autoCreatePr
         }
