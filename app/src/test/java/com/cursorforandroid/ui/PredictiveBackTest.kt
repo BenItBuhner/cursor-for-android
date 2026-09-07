@@ -97,7 +97,7 @@ class PredictiveBackTest {
     @Test
     fun `filter sheet drill-in is scrubbed by the gesture, rewinds on cancel and pops on commit`() {
         compose.onNodeWithContentDescription("Open sidebar").performClick()
-        waitForText("New Chat")
+        waitForText("Demo User")
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText(ROOT_PAGE)
         compose.onNodeWithText("Status").performClick()

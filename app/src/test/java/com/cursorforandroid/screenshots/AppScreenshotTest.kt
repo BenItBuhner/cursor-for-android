@@ -145,9 +145,9 @@ class AppScreenshotTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("/autopilot")).fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
 
-        // Sidebar drawer.
+        // Sidebar drawer: the header's "+" is the new-chat button.
         compose.onNodeWithContentDescription("Open sidebar").performClick()
-        waitForText("New Chat")
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         capture("03_sidebar")
 
         // Chats filter sheet from the filter icon next to "Chats".
