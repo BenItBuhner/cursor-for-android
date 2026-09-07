@@ -100,7 +100,9 @@ class AgentRepository(
                         }
                     }.getOrDefault(emptyList())
                 }
-                val summaries = v1.await()
+                // Pages are cursor-based over a list that changes underneath; an agent can straddle two of them,
+                // and the sidebar keys its rows on the id.
+                val summaries = v1.await().distinctBy { it.id }
                 val legacy: Map<String, V0AgentDto> = v0.await().associateBy { it.id }
                 val previous = _state.value.agents.associateBy { it.id }
                 val merged = summaries.map { it.toAgent(legacy[it.id], previous[it.id]) }
