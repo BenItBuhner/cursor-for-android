@@ -167,7 +167,7 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
         val repo = body.repos?.firstOrNull()
         val agent = AgentDto(
             id = id,
-            name = body.name ?: body.prompt.text.lines().first().take(60).ifBlank { "New agent" },
+            name = body.name ?: SlashCommands.strip(body.prompt.text).lines().first().take(60).ifBlank { "New agent" },
             status = "ACTIVE",
             env = body.env ?: com.cursorforandroid.data.api.dto.AgentEnvDto("cloud"),
             url = "https://cursor.com/agents/$id",
@@ -398,7 +398,7 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
     /** `/multitask`: the task is split and three subagents work at once, the way the web describes the mode. */
     private suspend fun kotlinx.coroutines.flow.FlowCollector<RunStreamEvent>.multitask(prompt: String, mcpServers: List<String>): Outcome {
-        val task = SlashCommands.remove(prompt, SlashCommands.MULTITASK).lines().first().take(60).ifBlank { "the request" }
+        val task = SlashCommands.strip(prompt).lines().first().take(60).ifBlank { "the request" }
         think("Multitask mode: split \"$task\" into independent pieces and hand each to its own subagent so they run in parallel instead of queueing.")
         delay(300)
         mcpTool(mcpServers)

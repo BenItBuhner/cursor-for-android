@@ -48,6 +48,14 @@ class SlashCommandsTest {
     }
 
     @Test
+    fun `strip leaves only the request`() {
+        assertThat(SlashCommands.strip("/multitask /land-it Ship the release notes")).isEqualTo("Ship the release notes")
+        assertThat(SlashCommands.strip("/review a /review b")).isEqualTo("a b")
+        assertThat(SlashCommands.strip("/multitask ")).isEqualTo("")
+        assertThat(SlashCommands.strip("no commands here")).isEqualTo("no commands here")
+    }
+
+    @Test
     fun `toggle flips presence`() {
         val on = SlashCommands.toggle("fix it", SlashCommands.MULTITASK)
         assertThat(on).isEqualTo("/multitask fix it")

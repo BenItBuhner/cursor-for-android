@@ -37,6 +37,9 @@ object SlashCommands {
         return "$prefix $rest"
     }
 
+    /** The text without any of its commands: what the request is about, e.g. for a derived title. */
+    fun strip(text: String): String = commands(text).fold(text) { acc, name -> remove(acc, name) }
+
     /** Removes the first `/name` token and the whitespace it owned. */
     fun remove(text: String, name: String): String {
         val match = TOKEN.findAll(text).firstOrNull { it.groupValues[1] == name } ?: return text
