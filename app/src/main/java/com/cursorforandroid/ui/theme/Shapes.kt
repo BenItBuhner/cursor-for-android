@@ -49,8 +49,6 @@ object CursorDimens {
     val sidebarRowGap = 2.dp
     /** Selected row: inset on both sides, radius 6. */
     val selectionInset = 8.dp
-    /** Row leading icon ("New Chat"). */
-    val rowIcon = 18.dp
     /** State glyph slot in a chat row. */
     val glyph = 16.dp
     val unreadDot = 6.dp

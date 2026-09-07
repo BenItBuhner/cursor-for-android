@@ -70,27 +70,45 @@ fun AgentSummaryDto.toAgent(v0: V0AgentDto?, previous: Agent?): Agent =
     toAgent(previous).let { if (v0 != null) it.withLegacy(v0) else it }
 
 /**
+ * The run status a row keeps when a record arrives without run-level state (the v1 list, or the detail without its
+ * run). The v1 lifecycle is authoritative for whether anything is running, so a remembered status only survives
+ * while it still describes the same run and does not contradict the lifecycle: an active status cannot outlive an
+ * idle lifecycle (a row cached as RUNNING stops spinning once the agent went idle), and a terminal one cannot hide
+ * a turn the row has not seen yet — an ACTIVE lifecycle together with activity newer than the row knows. A terminal
+ * status is kept when nothing newer is reported, which is what a list answer that predates a finish the row just
+ * watched looks like.
+ */
+private fun carriedRunStatus(previous: Agent?, lifecycle: AgentLifecycle, latestRunId: String?, updatedAtMillis: Long): RunStatus? {
+    val remembered = previous?.runStatus ?: return null
+    val sameRun = latestRunId == null || previous.latestRunId == null || latestRunId == previous.latestRunId
+    return remembered.takeIf {
+        sameRun &&
+            !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) &&
+            !(it.isTerminal && lifecycle == AgentLifecycle.ACTIVE && updatedAtMillis > previous.updatedAtMillis)
+    }
+}
+
+/**
  * Builds the list-row model from the v1 summary alone, carrying over what only richer sources knew (repo, branch,
  * summary, model, duration) from the row it replaces — which may have been restored from disk and be hours old.
- * The v1 lifecycle is authoritative for whether anything is running: a remembered run status only survives when it
- * still describes the same run and does not contradict the lifecycle, so a row cached as RUNNING cannot keep
- * spinning after the agent went idle, and a new run started elsewhere shows as running through the lifecycle.
+ * The remembered run status is subject to [carriedRunStatus], so a new run started elsewhere shows as running
+ * through the lifecycle whether or not the list already names it.
  */
 fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
     val lifecycle = AgentLifecycle.parse(status)
     val runId = latestRunId ?: previous?.latestRunId
     val sameRun = previous != null && (latestRunId == null || previous.latestRunId == null || latestRunId == previous.latestRunId)
-    val carried = previous?.runStatus?.takeIf { sameRun && !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) }
+    val serverUpdatedAt = parseIsoMillis(updatedAt, parseIsoMillis(createdAt))
     return Agent(
         id = id,
         name = name?.ifBlank { null } ?: previous?.name?.takeIf { it != UNTITLED } ?: UNTITLED,
         lifecycle = lifecycle,
-        runStatus = carried,
+        runStatus = carriedRunStatus(previous, lifecycle, latestRunId, serverUpdatedAt),
         envType = EnvType.parse(env.type),
         envName = env.name,
         url = url.ifBlank { "https://cursor.com/agents/$id" },
         createdAtMillis = parseIsoMillis(createdAt, previous?.createdAtMillis ?: 0L),
-        updatedAtMillis = maxOf(parseIsoMillis(updatedAt, parseIsoMillis(createdAt)), previous?.updatedAtMillis?.takeIf { sameRun } ?: 0L),
+        updatedAtMillis = maxOf(serverUpdatedAt, previous?.updatedAtMillis?.takeIf { sameRun } ?: 0L),
         latestRunId = runId,
         repoUrl = previous?.repoUrl,
         startingRef = previous?.startingRef,
@@ -106,9 +124,12 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
 }
 
 /**
- * Folds the legacy `GET /v0/agents` record (repo, branch, PR, summary, per-run status) into a v1 row. The v0 list
- * is fetched independently and may be older than the v1 lifecycle, so an active v0 status is ignored for an agent
- * v1 already reports as idle or archived.
+ * Folds the legacy `GET /v0/agents` record (repo, branch, PR, summary, agent-level status) into a v1 row. The v0
+ * status predates runs: it is one value per agent, fetched independently of the v1 list, and may be older than the
+ * v1 lifecycle or describe an earlier run. It is therefore advisory only — it fills in a status the row does not
+ * know from a richer source (the run itself, or its stream), and it never contradicts the lifecycle in either
+ * direction: an active v0 status is ignored for an agent v1 reports as idle or archived, and a terminal one for an
+ * agent v1 reports as active, which otherwise showed a running agent as done.
  */
 fun Agent.withLegacy(v0: V0AgentDto): Agent {
     val v0Branch = v0.target?.branchName
@@ -117,9 +138,10 @@ fun Agent.withLegacy(v0: V0AgentDto): Agent {
     val v0Status = v0.status?.let { RunStatus.parse(it) }
         ?.takeIf { it != RunStatus.UNKNOWN }
         ?.takeIf { !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) }
+        ?.takeIf { !(it.isTerminal && lifecycle == AgentLifecycle.ACTIVE) }
     return copy(
         name = if (name == UNTITLED) v0.name?.ifBlank { null } ?: name else name,
-        runStatus = v0Status ?: runStatus,
+        runStatus = runStatus?.takeIf { it != RunStatus.UNKNOWN } ?: v0Status,
         createdAtMillis = if (createdAtMillis == 0L) parseIsoMillis(v0.createdAt) else createdAtMillis,
         repoUrl = v0Repo ?: repoUrl,
         startingRef = v0.source?.ref ?: startingRef,
@@ -135,23 +157,27 @@ fun Agent.withLegacy(v0: V0AgentDto): Agent {
 
 private const val UNTITLED = "Untitled agent"
 
-/** Merges the full `GET /v1/agents/{id}` record and its latest run into an existing list row. */
+/**
+ * Merges the full `GET /v1/agents/{id}` record and its latest run into an existing list row. The run is the
+ * authority on execution state; without it the remembered status is subject to [carriedRunStatus].
+ */
 fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
     val repo = repos.firstOrNull()
     val runBranches = latestRun?.git.toBranches()
     val lifecycle = AgentLifecycle.parse(status)
+    val runId = latestRunId ?: latestRun?.id
+    val serverUpdatedAt = maxOf(parseIsoMillis(updatedAt), latestRun?.let { parseIsoMillis(it.updatedAt) } ?: 0L)
     return Agent(
         id = id,
         name = name?.ifBlank { null } ?: previous?.name ?: UNTITLED,
         lifecycle = lifecycle,
-        runStatus = latestRun?.let { RunStatus.parse(it.status) }
-            ?: previous?.runStatus?.takeIf { !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) },
+        runStatus = latestRun?.statusEnum() ?: carriedRunStatus(previous, lifecycle, runId, serverUpdatedAt),
         envType = EnvType.parse(env.type),
         envName = env.name,
         url = url.ifBlank { previous?.url ?: "https://cursor.com/agents/$id" },
         createdAtMillis = parseIsoMillis(createdAt, previous?.createdAtMillis ?: 0L),
-        updatedAtMillis = maxOf(parseIsoMillis(updatedAt), latestRun?.let { parseIsoMillis(it.updatedAt) } ?: 0L, previous?.updatedAtMillis ?: 0L),
-        latestRunId = latestRunId ?: latestRun?.id ?: previous?.latestRunId,
+        updatedAtMillis = maxOf(serverUpdatedAt, previous?.updatedAtMillis ?: 0L),
+        latestRunId = runId ?: previous?.latestRunId,
         repoUrl = repo?.url ?: previous?.repoUrl,
         startingRef = repo?.startingRef ?: previous?.startingRef,
         branches = if (runBranches.isNotEmpty()) runBranches else previous?.branches ?: emptyList(),
@@ -166,6 +192,24 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
 }
 
 fun RunDto.statusEnum(): RunStatus = RunStatus.parse(status)
+
+/**
+ * Folds a run the caller has just read from the server into the row, when it is the row's latest run (or the row
+ * does not know its latest run yet). Runs are the authority on execution state, so the status is taken as is —
+ * this is how a row learns that a turn ended in an error, which the v1 list reports as a plain idle lifecycle — and
+ * the terminal fields (branches, final reply, duration) fill in what the list never carries. A run that is no
+ * longer the row's latest changes nothing.
+ */
+fun Agent.withLatestRun(run: RunDto): Agent {
+    if (latestRunId != null && latestRunId != run.id) return this
+    return copy(
+        runStatus = run.statusEnum(),
+        latestRunId = run.id,
+        branches = run.git.toBranches().ifEmpty { branches },
+        summary = run.result?.takeIf { it.isNotBlank() } ?: summary,
+        durationMs = run.durationMs ?: durationMs,
+    )
+}
 
 /** The inline `mcpServers[]` entry: only the fields of the server's transport, empty maps and lists omitted. */
 fun McpServer.toDto(): McpServerDto = when (transport) {

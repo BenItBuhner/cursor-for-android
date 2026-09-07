@@ -23,24 +23,18 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,8 +89,8 @@ fun HomeScreen(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
+    var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
-    var editingRef by remember { mutableStateOf(false) }
 
     val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
     val pickImages = rememberImagePicker(
@@ -129,32 +123,8 @@ fun HomeScreen(
                         }
                         SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
-                            if (editingRef) {
-                                // Tapping the branch chip means "type a branch": focus the field and open the keyboard.
-                                val refFocus = remember { FocusRequester() }
-                                LaunchedEffect(Unit) { refFocus.requestFocus() }
-                                Row(
-                                    Modifier.height(28.dp).background(colors.fillFaint, CursorTheme.shapes.base).padding(start = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
-                                    Spacer(Modifier.width(5.dp))
-                                    BasicTextField(
-                                        value = state.ref,
-                                        onValueChange = viewModel::setRef,
-                                        singleLine = true,
-                                        textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
-                                        cursorBrush = SolidColor(colors.textPrimary),
-                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done, autoCorrectEnabled = false),
-                                        keyboardActions = KeyboardActions(onDone = { editingRef = false }),
-                                        modifier = Modifier.widthIn(min = 56.dp, max = 150.dp).focusRequester(refFocus),
-                                        decorationBox = { inner -> Box { if (state.ref.isEmpty()) Text("branch", style = type.base, color = colors.textQuaternary); inner() } },
-                                    )
-                                    FlatIconButton(CursorIcons.Check, "Done", onClick = { editingRef = false }, size = 28.dp, iconSize = 15.dp)
-                                }
-                            } else {
-                                SelectorChip(state.ref.ifBlank { "default" }, onClick = { editingRef = true }, icon = CursorIcons.GitBranch, mono = true)
-                            }
+                            // A blank ref leaves the starting point to the repository's default branch.
+                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch, mono = true)
                         }
                         SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
                     }
@@ -211,6 +181,15 @@ fun HomeScreen(
             onSelect = viewModel::selectRepo,
             onRefresh = viewModel::refreshRepositories,
             onDismiss = { repoSheet = false },
+        )
+    }
+    if (branchSheet) {
+        BranchSheet(
+            repo = state.selectedRepo,
+            branches = state.branches,
+            selected = state.ref,
+            onSelect = viewModel::setRef,
+            onDismiss = { branchSheet = false },
         )
     }
     if (modelSheet) {
@@ -363,7 +342,7 @@ internal fun SheetSectionLabel(text: String) {
 }
 
 @Composable
-private fun SheetSearchField(value: String, onValueChange: (String) -> Unit, placeholder: String) {
+internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, placeholder: String) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
@@ -391,9 +370,12 @@ private fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pla
     }
 }
 
-/** Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. */
+/**
+ * Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. [mono]
+ * sets the title in JetBrains Mono at body size, as the composer chips do for branch names.
+ */
 @Composable
-internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
+internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, mono: Boolean = false, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
@@ -410,7 +392,8 @@ internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: 
             Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
-            Text(title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val titleStyle = if (mono) type.code.copy(fontSize = type.base.fontSize, lineHeight = type.base.lineHeight) else type.base
+            Text(title, style = titleStyle, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (checked) {

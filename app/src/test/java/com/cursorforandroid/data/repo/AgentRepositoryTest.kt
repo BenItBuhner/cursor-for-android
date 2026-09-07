@@ -4,6 +4,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.dto.V0AgentDto
+import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -254,6 +256,45 @@ class AgentRepositoryTest {
         repo.refresh()
         assertThat(repo.state.value.agents.single().isRunning).isTrue()
         assertThat(repo.state.value.agents.single().latestRunId).isEqualTo("run-2")
+    }
+
+    @Test
+    fun `a running agent keeps running whatever the legacy list says, from a cold start and from a stale cache`() = runBlocking<Unit> {
+        // The legacy list is one status per agent and can lag or describe an earlier run; here it says the agent is
+        // done while v1 reports it active.
+        api.addRunningAgent("bc-1", "Follow-up in progress", "run-1")
+        api.v0["bc-1"] = V0AgentDto(id = "bc-1", name = "Follow-up in progress", status = "FINISHED", target = V0TargetDto(branchName = "cursor/x"))
+        val repo = repository()
+        repo.refresh()
+        val cold = repo.state.value.agents.single()
+        assertThat(cold.isRunning).isTrue()
+        assertThat(cold.runStatus).isNull()
+        assertThat(cold.branchName).isEqualTo("cursor/x")
+
+        // The disk remembers the same run as finished (an earlier legacy answer); the server has moved on since.
+        awaitUntil { cache.read()?.value?.single()?.isRunning == true }
+        cache.write(listOf(cachedAgent("bc-1", "Follow-up in progress", runStatus = RunStatus.FINISHED, lifecycle = AgentLifecycle.IDLE, runId = "run-1")))
+        val next = repository()
+        next.restoreFromCache()
+        assertThat(next.state.value.agents.single().isRunning).isFalse()
+        next.refresh()
+        assertThat(next.state.value.agents.single().isRunning).isTrue()
+    }
+
+    @Test
+    fun `an error the run reported survives a legacy list that only knows finished`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Broke", "run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "ERROR", result = "Build failed")
+        val repo = repository()
+        repo.refresh()
+        // The list alone cannot tell: idle it is, finished says the legacy record.
+        assertThat(repo.state.value.agents.single().runStatus).isEqualTo(RunStatus.FINISHED)
+
+        repo.loadDetail("bc-1")
+        assertThat(repo.state.value.agents.single().isError).isTrue()
+        repo.refresh()
+        assertThat(repo.state.value.agents.single().isError).isTrue()
+        assertThat(repo.state.value.agents.single().summary).isEqualTo("Build failed")
     }
 
     @Test

@@ -9,6 +9,8 @@ import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.BranchOption
+import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
@@ -32,7 +34,10 @@ data class NewAgentUiState(
     val repositories: List<Repository> = emptyList(),
     val selectedRepo: Repository? = null,
     val noRepo: Boolean = false,
+    /** The branch (or commit) the agent starts from; blank leaves it to the repository's default branch. */
     val ref: String = "main",
+    /** What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent first. */
+    val branches: List<BranchOption> = emptyList(),
     val models: List<ModelOption> = emptyList(),
     val selectedModel: ModelOption? = null,
     val selectedVariant: ModelVariant? = null,
@@ -63,7 +68,18 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     /** Rotated after each successful launch so an identical prompt sent again on purpose gets its own agent. */
     private var launchNonce: String = LaunchIdempotency.newNonce()
 
+    /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
+    private var agents: List<Agent> = emptyList()
+
     init {
+        viewModelScope.launch {
+            // The list is already on screen (restored from disk, then refreshed) by the time the composer shows, and
+            // every later page, launch or finished run may teach the picker a branch.
+            graph.agents.state.collect { s ->
+                agents = s.agents
+                _state.update { it.withBranches() }
+            }
+        }
         viewModelScope.launch {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
@@ -91,8 +107,13 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
         _state.update { s ->
             val selected = s.selectedRepo ?: repos.firstOrNull { it.url == preferredUrl } ?: repos.firstOrNull()
-            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false)
+            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withBranches()
         }
+    }
+
+    private fun NewAgentUiState.withBranches(): NewAgentUiState {
+        val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
+        return copy(branches = KnownBranches.forRepository(agents, repo.url))
     }
 
     private suspend fun loadModels(force: Boolean = false) {
@@ -131,7 +152,16 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
     fun removeAttachment(item: PendingAttachment) = _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
     fun reportError(message: String) = _state.update { it.copy(error = message) }
-    fun selectRepo(repo: Repository?) = _state.update { it.copy(selectedRepo = repo, noRepo = repo == null) }
+    /**
+     * Switching repositories keeps the branch only when the new one is known to have it; otherwise the choice
+     * belonged to the previous repository (a `cursor/…` branch, typically) and the agent starts from the default branch.
+     */
+    fun selectRepo(repo: Repository?) = _state.update { s ->
+        val sameRepo = repo != null && !s.noRepo && repo.url == s.selectedRepo?.url
+        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withBranches()
+        val keepRef = sameRepo || repo == null || s.ref.isBlank() || next.branches.any { it.name == s.ref.trim() }
+        if (keepRef) next else next.copy(ref = "")
+    }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         // An explicit pick settles the selection: a list arriving afterwards re-resolves it, never the remembered one.
@@ -178,7 +208,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                         launchNonce = LaunchIdempotency.newNonce()
                         graph.prefs.setComposerDefaults(
                             repoUrl = request.repoUrl,
-                            ref = request.ref,
+                            // Blank is a choice too (the repository's default branch), saved as such so it is not
+                            // mistaken for a first launch and replaced with "main" next time.
+                            ref = request.ref ?: "",
                             modelId = request.modelId,
                             params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
                             autoCreatePr = request.autoCreatePr,
