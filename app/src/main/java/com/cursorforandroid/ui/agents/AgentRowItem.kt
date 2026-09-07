@@ -40,6 +40,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.StateGlyph
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 
 data class AgentRowActions(
@@ -62,7 +63,7 @@ fun AgentRowItem(
     prefs: ListPreferences,
     actions: AgentRowActions,
     modifier: Modifier = Modifier,
-    nowMillis: Long = System.currentTimeMillis(),
+    nowMillis: Long = AppClock.now(),
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography

@@ -1,5 +1,6 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.util.AppClock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -105,7 +106,7 @@ object AgentListOrganizer {
         prefs: ListPreferences,
         local: LocalAgentState,
         query: String = "",
-        nowMillis: Long = System.currentTimeMillis(),
+        nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentSection> {
         val rows = agents

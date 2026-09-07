@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -36,7 +37,7 @@ object TimelineBuilder {
     fun fromHistory(
         messages: List<V0ConversationMessageDto>,
         runs: List<RunDto>,
-        nowMillis: Long = System.currentTimeMillis(),
+        nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
@@ -134,7 +135,7 @@ object TimelineBuilder {
     }
 
     /** Accumulates live SSE events for one run into timeline items. */
-    class LiveRun(private val runId: String, private val nowProvider: () -> Long = System::currentTimeMillis) {
+    class LiveRun(private val runId: String, private val nowProvider: () -> Long = AppClock::now) {
         private val items = mutableListOf<TimelineItem>()
         private var seq = 0
         private var thinkingStartedAt: Long? = null
