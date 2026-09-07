@@ -46,20 +46,26 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
 
+    /** Set once the user picks a model; automatic re-selection stops so a catalog refresh cannot undo the choice. */
+    private var modelPicked = false
+
     init {
         viewModelScope.launch {
             val defaults = graph.prefs.composerDefaults.first()
             _state.update { it.copy(autoCreatePr = defaults.autoCreatePr, ref = defaults.ref ?: "main") }
-            loadRepositories(defaults.repoUrl)
-            loadModels(defaults.modelId, defaults.modelParams)
+            // The catalogs are flows: whatever is on disk (or seeded from the agent list) shows immediately and the
+            // network revalidation lands on top. Both loads run at once; the rate-limited repository call no longer
+            // holds up the model picker.
+            launch { graph.catalog.repositories.collect { repos -> if (repos.isNotEmpty()) applyRepos(repos, defaults.repoUrl) } }
+            launch { graph.catalog.models.collect { models -> if (models.isNotEmpty()) applyModels(models, defaults.modelId, defaults.modelParams) } }
+            launch { loadRepositories() }
+            launch { graph.catalog.loadModels() }
         }
     }
 
-    private suspend fun loadRepositories(preferredUrl: String?) {
+    private suspend fun loadRepositories() {
         _state.update { it.copy(isLoadingRepos = true) }
-        val seeded = graph.catalog.repositories.value
-        if (seeded.isNotEmpty()) applyRepos(seeded, preferredUrl)
-        graph.catalog.loadRepositories().onSuccess { applyRepos(it, preferredUrl) }.onFailure {
+        graph.catalog.loadRepositories().onFailure {
             _state.update { s -> s.copy(reposUnavailable = s.repositories.isEmpty()) }
         }
         _state.update { it.copy(isLoadingRepos = false) }
@@ -72,16 +78,15 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
-    private suspend fun loadModels(preferredId: String?, preferredParams: Map<String, String>) {
-        graph.catalog.loadModels().onSuccess { models ->
-            _state.update { s ->
-                val model = models.firstOrNull { it.id == preferredId } ?: models.firstOrNull()
-                val variant = model?.variants?.let { variants ->
-                    variants.firstOrNull { v -> v.params.associate { p -> p.id to p.value } == preferredParams && preferredParams.isNotEmpty() }
-                        ?: variants.firstOrNull { it.isDefault } ?: variants.firstOrNull()
-                }
-                s.copy(models = models, selectedModel = model, selectedVariant = variant)
+    private fun applyModels(models: List<ModelOption>, preferredId: String?, preferredParams: Map<String, String>) {
+        _state.update { s ->
+            if (modelPicked) return@update s.copy(models = models)
+            val model = models.firstOrNull { it.id == preferredId } ?: models.firstOrNull()
+            val variant = model?.variants?.let { variants ->
+                variants.firstOrNull { v -> v.params.associate { p -> p.id to p.value } == preferredParams && preferredParams.isNotEmpty() }
+                    ?: variants.firstOrNull { it.isDefault } ?: variants.firstOrNull()
             }
+            s.copy(models = models, selectedModel = model, selectedVariant = variant)
         }
     }
 
@@ -91,8 +96,11 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun reportError(message: String) = _state.update { it.copy(error = message) }
     fun selectRepo(repo: Repository?) = _state.update { it.copy(selectedRepo = repo, noRepo = repo == null) }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
-    fun selectModel(model: ModelOption?, variant: ModelVariant?) = _state.update {
-        it.copy(selectedModel = model, selectedVariant = variant ?: model?.variants?.firstOrNull { v -> v.isDefault } ?: model?.variants?.firstOrNull())
+    fun selectModel(model: ModelOption?, variant: ModelVariant?) {
+        modelPicked = true
+        _state.update {
+            it.copy(selectedModel = model, selectedVariant = variant ?: model?.variants?.firstOrNull { v -> v.isDefault } ?: model?.variants?.firstOrNull())
+        }
     }
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
