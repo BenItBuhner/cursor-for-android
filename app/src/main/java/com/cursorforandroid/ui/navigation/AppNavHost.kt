@@ -2,9 +2,13 @@ package com.cursorforandroid.ui.navigation
 
 import android.app.Activity
 import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -46,6 +50,7 @@ import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
+import com.cursorforandroid.ui.components.PredictiveBackEasing
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.ui.home.HomeScreen
@@ -158,14 +163,16 @@ fun AppNavHost(
 
     @Composable
     fun detailHost(modifier: Modifier) {
+        // NavHost drives the pop transitions with the predictive back gesture (seeking them as the finger moves,
+        // finishing on release, rewinding on cancel), so they double as the app's predictive back animation.
         NavHost(
             navController = navController,
             startDestination = Routes.HOME,
             modifier = modifier,
             enterTransition = { slideIn() },
             exitTransition = { fadeOut(tween(180)) },
-            popEnterTransition = { fadeIn(tween(180)) },
-            popExitTransition = { slideOutPop() },
+            popEnterTransition = { popReveal() },
+            popExitTransition = { popRecede() },
         ) {
             composable(Routes.HOME) {
                 HomeScreen(
@@ -228,5 +235,19 @@ fun AppNavHost(
 private fun AnimatedContentTransitionScope<*>.slideIn() =
     slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(240)) + fadeIn(tween(180))
 
-private fun AnimatedContentTransitionScope<*>.slideOutPop() =
-    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(240)) + fadeOut(tween(180))
+/**
+ * The screen being left, drawn on top: it recedes toward its centre — the cue the system itself uses when a task
+ * shrinks back to the launcher — and only dissolves over the last stretch. A gesture that stops half-way therefore
+ * shows an intact, smaller screen that grows back if the gesture is cancelled; a fixed slide direction would fight
+ * the finger whenever the swipe comes from the right edge, which the transition cannot know.
+ */
+private fun popRecede(): ExitTransition =
+    scaleOut(targetScale = PopMinScale, animationSpec = tween(PopMillis, easing = PredictiveBackEasing)) +
+        fadeOut(tween(durationMillis = PopFadeMillis, delayMillis = PopMillis - PopFadeMillis, easing = LinearEasing))
+
+/** The screen underneath: still and full-size, brightening from the canvas as the one above recedes. */
+private fun popReveal(): EnterTransition = fadeIn(tween(PopMillis, easing = LinearEasing))
+
+private const val PopMillis = 300
+private const val PopFadeMillis = 120
+private const val PopMinScale = 0.85f

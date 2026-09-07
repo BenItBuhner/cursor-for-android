@@ -1,7 +1,14 @@
 package com.cursorforandroid.ui.customize
 
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.SeekableTransitionState
+import androidx.compose.animation.core.rememberTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -23,18 +30,20 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.domain.FilterKind
@@ -46,12 +55,17 @@ import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rewind
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * The "Chats" filter menu (the filter icon next to the "Chats" label) as a bottom sheet: grouping, sort, the
@@ -64,43 +78,62 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
     val type = CursorTheme.typography
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
     var page by remember { mutableStateOf<FilterKind?>(null) }
+    // Seekable so a back gesture scrubs the drill-in page out and the root page in; committed on release.
+    val pageTransition = remember { SeekableTransitionState<FilterKind?>(null) }
+    var rewindJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(page) {
+        rewindJob?.cancel()
+        pageTransition.animateTo(page)
+    }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = colors.elevated,
-        contentColor = colors.textPrimary,
-        shape = CursorTheme.shapes.sheet,
-        dragHandle = null,
-        scrimColor = Color.Black.copy(alpha = 0.5f),
-    ) {
-        BackHandler(enabled = page != null) { page = null }
+    CursorSheet(onDismiss = onDismiss, sheetState = sheetState, scrimColor = Color.Black.copy(alpha = 0.5f)) {
+        PredictiveBackHandler(enabled = page != null) { events ->
+            rewindJob?.cancel()
+            try {
+                events.collect { pageTransition.seekTo(it.progress, targetState = null) }
+            } catch (e: CancellationException) {
+                rewindJob = scope.launch { pageTransition.rewind(PageTransitionMillis) }
+                return@PredictiveBackHandler
+            }
+            page = null
+        }
+        val transition = rememberTransition(pageTransition, label = "customize-page")
         Column(Modifier.fillMaxWidth().navigationBarsPadding().heightIn(min = 280.dp)) {
-            Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = if (page == null) 16.dp else 6.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (page != null) {
-                    FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = { page = null })
-                    Spacer(Modifier.width(2.dp))
-                }
-                Text(page?.label ?: "Chats", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                if (page == null && !state.prefs.isDefault) {
-                    Text(
-                        "Reset",
-                        style = type.base,
-                        color = colors.link,
-                        modifier = Modifier.pressable(viewModel::resetPrefs, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
+            // The header rides the same transition as the body, so the title changes with the gesture, not after it.
+            transition.AnimatedContent(
+                transitionSpec = { fadeIn(tween(PageTransitionMillis)) togetherWith fadeOut(tween(PageTransitionMillis)) using null },
+            ) { current ->
+                Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = if (current == null) 16.dp else 6.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (current != null) {
+                        FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = { page = null })
+                        Spacer(Modifier.width(2.dp))
+                    }
+                    Text(current?.label ?: "Chats", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                    if (current == null && !state.prefs.isDefault) {
+                        Text(
+                            "Reset",
+                            style = type.base,
+                            color = colors.link,
+                            modifier = Modifier.pressable(viewModel::resetPrefs, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
                 }
             }
             HairlineDivider()
 
-            AnimatedContent(
-                targetState = page,
+            transition.AnimatedContent(
                 transitionSpec = {
-                    if (targetState != null) slideInHorizontally { it } togetherWith slideOutHorizontally { -it }
-                    else slideInHorizontally { -it } togetherWith slideOutHorizontally { it }
+                    // Decelerating, so the page answers the first millimetres of the gesture and settles on release.
+                    val slide = tween<IntOffset>(PageTransitionMillis, easing = LinearOutSlowInEasing)
+                    val pages =
+                        if (targetState != null) slideInHorizontally(slide) { it } togetherWith slideOutHorizontally(slide) { -it }
+                        else slideInHorizontally(slide) { -it } togetherWith slideOutHorizontally(slide) { it }
+                    // The height change runs on the same clock; with the default spring the seek would be stretched
+                    // over the spring's estimated duration and stop tracking the gesture 1:1.
+                    pages using SizeTransform { _, _ -> tween(PageTransitionMillis, easing = LinearOutSlowInEasing) }
                 },
-                label = "customize-page",
             ) { current ->
                 Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 12.dp)) {
                     when (current) {
@@ -119,6 +152,8 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
         }
     }
 }
+
+private const val PageTransitionMillis = 300
 
 @Composable
 private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {

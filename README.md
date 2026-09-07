@@ -12,6 +12,7 @@ Not affiliated with Anysphere, Inc.
 - Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop.
 - Live notifications, the Android counterpart of the iOS app's Live Activities: while agents run, an ongoing notification shows the status, title, current step and a Stop action for one agent, or one condensed line per agent (up to eight) for several; when an agent finishes, a card with "Finished", `+80 −230 · 3 Files` (or the duration when no tool reported line counts), the final reply, Review and View PR. On Android 16 it is a promoted Live Update (status-bar chip, lock screen). Backed by a `dataSync` foreground service that only runs while something is running; toggle in Settings › Notifications.
 - Settings with Cursor Dark / Cursor Light / system theme; demo mode with an in-memory backend so the UI can be explored without an API key.
+- Predictive back (Android 14+): screens recede with the gesture to reveal the one underneath, the drawer and bottom sheets shrink with it, the filter sheet's drill-in pages slide back under the finger, and from the New Chat pane the system's back-to-home animation plays. Cancelling a gesture rewinds; releasing it commits.
 
 ## Build
 

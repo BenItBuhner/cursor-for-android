@@ -20,7 +20,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,6 +46,7 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
@@ -291,7 +291,7 @@ private fun RepositorySheet(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var filter by remember { mutableStateOf("") }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.elevated, shape = CursorTheme.shapes.sheet, dragHandle = null) {
+    CursorSheet(onDismiss = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Repository", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
@@ -342,7 +342,7 @@ private fun ModelSheet(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.elevated, shape = CursorTheme.shapes.sheet, dragHandle = null) {
+    CursorSheet(onDismiss = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
             Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Model", style = type.title, color = colors.textPrimary)
