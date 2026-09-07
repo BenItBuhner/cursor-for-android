@@ -127,7 +127,7 @@ class CursorLoginTest {
         assertThat(request.method).isEqualTo("POST")
         assertThat(request.path).isEqualTo("/aiserver.v1.DashboardService/CreateUserApiKey")
         assertThat(request.getHeader("Authorization")).isEqualTo("Bearer session-token")
-        assertThat(request.getHeader("Content-Type")).startsWith("application/json")
+        assertThat(request.getHeader("Content-Type")).isEqualTo("application/json")
         assertThat(request.getHeader("Connect-Protocol-Version")).isEqualTo("1")
         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
         assertThat(body["name"]?.jsonPrimitive?.content).isEqualTo("Cursor for Android (Pixel)")

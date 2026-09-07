@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.security.MessageDigest
@@ -149,7 +150,7 @@ class CursorLogin(
             .header("Authorization", "Bearer $accessToken")
             .header("Accept", "application/json")
             .header("Connect-Protocol-Version", "1")
-            .post(body.toRequestBody(JSON))
+            .post(body.jsonBody())
             .build()
         val response = try {
             client.newCall(request).execute()
@@ -178,9 +179,12 @@ class CursorLogin(
             builder.url("$base?uuid=${handshake.uuid}&verifier=${handshake.verifier}").get().build()
         } else {
             val json = CursorJson.encodeToString(PollRequestDto.serializer(), PollRequestDto(handshake.uuid, handshake.verifier))
-            builder.url(base).post(json.toRequestBody(JSON)).build()
+            builder.url(base).post(json.jsonBody()).build()
         }
     }
+
+    /** A bare `application/json` body; the String overload would append a charset parameter. */
+    private fun String.jsonBody(): RequestBody = toByteArray(Charsets.UTF_8).toRequestBody(JSON)
 
     /** Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text. */
     private fun isRouteNotFound(body: String): Boolean {
