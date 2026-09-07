@@ -7,7 +7,8 @@ Not affiliated with Anysphere, Inc.
 ## Features
 
 - Sign in with a Cursor user API key (validated against `GET /v1/me`), stored encrypted with the Android Keystore and excluded from backups.
-- New Chat pane as home: repository / branch / environment selectors, the composer ("+" image attachments via the system photo picker, model picker with plan mode and auto-PR, send), then the recent chats with preview cards.
+- New Chat pane as home: repository / branch / environment selectors, the composer (the "+" menu, model picker with plan mode and auto-PR, send), then the recent chats with preview cards.
+- The composer's "+" menu, as on cursor.com/agents: Multitask (toggles `/multitask` at the front of the prompt), Files (image attachments via the system photo picker), Skills (the built-in cloud skills — `/autopilot`, `/review`, `/review-bugbot`, `/review-security`, `/split-to-prs`, `/subscribe`, `/loop`, … — plus any project or synced skill typed by name, inserted as `/name`), and MCP Servers (HTTP or stdio servers defined in the app, stored encrypted, toggled per server and sent inline as `mcpServers[]` with every prompt while enabled). The same menu sits on the follow-up composer.
 - Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
 - Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop.
 - Live notifications, the Android counterpart of the iOS app's Live Activities: while agents run, an ongoing notification shows the status, title, current step and a Stop action for one agent, or the total count with one condensed line per agent (live detail for up to eight, then "+N more") for several; when an agent finishes, a card with "Finished", `+80 −230 · 3 Files` (or the duration when no tool reported line counts), the final reply, Review and View PR. On Android 16 it is a promoted Live Update (status-bar chip, lock screen). Backed by a `dataSync` foreground service that only runs while something is running; toggle in Settings › Notifications.
@@ -65,7 +66,7 @@ Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). I
 | Transcript | `GET /v0/agents/{id}/conversation` (v1 has no equivalent) |
 | Runs | `GET /v1/agents/{id}/runs`, `GET /v1/agents/{id}/runs/{runId}` |
 | Live stream | `GET /v1/agents/{id}/runs/{runId}/stream` (SSE, `Last-Event-ID` reconnect) |
-| Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs`, `POST …/cancel` |
+| Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs` (both with `prompt.images`, `mode` and inline `mcpServers`), `POST …/cancel` |
 | Lifecycle | `POST …/archive`, `POST …/unarchive`, `DELETE /v1/agents/{id}` |
 | Pickers | `GET /v1/models`, `GET /v1/repositories` |
 
