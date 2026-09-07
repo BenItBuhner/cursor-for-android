@@ -60,19 +60,19 @@ fun CursorTheme(
         MaterialTheme(
             colorScheme = colors.toMaterialScheme(),
             typography = Typography(
-                bodyLarge = typography.body,
-                bodyMedium = typography.secondary,
-                bodySmall = typography.caption,
-                titleLarge = typography.title,
-                titleMedium = typography.bodyMedium,
-                titleSmall = typography.sectionLabel,
-                labelLarge = typography.bodyMedium,
-                labelMedium = typography.secondary,
-                labelSmall = typography.caption,
+                bodyLarge = typography.row,
+                bodyMedium = typography.base,
+                bodySmall = typography.small,
+                titleLarge = typography.pageTitle,
+                titleMedium = typography.title,
+                titleSmall = typography.baseMedium,
+                labelLarge = typography.baseMedium,
+                labelMedium = typography.small,
+                labelSmall = typography.tiny,
             ),
             shapes = Shapes(
                 extraSmall = shapes.sm,
-                small = shapes.md,
+                small = shapes.base,
                 medium = shapes.lg,
                 large = shapes.xl,
                 extraLarge = shapes.sheet,
@@ -83,56 +83,32 @@ fun CursorTheme(
 }
 
 /**
- * Material components (drawer sheet, bottom sheet, switch, ripple) read from the M3 scheme, so map the
- * Cursor tokens onto it. Anything visible is still drawn with [CursorColors] directly.
+ * Material components (drawer sheet, bottom sheet, menus, ripple) read the M3 scheme, so map the Cursor tokens
+ * onto it. Everything visible is still drawn with [CursorColors] directly.
  */
 private fun CursorColors.toMaterialScheme(): ColorScheme {
-    val onSurfaceOpaque = textPrimary.compositeOver(canvas)
+    val onSurface = textPrimary.compositeOver(canvas)
+    val onSurfaceVariant = textSecondary.compositeOver(canvas)
+    val outline = stroke.compositeOver(canvas)
     return if (isDark) {
         darkColorScheme(
-            primary = accentBlue,
-            onPrimary = onAccent,
-            secondary = cyan,
-            onSecondary = onAccent,
-            background = canvas,
-            onBackground = onSurfaceOpaque,
-            surface = canvas,
-            onSurface = onSurfaceOpaque,
-            surfaceVariant = surface,
-            onSurfaceVariant = textSecondary.compositeOver(canvas),
-            surfaceContainer = surface,
-            surfaceContainerLow = surface,
-            surfaceContainerLowest = canvas,
-            surfaceContainerHigh = surfaceRaised,
-            surfaceContainerHighest = surfaceRaised,
-            outline = borderSubtle.compositeOver(canvas),
-            outlineVariant = borderSubtle.compositeOver(canvas),
-            error = danger,
-            onError = onAccent,
-            scrim = Color.Black,
+            primary = accent, onPrimary = onAccent, secondary = cyan, onSecondary = onAccent,
+            background = canvas, onBackground = onSurface, surface = canvas, onSurface = onSurface,
+            surfaceVariant = elevated, onSurfaceVariant = onSurfaceVariant,
+            surfaceContainer = elevated, surfaceContainerLow = elevated, surfaceContainerLowest = canvas,
+            surfaceContainerHigh = elevated, surfaceContainerHighest = elevated,
+            outline = outline, outlineVariant = strokeSubtle.compositeOver(canvas),
+            error = red, onError = onAccent, scrim = Color.Black,
         )
     } else {
         lightColorScheme(
-            primary = accentBlue,
-            onPrimary = onAccent,
-            secondary = cyan,
-            onSecondary = Color.White,
-            background = canvas,
-            onBackground = onSurfaceOpaque,
-            surface = canvas,
-            onSurface = onSurfaceOpaque,
-            surfaceVariant = surface,
-            onSurfaceVariant = textSecondary.compositeOver(canvas),
-            surfaceContainer = surface,
-            surfaceContainerLow = surface,
-            surfaceContainerLowest = canvas,
-            surfaceContainerHigh = surfaceRaised,
-            surfaceContainerHighest = surfaceRaised,
-            outline = borderSubtle.compositeOver(canvas),
-            outlineVariant = borderSubtle.compositeOver(canvas),
-            error = danger,
-            onError = Color.White,
-            scrim = Color.Black,
+            primary = accent, onPrimary = onAccent, secondary = cyan, onSecondary = Color.White,
+            background = canvas, onBackground = onSurface, surface = canvas, onSurface = onSurface,
+            surfaceVariant = elevated, onSurfaceVariant = onSurfaceVariant,
+            surfaceContainer = elevated, surfaceContainerLow = elevated, surfaceContainerLowest = canvas,
+            surfaceContainerHigh = elevated, surfaceContainerHighest = elevated,
+            outline = outline, outlineVariant = strokeSubtle.compositeOver(canvas),
+            error = red, onError = Color.White, scrim = Color.Black,
         )
     }
 }
@@ -146,7 +122,3 @@ private fun Color.compositeOver(background: Color): Color {
         alpha = 1f,
     )
 }
-
-@Composable
-@ReadOnlyComposable
-fun isCursorDark(): Boolean = LocalCursorColors.current.isDark

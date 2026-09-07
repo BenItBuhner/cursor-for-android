@@ -11,14 +11,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
-import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,27 +45,24 @@ import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
-import com.cursorforandroid.ui.compose.NewAgentScreen
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
-import com.cursorforandroid.ui.inbox.InboxScreen
+import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 object Routes {
-    const val AGENTS = "agents"
-    const val NEW = "new"
-    const val INBOX = "inbox"
+    const val HOME = "home"
     const val SETTINGS = "settings"
     const val AGENT = "agent/{id}"
     fun agent(id: String) = "agent/$id"
 }
 
 /**
- * Adaptive shell. Compact widths: the sidebar is the home screen and also lives in a swipe-in drawer over
- * every detail screen. Medium/expanded widths: a permanent 300dp sidebar next to the detail pane, like iPad.
+ * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent 280dp column on wide
+ * screens and an edge-swipe drawer on phones.
  */
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -76,8 +74,7 @@ fun AppNavHost(
     onDeepLinkConsumed: () -> Unit,
 ) {
     val activity = LocalContext.current as Activity
-    val widthClass = calculateWindowSizeClass(activity).widthSizeClass
-    val wide = widthClass != WindowWidthSizeClass.Compact
+    val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
     val navController = rememberNavController()
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
@@ -100,7 +97,6 @@ fun AppNavHost(
         scope.launch { drawerState.close() }
         navController.navigate(Routes.agent(id)) {
             launchSingleTop = true
-            // From one agent to another: replace so back returns to the list / composer, not a chain of agents.
             if (route == Routes.AGENT) popUpTo(Routes.AGENT) { inclusive = true }
         }
     }
@@ -120,12 +116,11 @@ fun AppNavHost(
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onDelete = { row ->
             agentsViewModel.delete(row.agent.id)
-            if (selectedAgentId == row.agent.id) navigateTop(if (wide) Routes.NEW else Routes.AGENTS)
+            if (selectedAgentId == row.agent.id) navigateTop(Routes.HOME)
         },
     )
     val destination = when (route) {
-        Routes.NEW -> SidebarDestination.NewAgent
-        Routes.INBOX -> SidebarDestination.Inbox
+        Routes.HOME -> SidebarDestination.NewChat
         Routes.SETTINGS -> SidebarDestination.Settings
         else -> null
     }
@@ -140,11 +135,10 @@ fun AppNavHost(
             selectedDestination = destination,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
-                onNewAgent = { navigateTop(Routes.NEW) },
-                onInbox = { navigateTop(Routes.INBOX) },
+                onNewChat = { navigateTop(Routes.HOME) },
                 onSettings = { navigateTop(Routes.SETTINGS) },
                 onCustomize = { customizeOpen = true },
-                onCloseDrawer = if (inDrawer) ({ scope.launch { drawerState.close() } }) else null,
+                onToggleSidebar = if (inDrawer) ({ scope.launch { drawerState.close() } }) else null,
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
             ),
@@ -153,44 +147,37 @@ fun AppNavHost(
     }
 
     val openSidebar: (() -> Unit)? = if (wide) null else ({ scope.launch { drawerState.open() } })
-    val startDestination = if (wide) Routes.NEW else Routes.AGENTS
 
     @Composable
     fun detailHost(modifier: Modifier) {
         NavHost(
             navController = navController,
-            startDestination = startDestination,
+            startDestination = Routes.HOME,
             modifier = modifier,
             enterTransition = { slideIn() },
-            exitTransition = { fadeOut(tween(200)) },
-            popEnterTransition = { fadeIn(tween(200)) },
+            exitTransition = { fadeOut(tween(180)) },
+            popEnterTransition = { fadeIn(tween(180)) },
             popExitTransition = { slideOutPop() },
         ) {
-            composable(Routes.AGENTS) {
-                sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.NEW) {
-                NewAgentScreen(
+            composable(Routes.HOME) {
+                HomeScreen(
                     graph = graph,
+                    listState = listState,
                     onOpenSidebar = openSidebar,
+                    onOpenAgent = rowActions.onOpen,
                     onLaunched = { agent -> openAgent(agent.id) },
-                    isDemo = isDemo,
                 )
             }
-            composable(Routes.INBOX) {
-                InboxScreen(state = listState, actions = rowActions, onOpenSidebar = openSidebar)
-            }
             composable(Routes.SETTINGS) {
-                SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar)
+                SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = if (wide) null else ({ navController.popBackStack() }))
             }
             composable(Routes.AGENT) { entry ->
                 val id = entry.arguments?.getString("id") ?: return@composable
                 ConversationScreen(
                     graph = graph,
                     agentId = id,
-                    onOpenSidebar = openSidebar,
                     onBack = if (wide) null else ({ navController.popBackStack() }),
-                    onDeleted = { navigateTop(if (wide) Routes.NEW else Routes.AGENTS) },
+                    onDeleted = { navigateTop(Routes.HOME) },
                 )
             }
         }
@@ -199,25 +186,23 @@ fun AppNavHost(
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
             sidebar(inDrawer = false, modifier = Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight())
-            Box(Modifier.fillMaxHeight().width(1.dp).background(colors.borderSubtle))
+            Box(Modifier.fillMaxHeight().width(1.dp).background(colors.strokeSubtle))
             detailHost(Modifier.weight(1f).fillMaxHeight())
         }
     } else {
         ModalNavigationDrawer(
             drawerState = drawerState,
-            gesturesEnabled = route != Routes.AGENTS,
-            scrimColor = Color.Black.copy(alpha = 0.5f),
+            gesturesEnabled = true,
+            scrimColor = Color.Black.copy(alpha = 0.45f),
             drawerContent = {
-                // Keep the sheet width stable so the drag anchors never collapse; only the inner content is
-                // skipped on the home route, which already shows the sidebar full-screen.
                 ModalDrawerSheet(
                     drawerState = drawerState,
-                    drawerContainerColor = colors.surface,
+                    drawerContainerColor = colors.sidebar,
                     drawerContentColor = colors.textPrimary,
-                    drawerShape = androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp),
+                    drawerShape = RectangleShape,
                     modifier = Modifier.width(CursorDimens.sidebarWidth),
                 ) {
-                    if (route != Routes.AGENTS) sidebar(inDrawer = true, modifier = Modifier.fillMaxSize())
+                    sidebar(inDrawer = true, modifier = Modifier.fillMaxSize())
                 }
             },
         ) {
@@ -231,7 +216,7 @@ fun AppNavHost(
 }
 
 private fun AnimatedContentTransitionScope<*>.slideIn() =
-    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(260)) + fadeIn(tween(200))
+    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(240)) + fadeIn(tween(180))
 
 private fun AnimatedContentTransitionScope<*>.slideOutPop() =
-    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(260)) + fadeOut(tween(200))
+    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(240)) + fadeOut(tween(180))

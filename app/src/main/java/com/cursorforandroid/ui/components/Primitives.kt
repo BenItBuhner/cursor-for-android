@@ -1,7 +1,9 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -16,15 +18,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -43,178 +44,195 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
-/** Hairline border + fill that share one shape so the edge stays crisp. */
+/** Fill + hairline stroke sharing one shape so the edge stays crisp. */
 fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
-    this.clip(shape).background(fill, shape).border(CursorDimens.borderWidth, border, shape)
+    this.clip(shape).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
 
 @Composable
 fun Modifier.pressable(onClick: () -> Unit, shape: Shape, enabled: Boolean = true, role: Role? = Role.Button): Modifier {
     val interaction = remember { MutableInteractionSource() }
     return this.clip(shape).clickable(
         interactionSource = interaction,
-        indication = ripple(color = CursorTheme.colors.base),
+        indication = ripple(color = CursorTheme.colors.base, bounded = true),
         enabled = enabled,
         role = role,
         onClick = onClick,
     )
 }
 
-/** Circular 40dp icon button: 15% base fill, hairline border — the filter / sidebar / more / send affordance. */
+/**
+ * Cursor's icon button: no fill, no border, just the glyph at 66 % (`--cursor-icon-secondary`) that brightens
+ * on press. 32dp box (28–32px on desktop), radius 6.
+ */
 @Composable
-fun CursorIconButton(
+fun FlatIconButton(
     icon: ImageVector,
     contentDescription: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     size: Dp = CursorDimens.iconButton,
-    iconSize: Dp = CursorDimens.iconSize,
-    filled: Boolean = true,
-    tint: Color = CursorTheme.colors.textPrimary,
+    iconSize: Dp = CursorDimens.iconLarge,
+    tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
-    prominent: Boolean = false,
 ) {
-    val colors = CursorTheme.colors
-    val fill = when {
-        prominent -> colors.base
-        filled -> colors.borderFocus
-        else -> Color.Transparent
-    }
-    val border = if (filled && !prominent) colors.borderSubtle else Color.Transparent
-    val iconTint = if (prominent) colors.canvas else tint.copy(alpha = if (enabled) tint.alpha else tint.alpha * 0.4f)
     Box(
-        modifier = modifier
+        modifier
             .size(size)
-            .cursorSurface(fill, border, CircleShape)
-            .pressable(onClick = onClick, shape = CircleShape, enabled = enabled),
+            .pressable(onClick = onClick, shape = CursorTheme.shapes.base, enabled = enabled),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, tint = iconTint, modifier = Modifier.size(iconSize))
+        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
     }
 }
 
-/** Level-1 card: surface fill, hairline border, radius 10. */
+/**
+ * The small round buttons that do exist in Cursor's composer footer: the "+" (8 % fill) and the mic / send
+ * (foreground fill with a canvas-coloured glyph). 28dp on desktop; 30dp here for touch.
+ */
+@Composable
+fun ComposerRoundButton(
+    icon: ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    prominent: Boolean = false,
+    enabled: Boolean = true,
+    size: Dp = 30.dp,
+) {
+    val colors = CursorTheme.colors
+    val fill = if (prominent) colors.textPrimary else colors.fill
+    val tint = if (prominent) colors.canvas else colors.iconSecondary
+    Box(
+        modifier
+            .size(size)
+            .background(if (enabled) fill else fill.copy(alpha = fill.alpha * 0.5f), CircleShape)
+            .pressable(onClick = onClick, shape = CircleShape, enabled = enabled),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.5f), modifier = Modifier.size(16.dp))
+    }
+}
+
+/** Elevated card: `--cursor-editor` fill, 8 % stroke, radius 8 (12 for previews). */
 @Composable
 fun CursorCard(
     modifier: Modifier = Modifier,
     shape: Shape = CursorTheme.shapes.lg,
-    fill: Color = CursorTheme.colors.surface,
-    border: Color = CursorTheme.colors.borderSubtle,
+    fill: Color = CursorTheme.colors.elevated,
+    border: Color = CursorTheme.colors.strokeSubtle,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(modifier.cursorSurface(fill, border, shape).padding(contentPadding), content = content)
 }
 
-/** Sentence-case group label ("Pinned", "Today", "Grouping"). */
 @Composable
-fun SectionLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable RowScope.() -> Unit)? = null) {
-    Row(
-        modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, style = CursorTheme.typography.sectionLabel, color = CursorTheme.colors.textPlaceholder)
-        trailing?.invoke(this)
+fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.strokeSubtle) {
+    Box(modifier.fillMaxWidth().height(CursorDimens.hairline).background(color))
+}
+
+/** Group label such as "Pinned" / "Today" / "Chats": 12sp at 60 %, sentence case, no chevron. */
+@Composable
+fun GroupLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
+    Row(modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
+        trailing?.invoke()
     }
 }
 
+/** Neutral pill: 8 % fill, radius 6, 12sp — "Branch", "Early Beta", inline branch names. */
 @Composable
-fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.borderSubtle) {
-    Box(modifier.fillMaxWidth().height(CursorDimens.borderWidth).background(color))
-}
-
-/** Neutral chip: 12% base fill, radius 6, secondary text. */
-@Composable
-fun CursorChip(
+fun Pill(
     text: String,
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
-    trailingIcon: ImageVector? = null,
     tint: Color = CursorTheme.colors.textSecondary,
-    fill: Color = CursorTheme.colors.selected,
+    fill: Color = CursorTheme.colors.fill,
     mono: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
-    val shape = CursorTheme.shapes.sm
+    val shape = CursorTheme.shapes.base
     Row(
         modifier
             .clip(shape)
             .background(fill, shape)
             .then(if (onClick != null) Modifier.pressable(onClick, shape) else Modifier)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
+            .padding(horizontal = 7.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
+        if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(12.dp))
         Text(
             text,
-            style = if (mono) CursorTheme.typography.code.copy(fontSize = CursorTheme.typography.caption.fontSize) else CursorTheme.typography.caption,
+            style = if (mono) CursorTheme.typography.code else CursorTheme.typography.small,
             color = tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        if (trailingIcon != null) Icon(trailingIcon, null, tint = tint, modifier = Modifier.size(13.dp))
     }
 }
 
-/** Cursor-styled switch: green track when on (desktop toggle colour), 12% base when off, white knob. */
+/** Desktop-sized toggle (34 x 18): green track when on, 14 % fill when off, white knob. */
 @Composable
-fun CursorSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    Switch(
-        checked = checked,
-        onCheckedChange = onCheckedChange,
-        enabled = enabled,
-        modifier = modifier,
-        colors = SwitchDefaults.colors(
-            checkedThumbColor = Color.White,
-            checkedTrackColor = colors.green,
-            checkedBorderColor = Color.Transparent,
-            uncheckedThumbColor = Color.White.copy(alpha = 0.9f),
-            uncheckedTrackColor = colors.selected,
-            uncheckedBorderColor = Color.Transparent,
-        ),
-    )
+    val track by animateColorAsState(if (checked) colors.green else colors.fillMedium, label = "track")
+    val knobOffset by animateDpAsState(if (checked) 17.dp else 2.dp, label = "knob")
+    Box(
+        modifier
+            .size(width = 34.dp, height = 18.dp)
+            .background(track, CircleShape)
+            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch),
+    ) {
+        Box(
+            Modifier
+                .offset { IntOffset(knobOffset.roundToPx(), 2.dp.roundToPx()) }
+                .size(14.dp)
+                .background(Color.White, CircleShape),
+        )
+    }
 }
 
-/** Leading list indicator: 8dp dot, or the spinning sparkle for a running agent. */
+/**
+ * Leading state glyph of a sidebar row (16dp slot). Web semantics: running sparkle, unread blue dot, error red
+ * dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
+ */
 @Composable
-fun StatusIndicator(indicator: AgentIndicator, modifier: Modifier = Modifier, size: Dp = CursorDimens.statusDot) {
+fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    when (indicator) {
-        AgentIndicator.Running -> RunningGlyph(modifier, color = colors.statusRunning)
-        AgentIndicator.Unread -> Dot(colors.statusUnread, modifier, size)
-        AgentIndicator.Error -> Dot(colors.statusError, modifier, size)
-        AgentIndicator.Read -> Dot(colors.statusIdle, modifier, size)
-        AgentIndicator.Archived -> Box(modifier.size(size).border(1.dp, colors.statusIdle, CircleShape))
+    Box(modifier.size(CursorDimens.icon), contentAlignment = Alignment.Center) {
+        when (indicator) {
+            AgentIndicator.Running -> RunningGlyph(color = colors.iconSecondary, size = 14.dp)
+            AgentIndicator.Unread -> Dot(colors.unreadDot)
+            AgentIndicator.Error -> Dot(colors.red)
+            AgentIndicator.Read -> if (hasBranch) Icon(CursorIcons.GitBranch, null, tint = colors.branchGlyph, modifier = Modifier.size(14.dp))
+            AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+        }
     }
 }
 
 @Composable
-private fun Dot(color: Color, modifier: Modifier, size: Dp) {
+fun Dot(color: Color, size: Dp = CursorDimens.unreadDot, modifier: Modifier = Modifier) {
     Box(modifier.size(size).background(color, CircleShape))
 }
 
-/** Slowly rotating four-point sparkle — Cursor's "agent is working" glyph. */
+/** Cursor's "agent is working" glyph: a slowly rotating four-point sparkle. */
 @Composable
-fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.statusRunning, size: Dp = 14.dp) {
+fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconSecondary, size: Dp = 14.dp) {
     val transition = rememberInfiniteTransition(label = "running")
-    val angle by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(2600, easing = LinearEasing), RepeatMode.Restart),
-        label = "angle",
-    )
+    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(2800, easing = LinearEasing), RepeatMode.Restart), label = "angle")
     Icon(CursorIcons.Sparkle, null, tint = color, modifier = modifier.size(size).rotate(angle))
 }
 
-/** Thin indeterminate ring used inside cards and the composer while a run is in flight. */
+/** Thin indeterminate ring for in-flight tool calls. */
 @Composable
-fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.textSecondary, size: Dp = 14.dp, strokeWidth: Dp = 1.5.dp) {
+fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconTertiary, size: Dp = 12.dp, strokeWidth: Dp = 1.5.dp) {
     val transition = rememberInfiniteTransition(label = "spinner")
     val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing)), label = "spin")
     Box(
@@ -224,4 +242,46 @@ fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors
             drawArc(color, angle, 90f, false, style = stroke)
         },
     )
+}
+
+/** Desktop buttons: ghost (8 % stroke, transparent) and primary (accent fill). 28dp tall, radius 6. */
+@Composable
+fun CursorButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    primary: Boolean = false,
+    destructive: Boolean = false,
+    icon: ImageVector? = null,
+    height: Dp = 30.dp,
+) {
+    val colors = CursorTheme.colors
+    val shape = CursorTheme.shapes.base
+    val fill = when {
+        primary -> if (enabled) colors.accent else colors.accent.copy(alpha = 0.4f)
+        else -> colors.fillFaint
+    }
+    val border = if (primary) Color.Transparent else colors.stroke
+    val label = when {
+        primary -> colors.onAccent
+        destructive -> colors.red
+        enabled -> colors.textPrimary
+        else -> colors.textQuaternary
+    }
+    Row(
+        modifier
+            .cursorSurface(fill, border, shape)
+            .pressable(onClick, shape, enabled = enabled)
+            .height(height)
+            .padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            Icon(icon, null, tint = label, modifier = Modifier.size(14.dp))
+            Box(Modifier.width(6.dp))
+        }
+        Text(text, style = CursorTheme.typography.baseMedium, color = label, maxLines = 1)
+    }
 }

@@ -11,16 +11,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,13 +30,15 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The prompt box shared by New Agent and follow-ups: level-1 surface, hairline border that brightens on
- * focus, optional context chips above the text, and the + / model / mic / send footer.
+ * Cursor's prompt box: `--cursor-editor` surface, 8 % stroke (12 % when focused), radius 12, 14/22 text, and a
+ * footer holding the round "+" button, the plain-text model selector and the mic / send / stop control.
+ * Context selectors (repo, branch, environment) sit above the box on the home pane — see [SelectorRow].
  */
 @Composable
 fun ComposerBox(
@@ -53,114 +51,117 @@ fun ComposerBox(
     isRunning: Boolean = false,
     onStop: (() -> Unit)? = null,
     onPlus: (() -> Unit)? = null,
-    header: (@Composable RowScope.() -> Unit)? = null,
-    footer: (@Composable RowScope.() -> Unit)? = null,
+    modelLabel: String? = null,
+    onModel: (() -> Unit)? = null,
+    footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
     focusRequester: FocusRequester? = null,
     enableSpeech: Boolean = true,
 ) {
     val colors = CursorTheme.colors
-    val shape = CursorTheme.shapes.bubble
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.xl
     var focused by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return@rememberLauncherForActivityResult
         onValueChange(if (value.isBlank()) spoken else "$value $spoken")
     }
-    val speechAvailable = remember {
-        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(context.packageManager) != null
-    }
+    val speechAvailable = remember { Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(context.packageManager) != null }
 
     Column(
         modifier
             .fillMaxWidth()
-            .cursorSurface(colors.surface, if (focused) colors.borderFocus else colors.borderSubtle, shape)
-            .padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 10.dp),
+            .cursorSurface(colors.elevated, if (focused) colors.stroke else colors.strokeSubtle, shape)
+            .padding(start = 12.dp, end = 10.dp, top = 10.dp, bottom = 8.dp),
     ) {
-        if (header != null) {
-            Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), content = header)
-        }
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            textStyle = CursorTheme.typography.message.copy(color = colors.textPrimary),
+            textStyle = type.message.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
             minLines = minLines,
-            maxLines = 8,
+            maxLines = 10,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 24.dp)
+                .heightIn(min = 22.dp)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) Text(placeholder, style = CursorTheme.typography.message, color = colors.textPlaceholder)
+                    if (value.isEmpty()) Text(placeholder, style = type.message, color = colors.textTertiary)
                     inner()
                 }
             },
         )
-        Spacer(Modifier.size(10.dp))
+        Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            CursorIconButton(
-                Icons.Outlined.Add, "More options",
-                onClick = { onPlus?.invoke() },
-                size = 32.dp, iconSize = 18.dp, filled = true, tint = colors.textSecondary, enabled = onPlus != null,
-            )
-            if (footer != null) {
-                Spacer(Modifier.size(8.dp))
-                footer()
+            if (onPlus != null) {
+                ComposerRoundButton(CursorIcons.Plus, "Add context", onClick = onPlus)
+                Spacer(Modifier.width(10.dp))
             }
+            if (modelLabel != null) {
+                SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null)
+            }
+            footerExtra?.invoke(this)
             Spacer(Modifier.weight(1f))
-            if (enableSpeech && speechAvailable) {
-                CursorIconButton(
-                    Icons.Outlined.Mic, "Dictate",
+            when {
+                isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
+                canSend -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = true)
+                enableSpeech && speechAvailable -> ComposerRoundButton(
+                    CursorIcons.Mic, "Dictate",
                     onClick = {
                         speechLauncher.launch(
                             Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                                putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak your prompt")
                             },
                         )
                     },
-                    size = 32.dp, iconSize = 18.dp, filled = true, tint = colors.textSecondary,
+                    prominent = true,
                 )
-                Spacer(Modifier.size(8.dp))
-            }
-            if (isRunning && onStop != null && !canSend) {
-                CursorIconButton(Icons.Outlined.Stop, "Stop run", onClick = onStop, size = 32.dp, iconSize = 16.dp, prominent = true)
-            } else {
-                CursorIconButton(
-                    Icons.Outlined.ArrowUpward, "Send",
-                    onClick = onSend, size = 32.dp, iconSize = 18.dp,
-                    prominent = canSend, filled = true, tint = colors.textPlaceholder, enabled = canSend,
-                )
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = {}, enabled = false)
             }
         }
     }
 }
 
-/** Small selector chip used in the composer header: label + chevron ("cursor-for-android ⌄", "main ⌄", "Cloud ⌄"). */
+/** Plain-text selector with a chevron: "codex-poly-bot ⌄", "master ⌄", "Claude Fable 5.1 1M Max ⌄". */
 @Composable
 fun SelectorChip(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    icon: ImageVector? = null,
     mono: Boolean = false,
+    enabled: Boolean = true,
 ) {
     val colors = CursorTheme.colors
+    val type = CursorTheme.typography
     Row(
-        modifier.pressable(onClick, CursorTheme.shapes.sm).padding(horizontal = 4.dp, vertical = 2.dp),
+        modifier
+            .pressable(onClick, CursorTheme.shapes.base, enabled = enabled)
+            .padding(horizontal = 4.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        if (icon != null) Icon(icon, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+        if (icon != null) Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(14.dp))
         Text(
             label,
-            style = if (mono) CursorTheme.typography.code.copy(fontSize = CursorTheme.typography.secondary.fontSize) else CursorTheme.typography.secondary,
+            style = if (mono) type.code.copy(fontSize = type.base.fontSize) else type.base,
             color = colors.textSecondary,
             maxLines = 1,
         )
-        Icon(Icons.Outlined.ExpandMore, null, tint = colors.textPlaceholder, modifier = Modifier.size(14.dp))
+        Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
     }
+}
+
+/** The row of context selectors that sits above the home composer. */
+@Composable
+fun SelectorRow(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier.fillMaxWidth().padding(start = 2.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        content = content,
+    )
 }

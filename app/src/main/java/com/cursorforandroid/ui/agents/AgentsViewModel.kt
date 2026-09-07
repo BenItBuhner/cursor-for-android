@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentListOrganizer
-import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
@@ -26,7 +25,6 @@ import kotlinx.coroutines.launch
 data class AgentListUiState(
     val sections: List<AgentSection> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
-    val inbox: List<AgentRow> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
     val prefs: ListPreferences = ListPreferences(),
     val local: LocalAgentState = LocalAgentState(),
@@ -53,8 +51,6 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
         AgentListUiState(
             sections = sections,
             allAgents = list.agents,
-            inbox = rows.filter { it.isUnread || it.indicator == com.cursorforandroid.domain.AgentIndicator.Error }
-                .sortedByDescending { it.agent.updatedAtMillis },
             repoSlugs = list.agents.mapNotNull { it.repoSlug }.distinct().sortedBy { it.lowercase() },
             prefs = prefs,
             local = local,

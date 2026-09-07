@@ -217,7 +217,7 @@ fun MarkdownText(
                             Text(
                                 if (block.ordered) "${index + 1}." else "•",
                                 style = style,
-                                color = colors.textSecondary,
+                                color = colors.textTertiary,
                                 modifier = Modifier.width(22.dp),
                             )
                             InlineText(item, style, color, modifier = Modifier.weight(1f))
@@ -226,8 +226,8 @@ fun MarkdownText(
                 }
                 is MdBlock.Code -> CodeBlock(block.code, block.language)
                 is MdBlock.Quote -> Row {
-                    Box(Modifier.width(2.dp).padding(vertical = 2.dp).background(colors.borderFocus))
-                    InlineText(block.text, style, colors.textSecondary, modifier = Modifier.padding(start = 10.dp))
+                    Box(Modifier.width(2.dp).padding(vertical = 2.dp).background(colors.strokeStrong))
+                    InlineText(block.text, style, colors.textTertiary, modifier = Modifier.padding(start = 10.dp))
                 }
                 MdBlock.Rule -> HairlineDivider(Modifier.padding(vertical = 4.dp))
             }
@@ -243,7 +243,7 @@ private fun InlineText(text: String, style: TextStyle, color: Color, modifier: M
             text = text,
             base = style,
             codeColor = colors.textPrimary,
-            codeBackground = colors.selected,
+            codeBackground = colors.fillMedium,
             linkColor = colors.link,
             boldColor = colors.textPrimary,
         )
@@ -254,12 +254,12 @@ private fun InlineText(text: String, style: TextStyle, color: Color, modifier: M
 @Composable
 fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    CursorCard(modifier = modifier.fillMaxWidth(), shape = CursorTheme.shapes.md, fill = colors.canvas, border = colors.borderSubtle) {
+    CursorCard(modifier = modifier.fillMaxWidth(), shape = CursorTheme.shapes.lg, fill = colors.canvas, border = colors.strokeSubtle) {
         if (!language.isNullOrBlank()) {
             Text(
                 language,
-                style = CursorTheme.typography.caption,
-                color = colors.textPlaceholder,
+                style = CursorTheme.typography.tiny,
+                color = colors.textQuaternary,
                 modifier = Modifier.padding(start = 12.dp, top = 8.dp),
             )
         }

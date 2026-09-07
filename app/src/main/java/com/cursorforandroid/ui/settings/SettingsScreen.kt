@@ -15,9 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,22 +33,23 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.agents.Avatar
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorCard
-import com.cursorforandroid.ui.components.CursorIconButton
+import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
-import com.cursorforandroid.ui.components.SectionLabel
-import com.cursorforandroid.ui.components.CursorTopBar
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
+/** Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of 38dp rows. */
 @Composable
 fun SettingsScreen(
     graph: AppGraph,
     user: CursorUser,
     isDemo: Boolean,
     onOpenSidebar: (() -> Unit)?,
+    onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val colors = CursorTheme.colors
@@ -61,26 +59,26 @@ fun SettingsScreen(
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
-        CursorTopBar(
+        CursorHeader(
             title = "Settings",
-            leading = { if (onOpenSidebar != null) CursorIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar) },
+            leading = {
+                when {
+                    onBack != null -> FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
+                    onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
+                }
+            },
         )
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp),
-        ) {
-            SectionLabel("Account", Modifier.padding(horizontal = 0.dp))
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
+            Group("Account")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(user, 40.dp)
-                    Spacer(Modifier.width(14.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(user, 28.dp)
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(user.displayName, style = type.bodyMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(user.displayName, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            if (isDemo) "Demo mode · local mock backend" else listOfNotNull(user.email, "Key: ${user.apiKeyName}").joinToString(" · "),
-                            style = type.caption,
-                            color = colors.textPlaceholder,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                            if (isDemo) "Demo · local mock backend" else listOfNotNull(user.email, user.apiKeyName).joinToString(" · "),
+                            style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -90,74 +88,65 @@ fun SettingsScreen(
                 LinkRow("Open cursor.com/agents", "https://cursor.com/agents", uriHandler::openUri)
             }
 
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("Appearance", Modifier.padding(horizontal = 0.dp))
+            Group("Appearance")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 ThemeMode.entries.forEachIndexed { index, mode ->
                     Row(
-                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setThemeMode(mode) } }, CursorTheme.shapes.lg).padding(horizontal = 16.dp, vertical = 14.dp),
+                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setThemeMode(mode) } }, CursorTheme.shapes.lg).height(38.dp).padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Column {
-                            Text(
-                                when (mode) { ThemeMode.System -> "Match system"; ThemeMode.Dark -> "Cursor Dark"; ThemeMode.Light -> "Cursor Light" },
-                                style = type.body, color = colors.textPrimary,
-                            )
-                            Text(
-                                when (mode) { ThemeMode.System -> "Follow the device theme"; ThemeMode.Dark -> "Anysphere dark palette, #141414 canvas"; ThemeMode.Light -> "Anysphere light palette, #FCFCFC canvas" },
-                                style = type.caption, color = colors.textPlaceholder,
-                            )
-                        }
-                        if (themeMode == mode) Icon(Icons.Outlined.Check, null, tint = colors.accentBlue, modifier = Modifier.size(18.dp))
+                        Text(
+                            when (mode) { ThemeMode.System -> "Match system"; ThemeMode.Dark -> "Cursor Dark"; ThemeMode.Light -> "Cursor Light" },
+                            style = type.base, color = colors.textPrimary,
+                        )
+                        if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(14.dp))
                     }
-                    if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 16.dp))
+                    if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 12.dp))
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
-            SectionLabel("About", Modifier.padding(horizontal = 0.dp))
+            Group("About")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 InfoRow("Version", BuildConfig.VERSION_NAME)
                 HairlineDivider()
-                InfoRow("API", "api.cursor.com · Cloud Agents v1 (+ v0 transcript)")
+                InfoRow("API", "Cloud Agents v1 · v0 transcript")
                 HairlineDivider()
-                LinkRow("Cloud Agents API docs", "https://cursor.com/docs/cloud-agent/api/endpoints", uriHandler::openUri)
-                HairlineDivider()
-                Text(
-                    "Unofficial community client for Cursor Cloud Agents. Not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License.",
-                    style = type.caption, color = colors.textPlaceholder, modifier = Modifier.padding(16.dp),
-                )
+                LinkRow("API documentation", "https://cursor.com/docs/cloud-agent/api/endpoints", uriHandler::openUri)
             }
-
-            Spacer(Modifier.height(24.dp))
-            CursorButton(
-                text = if (isDemo) "Leave demo" else "Sign out",
-                onClick = { scope.launch { graph.signOut() } },
-                destructive = true,
-                modifier = Modifier.fillMaxWidth().widthIn(max = 640.dp),
+            Text(
+                "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License.",
+                style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 8.dp, start = 2.dp),
             )
+
+            Spacer(Modifier.height(20.dp))
+            CursorButton(if (isDemo) "Leave demo" else "Sign out", onClick = { scope.launch { graph.signOut() } }, destructive = true)
         }
     }
+}
+
+@Composable
+private fun Group(text: String) {
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp, start = 2.dp))
 }
 
 @Composable
 private fun LinkRow(label: String, url: String, open: (String) -> Unit) {
     val colors = CursorTheme.colors
     Row(
-        Modifier.fillMaxWidth().pressable({ open(url) }, CursorTheme.shapes.lg).padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().pressable({ open(url) }, CursorTheme.shapes.lg).height(38.dp).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = CursorTheme.typography.body, color = colors.textPrimary, modifier = Modifier.weight(1f))
-        Icon(Icons.AutoMirrored.Outlined.OpenInNew, null, tint = colors.textPlaceholder, modifier = Modifier.size(16.dp))
+        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
+        Icon(CursorIcons.ExternalLink, null, tint = colors.iconQuaternary, modifier = Modifier.size(13.dp))
     }
 }
 
 @Composable
 private fun InfoRow(label: String, value: String) {
     val colors = CursorTheme.colors
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, style = CursorTheme.typography.body, color = colors.textPrimary, modifier = Modifier.weight(1f))
-        Text(value, style = CursorTheme.typography.secondary, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Row(Modifier.fillMaxWidth().height(38.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
+        Text(value, style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

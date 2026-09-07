@@ -1,19 +1,16 @@
 # cursor-for-android
 
-An unofficial, native Android client for [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent/api/endpoints), built with Kotlin and Jetpack Compose. It mirrors the layout of the official iOS app (sidebar, Customize sheet, conversation view, New Agent composer) and reproduces the desktop app's colour, radius and typography system using Android primitives instead of Liquid Glass.
+An unofficial, native Android client for [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent/api/endpoints), built with Kotlin and Jetpack Compose. It reproduces the official Cursor Agents application (the desktop Agents window and cursor.com/agents) with Android primitives: the same sidebar, the composer-first New Chat pane with the recent-chats list, the conversation view, and the design tokens shipped in the desktop build.
 
 Not affiliated with Anysphere, Inc.
 
 ## Features
 
-- Sign in with a Cursor user API key (validated against `GET /v1/me`), stored encrypted with the Android Keystore.
-- Agent list with pinned + date / repo / status grouping, sorting, search, unread tracking, pull-to-refresh, and a swipe-in sidebar drawer over every detail screen (permanent sidebar on tablets and foldables).
-- Customize sheet: Group by, Sort, Repo / Status / Git / Source filters, and Agent Metadata toggles (Workspace, Branch Status, Runtime).
-- Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR chips), and live SSE streaming of the active run with thinking blocks, "Explored N files, M searches" tool activity, Subagents cards, and markdown rendering.
-- Follow-ups, stop run, archive / unarchive / delete, pin, copy URL, open on the web.
-- New Agent composer with repository, branch, model + variant, plan mode and auto-PR options, plus system speech input.
-- Inbox for unread / failed agents, settings with Cursor Dark / Cursor Light / system theme.
-- Demo mode with an in-memory backend so the UI can be explored without an API key.
+- Sign in with a Cursor user API key (validated against `GET /v1/me`), stored encrypted with the Android Keystore and excluded from backups.
+- New Chat pane as home: repository / branch / environment selectors, the composer with model picker, plan mode and auto-PR, then the recent chats with preview cards.
+- Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
+- Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups and stop.
+- Settings with Cursor Dark / Cursor Light / system theme; demo mode with an in-memory backend so the UI can be explored without an API key.
 
 ## Build
 
@@ -22,6 +19,7 @@ Requirements: JDK 17+, Android SDK with platform 35 and build-tools 35.
 ```bash
 ./gradlew :app:assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:testDebugUnitTest      # JVM unit tests
+./gradlew :app:recordRoborazziDebug   # re-render screenshots/ from the demo backend
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -42,4 +40,4 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Design tokens
 
-Colours come from the theme JSON bundled with the desktop app ("Cursor Dark Anysphere" and "Cursor Light"), cross-checked against the web app and the iOS screenshots: `#141414` canvas, `#181818` elevated surfaces, `#E4E4E4` base overlay at 92 / 55 / 37 / 15 / 12 / 7 / 4 percent for text, focus, selection, borders and washes, accents `#81A1C1` (blue), `#3FA266` (green), `#F1B467` (orange), `#E34671` (danger). Radii follow the desktop 6 / 8 / 10 / 12 scale. UI text uses the system sans (the desktop app uses the platform system font too); code uses the bundled JetBrains Mono (SIL OFL, see `app/licenses`).
+Taken from the Cursor 3.19 desktop build (`workbench.glass.main.*` and the bundled `theme-cursor` themes): surfaces `#141414` (chat canvas, `--cursor-chrome`), `#181818` (sidebar, inputs, cards); the foreground `#F0F0F0` (light: `#141414`) at 100 / 74 / 60 / 36 % for text, 66 / 52 / 28 % for icons, 20 / 14 / 8 / 6 / 4 % for fills and 20 / 12 / 8 / 4 % for strokes; accents `#81A1C1`, `#3FA266`, `#70B489` (git added), `#FC6B83` (git removed), `#E34671`; radii 4 / 6 / 8 / 12 / 14; type 11 / 12 / 13 / 14 with 14 / 16 / 18 / 22 line heights. UI text uses the system sans (the desktop app uses the platform system font too); code uses the bundled JetBrains Mono (SIL OFL, see `app/licenses`). See `app/src/main/java/com/cursorforandroid/ui/theme/` for the mapping.

@@ -10,9 +10,10 @@ import androidx.compose.ui.unit.sp
 import com.cursorforandroid.R
 
 /**
- * Cursor's desktop UI font stack is literally the platform system font (SF Pro on macOS), so on Android the
- * system sans (Roboto / OEM equivalent) is the faithful analogue. The only bundled programming font in the
- * desktop app is JetBrains Mono, which we bundle too for paths, branches, SHAs and inline code.
+ * Cursor's type scale from the desktop build: `--cursor-font-size-xs/sm/base/lg` = 11 / 12 / 13 / 14 px with
+ * line heights 14 / 16 / 18 / 22. The UI font is the platform system font (the desktop stack is
+ * `SF Pro, -apple-system, BlinkMacSystemFont, sans-serif`), so Android's system sans is the correct analogue.
+ * JetBrains Mono is the only font Cursor bundles; it is bundled here for code, paths and branch names.
  */
 val JetBrainsMono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
@@ -21,28 +22,23 @@ val JetBrainsMono = FontFamily(
 
 @Immutable
 data class CursorTypography(
-    /** Large screen header, e.g. sign-in headline. */
-    val display: TextStyle = TextStyle(fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
-    /** Top bar title. */
-    val title: TextStyle = TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
-    /** Sheet / dialog title. */
-    val sheetTitle: TextStyle = TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
-    /** Sidebar rows, list rows, primary body copy. */
-    val body: TextStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.Normal),
-    /** Row titles that need slight emphasis. */
-    val bodyMedium: TextStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium),
-    /** Descriptions, secondary values, metadata. */
-    val secondary: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
-    /** Section labels ("Pinned", "Today", "Grouping"). Sentence case, never uppercase. */
-    val sectionLabel: TextStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium),
-    /** Timestamps, kbd hints, counts. */
-    val caption: TextStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal),
-    /** Chat message text — slightly larger than desktop's 13px because of viewing distance. */
-    val message: TextStyle = TextStyle(fontSize = 15.sp, lineHeight = 22.sp, fontWeight = FontWeight.Normal),
-    /** Inline code, paths, branches. */
-    val code: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 13.sp, lineHeight = 18.sp),
-    /** Fenced code blocks. */
-    val codeBlock: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.5.sp, lineHeight = 18.sp),
+    /** `--cursor-font-size-lg` 14 / 22 — conversation text (`--conversation-text-font-size`). */
+    val message: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 22.sp, fontWeight = FontWeight.Normal),
+    /** 14 / 18 — sidebar rows, list titles. */
+    val row: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
+    val rowMedium: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    /** `--cursor-font-size-base` 13 / 18 — controls, chips, selector labels, secondary lines. */
+    val base: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
+    val baseMedium: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    /** `--cursor-font-size-sm` 12 / 16 — group labels, metadata, captions. */
+    val small: TextStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal),
+    /** `--cursor-font-size-xs` 11 / 14 — badges, kbd hints. */
+    val tiny: TextStyle = TextStyle(fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.Normal),
+    /** Page / sheet titles (Cursor settings uses 20 semibold; headers in the Agents window use 14 medium). */
+    val title: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    val pageTitle: TextStyle = TextStyle(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.2).sp),
+    val code: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.sp, lineHeight = 16.sp),
+    val codeBlock: TextStyle = TextStyle(fontFamily = JetBrainsMono, fontSize = 12.sp, lineHeight = 18.sp),
 )
 
 val LocalCursorTypography = staticCompositionLocalOf { CursorTypography() }

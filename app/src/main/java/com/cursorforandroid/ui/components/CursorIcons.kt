@@ -137,12 +137,197 @@ object CursorIcons {
         }
     }
 
-    /** Filled isometric cube, used for the account row and empty state. */
+    /** Outline isometric cube — the Cursor mark as drawn at the top of the web sidebar. */
     val Cube: ImageVector by lazy {
         stroke("Cube") {
-            line("M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z")
-            line("M4 7.5l8 4.5 8-4.5")
-            line("M12 12v9")
+            line("M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z", 1.5f)
+            line("M4 7.5l8 4.5 8-4.5", 1.5f)
+            line("M12 12v9", 1.5f)
+        }
+    }
+
+    val Archive: ImageVector by lazy {
+        stroke("Archive") {
+            line("M3.5 6.5h17v3h-17z")
+            line("M5 9.5v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-9")
+            line("M10 13h4")
+        }
+    }
+
+    val Clock: ImageVector by lazy {
+        stroke("Clock") {
+            line("M12 4a8 8 0 1 0 0 16 8 8 0 1 0 0-16z")
+            line("M12 8v4l3 2")
+        }
+    }
+
+    val Pin: ImageVector by lazy {
+        stroke("Pin") {
+            line("M9 4h6l-.7 6.3 2.7 2.7v1H7v-1l2.7-2.7L9 4z")
+            line("M12 14v6")
+        }
+    }
+
+    val Stop: ImageVector by lazy {
+        stroke("Stop") {
+            line("M7 7h10v10H7z")
+        }
+    }
+
+    val ArrowUp: ImageVector by lazy {
+        stroke("ArrowUp") {
+            line("M12 19V5", 1.8f)
+            line("M6 11l6-6 6 6", 1.8f)
+        }
+    }
+
+    val ChevronDown: ImageVector by lazy {
+        stroke("ChevronDown") {
+            line("M6 9l6 6 6-6")
+        }
+    }
+
+    val ChevronRight: ImageVector by lazy {
+        stroke("ChevronRight") {
+            line("M9 6l6 6-6 6")
+        }
+    }
+
+    val ChevronLeft: ImageVector by lazy {
+        stroke("ChevronLeft") {
+            line("M15 6l-6 6 6 6")
+        }
+    }
+
+    val More: ImageVector by lazy {
+        stroke("More") {
+            line("M5 12h.01", 2.4f)
+            line("M12 12h.01", 2.4f)
+            line("M19 12h.01", 2.4f)
+        }
+    }
+
+    val Search: ImageVector by lazy {
+        stroke("Search") {
+            line("M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 1 0 0-13z")
+            line("M15.5 15.5L20 20")
+        }
+    }
+
+    val Plus: ImageVector by lazy {
+        stroke("Plus") {
+            line("M12 5v14")
+            line("M5 12h14")
+        }
+    }
+
+    val Mic: ImageVector by lazy {
+        stroke("Mic") {
+            line("M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z")
+            line("M6 11a6 6 0 0 0 12 0")
+            line("M12 17v4")
+        }
+    }
+
+    val Close: ImageVector by lazy {
+        stroke("Close") {
+            line("M6 6l12 12")
+            line("M18 6L6 18")
+        }
+    }
+
+    val Check: ImageVector by lazy {
+        stroke("Check") {
+            line("M5 12.5l4.5 4.5L19 7", 1.8f)
+        }
+    }
+
+    val File: ImageVector by lazy {
+        stroke("File") {
+            line("M7 3h7l5 5v13H7z")
+            line("M14 3v5h5")
+        }
+    }
+
+    val Folder: ImageVector by lazy {
+        stroke("Folder") {
+            line("M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z")
+        }
+    }
+
+    val Pencil: ImageVector by lazy {
+        stroke("Pencil") {
+            line("M4 20l4-1 11-11-3-3L5 16l-1 4z")
+            line("M13 6l3 3")
+        }
+    }
+
+    val Globe: ImageVector by lazy {
+        stroke("Globe") {
+            line("M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18z")
+            line("M3 12h18")
+            line("M12 3c3 3 3 15 0 18")
+            line("M12 3c-3 3-3 15 0 18")
+        }
+    }
+
+    val Bell: ImageVector by lazy {
+        stroke("Bell") {
+            line("M6 17V11a6 6 0 0 1 12 0v6l1.5 1.5H4.5L6 17z")
+            line("M10 20a2 2 0 0 0 4 0")
+        }
+    }
+
+    val Warning: ImageVector by lazy {
+        stroke("Warning") {
+            line("M12 4l9 16H3l9-16z")
+            line("M12 10v4")
+            line("M12 17h.01", 2f)
+        }
+    }
+
+    val Eye: ImageVector by lazy {
+        stroke("Eye") {
+            line("M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z")
+            line("M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5z")
+        }
+    }
+
+    val EyeOff: ImageVector by lazy {
+        stroke("EyeOff") {
+            line("M3 3l18 18")
+            line("M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3 3.6")
+            line("M6.4 6.4A16 16 0 0 0 2.5 12S6 18 12 18a9.5 9.5 0 0 0 3.5-.7")
+        }
+    }
+
+    val ExternalLink: ImageVector by lazy {
+        stroke("ExternalLink") {
+            line("M14 4h6v6")
+            line("M20 4l-9 9")
+            line("M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6")
+        }
+    }
+
+    val Copy: ImageVector by lazy {
+        stroke("Copy") {
+            line("M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z")
+            line("M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1")
+        }
+    }
+
+    val Trash: ImageVector by lazy {
+        stroke("Trash") {
+            line("M4 7h16")
+            line("M9 7V4h6v3")
+            line("M6 7l1 13h10l1-13")
+        }
+    }
+
+    val Refresh: ImageVector by lazy {
+        stroke("Refresh") {
+            line("M20 11a8 8 0 1 0 2 5.3")
+            line("M20 4v7h-7")
         }
     }
 }

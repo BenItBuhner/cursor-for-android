@@ -5,143 +5,180 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
- * Cursor design tokens.
+ * Cursor design tokens, taken from the desktop build (Cursor 3.19.13, `workbench.glass.main.*` and
+ * `theme-cursor/themes/cursor-dark-color-theme.json` "Cursor Dark Anysphere v0.0.3" / `cursor-light-color-theme.json`).
  *
- * Sources:
- *  - Opaque backgrounds, base overlay colour and accent hues come from the theme JSON bundled with the
- *    desktop app (`theme-cursor/themes/cursor-dark-color-theme.json`, "Cursor Dark Anysphere", and
- *    `cursor-light-color-theme.json`). Cursor paints almost every text/border/hover/selection as the single
- *    base colour (#E4E4E4 dark, #15151D light) at a low alpha over a couple of near-black backgrounds.
- *  - Surface levels were verified by sampling the official web app (cursor.com/agents) and the iOS app
- *    screenshots: the canvas is #141414 and every elevated surface (sidebar, cards, sheets, composer)
- *    is #181818. Status colours (unread blue #59A1E9, running #5A8CBA, error #D54268) were sampled from the
- *    iOS agent list.
+ * The Agents window paints three opaque surfaces — `--cursor-chrome` (#141414, the chat canvas), `--cursor-sidebar`
+ * (#181818) and `--cursor-editor` (#181818, inputs / elevated / cards) — and derives everything else from the
+ * theme foreground (#F0F0F0 dark, #141414 light) at fixed alphas:
+ *
+ *  text      100 / 74 / 60 / 36 %      (`--cursor-text-primary…quaternary`)
+ *  icons     100 / 66 / 52 / 28 %      (`--cursor-icon-primary…quaternary`)
+ *  fills      20 / 14 /  8 /  6 / 4 %  (`--cursor-bg-primary…quinary`), active selection 12 %
+ *  strokes    20 / 12 /  8 /  4 %      (`--cursor-stroke-primary…quaternary`), focus 15 %
+ *
+ * Accent hues are the theme's `button.background`, `textLink`, `badge`, `gitDecoration.*`, `charts.*` values. The
+ * unread dot (#6D9BF0) and the branch glyph (#8B82D8) were sampled from the official web app's sidebar.
  */
 @Immutable
 data class CursorColors(
     val isDark: Boolean,
-    /** Level 0 — the main canvas behind conversations and the empty state. */
+    /** `--cursor-chrome`: the chat / detail canvas. */
     val canvas: Color,
-    /** Level 1 — sidebar, cards, sheets, composer, popovers. */
-    val surface: Color,
-    /** Level 2 — inline code chips, nested cards inside a surface. */
-    val surfaceRaised: Color,
-    /** The overlay base colour that all translucent tokens derive from. */
+    /** `--cursor-sidebar`. */
+    val sidebar: Color,
+    /** `--cursor-editor`: inputs, cards, sheets, menus and other elevated surfaces. */
+    val elevated: Color,
+    /** The theme foreground every translucent token is derived from. */
     val base: Color,
     val textPrimary: Color,
     val textSecondary: Color,
-    val textPlaceholder: Color,
-    /** Input / field fill. base @ 4%. */
-    val wash: Color,
-    /** Card / input / divider border. base @ 7%. */
-    val borderSubtle: Color,
-    /** Hovered / pressed row. base @ 7%. */
-    val hover: Color,
-    /** Selected row, neutral chip fill. base @ 12%. */
-    val selected: Color,
-    /** Focus ring, circular icon-button fill. base @ 15%. */
-    val borderFocus: Color,
-    val accentBlue: Color,
-    val accentBlueHover: Color,
+    val textTertiary: Color,
+    val textQuaternary: Color,
+    val iconPrimary: Color,
+    val iconSecondary: Color,
+    val iconTertiary: Color,
+    val iconQuaternary: Color,
+    /** `--cursor-bg-primary` 20 %. */
+    val fillStrong: Color,
+    /** `--cursor-bg-secondary` 14 %. */
+    val fillMedium: Color,
+    /** `--cursor-bg-tertiary` 8 %: neutral chips, "+" button, hover. */
+    val fill: Color,
+    /** `--cursor-bg-quaternary` 6 %: selected sidebar row. */
+    val fillSoft: Color,
+    /** `--cursor-bg-quinary` 4 %: input wash, human message. */
+    val fillFaint: Color,
+    /** `list.activeSelectionBackground` 12 %. */
+    val fillActive: Color,
+    /** `--cursor-stroke-primary` 20 %. */
+    val strokeStrong: Color,
+    /** `--cursor-stroke-secondary` 12 %: human message, focused composer. */
+    val stroke: Color,
+    /** `--cursor-stroke-tertiary` 8 %: cards, composer, dividers. */
+    val strokeSubtle: Color,
+    /** `--cursor-stroke-quaternary` 4 %. */
+    val strokeFaint: Color,
+    val focus: Color,
+    val accent: Color,
     val onAccent: Color,
-    val cyan: Color,
-    val green: Color,
-    val orange: Color,
-    val orangeDeep: Color,
-    val danger: Color,
-    val secondaryButton: Color,
-    val statusUnread: Color,
-    val statusRunning: Color,
-    val statusError: Color,
-    val statusIdle: Color,
-    val diffAdded: Color,
-    val diffRemoved: Color,
     val link: Color,
+    val badge: Color,
+    val onBadge: Color,
+    val green: Color,
+    val gitAdded: Color,
+    val gitRemoved: Color,
+    val gitModified: Color,
+    val red: Color,
+    val orange: Color,
+    val blue: Color,
+    val purple: Color,
+    val cyan: Color,
+    /** Sidebar unread marker. */
+    val unreadDot: Color,
+    /** Sidebar glyph for a read agent that has pushed a branch. */
+    val branchGlyph: Color,
     val codeString: Color,
     val codeFunction: Color,
-    val codeKeyword: Color,
     val codeNumber: Color,
     val codeType: Color,
-    val codeComment: Color,
 )
 
-private val DarkBase = Color(0xFFE4E4E4)
-private val LightBase = Color(0xFF15151D)
+private val DarkBase = Color(0xFFF0F0F0)
+private val LightBase = Color(0xFF141414)
 
 val CursorDarkColors = CursorColors(
     isDark = true,
     canvas = Color(0xFF141414),
-    surface = Color(0xFF181818),
-    surfaceRaised = Color(0xFF232323),
+    sidebar = Color(0xFF181818),
+    elevated = Color(0xFF181818),
     base = DarkBase,
-    textPrimary = DarkBase.copy(alpha = 0.92f),
-    textSecondary = DarkBase.copy(alpha = 0.55f),
-    textPlaceholder = DarkBase.copy(alpha = 0.37f),
-    wash = DarkBase.copy(alpha = 0.04f),
-    borderSubtle = DarkBase.copy(alpha = 0.07f),
-    hover = DarkBase.copy(alpha = 0.07f),
-    selected = DarkBase.copy(alpha = 0.12f),
-    borderFocus = DarkBase.copy(alpha = 0.15f),
-    accentBlue = Color(0xFF81A1C1),
-    accentBlueHover = Color(0xFF87A6C4),
+    textPrimary = DarkBase,
+    textSecondary = DarkBase.copy(alpha = 0.74f),
+    textTertiary = DarkBase.copy(alpha = 0.60f),
+    textQuaternary = DarkBase.copy(alpha = 0.36f),
+    iconPrimary = DarkBase,
+    iconSecondary = DarkBase.copy(alpha = 0.66f),
+    iconTertiary = DarkBase.copy(alpha = 0.52f),
+    iconQuaternary = DarkBase.copy(alpha = 0.28f),
+    fillStrong = DarkBase.copy(alpha = 0.20f),
+    fillMedium = DarkBase.copy(alpha = 0.14f),
+    fill = DarkBase.copy(alpha = 0.08f),
+    fillSoft = DarkBase.copy(alpha = 0.06f),
+    fillFaint = DarkBase.copy(alpha = 0.04f),
+    fillActive = DarkBase.copy(alpha = 0.12f),
+    strokeStrong = DarkBase.copy(alpha = 0.20f),
+    stroke = DarkBase.copy(alpha = 0.12f),
+    strokeSubtle = DarkBase.copy(alpha = 0.08f),
+    strokeFaint = DarkBase.copy(alpha = 0.04f),
+    focus = DarkBase.copy(alpha = 0.15f),
+    accent = Color(0xFF81A1C1),
     onAccent = Color(0xFF191C22),
-    cyan = Color(0xFF88C0D0),
-    green = Color(0xFF3FA266),
-    orange = Color(0xFFF1B467),
-    orangeDeep = Color(0xFFD2943E),
-    danger = Color(0xFFE34671),
-    secondaryButton = Color(0xFF626262),
-    statusUnread = Color(0xFF59A1E9),
-    statusRunning = Color(0xFF5A8CBA),
-    statusError = Color(0xFFD54268),
-    statusIdle = DarkBase.copy(alpha = 0.30f),
-    diffAdded = Color(0xFF3FA266),
-    diffRemoved = Color(0xFFFC6B83),
     link = Color(0xFF81A1C1),
+    badge = Color(0xFF88C0D0),
+    onBadge = Color(0xFF141414),
+    green = Color(0xFF3FA266),
+    gitAdded = Color(0xFF70B489),
+    gitRemoved = Color(0xFFFC6B83),
+    gitModified = Color(0xFFF1B467),
+    red = Color(0xFFE34671),
+    orange = Color(0xFFF1B467),
+    blue = Color(0xFF81A1C1),
+    purple = Color(0xFFB48EAD),
+    cyan = Color(0xFF88C0D0),
+    unreadDot = Color(0xFF6D9BF0),
+    branchGlyph = Color(0xFF8B82D8),
     codeString = Color(0xFFA8CC7C),
     codeFunction = Color(0xFFEBC88D),
-    codeKeyword = Color(0xFFD6D6DD),
     codeNumber = Color(0xFFF8C762),
     codeType = Color(0xFF82D2CE),
-    codeComment = DarkBase.copy(alpha = 0.45f),
 )
 
 val CursorLightColors = CursorColors(
     isDark = false,
-    canvas = Color(0xFFFCFCFC),
-    surface = Color(0xFFF3F3F4),
-    surfaceRaised = Color(0xFFE9E9EB),
+    canvas = Color(0xFFF3F3F3),
+    sidebar = Color(0xFFFCFCFC),
+    elevated = Color(0xFFFCFCFC),
     base = LightBase,
-    textPrimary = LightBase.copy(alpha = 0.92f),
-    textSecondary = Color(0xFF121224).copy(alpha = 0.63f),
-    textPlaceholder = Color(0xFF0E0E2A).copy(alpha = 0.28f),
-    wash = Color(0xFF0B0B2D).copy(alpha = 0.04f),
-    borderSubtle = Color(0xFF0B0B2D).copy(alpha = 0.08f),
-    hover = Color(0xFF0B0B2D).copy(alpha = 0.07f),
-    selected = Color(0xFF0B0B2D).copy(alpha = 0.10f),
-    borderFocus = Color(0xFF161618).copy(alpha = 0.16f),
-    accentBlue = Color(0xFF3173A7),
-    accentBlueHover = Color(0xFF3C80B8),
+    textPrimary = LightBase,
+    textSecondary = LightBase.copy(alpha = 0.74f),
+    textTertiary = LightBase.copy(alpha = 0.60f),
+    textQuaternary = LightBase.copy(alpha = 0.36f),
+    iconPrimary = LightBase,
+    iconSecondary = LightBase.copy(alpha = 0.66f),
+    iconTertiary = LightBase.copy(alpha = 0.52f),
+    iconQuaternary = LightBase.copy(alpha = 0.28f),
+    fillStrong = LightBase.copy(alpha = 0.20f),
+    fillMedium = LightBase.copy(alpha = 0.14f),
+    fill = LightBase.copy(alpha = 0.08f),
+    fillSoft = LightBase.copy(alpha = 0.06f),
+    fillFaint = LightBase.copy(alpha = 0.04f),
+    fillActive = LightBase.copy(alpha = 0.08f),
+    strokeStrong = LightBase.copy(alpha = 0.20f),
+    stroke = LightBase.copy(alpha = 0.12f),
+    strokeSubtle = LightBase.copy(alpha = 0.08f),
+    strokeFaint = LightBase.copy(alpha = 0.04f),
+    focus = LightBase.copy(alpha = 0.20f),
+    accent = Color(0xFF2778C1),
     onAccent = Color(0xFFFCFCFC),
-    cyan = Color(0xFF4C7F8C),
-    green = Color(0xFF2D8B48),
-    orange = Color(0xFFE6742D),
-    orangeDeep = Color(0xFFA16900),
-    danger = Color(0xFFDE3757),
-    secondaryButton = Color(0xFF0C0C2C).copy(alpha = 0.12f),
-    statusUnread = Color(0xFF3C80B8),
-    statusRunning = Color(0xFF3C7CAB),
-    statusError = Color(0xFFDE3757),
-    statusIdle = LightBase.copy(alpha = 0.25f),
-    diffAdded = Color(0xFF2D8B48),
-    diffRemoved = Color(0xFFC92D4F),
-    link = Color(0xFF3173A7),
-    codeString = Color(0xFF1F8A65),
-    codeFunction = Color(0xFFA16900),
-    codeKeyword = Color(0xFF252525),
-    codeNumber = Color(0xFFC08532),
-    codeType = Color(0xFF4C7F8C),
-    codeComment = LightBase.copy(alpha = 0.45f),
+    link = Color(0xFF0064B0),
+    badge = Color(0xFFF3F3F3),
+    onBadge = LightBase.copy(alpha = 0.66f),
+    green = Color(0xFF00854C),
+    gitAdded = Color(0xFF007041),
+    gitRemoved = Color(0xFFBE1744),
+    gitModified = Color(0xFFA46700),
+    red = Color(0xFFCE405B),
+    orange = Color(0xFFCD4500),
+    blue = Color(0xFF2778C1),
+    purple = Color(0xFF7565CC),
+    cyan = Color(0xFF176C74),
+    unreadDot = Color(0xFF2778C1),
+    branchGlyph = Color(0xFF7565CC),
+    codeString = Color(0xFF007041),
+    codeFunction = Color(0xFFA46700),
+    codeNumber = Color(0xFFCD4500),
+    codeType = Color(0xFF176C74),
 )
 
 val LocalCursorColors = staticCompositionLocalOf { CursorDarkColors }

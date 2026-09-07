@@ -5,20 +5,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.automirrored.outlined.OpenInNew
-import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -37,14 +30,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.StatusIndicator
+import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -57,8 +50,8 @@ data class AgentRowActions(
 )
 
 /**
- * Sidebar / list row: status indicator, title, optional workspace line, trailing branch glyph + runtime.
- * Selected rows get the 12% base fill with radius 8, exactly like the desktop sidebar.
+ * Sidebar row as on the web: 32dp, leading 16dp state glyph, 14sp title, optional trailing metadata (runtime,
+ * self-hosted machine glyph). Selected rows get a 6 % fill with radius 8.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -72,99 +65,73 @@ fun AgentRowItem(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val shape = CursorTheme.shapes.md
+    val shape = CursorTheme.shapes.lg
     var menuOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
-
-    val titleColor = when {
-        selected || row.indicator == AgentIndicator.Unread || row.indicator == AgentIndicator.Running -> colors.textPrimary
-        row.indicator == AgentIndicator.Archived -> colors.textPlaceholder
-        else -> colors.textSecondary
-    }
 
     Box(modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clip(shape)
-                .background(if (selected) colors.selected else Color.Transparent, shape)
+                .background(if (selected) colors.fillSoft else Color.Transparent, shape)
                 .combinedClickable(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
                     onLongClick = { menuOpen = true },
                 )
-                .heightIn(min = 40.dp)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .height(CursorDimens.sidebarRow)
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(Modifier.width(18.dp), contentAlignment = Alignment.Center) {
-                StatusIndicator(row.indicator)
+            StateGlyph(row.indicator, hasBranch = agent.hasBranch)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                agent.name,
+                style = type.row,
+                color = if (agent.isArchived) colors.textTertiary else colors.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            val trailing = buildList {
+                if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
+                if (prefs.showRuntime) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
             }
-            Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                Text(
-                    agent.name,
-                    style = if (row.isUnread || selected) type.body.copy(fontWeight = FontWeight.Medium) else type.body,
-                    color = titleColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val workspace = when {
-                    !prefs.showWorkspace -> null
-                    agent.envName != null && agent.envName.contains('#') -> agent.envName
-                    else -> agent.repoSlug
-                }
-                val runtime = if (prefs.showRuntime) listOfNotNull(agent.modelDisplayName, TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis)).joinToString("  ") else null
-                val subtitle = listOfNotNull(workspace, runtime).takeIf { it.isNotEmpty() }?.joinToString("  ·  ")
-                if (subtitle != null) {
-                    Text(
-                        subtitle,
-                        style = type.caption,
-                        color = colors.textPlaceholder,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            if (trailing.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                Text(trailing.joinToString(" · "), style = type.small, color = colors.textQuaternary, maxLines = 1)
             }
-            if (prefs.showBranchStatus) {
-                BranchGlyph(row)
+            if (prefs.showBranchStatus && agent.envType == EnvType.MACHINE) {
+                Spacer(Modifier.width(8.dp))
+                Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.surface) {
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
             val clipboard = LocalClipboardManager.current
             val uriHandler = LocalUriHandler.current
-            MenuItem(if (row.isPinned) "Unpin" else "Pin", Icons.Outlined.PushPin) { menuOpen = false; actions.onTogglePin(row) }
-            MenuItem("Open in browser", Icons.AutoMirrored.Outlined.OpenInNew) { menuOpen = false; uriHandler.openUri(agent.url) }
-            MenuItem("Copy link", Icons.Outlined.ContentCopy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
+            MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; actions.onTogglePin(row) }
+            MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; uriHandler.openUri(agent.url) }
+            MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
             if (agent.isArchived) {
-                MenuItem("Unarchive", Icons.Outlined.Unarchive) { menuOpen = false; actions.onUnarchive(row) }
+                MenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; actions.onUnarchive(row) }
             } else {
-                MenuItem("Archive", Icons.Outlined.Archive) { menuOpen = false; actions.onArchive(row) }
+                MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; actions.onArchive(row) }
             }
-            MenuItem("Delete", Icons.Outlined.DeleteOutline, tint = colors.danger) { menuOpen = false; actions.onDelete(row) }
+            MenuItem("Delete", CursorIcons.Trash, tint = colors.red) { menuOpen = false; actions.onDelete(row) }
         }
     }
 }
 
 @Composable
-private fun MenuItem(label: String, icon: ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
+internal fun MenuItem(label: String, icon: ImageVector, tint: Color = CursorTheme.colors.textPrimary, onClick: () -> Unit) {
     DropdownMenuItem(
-        text = { Text(label, style = CursorTheme.typography.body, color = tint) },
-        leadingIcon = { Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp)) },
+        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
+        leadingIcon = { Icon(icon, null, tint = if (tint == CursorTheme.colors.textPrimary) CursorTheme.colors.iconSecondary else tint, modifier = Modifier.size(14.dp)) },
         onClick = onClick,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+        modifier = Modifier.height(32.dp),
     )
-}
-
-/** Trailing git state: green PR glyph, grey branch glyph, or nothing. */
-@Composable
-fun BranchGlyph(row: AgentRow, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val agent = row.agent
-    when {
-        agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, "Pull request", tint = colors.green, modifier = modifier.size(16.dp))
-        agent.hasBranch -> Icon(CursorIcons.GitBranch, "Branch", tint = colors.textPlaceholder, modifier = modifier.size(16.dp))
-        agent.envType == com.cursorforandroid.domain.EnvType.MACHINE -> Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.textPlaceholder, modifier = modifier.size(16.dp))
-        else -> Unit
-    }
 }
