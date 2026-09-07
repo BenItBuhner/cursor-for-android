@@ -24,6 +24,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -60,7 +61,9 @@ class AgentRepository(
 
     init {
         scope.launch {
-            session.backend.collect { _state.value = AgentListState() }
+            // Only actual backend switches reset the list; reacting to the initial value could race a refresh that
+            // completed before this collector got scheduled and wipe its result.
+            session.backend.drop(1).collect { _state.value = AgentListState() }
         }
     }
 
