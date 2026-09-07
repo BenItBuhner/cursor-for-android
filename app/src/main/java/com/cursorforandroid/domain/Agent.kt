@@ -67,7 +67,12 @@ data class Agent(
     val hasBranch: Boolean get() = branchName != null
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
-    val isRunning: Boolean get() = !isArchived && (runStatus?.isActive == true || (runStatus == null && lifecycle == AgentLifecycle.ACTIVE))
+    /**
+     * A known run status decides; without one — or with one this build does not recognise — the lifecycle does, as
+     * `ACTIVE` means a turn is running, about to start, or waiting on background work.
+     */
+    val isRunning: Boolean
+        get() = !isArchived && (runStatus?.isActive == true || ((runStatus == null || runStatus == RunStatus.UNKNOWN) && lifecycle == AgentLifecycle.ACTIVE))
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
 
     companion object {

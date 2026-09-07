@@ -264,8 +264,10 @@ class ConversationRepository(
                 } else {
                     e.state.update { it.copy(isLoading = false, error = convResult.exceptionOrNull()?.userMessage()) }
                 }
-                // The full agent record only enriches the row (repo, PR, duration); it never holds up the transcript,
-                // and the latest run is already known from the list above, saving a round-trip.
+                // The latest run is the row's execution state (a turn that ended in an error is only visible here),
+                // so the sidebar reflects it right away. The full agent record then enriches the row (repo, PR,
+                // duration); it never holds up the transcript, and reuses this run, saving a round-trip.
+                latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
                 launch { agents.loadDetail(agentId, latest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
@@ -522,6 +524,10 @@ class ConversationRepository(
                     val runs = async { api.listRuns(agent.id, limit = 50).items }
                     val transcript = conversation.await().messages
                     val runList = runs.await()
+                    val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
+                    // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
+                    // row is the one place the sidebar learns that from without the chat being opened.
+                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(run) } }
                     val e = entry(agent.id)
                     // A screen that opened it in the meantime owns the entry now.
                     if (e.attached == 0 && e.streamJob == null) {
@@ -533,10 +539,7 @@ class ConversationRepository(
                                 inputsUpdatedAt = agent.updatedAtMillis
                                 fetched = true
                             },
-                            transform = {
-                                val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
-                                copy(isLoading = false, activeRunId = latest?.id, runStatus = latest?.statusEnum())
-                            },
+                            transform = { copy(isLoading = false, activeRunId = latest?.id, runStatus = latest?.statusEnum()) },
                         )
                         persist(e, backend)
                     }

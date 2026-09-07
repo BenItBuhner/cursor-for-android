@@ -201,6 +201,27 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `the prefetch tells the sidebar how a turn ended, which the list alone cannot`() = runBlocking<Unit> {
+        // The run errored; v1 lists the agent as merely idle and the legacy record says finished.
+        api.addIdleAgent("bc-1", "Broke", "run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "ERROR", result = "Build failed", durationMs = 9_000)
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        repository(prefetchLimit = 1)
+
+        agents.refresh()
+        awaitUntil { agents.agent("bc-1")?.isError == true }
+        val row = agents.agent("bc-1")!!
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.summary).isEqualTo("Build failed")
+        assertThat(row.durationMs).isEqualTo(9_000)
+        awaitUntil { cache.read("bc-1") != null }
+
+        // Later list fetches, with the legacy record still saying finished, do not undo it.
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isError).isTrue()
+    }
+
+    @Test
     fun `forgetting an agent removes its transcript from disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")
