@@ -1,9 +1,5 @@
 package com.cursorforandroid.ui.components
 
-import android.content.Intent
-import android.speech.RecognizerIntent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,7 +30,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -44,8 +39,8 @@ import kotlinx.coroutines.delay
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (12 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" (attach) on the left, mic /
- * send / stop on the right — with the 13px model selector next to the "+".
+ * radius 12, 12px padding, 14/22 text, and a footer of 24px round buttons — "+" (attach) on the left, send / stop
+ * on the right — with the 13px model selector next to the "+".
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
@@ -71,7 +66,6 @@ fun ComposerBox(
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
     focusRequester: FocusRequester? = null,
-    enableSpeech: Boolean = true,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -85,12 +79,6 @@ fun ComposerBox(
             cancelOffered = true
         }
     }
-    val context = LocalContext.current
-    val speechLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val spoken = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return@rememberLauncherForActivityResult
-        onValueChange(if (value.isBlank()) spoken else "$value $spoken")
-    }
-    val speechAvailable = remember { Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).resolveActivity(context.packageManager) != null }
     val pad = CursorDimens.composerPadding
 
     Column(
@@ -136,19 +124,7 @@ fun ComposerBox(
                 isSending && cancelOffered && onCancelSend != null -> ComposerRoundButton(CursorIcons.Stop, "Cancel sending", onClick = onCancelSend, prominent = true)
                 isSending -> ComposerBusyButton()
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
-                canSend -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = true)
-                enableSpeech && speechAvailable -> ComposerRoundButton(
-                    CursorIcons.Mic, "Dictate",
-                    onClick = {
-                        speechLauncher.launch(
-                            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                            },
-                        )
-                    },
-                    prominent = true,
-                )
-                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = {}, enabled = false)
+                else -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = canSend, enabled = canSend)
             }
         }
     }

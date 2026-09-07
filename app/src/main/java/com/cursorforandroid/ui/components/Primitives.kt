@@ -2,12 +2,13 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.withInfiniteAnimationFrameMillis
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,12 +33,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
@@ -123,7 +125,7 @@ fun TouchTarget(
 }
 
 /**
- * The round buttons of Cursor's composer footer, measured at 24px with 12px glyphs: "+" on an 8 % fill, mic / send
+ * The round buttons of Cursor's composer footer, measured at 24px with 12px glyphs: "+" on an 8 % fill, send / stop
  * on a foreground fill with a canvas-coloured glyph.
  */
 @Composable
@@ -231,8 +233,8 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
 }
 
 /**
- * Leading state glyph of a sidebar row (12px slot). Web semantics: running sparkle, unread blue dot, error red
- * dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
+ * Leading state glyph of a sidebar row (12px slot). Web semantics: stepping dot grid while running, unread blue
+ * dot, error red dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
  */
 @Composable
 fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, modifier: Modifier = Modifier) {
@@ -253,13 +255,49 @@ fun Dot(color: Color, size: Dp = CursorDimens.unreadDot, modifier: Modifier = Mo
     Box(modifier.size(size).background(color, CircleShape))
 }
 
-/** The web sidebar's "working" glyph: a slowly rotating cluster of dots. */
+/**
+ * The web sidebar's "working" glyph, reproduced frame for frame from the live app: dots on a 3x3 grid that step
+ * through eight arrangements at 175ms per step (a 1.4s loop). Nothing moves, fades or rotates; each step simply
+ * lights a different set of cells. Steps 5–7 mirror steps 3–1 and steps 4 / 8 are symmetric, so the shape leans
+ * left, squares up, leans right, squares up. The step is derived from the shared frame clock rather than a
+ * per-instance transition, so a list of running agents pulses in lockstep like the web's CSS animation does.
+ */
 @Composable
 fun RunningGlyph(modifier: Modifier = Modifier, color: Color = CursorTheme.colors.iconSecondary, size: Dp = 16.dp) {
-    val transition = rememberInfiniteTransition(label = "running")
-    val angle by transition.animateFloat(0f, 360f, infiniteRepeatable(tween(2800, easing = LinearEasing), RepeatMode.Restart), label = "angle")
-    Icon(CursorIcons.Working, null, tint = color, modifier = modifier.size(size).rotate(angle))
+    val step by produceState(0) {
+        while (true) withInfiniteAnimationFrameMillis { value = ((it / RUNNING_STEP_MS) % RUNNING_FRAMES.size).toInt() }
+    }
+    Canvas(modifier.size(size)) {
+        val box = this.size.minDimension
+        val pitch = box * RUNNING_PITCH
+        val radius = box * RUNNING_DOT_RADIUS
+        val cells = RUNNING_FRAMES[step]
+        for (i in cells.indices) {
+            if (cells[i] != 'X') continue
+            drawCircle(color, radius, center + Offset((i % 3 - 1) * pitch, (i / 3 - 1) * pitch))
+        }
+    }
 }
+
+/**
+ * Grid geometry measured from the web glyph: the dot diameter is 0.555 of the cell pitch and the lit area spans two
+ * pitches plus one dot. Sized so the visible grid is ~12px in the 16px state-glyph slot, like the other row icons.
+ */
+private const val RUNNING_PITCH = 4.7f / 16f
+private const val RUNNING_DOT_RADIUS = 1.3f / 16f
+private const val RUNNING_STEP_MS = 175L
+
+/** Lit cells per step, rows top to bottom (`X` = dot), transcribed from the web app's animation. */
+private val RUNNING_FRAMES = listOf(
+    "X.." + "X.." + ".XX",
+    "X.." + "XX." + ".X.",
+    "XX." + "XX." + "..X",
+    ".X." + "XXX" + "X.X",
+    ".XX" + ".XX" + "X..",
+    "..X" + ".XX" + ".X.",
+    "..X" + "..X" + "XX.",
+    "..." + "X.X" + "X.X",
+)
 
 /** Thin indeterminate ring for in-flight tool calls. */
 @Composable

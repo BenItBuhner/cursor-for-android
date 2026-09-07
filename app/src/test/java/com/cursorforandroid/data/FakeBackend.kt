@@ -45,6 +45,7 @@ class FakeCursorApi : CursorApi {
     /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
     @Volatile var listGate: CompletableDeferred<Unit>? = null
     @Volatile var getRunCalls = 0
+    @Volatile var listAgentsCalls = 0
     private val ids = AtomicInteger()
 
     fun addRunningAgent(id: String, name: String, runId: String, createdAt: String = "2026-04-13T18:30:00.000Z") {
@@ -59,6 +60,7 @@ class FakeCursorApi : CursorApi {
     override suspend fun models() = ListModelsResponseDto()
     override suspend fun repositories() = ListRepositoriesResponseDto()
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+        listAgentsCalls++
         // Snapshot first, then wait: the answer reflects the server as it was when the request went out.
         val items = agents.values.map { AgentSummaryDto(it.id, it.name, it.status, it.env, it.url, it.createdAt, it.updatedAt, it.latestRunId) }
         listGate?.await()

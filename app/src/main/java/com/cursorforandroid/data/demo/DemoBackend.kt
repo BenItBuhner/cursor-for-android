@@ -21,6 +21,8 @@ import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.ModelParamDto
+import com.cursorforandroid.data.api.dto.ModelParameterDefinitionDto
+import com.cursorforandroid.data.api.dto.ModelParameterValueDto
 import com.cursorforandroid.data.api.dto.ModelVariantDto
 import com.cursorforandroid.data.api.dto.RepositoryDto
 import com.cursorforandroid.data.api.dto.RunDto
@@ -131,8 +133,15 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
                         ModelVariantDto(params = listOf(ModelParamDto("effort", "high")), displayName = "Claude Fable 5.1"),
                     ),
                 ),
-                ModelListItemDto(id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
-                    variants = listOf(ModelVariantDto(params = listOf(ModelParamDto("fast", "true")), displayName = "Composer 2.5 Fast", isDefault = true), ModelVariantDto(params = emptyList(), displayName = "Composer 2.5"))),
+                // Like the live catalogue, both variants carry the model's name and differ only by their parameters.
+                ModelListItemDto(
+                    id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
+                    parameters = listOf(ModelParameterDefinitionDto("fast", "Fast", listOf(ModelParameterValueDto("false"), ModelParameterValueDto("true", "Fast")))),
+                    variants = listOf(
+                        ModelVariantDto(params = listOf(ModelParamDto("fast", "true")), displayName = "Composer 2.5", isDefault = true),
+                        ModelVariantDto(params = listOf(ModelParamDto("fast", "false")), displayName = "Composer 2.5"),
+                    ),
+                ),
                 ModelListItemDto(id = "gpt-5.6", displayName = "GPT-5.6", variants = listOf(ModelVariantDto(params = listOf(ModelParamDto("effort", "high")), displayName = "GPT-5.6 High", isDefault = true))),
                 ModelListItemDto(id = "gemini-3.8-flash", displayName = "Gemini 3.8 Flash", variants = listOf(ModelVariantDto(params = emptyList(), displayName = "Gemini 3.8 Flash", isDefault = true))),
                 ModelListItemDto(id = "auto-smart", displayName = "Auto", description = "Cursor Router picks the model."),

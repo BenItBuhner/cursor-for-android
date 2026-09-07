@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.Agent
@@ -16,6 +17,7 @@ import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,11 +40,14 @@ data class NewAgentUiState(
     val planMode: Boolean = false,
     val isLaunching: Boolean = false,
     val isLoadingRepos: Boolean = false,
+    val isLoadingModels: Boolean = false,
     val error: String? = null,
     val reposUnavailable: Boolean = false,
+    /** `GET /v1/models` failed and nothing is cached; the picker offers a retry and "Default" keeps working. */
+    val modelsUnavailable: Boolean = false,
 ) {
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
-    val modelLabel: String get() = selectedVariant?.displayName ?: selectedModel?.displayName ?: "Default model"
+    val modelLabel: String get() = selectedModel?.labelFor(selectedVariant) ?: "Default model"
 }
 
 class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
@@ -50,16 +55,22 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
 
+    /** The last launch's choices, applied the first time the model list arrives (which may be after a retry). */
+    private var defaults: ComposerDefaults? = null
+    private var modelSelectionResolved = false
+
     private var launchJob: Job? = null
     /** Rotated after each successful launch so an identical prompt sent again on purpose gets its own agent. */
     private var launchNonce: String = LaunchIdempotency.newNonce()
 
     init {
         viewModelScope.launch {
-            val defaults = graph.prefs.composerDefaults.first()
-            _state.update { it.copy(autoCreatePr = defaults.autoCreatePr, ref = defaults.ref ?: "main") }
-            loadRepositories(defaults.repoUrl)
-            loadModels(defaults.modelId, defaults.modelParams)
+            val loaded = graph.prefs.composerDefaults.first()
+            defaults = loaded
+            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main") }
+            // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
+            launch { loadRepositories(loaded.repoUrl) }
+            launch { loadModels() }
         }
     }
 
@@ -80,17 +91,30 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
-    private suspend fun loadModels(preferredId: String?, preferredParams: Map<String, String>) {
-        graph.catalog.loadModels().onSuccess { models ->
-            _state.update { s ->
-                val model = models.firstOrNull { it.id == preferredId } ?: models.firstOrNull()
-                val variant = model?.variants?.let { variants ->
-                    variants.firstOrNull { v -> v.params.associate { p -> p.id to p.value } == preferredParams && preferredParams.isNotEmpty() }
-                        ?: variants.firstOrNull { it.isDefault } ?: variants.firstOrNull()
-                }
-                s.copy(models = models, selectedModel = model, selectedVariant = variant)
-            }
+    private suspend fun loadModels(force: Boolean = false) {
+        _state.update { it.copy(isLoadingModels = true) }
+        graph.catalog.loadModels(force)
+            .onSuccess { models -> _state.update { it.withModels(models) } }
+            .onFailure { _state.update { it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty()) } }
+    }
+
+    /**
+     * Adopts a freshly loaded model list. A selection already made on this screen is re-resolved against the new
+     * instances; otherwise the last launch's choice is restored — "Default" stays "Default", and a variant is matched
+     * on its exact parameters, so a parameter-less variant is not swapped for the model's default one — and a
+     * user who has never picked anything starts on the first recommended model.
+     */
+    private fun NewAgentUiState.withModels(models: List<ModelOption>): NewAgentUiState {
+        val remembered = defaults
+        val (wantedId, wantedParams) = when {
+            modelSelectionResolved -> selectedModel?.id to selectedVariant?.params?.associate { it.id to it.value }
+            remembered?.modelChosen == true -> remembered.modelId to remembered.modelParams
+            else -> models.firstOrNull()?.id to null
         }
+        val model = wantedId?.let { id -> models.firstOrNull { it.id == id } ?: models.firstOrNull() }
+        val variant = model?.let { m -> wantedParams?.let(m::variantWithParams) ?: m.defaultVariant }
+        modelSelectionResolved = true
+        return copy(models = models, selectedModel = model, selectedVariant = variant, isLoadingModels = false, modelsUnavailable = false)
     }
 
     fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null) }
@@ -100,7 +124,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun selectRepo(repo: Repository?) = _state.update { it.copy(selectedRepo = repo, noRepo = repo == null) }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
     fun selectModel(model: ModelOption?, variant: ModelVariant?) = _state.update {
-        it.copy(selectedModel = model, selectedVariant = variant ?: model?.variants?.firstOrNull { v -> v.isDefault } ?: model?.variants?.firstOrNull())
+        it.copy(selectedModel = model, selectedVariant = variant ?: model?.defaultVariant)
     }
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
@@ -112,6 +136,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             .onFailure { t -> _state.update { it.copy(error = t.userMessage()) } }
         _state.update { it.copy(isLoadingRepos = false) }
     }
+
+    fun refreshModels() = viewModelScope.launch { loadModels(force = true) }
 
     fun launch(onLaunched: (Agent) -> Unit) {
         val s = _state.value
@@ -133,17 +159,20 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             val request = draft.copy(agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, launchNonce) })
             graph.agents.launch(request, s.modelLabel).fold(
                 onSuccess = { agent ->
-                    launchNonce = LaunchIdempotency.newNonce()
-                    _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
-                    onLaunched(agent)
-                    // Last, and suspending: a cancel landing here must not leave a created agent behind an intact draft.
-                    graph.prefs.setComposerDefaults(
-                        repoUrl = request.repoUrl,
-                        ref = request.ref,
-                        modelId = request.modelId,
-                        params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
-                        autoCreatePr = request.autoCreatePr,
-                    )
+                    // The agent exists now: a cancel arriving this late must not strand it behind an intact draft, and
+                    // the composer only reports the launch done once the defaults it will restore next time are saved.
+                    withContext(NonCancellable) {
+                        launchNonce = LaunchIdempotency.newNonce()
+                        graph.prefs.setComposerDefaults(
+                            repoUrl = request.repoUrl,
+                            ref = request.ref,
+                            modelId = request.modelId,
+                            params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
+                            autoCreatePr = request.autoCreatePr,
+                        )
+                        _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
+                        onLaunched(agent)
+                    }
                 },
                 onFailure = { t -> _state.update { it.copy(isLaunching = false, error = t.userMessage()) } },
             )

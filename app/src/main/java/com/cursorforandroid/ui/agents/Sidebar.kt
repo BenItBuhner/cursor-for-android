@@ -231,7 +231,12 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
         Spacer(Modifier.width(9.dp))
         Column(Modifier.weight(1f)) {
             Text(user.displayName, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(if (isDemo) "Demo" else user.apiKeyName, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The API key's dashboard label is not identity, so it stays in Settings next to "Manage API keys". Skip the
+            // line when there is no email or the display name already had to fall back to it.
+            val subtitle = if (isDemo) "Demo" else user.email?.takeIf { it != user.displayName }
+            if (subtitle != null) {
+                Text(subtitle, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
     }
