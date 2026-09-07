@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +30,7 @@ import kotlinx.coroutines.launch
 class LiveRunHub(
     private val session: SessionManager,
     private val agents: AgentRepository,
-    private val nowProvider: () -> Long = System::currentTimeMillis,
+    private val nowProvider: () -> Long = AppClock::now,
     private val pollIntervalMs: Long = 20_000L,
     private val releaseGraceMs: Long = 5_000L,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),

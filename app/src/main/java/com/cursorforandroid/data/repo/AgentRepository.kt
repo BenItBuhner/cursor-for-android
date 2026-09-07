@@ -15,6 +15,7 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -139,7 +140,7 @@ class AgentRepository(
         upsert(agent)
         prefs.markLaunchedHere(agent.id)
         // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
-        prefs.markRead(agent.id, System.currentTimeMillis())
+        prefs.markRead(agent.id, AppClock.now())
         agent
     }
 
@@ -148,7 +149,7 @@ class AgentRepository(
             agentId,
             CreateRunRequestDto(PromptEncoding.toPromptDto(text, images), mode = planMode?.let { if (it) "plan" else "agent" }),
         )
-        agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = System.currentTimeMillis())) }
+        agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())) }
         response.run
     }
 

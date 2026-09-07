@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +33,7 @@ class CatalogRepository(private val session: SessionManager) {
     }
 
     suspend fun loadRepositories(force: Boolean = false): Result<List<Repository>> {
-        val now = System.currentTimeMillis()
+        val now = AppClock.now()
         if (!force && _repositories.value.isNotEmpty() && now - reposFetchedAt < REPO_TTL_MS) return Result.success(_repositories.value)
         if (!force && now - reposFetchedAt < REPO_MIN_INTERVAL_MS) return Result.success(_repositories.value)
         return runCatching { session.current.api.repositories().items.map { Repository(it.url) } }

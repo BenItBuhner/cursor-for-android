@@ -13,7 +13,7 @@ object TimeFormat {
     private val dateYearFormatter get() = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
 
     /** "Yesterday at 12:14 AM" — the header above a user message in the conversation view. */
-    fun conversationStamp(epochMillis: Long, nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): String {
+    fun conversationStamp(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
         val then = Instant.ofEpochMilli(epochMillis).atZone(zone)
         val now = Instant.ofEpochMilli(nowMillis).atZone(zone)
         val days = ChronoUnit.DAYS.between(then.toLocalDate(), now.toLocalDate())
@@ -27,7 +27,7 @@ object TimeFormat {
     }
 
     /** Compact relative age for list rows: "now", "4m", "3h", "2d", "Sep 4". */
-    fun relativeShort(epochMillis: Long, nowMillis: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()): String {
+    fun relativeShort(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
         val diff = (nowMillis - epochMillis).coerceAtLeast(0)
         val minutes = diff / 60_000
         val hours = minutes / 60

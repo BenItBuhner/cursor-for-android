@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.LiveActivityState
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
+import com.cursorforandroid.util.AppClock
 
 /**
  * Builds the notifications that stand in for the iOS Live Activity.
@@ -102,7 +103,7 @@ object LiveNotificationRenderer {
             .setColor(statusColor(run.status))
             .setContentTitle(run.title)
             .setSubText(statusLabel(context, run.status))
-            .setWhen(run.finishedAtMillis ?: System.currentTimeMillis())
+            .setWhen(run.finishedAtMillis ?: AppClock.now())
             .setShowWhen(true)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)

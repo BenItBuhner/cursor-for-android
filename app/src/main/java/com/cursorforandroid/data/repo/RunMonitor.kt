@@ -7,6 +7,7 @@ import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunDigest
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,7 @@ class RunMonitor(
     private val runStartedAt: suspend (agentId: String, runId: String) -> Long? = { _, _ -> null },
     private val refreshIntervalMs: Long = 60_000L,
     private val maxTracked: Int = MAX_TRACKED,
-    private val nowProvider: () -> Long = System::currentTimeMillis,
+    private val nowProvider: () -> Long = AppClock::now,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private val _state = MutableStateFlow(LiveActivityState())

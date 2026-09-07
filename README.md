@@ -21,8 +21,37 @@ Requirements: JDK 17+, Android SDK with platform 36 (compileSdk; targetSdk stays
 ./gradlew :app:assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:testDebugUnitTest      # JVM unit tests
 ./gradlew :app:recordRoborazziDebug   # re-render screenshots/ from the demo backend
+./gradlew :app:verifyRoborazziDebug   # compare the demo walkthrough against screenshots/
+./gradlew :app:assembleRelease        # R8-minified APK; signed with the debug key unless release signing is configured
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## CI and releases
+
+Everything runs on GitHub Actions (`.github/workflows/`); the shared toolchain (JDK 17, SDK 35, Gradle cache) lives in `.github/actions/android-toolchain`.
+
+| Workflow | Runs on | Does |
+| --- | --- | --- |
+| `ci.yml` | pushes to `main`, pull requests | `lintDebug`, debug + release APKs (downloadable from the run's artifacts, stamped `0.1.0-dev.<run>+g<sha>`), JVM unit tests, screenshot verification against `screenshots/` |
+| `release.yml` | tags `vX.Y.Z`, or manually for an existing tag | lint + tests, then a signed release APK and AAB, the R8 `mapping.txt`, `SHA256SUMS.txt` and a GitHub Release with generated notes (`.github/release.yml` groups them by label) |
+| `update-screenshots.yml` | manually | re-records `screenshots/` on a clean runner and opens a pull request |
+
+### Cutting a release
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0        # stable release, marked "latest"
+git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1   # pre-release
+```
+
+The tag is the only input. `versionName` is the tag without the `v`; `versionCode` is derived from it as `MAJOR * 1_000_000 + MINOR * 10_000 + PATCH * 100 + STAGE`, where `STAGE` is 0–24 for `alpha.N`, 25–49 for `beta.N`, 50–98 for `rc.N` and 99 for a stable version, so every pre-release sorts below its final build (`0.2.0-rc.1` → `20051`, `0.2.0` → `20199`). Local and CI dev builds use `app.versionName` from `gradle.properties`; bump it after tagging so dev builds report the version they lead up to. `-Papp.versionName=…` and `-Papp.versionCode=…` override both.
+
+### Release signing
+
+Run `scripts/release-keystore.sh --set-secrets` once (needs a logged-in `gh`). It creates `release.jks` and uploads the `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS` and `RELEASE_KEY_PASSWORD` repository secrets; without `--set-secrets` it prints the values to add by hand. Keep the keystore and password backed up: Android only installs an update if it is signed with the same key. Until the secrets exist, the release workflow still publishes but signs with the debug key and says so in the release notes; re-run it for the tag ("Run workflow") once they are in place. For local release builds, put the same values in a git-ignored `keystore.properties` next to `settings.gradle.kts` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`).
+
+### Screenshots
+
+`AppScreenshotTest` pins the clock (`AppClock`) to 2025-01-15 14:00 UTC, the zone and the locale, and disables ripples, so the PNGs render identically on every machine. After an intentional UI change, re-record with `./gradlew :app:recordRoborazziDebug` or the "Update screenshots" workflow and commit `screenshots/`.
 
 ## API surface used
 

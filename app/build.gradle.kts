@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,71 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.roborazzi)
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Versioning
+//
+// `app.versionName` lives in gradle.properties and is overridden with `-Papp.versionName=X.Y.Z` by the release
+// workflow, which derives it from the `vX.Y.Z` git tag. versionCode is computed from that name so a tag is the only
+// input a release needs:
+//
+//     MAJOR * 1_000_000 + MINOR * 10_000 + PATCH * 100 + STAGE
+//     STAGE: alpha.N -> N (0..24), beta.N -> 25 + N, rc.N -> 50 + N, stable (no pre-release) -> 99
+//
+// e.g. 0.2.0-alpha.1 -> 20101, 0.2.0-beta.1 -> 20126, 0.2.0-rc.1 -> 20151, 0.2.0 -> 20199. Build metadata after `+`
+// is ignored. `-Papp.versionCode=N` overrides the derived value; `-Papp.versionNameSuffix=...` is appended to the
+// versionName only (CI uses it to stamp dev builds with the run number and commit).
+// ---------------------------------------------------------------------------------------------------------------------
+val appVersionName: String = providers.gradleProperty("app.versionName").get()
+val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appVersionName))
+val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
+
+fun versionCodeFor(versionName: String): Int {
+    val semver = Regex("""^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$""")
+    val match = semver.matchEntire(versionName)
+        ?: error("app.versionName '$versionName' must look like MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]")
+    val (major, minor, patch, preRelease) = match.destructured
+    require(minor.toInt() < 100 && patch.toInt() < 100) { "MINOR and PATCH must be < 100 to fit the versionCode scheme ($versionName)" }
+    require(major.toInt() < 2_000) { "MAJOR must be < 2000 to stay under Android's versionCode limit ($versionName)" }
+    return major.toInt() * 1_000_000 + minor.toInt() * 10_000 + patch.toInt() * 100 + preReleaseStage(preRelease)
+}
+
+fun preReleaseStage(preRelease: String): Int {
+    if (preRelease.isEmpty()) return 99
+    val parts = preRelease.split('.')
+    val iteration = parts.getOrNull(1)?.toIntOrNull() ?: 0
+    return when (parts.first().lowercase()) {
+        "beta" -> 25 + iteration.coerceIn(0, 24)
+        "rc" -> 50 + iteration.coerceIn(0, 48)
+        else -> iteration.coerceIn(0, 24) // alpha, dev, snapshot, ...
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Release signing
+//
+// CI:    RELEASE_KEYSTORE_FILE / RELEASE_KEYSTORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD env vars
+// Local: a git-ignored keystore.properties next to settings.gradle.kts with storeFile / storePassword / keyAlias /
+//        keyPassword (storeFile is resolved against the repository root).
+// When neither is present, release builds are signed with the debug key so `assembleRelease` still produces an
+// installable APK; the release workflow reports which key was used.
+// ---------------------------------------------------------------------------------------------------------------------
+data class ReleaseSigning(val storeFile: File, val storePassword: String, val keyAlias: String, val keyPassword: String)
+
+fun releaseSigning(): ReleaseSigning? {
+    val env = { name: String -> providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() } }
+    env("RELEASE_KEYSTORE_FILE")?.let { path ->
+        fun required(name: String) = env(name) ?: error("$name must be set when RELEASE_KEYSTORE_FILE is set")
+        return ReleaseSigning(file(path), required("RELEASE_KEYSTORE_PASSWORD"), required("RELEASE_KEY_ALIAS"), required("RELEASE_KEY_PASSWORD"))
+    }
+    val propertiesFile = rootProject.file("keystore.properties")
+    if (!propertiesFile.exists()) return null
+    val properties = Properties().apply { propertiesFile.inputStream().use(::load) }
+    fun required(name: String) = properties.getProperty(name)?.takeIf { it.isNotBlank() } ?: error("keystore.properties is missing '$name'")
+    return ReleaseSigning(rootProject.file(required("storeFile")), required("storePassword"), required("keyAlias"), required("keyPassword"))
+}
+
+val releaseSigning: ReleaseSigning? = releaseSigning()
 
 android {
     namespace = "com.cursorforandroid"
@@ -15,9 +82,21 @@ android {
         applicationId = "com.cursorforandroid"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+        versionNameSuffix = appVersionNameSuffix
         vectorDrawables.useSupportLibrary = true
+    }
+
+    signingConfigs {
+        releaseSigning?.let { signing ->
+            create("release") {
+                storeFile = signing.storeFile
+                storePassword = signing.storePassword
+                keyAlias = signing.keyAlias
+                keyPassword = signing.keyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +104,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -98,4 +178,33 @@ dependencies {
 
 roborazzi {
     outputDir.set(file("$rootDir/screenshots"))
+}
+
+// `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything
+// else in src/test still runs.
+if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).getOrElse(false)) {
+    tasks.withType<Test>().configureEach {
+        exclude("com/cursorforandroid/screenshots/**")
+    }
+}
+
+// Prints the resolved version so the release workflow can reuse it without duplicating the versionCode scheme.
+tasks.register("printAppVersion") {
+    group = "help"
+    description = "Prints the resolved versionName and versionCode."
+    val resolvedName = appVersionName + (appVersionNameSuffix ?: "")
+    val resolvedCode = appVersionCode
+    doLast {
+        println("versionName=$resolvedName")
+        println("versionCode=$resolvedCode")
+    }
+}
+
+if (releaseSigning == null) {
+    val appTaskPrefix = "${project.path}:"
+    gradle.taskGraph.whenReady {
+        if (allTasks.any { it.path.startsWith(appTaskPrefix) && it.name.contains("Release") }) {
+            logger.warn("Release signing is not configured (RELEASE_KEYSTORE_FILE or keystore.properties); release artifacts will be signed with the debug key.")
+        }
+    }
 }

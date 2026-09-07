@@ -34,6 +34,7 @@ import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -46,9 +47,9 @@ import java.time.format.DateTimeFormatter
 
 /** Shared mutable state behind the demo API and streamer. */
 internal class DemoStore {
-    private val now = System.currentTimeMillis()
+    private val now = AppClock.now()
     private val fmt = DateTimeFormatter.ISO_INSTANT
-    fun iso(millis: Long = System.currentTimeMillis()): String = fmt.format(Instant.ofEpochMilli(millis))
+    fun iso(millis: Long = AppClock.now()): String = fmt.format(Instant.ofEpochMilli(millis))
 
     val seeds = DemoData.seeds.associateBy { it.id }.toMutableMap()
     val agents: MutableMap<String, AgentDto> = linkedMapOf()
@@ -261,7 +262,7 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
         emit(RunStreamEvent.Status(runId, RunStatus.RUNNING))
         store.updateRun(agentId, runId) { it.copy(status = "RUNNING") }
         store.setV0Status(agentId, "RUNNING")
-        val startedAt = System.currentTimeMillis()
+        val startedAt = AppClock.now()
         val outcome = when (script) {
             "cesium" -> cesium()
             "codex" -> codex()
@@ -269,7 +270,7 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
             "plan" -> plan(store.prompts[runId].orEmpty())
             else -> generic(store.prompts[runId].orEmpty())
         }
-        val elapsed = System.currentTimeMillis() - startedAt
+        val elapsed = AppClock.now() - startedAt
         val duration = outcome.reportedDurationMs ?: elapsed
         val git = outcome.branch?.let { RunGitDto(listOf(RunGitBranchDto(repoUrl = "github.com/demo/repo", branch = it, prUrl = outcome.prUrl))) }
         store.appendAssistant(agentId, outcome.finalText)
