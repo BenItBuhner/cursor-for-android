@@ -50,7 +50,7 @@ object CursorDimens {
     /** State glyph slot: glyph centred at x=20, ~12px visible; title at x=36. */
     val glyph = 16.dp
     val unreadDot = 6.dp
-    /** Composer "+", mic and send: 24px circles with 12px glyphs. */
+    /** Composer "+", send and stop: 24px circles with 12px glyphs. */
     val roundButton = 24.dp
     /** 20dp box → ~11.5px visible "+" like the web. */
     val roundButtonGlyph = 20.dp

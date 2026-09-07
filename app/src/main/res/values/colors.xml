@@ -2,5 +2,6 @@
 <resources>
     <!-- Cursor canvas (matches web + iOS conversation canvas). -->
     <color name="cursor_canvas">#141414</color>
-    <color name="ic_launcher_background">#141414</color>
+    <!-- Background of the official dark app icon (APP_ICON_25D_DARK.png in the https://cursor.com/brand kit). -->
+    <color name="ic_launcher_background">#14120B</color>
 </resources>

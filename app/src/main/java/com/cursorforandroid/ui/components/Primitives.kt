@@ -125,7 +125,7 @@ fun TouchTarget(
 }
 
 /**
- * The round buttons of Cursor's composer footer, measured at 24px with 12px glyphs: "+" on an 8 % fill, mic / send
+ * The round buttons of Cursor's composer footer, measured at 24px with 12px glyphs: "+" on an 8 % fill, send / stop
  * on a foreground fill with a canvas-coloured glyph.
  */
 @Composable
