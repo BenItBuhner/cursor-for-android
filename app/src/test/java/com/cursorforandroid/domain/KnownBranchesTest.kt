@@ -1,6 +1,7 @@
 package com.cursorforandroid.domain
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 
 class KnownBranchesTest {
@@ -112,5 +113,18 @@ class KnownBranchesTest {
     @Test
     fun `an unparseable repository yields nothing`() {
         assertThat(KnownBranches.forRepository(listOf(agent("a")), "")).isEmpty()
+    }
+
+    @Test
+    fun `a typed name is offered as a branch only once git would accept it`() {
+        listOf("main", "cursor/fix-build-9f8e", "release/1.2", "feature/a.b", "v1.0", "a1b2c3d4e5f6", "HEAD").forEach {
+            assertWithMessage(it).that(KnownBranches.isPlausibleRef(it)).isTrue()
+        }
+        listOf(
+            "", "@", "-flag", "/lead", "cursor/", "trail.", "a//b", "a..b", "a@{b", "with space", "tab\tbed", "ti~lde", "ca^ret",
+            "co:lon", "que?stion", "st*ar", "br[acket", "back\\slash", "a/.hidden", "refs/.lock", "name.lock",
+        ).forEach {
+            assertWithMessage(it).that(KnownBranches.isPlausibleRef(it)).isFalse()
+        }
     }
 }

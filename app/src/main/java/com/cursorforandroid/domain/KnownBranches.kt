@@ -67,4 +67,16 @@ object KnownBranches {
 
     /** GitHub slugs are case-insensitive; a blank or unparseable URL matches nothing. */
     private fun slug(url: String): String? = url.takeIf { it.isNotBlank() }?.let(Agent::repoSlugOf)?.lowercase()
+
+    /**
+     * Whether [name] could name a branch (or a commit) — git's `check-ref-format --branch` rules. The picker offers
+     * to use what was typed only once this holds, so a half-typed prefix like `cursor/` is not offered as a branch.
+     */
+    fun isPlausibleRef(name: String): Boolean {
+        if (name.isEmpty() || name == "@") return false
+        if (name.startsWith("-") || name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return false
+        if ("//" in name || ".." in name || "@{" in name) return false
+        if (name.any { it <= ' ' || it == '\u007f' || it in "~^:?*[\\" }) return false
+        return name.split('/').none { it.startsWith(".") || it.endsWith(".lock") }
+    }
 }

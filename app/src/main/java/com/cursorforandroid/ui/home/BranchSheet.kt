@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.BranchOption
+import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
@@ -57,7 +58,9 @@ internal fun BranchSheet(
         val visible = branches.filter { matches(it.name) }
         // The selection always has a row, even when no agent has used it (typed earlier, or restored from the last launch).
         val currentUnlisted = current.isNotEmpty() && branches.none { it.name == current } && matches(current)
-        val offerTyped = typed.isNotEmpty() && typed != current && branches.none { it.name == typed }
+        val unlisted = typed.isNotEmpty() && typed != current && branches.none { it.name == typed }
+        val offerTyped = unlisted && KnownBranches.isPlausibleRef(typed)
+        val nothingToShow = typed.isNotEmpty() && visible.isEmpty() && !currentUnlisted && !offerTyped
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (typed.isEmpty()) {
                 item("default") {
@@ -76,6 +79,11 @@ internal fun BranchSheet(
             if (offerTyped) {
                 item("typed") {
                     SheetRow(title = typed, subtitle = "Use this branch name", checked = false, icon = CursorIcons.Plus, mono = true) { pick(typed) }
+                }
+            }
+            if (nothingToShow) {
+                item("invalid") {
+                    Text("\u201C$typed\u201D can't be a branch name", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
             }
             if (repo != null) {
