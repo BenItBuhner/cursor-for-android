@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
@@ -72,6 +73,8 @@ class RunMonitor(
         scope = s
         s.launch {
             agents.state
+                // Rows restored from disk are not tracked until a fetch has confirmed they are still running.
+                .filter { !it.isFromCache }
                 .map { st -> st.agents.filter { it.isRunning }.sortedByDescending { it.updatedAtMillis } }
                 .distinctUntilChanged()
                 .collect { reconcile(s, it) }

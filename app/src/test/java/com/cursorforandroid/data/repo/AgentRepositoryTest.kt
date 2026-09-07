@@ -255,6 +255,37 @@ class AgentRepositoryTest {
     }
 
     @Test
+    fun `the run monitor ignores rows restored from disk until a fetch confirms them`() = runBlocking<Unit> {
+        cache.write(
+            listOf(
+                cachedAgent("bc-stale", "Finished hours ago", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE, runId = "run-stale"),
+                cachedAgent("bc-live", "Still going", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE, runId = "run-live"),
+            ),
+        )
+        api.addIdleAgent("bc-stale", "Finished hours ago", "run-stale")
+        api.addRunningAgent("bc-live", "Still going", "run-live")
+        val streamer = FakeRunStreamer()
+        session = SessionManager(SecureKeyStore(ApplicationProvider.getApplicationContext()), prefs, CursorBackend(api, streamer, isDemo = false), CursorBackend(api, streamer, isDemo = true))
+        val repo = repository()
+        val hub = LiveRunHub(session, repo, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
+        val monitor = RunMonitor(repo, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
+
+        repo.restoreFromCache()
+        assertThat(repo.state.value.agents.count { it.isRunning }).isEqualTo(2)
+        monitor.start()
+        delay(150)
+        // Nothing is tracked and no stream is opened for the stale run while the list is unconfirmed.
+        assertThat(monitor.state.value.running).isEmpty()
+        assertThat(streamer.connections).isEmpty()
+
+        repo.refresh()
+        awaitUntil { monitor.state.value.running.map { it.agentId } == listOf("bc-live") }
+        assertThat(streamer.connections).containsExactly("run-live")
+        assertThat(repo.state.value.agents.first { it.id == "bc-stale" }.isRunning).isFalse()
+        monitor.stop()
+    }
+
+    @Test
     fun `local changes reach the disk without a refresh`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         val repo = repository(persistDelayMs = 10)

@@ -216,9 +216,10 @@ class ConversationRepository(
         if (e.hasInputs || e.fetched) return
         applyInputs(e, cached.messages, cached.runs, cached.transcriptUnavailable, cached.agentUpdatedAtMillis)
         // A run that was still active when the cache was written has very likely finished since; the live state
-        // ("Working…", Stop) waits for the network instead of trusting a stale status.
-        val row = agents.agent(agentId)
-        if (e.state.value.runStatus?.isActive == true && row?.isRunning != true) {
+        // ("Working…", Stop) waits for the network unless a fetched agent row confirms the run is still going.
+        val list = agents.state.value
+        val row = list.agents.firstOrNull { it.id == agentId }
+        if (e.state.value.runStatus?.isActive == true && (list.isFromCache || row?.isRunning != true)) {
             e.state.update { it.copy(runStatus = null) }
         }
     }
@@ -243,6 +244,7 @@ class ConversationRepository(
                 items = e.history,
                 activeRunId = latest?.id,
                 runStatus = latest?.statusEnum(),
+                isStreaming = false,
                 transcriptUnavailable = transcriptUnavailable,
             )
         }
