@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark values of CursorColors for the widget's launcher-inflated layouts; see values/colors.xml. -->
+    <color name="widget_surface">#181818</color>
+    <color name="widget_text_primary">#F0F0F0</color>
+    <color name="widget_text_tertiary">#99F0F0F0</color>
+    <color name="widget_text_quaternary">#5CF0F0F0</color>
+    <color name="widget_icon_secondary">#A8F0F0F0</color>
+    <color name="widget_icon_tertiary">#85F0F0F0</color>
+    <color name="widget_icon_quaternary">#47F0F0F0</color>
+    <color name="widget_unread_dot">#6D9BF0</color>
+    <color name="widget_error_dot">#E34671</color>
+</resources>

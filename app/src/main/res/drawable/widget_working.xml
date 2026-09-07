@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The sidebar's "working" glyph, held on one frame: RemoteViews cannot run the web's 175ms stepping animation, so the
+  widget shows step 4 of 8 — the arrangement the loop squares up on between leaning left and right (`RunningGlyph` in
+  Primitives.kt). Same geometry as the live glyph: a 3x3 grid at a 4.7-unit pitch with 1.3-unit dots in a 16-unit
+  box, so the lit area is the same ~12dp the other row glyphs occupy. Tinted at render time.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="16"
+    android:viewportHeight="16">
+    <!-- .X. -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6.7 3.3a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+    <!-- XXX -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M2 8a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M6.7 8a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.4 8a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+    <!-- X.X -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M2 12.7a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11.4 12.7a1.3 1.3 0 1 0 2.6 0a1.3 1.3 0 1 0 -2.6 0z" />
+</vector>

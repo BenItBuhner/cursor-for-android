@@ -40,7 +40,7 @@ jobs:
       - uses: ./.github/actions/android-toolchain
 
       - name: Record screenshots
-        run: ./gradlew :app:recordRoborazziDebug --tests '*AppScreenshotTest*'
+        run: ./gradlew :app:recordRoborazziDebug --tests '*ScreenshotTest*'
 
       - name: Open pull request
         uses: peter-evans/create-pull-request@v8
