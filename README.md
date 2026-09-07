@@ -11,6 +11,7 @@ Not affiliated with Anysphere, Inc.
 - Sidebar (edge-swipe drawer on phones, permanent 280dp column on tablets and foldables): New Chat, "Chats" with the filter menu (group by, sort, Repo / Status / Git / Source filters, metadata toggles), Pinned and date groups, search, pull-to-refresh, long-press actions (pin, open on cursor.com, copy link, archive, delete).
 - Conversation view: transcript (`/v0/agents/{id}/conversation`), run footers ("Worked 3m 5s" + branch / PR pills), live SSE streaming of the active run with thinking, "Explored N files, M searches" tool rows, subagent cards and markdown rendering; follow-ups with image attachments (`prompt.images`), and stop.
 - Settings with Cursor Dark / Cursor Light / system theme; demo mode with an in-memory backend so the UI can be explored without an API key.
+- Predictive back (Android 14+): screens recede with the gesture to reveal the one underneath, the drawer and bottom sheets shrink with it, the filter sheet's drill-in pages slide back under the finger, and from the New Chat pane the system's back-to-home animation plays. Cancelling a gesture rewinds; releasing it commits.
 
 ## Build
 
