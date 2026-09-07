@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
@@ -115,6 +116,12 @@ fun ConversationScreen(
             snackbar.showSnackbar(it)
             viewModel.clearToast()
         }
+    }
+    // Coming back to the foreground: the network may have taken the stream down while the app was away, or the run
+    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op.
+    LifecycleStartEffect(agentId) {
+        viewModel.revalidate()
+        onStopOrDispose { }
     }
 
     val items = conversation.items

@@ -237,6 +237,14 @@ class FakeRunStreamer : RunStreamer {
 
     suspend fun emit(runId: String, event: RunStreamEvent) = channel(runId).emit(event)
 
+    /**
+     * Forgets what was emitted for [runId], so the next connection sees only what is emitted afterwards — the way a
+     * connection that dropped mid-run is followed, later, by a replay of the run's whole retained log.
+     */
+    fun reset(runId: String) {
+        channels.remove(runId)
+    }
+
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         connections += runId
         channel(runId).takeWhile { it != RunStreamEvent.Done }.collect { emit(it) }

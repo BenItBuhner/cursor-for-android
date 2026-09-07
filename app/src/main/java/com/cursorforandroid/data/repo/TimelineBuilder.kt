@@ -321,11 +321,32 @@ object TimelineBuilder {
             status = event.status
             finished = true
             val finalText = event.text?.trim().orEmpty()
-            val hasAssistant = items.any { it is AssistantMessage && it.markdown.isNotBlank() }
-            if (finalText.isNotEmpty() && !hasAssistant) items += AssistantMessage(nextId("asst"), finalText)
+            placeFinalReply(finalText)
             if (event.status == RunStatus.ERROR) items += NoticeCard(nextId("notice"), "Run failed", finalText.ifBlank { null }, NoticeTone.Error)
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
         }
+
+        /**
+         * The `result` carries the final reply verbatim. When the stream already delivered it as assistant deltas
+         * nothing is added; when it did not — the stream broke and the outcome was read from the run record, or
+         * the reply only ever came with the result, after intermediate remarks between tool calls — it is appended,
+         * and a reply the stream cut off half-way is completed in place.
+         */
+        private fun placeFinalReply(finalText: String) {
+            if (finalText.isEmpty()) return
+            val wanted = normalize(finalText)
+            if (items.any { it is AssistantMessage && normalize(it.markdown) == wanted }) return
+            val last = items.lastOrNull()
+            if (last is AssistantMessage && wanted.startsWith(normalize(last.markdown))) {
+                items[items.lastIndex] = last.copy(markdown = finalText)
+                return
+            }
+            items += AssistantMessage(nextId("asst"), finalText)
+        }
+
+        private fun normalize(text: String) = text.trim().replace(WHITESPACE, " ")
     }
+
+    private val WHITESPACE = Regex("\\s+")
 }
