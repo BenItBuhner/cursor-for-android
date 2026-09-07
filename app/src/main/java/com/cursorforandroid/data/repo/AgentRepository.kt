@@ -10,6 +10,7 @@ import com.cursorforandroid.data.api.dto.ModelRefDto
 import com.cursorforandroid.data.api.dto.RepoConfigDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
+import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.PreferencesStore
@@ -39,6 +40,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 
 data class AgentListState(
@@ -68,6 +70,8 @@ data class LaunchRequest(
     val autoCreatePr: Boolean,
     val planMode: Boolean,
     val name: String? = null,
+    /** Client-minted id (see [LaunchIdempotency]); null lets the server mint one and disables retry recovery. */
+    val agentId: String? = null,
 )
 
 /**
@@ -210,6 +214,9 @@ class AgentRepository(
         val startedAt = AppClock.now()
         dropForeignList(backend)
         val startedIn = generation.get()
+        // Rows that appear while the pages are in flight and are not in the server's answer were launched here
+        // meanwhile; the complete-listing cleanup below must not make a chat the user just started vanish.
+        val knownBefore = _state.value.agents.mapTo(HashSet()) { it.id }
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState): Boolean {
@@ -238,7 +245,7 @@ class AgentRepository(
             }
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
-                (if (complete) s.withoutUnseen(seen, startedAt) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             if (landed) lastRefreshedAt = AppClock.now()
         } catch (t: Throwable) {
@@ -283,11 +290,12 @@ class AgentRepository(
         copy(agents = agents.map { a -> legacy[a.id]?.let(a::withLegacy) ?: a })
 
     /**
-     * After a complete listing, rows the server no longer returns were deleted elsewhere. Agents created around or
-     * after the refresh started are kept: they were launched from here while the pages were in flight.
+     * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
+     * not known when the fetch started (launched here while the pages were in flight) and, as the listing can lag a
+     * creation by a moment, agents created shortly before it started.
      */
-    private fun AgentListState.withoutUnseen(seen: Set<String>, startedAt: Long): AgentListState =
-        copy(agents = agents.filter { it.id in seen || it.createdAtMillis > startedAt - RECENT_WINDOW_MS })
+    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long): AgentListState =
+        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis > startedAt - RECENT_WINDOW_MS })
 
     private suspend fun persist() {
         val backend = session.current
@@ -313,22 +321,38 @@ class AgentRepository(
         merged
     }
 
+    /**
+     * Creates the agent and its first run. When [LaunchRequest.agentId] is set and the server answers
+     * `409 agent_id_conflict`, an earlier attempt already went through (its reply was lost to a timeout, a dropped
+     * connection or a cancel), so that agent is adopted instead of failing or creating a duplicate.
+     */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?): Result<Agent> = runCatching {
         val api = session.current.api
-        val body = CreateAgentRequestDto(
-            prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
-            model = request.modelId?.let { id ->
-                ModelRefDto(id = id, params = request.modelParams.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
-            },
-            name = request.name,
-            env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
-            repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
-            autoCreatePR = request.autoCreatePr.takeIf { it },
-            mode = if (request.planMode) "plan" else null,
-        )
-        val response = api.createAgent(body)
-        val agent = response.agent.mergeInto(null, response.run).copy(
-            runStatus = RunStatus.parse(response.run.status),
+        val (dto, run) = try {
+            // Off the main thread: base64-encoding the images and serializing the body happen before the call is
+            // enqueued, on whichever thread makes it.
+            withContext(Dispatchers.IO) {
+                val body = CreateAgentRequestDto(
+                    prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
+                    agentId = request.agentId,
+                    model = request.modelId?.let { id ->
+                        ModelRefDto(id = id, params = request.modelParams.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
+                    },
+                    name = request.name,
+                    env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
+                    repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
+                    autoCreatePR = request.autoCreatePr.takeIf { it },
+                    mode = if (request.planMode) "plan" else null,
+                )
+                api.createAgent(body)
+            }.let { it.agent to it.run }
+        } catch (t: Throwable) {
+            if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
+            val existing = api.getAgent(request.agentId)
+            existing to existing.latestRunId?.let { runId -> runCatching { api.getRun(existing.id, runId) }.getOrNull() }
+        }
+        val agent = dto.mergeInto(null, run).copy(
+            runStatus = run?.let { RunStatus.parse(it.status) } ?: RunStatus.CREATING,
             modelDisplayName = modelDisplayName,
         )
         upsert(agent)
@@ -336,13 +360,13 @@ class AgentRepository(
         // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
         prefs.markRead(agent.id, AppClock.now())
         agent
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun followUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), planMode: Boolean? = null): Result<RunDto> = runCatching {
-        val response = session.current.api.createRun(
-            agentId,
-            CreateRunRequestDto(PromptEncoding.toPromptDto(text, images), mode = planMode?.let { if (it) "plan" else "agent" }),
-        )
+        val api = session.current.api
+        val response = withContext(Dispatchers.IO) {
+            api.createRun(agentId, CreateRunRequestDto(PromptEncoding.toPromptDto(text, images), mode = planMode?.let { if (it) "plan" else "agent" }))
+        }
         agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())) }
         response.run
     }
@@ -385,5 +409,6 @@ class AgentRepository(
         const val MAX_PAGES = 5
         const val PERSIST_DELAY_MS = 1_500L
         const val RECENT_WINDOW_MS = 5 * 60 * 1000L
+        const val AGENT_ID_CONFLICT = "agent_id_conflict"
     }
 }
