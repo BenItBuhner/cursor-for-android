@@ -15,8 +15,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.ThinkingBlock
-import com.cursorforandroid.domain.ToolActivity
+import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
@@ -111,7 +110,7 @@ class LiveRunMonitorTest {
         // A conversation screen opens the same agent: it must ride the monitor's stream, not open a second one.
         val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ToolActivity } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
         assertThat(conversations.state("bc-1").value.isStreaming).isTrue()
 
@@ -146,7 +145,7 @@ class LiveRunMonitorTest {
         // A run the hub followed to its end is replayed from memory, not from a second connection.
         val replayed = hub.replay("bc-1", "run-1")
         assertThat(replayed.hasTrace).isTrue()
-        assertThat(replayed.items.filterIsInstance<ToolActivity>().single().calls.single().status).isEqualTo("completed")
+        assertThat(replayed.items.filterIsInstance<ActivityGroup>().single().calls.single().status).isEqualTo("completed")
         assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
 
         // The second stream closes without a result: the hub polls the run until it is terminal.
@@ -246,10 +245,11 @@ class LiveRunMonitorTest {
         val snapshot = hub.replay("bc-1", "run-1")
         assertThat(snapshot.hasTrace).isTrue()
         assertThat(snapshot.expired).isFalse()
-        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         // Replayed events arrive in a burst, so no thinking duration is invented for them.
-        assertThat(snapshot.items.filterIsInstance<ThinkingBlock>().single().durationSeconds).isNull()
-        assertThat(snapshot.items.filterIsInstance<ToolActivity>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
+        val trace = snapshot.items.filterIsInstance<ActivityGroup>().single()
+        assertThat(trace.thoughts.single().durationSeconds).isNull()
+        assertThat(trace.calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat((snapshot.items.last() as RunFooter).branches.single().branch).isEqualTo("cursor/readme-1a2b")
         // No polling, no patch: the row still says what the list said, not "updated just now".
         assertThat(api.getRunCalls).isEqualTo(0)
@@ -302,7 +302,7 @@ class LiveRunMonitorTest {
 
         val conversations = ConversationRepository(session, agents, prefs, hub, attachments)
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ToolActivity } }
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         awaitUntil { "run-4" in streamer.connections }
         delay(300)
 
@@ -313,10 +313,10 @@ class LiveRunMonitorTest {
         val types = state.items.map { it::class.simpleName }
         // Four text-only turns from the transcript, then the replayed trace of run-5 in place of its reply.
         assertThat(types.take(16)).isEqualTo(List(4) { listOf("DateHeader", "UserMessage", "AssistantMessage", "RunFooter") }.flatten())
-        assertThat(types.drop(16)).containsExactly("DateHeader", "UserMessage", "ThinkingBlock", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(types.drop(16)).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat((state.items[17] as UserMessage).text).isEqualTo("Prompt 5")
-        assertThat((state.items[20] as AssistantMessage).markdown).isEqualTo("Reply 5")
-        assertThat((state.items[21] as RunFooter).durationMs).isEqualTo(42_000L)
+        assertThat((state.items[19] as AssistantMessage).markdown).isEqualTo("Reply 5")
+        assertThat((state.items[20] as RunFooter).durationMs).isEqualTo(42_000L)
         assertThat((state.items[2] as AssistantMessage).id).isEqualTo("run-1-a")
         assertThat(streamer.connections.count { it == "run-5" }).isEqualTo(1)
         assertThat(streamer.connections.count { it == "run-4" }).isEqualTo(1)
@@ -335,14 +335,14 @@ class LiveRunMonitorTest {
         assertThat(runId).startsWith("run-followup-")
         streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
         streamer.emit(runId, tool("f1", "edit_file", "running", "app/src/Sidebar.kt"))
-        awaitUntil { conversations.state("bc-1").value.items.filterIsInstance<ToolActivity>().any { it.isRunning } }
+        awaitUntil { conversations.state("bc-1").value.items.filterIsInstance<ActivityGroup>().any { it.isRunning } }
         streamer.emit(runId, tool("f1", "edit_file", "completed", "app/src/Sidebar.kt"))
         streamer.emit(runId, RunStreamEvent.Assistant("Reply 6"))
         streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply 6", 5_000, null))
         streamer.emit(runId, RunStreamEvent.Done)
         awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && !conversations.state("bc-1").value.isStreaming }
         val done = conversations.state("bc-1").value
-        assertThat(done.items.map { it::class.simpleName }.takeLast(5)).containsExactly("DateHeader", "UserMessage", "ToolActivity", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(done.items.map { it::class.simpleName }.takeLast(5)).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat((done.items.last() as RunFooter).runId).isEqualTo(runId)
         // Reloading rebuilds history from the server; every trace survives without a single reconnection.
         val connectionsBefore = streamer.connections.size
@@ -378,7 +378,7 @@ class LiveRunMonitorTest {
         val items = conversations.state("bc-1").value.items
         assertThat(items.map { it::class.simpleName }).containsExactly(
             "DateHeader", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "ToolActivity", "AssistantMessage", "RunFooter",
+            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
         ).inOrder()
         assertThat((items[4] as UserMessage).text).isEqualTo("Prompt 2")
         assertThat((items[7] as RunFooter).runId).isEqualTo(runId)
