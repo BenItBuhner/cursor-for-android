@@ -20,8 +20,8 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The composer remembers what the last agent was launched with. Runs against the demo backend, whose catalogue has
- * a model with a default "Fast" variant and a parameter-less sibling ("Composer 2.5").
+ * The composer remembers what the last agent was launched with. Runs against the demo backend, whose catalogue
+ * mirrors the live one: "Composer 2.5" has two variants of the same name, `fast` on (the default) and off.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -75,24 +75,40 @@ class NewAgentViewModelTest {
     }
 
     @Test
-    fun `a parameter-less variant is restored instead of the model's default variant`() {
+    fun `the non-default variant is restored instead of the model's default one`() {
         val first = loaded()
         val composer = first.state.value.models.first { it.id == "composer-2.5" }
-        val plain = composer.variants.first { it.params.isEmpty() }
-        first.selectModel(composer, plain)
+        val slow = composer.variants.first { !it.isDefault }
+        first.selectModel(composer, slow)
         first.launchAndWait()
 
         val second = loaded()
         assertThat(second.state.value.selectedModel?.id).isEqualTo("composer-2.5")
-        assertThat(second.state.value.selectedVariant).isEqualTo(plain)
-        assertThat(second.state.value.modelLabel).isEqualTo("Composer 2.5")
+        assertThat(second.state.value.selectedVariant).isEqualTo(slow)
+        assertThat(second.state.value.modelLabel).isEqualTo("Composer 2.5 · Fast off")
     }
 
     @Test
-    fun `selecting a model without a variant picks its default variant`() {
+    fun `a parameter-less variant is restored instead of the model's default variant`() {
+        val first = loaded()
+        val gemini = first.state.value.models.first { it.id == "gemini-3.8-flash" }
+        val bare = gemini.variants.single()
+        assertThat(bare.params).isEmpty()
+        first.selectModel(gemini, bare)
+        first.launchAndWait()
+
+        val second = loaded()
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("gemini-3.8-flash")
+        assertThat(second.state.value.selectedVariant).isEqualTo(bare)
+        assertThat(second.state.value.modelLabel).isEqualTo("Gemini 3.8 Flash")
+    }
+
+    @Test
+    fun `selecting a model without a variant picks its default variant and labels same-named siblings apart`() {
         val vm = loaded()
         val composer = vm.state.value.models.first { it.id == "composer-2.5" }
         vm.selectModel(composer, null)
-        assertThat(vm.state.value.selectedVariant?.displayName).isEqualTo("Composer 2.5 Fast")
+        assertThat(vm.state.value.selectedVariant?.isDefault).isTrue()
+        assertThat(vm.state.value.modelLabel).isEqualTo("Composer 2.5 · Fast")
     }
 }
