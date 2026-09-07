@@ -58,10 +58,15 @@ class LiveNotificationServiceTest {
         assertThat(foregroundNotification).isNotNull()
         assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
 
-        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" }
+        // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
+        // tracker has reported, so wait for the steady state rather than the title alone.
+        awaitOnMain(10_000) {
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.bigText()?.lines()?.size == 3 } == true
+        }
         val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
         assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
         assertThat(live.bigText()!!.lines()).hasSize(3)
+        assertThat(live.bigText()).doesNotContain("more")
         assertThat(live.bigText()).contains("\u2022 Codex-Poly-Bot Scaling")
         assertThat(live.bigText()).contains("\u2022 Cesium Revenue Strategy")
         assertThat(live.bigText()).contains("\u2022 Hyper-realistic human limbs")
