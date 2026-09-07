@@ -150,7 +150,7 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         capture("03_sidebar")
 
-        // Chats filter sheet from the filter icon next to "Chats".
+        // Chats filter sheet from the header's filter icon.
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText("Grouping")
         capture("04_chats_filter")

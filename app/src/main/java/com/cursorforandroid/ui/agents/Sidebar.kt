@@ -74,9 +74,9 @@ data class SidebarCallbacks(
 )
 
 /**
- * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo, flat
- * sidebar-toggle + search + new-chat ("+") icons, a "Chats" label with the filter icon, Pinned / date groups of
- * 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
+ * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
+ * sidebar-toggle + search + filter + new-chat ("+") icons in one header row (the web's separate "Chats" label is
+ * folded into it), Pinned / date groups of 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -111,6 +111,12 @@ fun Sidebar(
                 onClick = { searching = !searching; if (!searching) onQueryChange("") },
                 tint = if (searching) colors.iconPrimary else colors.iconSecondary,
             )
+            FlatIconButton(
+                CursorIcons.Filter,
+                "Filter and group chats",
+                onClick = callbacks.onCustomize,
+                tint = if (state.prefs.isDefault) colors.iconSecondary else colors.accent,
+            )
             FlatIconButton(CursorIcons.Plus, "New chat", onClick = callbacks.onNewChat)
         }
 
@@ -123,16 +129,6 @@ fun Sidebar(
             )
         }
         if (searching) LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
-        Spacer(Modifier.height(4.dp))
-        GroupLabel("Chats", Modifier.padding(start = 16.dp, end = 6.dp).height(32.dp)) {
-            FlatIconButton(
-                CursorIcons.Filter,
-                "Filter and group chats",
-                onClick = callbacks.onCustomize,
-                tint = if (state.prefs.isDefault) colors.iconSecondary else colors.accent,
-            )
-        }
 
         PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
