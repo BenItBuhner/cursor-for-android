@@ -111,11 +111,14 @@ fun ComposerBox(
                 ComposerRoundButton(CursorIcons.Plus, "Attach image", onClick = onPlus)
                 Spacer(Modifier.width(10.dp))
             }
-            if (modelLabel != null) {
-                SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
+            // The model chip takes what it needs and ellipsises only when the trailing buttons would otherwise be pushed out.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                if (modelLabel != null) {
+                    SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
+                }
+                footerExtra?.invoke(this)
             }
-            footerExtra?.invoke(this)
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(8.dp))
             when {
                 isRunning && onStop != null && !canSend -> ComposerRoundButton(CursorIcons.Stop, "Stop", onClick = onStop, prominent = true)
                 canSend -> ComposerRoundButton(CursorIcons.ArrowUp, "Send", onClick = onSend, prominent = true)

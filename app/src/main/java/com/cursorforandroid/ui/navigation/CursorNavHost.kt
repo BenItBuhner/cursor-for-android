@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.navigation
 
+import android.app.Activity
 import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
@@ -31,6 +32,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
@@ -72,6 +74,13 @@ fun CursorNavHost(
     val scene = remember { NavScene(stack.top) }
     val scope = rememberCoroutineScope()
     val colors = CursorTheme.colors
+    val activity = LocalContext.current as? Activity
+
+    // The host leaving composition while the activity stays (sign-out) abandons the whole stack; release every
+    // entry's view models. A configuration change also disposes the host, but there the entries come back.
+    DisposableEffect(stack) {
+        onDispose { if (activity?.isChangingConfigurations != true) stores.clearAll() }
+    }
 
     val desired = stack.top
     LaunchedEffect(desired) {
@@ -84,7 +93,7 @@ fun CursorNavHost(
 
     PredictiveBackHandler(enabled = stack.canPop) { events ->
         val under = stack.underTop ?: return@PredictiveBackHandler
-        scene.beginGesture(under)
+        val gesture = scene.beginGesture(under)
         var originY: Float? = null
         try {
             events.collect { event ->
@@ -95,20 +104,22 @@ fun CursorNavHost(
                 scene.seek(event.progress, event.touchY - (originY ?: event.touchY))
             }
         } catch (_: CancellationException) {
-            scene.gestureActive = false
-            scope.launch {
-                try {
-                    scene.settle(reveal = false)
-                    // The stack may have moved while the finger was down (a deep link); catch the scene up.
-                    scene.moveTo(stack.top, stack)
-                } catch (_: CancellationException) {
-                    // Another navigation started before the rewind finished; it owns the scene now.
+            // Cancelled by the system, or superseded by a newer gesture that now owns the scene.
+            if (scene.endGesture(gesture)) {
+                scope.launch {
+                    try {
+                        scene.settle(reveal = false)
+                        // The stack may have moved while the finger was down (a deep link); catch the scene up.
+                        scene.moveTo(stack.top, stack)
+                    } catch (_: CancellationException) {
+                        // Another navigation or gesture started before the rewind finished; it owns the scene now.
+                    }
                 }
             }
             return@PredictiveBackHandler
         }
         // Committed: pop now and let the stack observer finish the animation from where the finger left it.
-        scene.gestureActive = false
+        scene.endGesture(gesture)
         stack.pop()
     }
 
@@ -171,10 +182,12 @@ class NavEntryStores : ViewModel() {
         stores.remove(id)?.viewModelStore?.clear()
     }
 
-    override fun onCleared() {
+    fun clearAll() {
         stores.values.forEach { it.viewModelStore.clear() }
         stores.clear()
     }
+
+    override fun onCleared() = clearAll()
 
     private class EntryStoreOwner : ViewModelStoreOwner {
         override val viewModelStore: ViewModelStore = ViewModelStore()
@@ -195,16 +208,35 @@ private class NavScene(initialTop: NavEntry) {
     var maxDragPx = 0f
 
     var edge by mutableIntStateOf(BackEventCompat.EDGE_LEFT)
-    var gestureActive by mutableStateOf(false)
 
-    /** A back gesture began over [top]; [revealed] is what it uncovers. Keeps an in-flight transition's progress. */
-    suspend fun beginGesture(revealed: NavEntry) {
-        gestureActive = true
+    /** Generation of the gesture that currently owns the scene; 0 when none does. */
+    private var gesture = 0
+    private var gestureCount = 0
+    val gestureActive: Boolean get() = gesture != 0
+
+    /**
+     * A back gesture began over [top]; [revealed] is what it uncovers. An in-flight transition toward the same pair
+     * hands over its progress (and is interrupted, so it cannot finish underneath the finger). Returns the token
+     * [endGesture] expects.
+     */
+    suspend fun beginGesture(revealed: NavEntry): Int {
+        gesture = ++gestureCount
         if (under?.id != revealed.id) {
             under = revealed
             progress.snapTo(0f)
             dragY.snapTo(0f)
+        } else {
+            progress.snapTo(progress.value)
+            dragY.snapTo(dragY.value)
         }
+        return gesture
+    }
+
+    /** Ends the gesture with this token; false if a newer gesture has already taken the scene over. */
+    fun endGesture(token: Int): Boolean {
+        if (gesture != token) return false
+        gesture = 0
+        return true
     }
 
     suspend fun seek(fraction: Float, fingerDy: Float) {
