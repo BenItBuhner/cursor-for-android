@@ -141,7 +141,15 @@ private fun DisclosureRow(
         Text(label, style = CursorTheme.typography.base, color = colors.textTertiary)
         if (value != null) {
             Spacer(Modifier.width(6.dp))
-            Text(value, style = CursorTheme.typography.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Yields to the chevron: a long value ellipsizes rather than pushing the chevron off the row.
+            Text(
+                value,
+                style = CursorTheme.typography.base,
+                color = colors.textQuaternary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
         }
         Spacer(Modifier.width(4.dp))
         if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
