@@ -1,7 +1,10 @@
 package com.cursorforandroid.screenshots
 
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,20 +29,27 @@ import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import java.time.Instant
+import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Drives the real app (demo backend) through Robolectric's native renderer and writes PNGs to `screenshots/`.
- * Run with `./gradlew :app:recordRoborazziDebug --tests '*AppScreenshotTest*'`.
+ * Run with `./gradlew :app:recordRoborazziDebug --tests '*AppScreenshotTest*'`; CI verifies against the committed
+ * PNGs with `verifyRoborazziDebug`.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -51,17 +61,35 @@ class AppScreenshotTest {
 
     private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
 
+    // The demo data is generated relative to "now" and the UI renders "Today at 2:00 PM"-style stamps, so the clock,
+    // zone and locale are pinned to keep every pixel reproducible across machines and times of day.
+    @Before
+    fun pinClock() {
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        Locale.setDefault(Locale.US)
+        AppClock.nowMillis = { FIXED_NOW }
+    }
+
+    @After
+    fun restoreClock() {
+        AppClock.nowMillis = System::currentTimeMillis
+    }
+
     private fun capture(name: String) {
         compose.waitForIdle()
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun App(graph: AppGraph) {
         var pending by remember { mutableStateOf<String?>(null) }
         val mode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.Dark)
         CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode) {
-            CursorRoot(graph = graph, deepLinkAgentId = pending, onDeepLinkConsumed = { pending = null })
+            // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
+            CompositionLocalProvider(LocalRippleConfiguration provides null) {
+                CursorRoot(graph = graph, deepLinkAgentId = pending, onDeepLinkConsumed = { pending = null })
+            }
         }
     }
 
@@ -155,5 +183,10 @@ class AppScreenshotTest {
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
         capture("10_tablet_conversation")
+    }
+
+    private companion object {
+        /** Wednesday 2025-01-15 14:00 UTC; demo ages are whole minutes, so rendered times land on exact minutes. */
+        val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
     }
 }

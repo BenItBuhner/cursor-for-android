@@ -11,6 +11,7 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -159,7 +160,7 @@ class ConversationRepository(
     }
 
     private suspend fun onRunFinished(agentId: String, event: RunStreamEvent.Result) {
-        val now = System.currentTimeMillis()
+        val now = AppClock.now()
         agents.patch(agentId) { a ->
             a.copy(
                 runStatus = event.status,
@@ -177,7 +178,7 @@ class ConversationRepository(
         val e = entry(agentId)
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
-        val now = System.currentTimeMillis()
+        val now = AppClock.now()
         val optimistic = listOf(
             DateHeader("hdr-local-$now", TimeFormat.conversationStamp(now)),
             UserMessage("local-$now", trimmed, now),

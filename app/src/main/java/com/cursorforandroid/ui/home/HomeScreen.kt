@@ -61,6 +61,7 @@ import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 
 /**
@@ -208,7 +209,7 @@ private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
  * and a metadata line (state glyph · model · repo · age).
  */
 @Composable
-fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modifier, nowMillis: Long = System.currentTimeMillis()) {
+fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modifier, nowMillis: Long = AppClock.now()) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent = row.agent

@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# One active run per pull request / branch; a newer push cancels the previous run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
+
+jobs:
+  build:
+    name: Build & lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-toolchain
+
+      # Dev builds report e.g. 0.1.0-dev.42+gabc1234 in Settings and the User-Agent so an installed build can be traced
+      # back to this run and commit. The base version stays whatever gradle.properties says.
+      - name: Stamp dev version
+        id: stamp
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          short_sha="${HEAD_SHA::7}"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
+
+      # assembleRelease exercises R8 / resource shrinking on every change. Without signing secrets (never passed to
+      # CI) the release APK is signed with the debug key, which is what we want for a PR build.
+      - name: Lint and build debug + release APKs
+        run: >
+          ./gradlew :app:lintDebug :app:assembleDebug :app:assembleRelease
+          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+
+      - name: Collect APKs
+        run: |
+          version="$(./gradlew -q :app:printAppVersion -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" | sed -n 's/^versionName=//p')"
+          echo "Built version ${version}"
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/cursor-for-android-${version}-debug.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${version}-release-debugkey.apk"
+          ls -l dist
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: apks-${{ steps.stamp.outputs.short_sha }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload lint report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-report-${{ steps.stamp.outputs.short_sha }}
+          path: app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-toolchain
+
+      # The Roborazzi walkthrough is covered by the `screenshots` job below.
+      - name: Run JVM unit tests
+        run: ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+
+  screenshots:
+    name: Screenshot tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-toolchain
+
+      # Renders the demo walkthrough through Robolectric and compares it pixel-for-pixel with screenshots/. When the UI
+      # changes on purpose, run the "Update screenshots" workflow (or `./gradlew :app:recordRoborazziDebug`) and
+      # commit the result.
+      - name: Verify screenshots against screenshots/
+        run: ./gradlew :app:verifyRoborazziDebug --tests '*AppScreenshotTest*'
+
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screenshot-diffs
+          path: |
+            screenshots/*_compare.png
+            screenshots/*_actual.png
+            app/build/outputs/roborazzi/
+            app/build/reports/roborazzi/
+            app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore

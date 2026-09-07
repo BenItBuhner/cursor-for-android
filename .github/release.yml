@@ -1,0 +1,21 @@
+# Layout of the notes GitHub generates for each release (Release workflow, generate_release_notes: true).
+# Pull requests are grouped by label; unlabelled ones land in "Other changes".
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: New features
+      labels:
+        - feature
+        - enhancement
+    - title: Bug fixes
+      labels:
+        - bug
+        - fix
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: Other changes
+      labels:
+        - "*"

@@ -1,0 +1,56 @@
+name: Update screenshots
+
+# Re-records screenshots/ by driving the demo walkthrough through Robolectric + Roborazzi on a clean runner, then opens
+# a pull request with the changed PNGs (nothing happens when they are unchanged). Use it after intentional UI changes
+# when the "Screenshot tests" CI job fails.
+#
+# Requires "Allow GitHub Actions to create and approve pull requests" under Settings > Actions > General.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch to record from (the pull request targets the same branch)
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-screenshots-${{ inputs.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  record:
+    name: Record ${{ inputs.ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Record screenshots
+        run: ./gradlew :app:recordRoborazziDebug --tests '*AppScreenshotTest*'
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: ci/update-screenshots-${{ inputs.ref }}
+          base: ${{ inputs.ref }}
+          add-paths: screenshots/*.png
+          commit-message: Update screenshots
+          title: Update screenshots
+          body: |
+            Re-recorded `screenshots/` from `${{ inputs.ref }}` with `./gradlew :app:recordRoborazziDebug` in
+            [run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          delete-branch: true

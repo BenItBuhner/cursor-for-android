@@ -1,0 +1,160 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 (or v0.2.0-rc.1 for a pre-release) builds a signed release APK + AAB from that tag and
+# publishes them as a GitHub Release with auto-generated notes. The version comes from the tag alone:
+#   versionName = tag without the leading "v", versionCode derived in app/build.gradle.kts.
+#
+# Signing uses these repository secrets (create them with scripts/release-keystore.sh):
+#   RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
+# Without them the build still succeeds but is signed with the debug key, and the release notes say so.
+#
+# "Run workflow" (workflow_dispatch) rebuilds an existing tag, e.g. after adding the signing secrets; tick "dry run"
+# to only attach the artifacts to the workflow run.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build, e.g. v0.2.0
+        required: true
+        type: string
+      dry_run:
+        description: Dry run - build and upload artifacts to this run only, do not create or update the GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # create the release and upload its assets
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # Only used by Gradle when RELEASE_KEYSTORE_FILE is set (see the "Prepare signing" step).
+  RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+  RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+  RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+
+jobs:
+  release:
+    name: Release ${{ inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Validate tag
+        id: tag
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' must look like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          version="${TAG#v}"
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+          echo "Building ${version} (pre-release: ${prerelease})"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Lint and unit tests
+        run: ./gradlew :app:lintDebug :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+
+      - name: Prepare signing
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "$KEYSTORE_BASE64" ]]; then
+            keystore="$RUNNER_TEMP/release.jks"
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            echo "RELEASE_KEYSTORE_FILE=${keystore}" >> "$GITHUB_ENV"
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Signing with the release keystore."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RELEASE_KEYSTORE_BASE64 is not set; the release artifacts will be signed with the debug key. Run scripts/release-keystore.sh and add the secrets, then re-run this workflow for the tag."
+          fi
+
+      - name: Build release APK and AAB
+        run: ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}"
+
+      - name: Package artifacts
+        id: package
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          version_code="$(./gradlew -q :app:printAppVersion -Papp.versionName="$VERSION" | sed -n 's/^versionCode=//p')"
+          [[ -n "$version_code" ]] || { echo "::error::Could not resolve versionCode"; exit 1; }
+
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${VERSION}.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "dist/cursor-for-android-${VERSION}.aab"
+          cp app/build/outputs/mapping/release/mapping.txt "dist/cursor-for-android-${VERSION}-mapping.txt"
+          (cd dist && sha256sum -- *.apk *.aab > SHA256SUMS.txt)
+
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$apksigner" verify --verbose --print-certs "dist/cursor-for-android-${VERSION}.apk" | tee "$RUNNER_TEMP/apksigner.txt"
+          cert_sha256="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apksigner.txt")"
+
+          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "cert_sha256=${cert_sha256}" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
+      - name: Write release notes header
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION_CODE: ${{ steps.package.outputs.version_code }}
+          CERT_SHA256: ${{ steps.package.outputs.cert_sha256 }}
+          SIGNED: ${{ steps.signing.outputs.configured }}
+        run: |
+          commit="$(git rev-parse HEAD)" # not GITHUB_SHA: on workflow_dispatch that is the selected branch head
+          {
+            echo "| | |"
+            echo "|---|---|"
+            echo "| versionName | \`${VERSION}\` |"
+            echo "| versionCode | \`${VERSION_CODE}\` |"
+            echo "| Commit | ${commit} |"
+            if [[ "$SIGNED" == "true" ]]; then
+              echo "| Signing certificate (SHA-256) | \`${CERT_SHA256}\` |"
+            else
+              echo "| Signing | **Debug key** - release signing secrets were not configured for this build; it will not install over a release-signed build. |"
+            fi
+            echo
+            echo "**Install:** download \`cursor-for-android-${VERSION}.apk\`, then \`adb install -r cursor-for-android-${VERSION}.apk\` (or open it on the device). \`SHA256SUMS.txt\` holds the checksums of the APK and AAB; \`*-mapping.txt\` is the R8 mapping for de-obfuscating stack traces."
+            echo
+          } > "$RUNNER_TEMP/release-body.md"
+          cat "$RUNNER_TEMP/release-body.md"
+
+      - name: Upload artifacts to this run
+        uses: actions/upload-artifact@v7
+        with:
+          name: cursor-for-android-${{ steps.tag.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: ${{ runner.temp }}/release-body.md
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.tag.outputs.prerelease == 'false' }}
