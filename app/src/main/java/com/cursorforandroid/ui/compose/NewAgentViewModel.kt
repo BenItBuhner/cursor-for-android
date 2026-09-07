@@ -68,6 +68,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
             _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main") }
+            // Both catalogs were saved by the previous session: they are adopted below before either network call
+            // is made, and the fetches only revalidate them.
+            graph.catalog.restoreFromCache()
             // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
             launch { loadRepositories(loaded.repoUrl) }
             launch { loadModels() }
@@ -76,8 +79,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     private suspend fun loadRepositories(preferredUrl: String?) {
         _state.update { it.copy(isLoadingRepos = true) }
-        val seeded = graph.catalog.repositories.value
-        if (seeded.isNotEmpty()) applyRepos(seeded, preferredUrl)
+        // The saved list, or one seeded from the agent list, shows right away; the fetch is skipped while it is fresh.
+        val known = graph.catalog.repositories.value
+        if (known.isNotEmpty()) applyRepos(known, preferredUrl)
         graph.catalog.loadRepositories().onSuccess { applyRepos(it, preferredUrl) }.onFailure {
             _state.update { s -> s.copy(reposUnavailable = s.repositories.isEmpty()) }
         }
@@ -92,6 +96,10 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     private suspend fun loadModels(force: Boolean = false) {
+        // The saved list shows right away (the picker spins in its header while it is revalidated).
+        if (_state.value.models.isEmpty()) {
+            graph.catalog.models.value.takeIf { it.isNotEmpty() }?.let { saved -> _state.update { it.withModels(saved) } }
+        }
         _state.update { it.copy(isLoadingModels = true) }
         graph.catalog.loadModels(force)
             .onSuccess { models -> _state.update { it.withModels(models) } }
@@ -102,7 +110,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
      * Adopts a freshly loaded model list. A selection already made on this screen is re-resolved against the new
      * instances; otherwise the last launch's choice is restored — "Default" stays "Default", and a variant is matched
      * on its exact parameters, so a parameter-less variant is not swapped for the model's default one — and a
-     * user who has never picked anything starts on the first recommended model.
+     * user who has never picked anything starts on the first recommended model. A list that lacks the wanted model
+     * (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it rather than the
+     * stand-in.
      */
     private fun NewAgentUiState.withModels(models: List<ModelOption>): NewAgentUiState {
         val remembered = defaults
@@ -113,7 +123,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         }
         val model = wantedId?.let { id -> models.firstOrNull { it.id == id } ?: models.firstOrNull() }
         val variant = model?.let { m -> wantedParams?.let(m::variantWithParams) ?: m.defaultVariant }
-        modelSelectionResolved = true
+        modelSelectionResolved = wantedId == null || model?.id == wantedId
         return copy(models = models, selectedModel = model, selectedVariant = variant, isLoadingModels = false, modelsUnavailable = false)
     }
 
@@ -123,8 +133,10 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun reportError(message: String) = _state.update { it.copy(error = message) }
     fun selectRepo(repo: Repository?) = _state.update { it.copy(selectedRepo = repo, noRepo = repo == null) }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
-    fun selectModel(model: ModelOption?, variant: ModelVariant?) = _state.update {
-        it.copy(selectedModel = model, selectedVariant = variant ?: model?.defaultVariant)
+    fun selectModel(model: ModelOption?, variant: ModelVariant?) {
+        // An explicit pick settles the selection: a list arriving afterwards re-resolves it, never the remembered one.
+        modelSelectionResolved = true
+        _state.update { it.copy(selectedModel = model, selectedVariant = variant ?: model?.defaultVariant) }
     }
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }

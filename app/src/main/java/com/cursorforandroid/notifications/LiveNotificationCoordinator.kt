@@ -40,6 +40,9 @@ object LiveNotificationCoordinator {
                     val running = list.agents.filter { it.isRunning }.map { it.id }.toSet()
                     when {
                         session is SessionState.SignedOut -> Decision.SignedOut
+                        // A list restored from disk may still say "running" about runs that finished hours ago; the
+                        // service only starts once a fetch has confirmed what is actually running.
+                        list.isFromCache -> Decision.Idle
                         enabled && session is SessionState.SignedIn && running.isNotEmpty() -> Decision.Track(running)
                         else -> Decision.Idle
                     }

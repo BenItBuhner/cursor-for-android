@@ -7,12 +7,17 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.CursorUser
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface SessionState {
     data object Loading : SessionState
@@ -28,6 +33,9 @@ class SessionManager(
     private val prefs: PreferencesStore,
     private val realBackend: CursorBackend,
     private val demoBackend: CursorBackend,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** How long a cold start with no cached account waits for `/v1/me` before showing a degraded signed-in state. */
+    private val restoreTimeoutMs: Long = RESTORE_TIMEOUT_MS,
 ) {
     private val _state = MutableStateFlow<SessionState>(SessionState.Loading)
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -38,13 +46,21 @@ class SessionManager(
     val current: CursorBackend get() = _backend.value
     val isDemo: Boolean get() = current.isDemo
 
-    /** Called once at startup. Signs in from the stored key or demo flag; tolerates being offline. */
+    /** Runs on every sign-out, including the automatic one after a rejected key; the app graph wipes its caches here. */
+    var onSignedOut: suspend () -> Unit = {}
+
+    /**
+     * Called once at startup. Signs in from the stored key or demo flag; tolerates being offline. The cached account
+     * makes the session signed-in immediately; the key is then re-validated against `/v1/me` in the background and
+     * the wait for it is bounded even when nothing is cached, so a slow network never holds the splash screen.
+     */
     suspend fun restore() {
         if (prefs.demoMode.first()) {
             _backend.value = demoBackend
             _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
             return
         }
+        // The encrypted key store initialises the Android Keystore on first access; never on the main thread.
         val key = withContext(Dispatchers.IO) { keyStore.apiKey() }
         if (key.isNullOrBlank()) {
             _state.value = SessionState.SignedOut
@@ -53,19 +69,29 @@ class SessionManager(
         _backend.value = realBackend
         val cached = prefs.cachedUser.first()
         if (cached != null) _state.value = SessionState.SignedIn(cached, isDemo = false)
-        val fresh = runCatching { realBackend.api.me().toUser() }
-        fresh.onSuccess { user ->
-            prefs.setCachedUser(user)
-            _state.value = SessionState.SignedIn(user, isDemo = false)
-        }.onFailure { t ->
-            val err = t.toCursorError()
-            if (err?.isUnauthorized == true) {
-                signOut()
-            } else if (cached == null) {
-                // Offline with no cache: keep the key and let the UI show a degraded signed-in state.
-                _state.value = SessionState.SignedIn(CursorUser("Cursor", null, null, null, null), isDemo = false)
-            }
+        val validation: Job = scope.launch { validateStoredKey(cached) }
+        if (cached == null) {
+            withTimeoutOrNull(restoreTimeoutMs) { validation.join() }
+            // Still loading: offline or slow with no cache. Keep the key and show a degraded signed-in state; the
+            // validation keeps running and signs out if the key turns out to be rejected.
+            if (_state.value is SessionState.Loading) _state.value = SessionState.SignedIn(placeholderUser(), isDemo = false)
         }
+    }
+
+    private suspend fun validateStoredKey(cached: CursorUser?) {
+        runCatching { realBackend.api.me().toUser() }
+            .onSuccess { user ->
+                prefs.setCachedUser(user)
+                if (_backend.value === realBackend) _state.value = SessionState.SignedIn(user, isDemo = false)
+            }
+            .onFailure { t ->
+                val err = t.toCursorError()
+                if (err?.isUnauthorized == true) {
+                    signOut()
+                } else if (cached == null && _state.value is SessionState.Loading) {
+                    _state.value = SessionState.SignedIn(placeholderUser(), isDemo = false)
+                }
+            }
     }
 
     suspend fun signIn(apiKey: String): Result<CursorUser> {
@@ -96,6 +122,7 @@ class SessionManager(
     suspend fun signOut() {
         storeKey(null)
         prefs.clearSession()
+        runCatching { onSignedOut() }
         _backend.value = realBackend
         _state.value = SessionState.SignedOut
     }
@@ -110,4 +137,11 @@ class SessionManager(
         lastName = "User",
         userId = null,
     )
+
+    /** Offline with no cached account: the key is kept and the UI shows a degraded signed-in state. */
+    private fun placeholderUser() = CursorUser("Cursor", null, null, null, null)
+
+    private companion object {
+        const val RESTORE_TIMEOUT_MS = 8_000L
+    }
 }

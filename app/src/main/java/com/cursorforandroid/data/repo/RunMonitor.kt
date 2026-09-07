@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
@@ -73,14 +74,20 @@ class RunMonitor(
         scope = s
         s.launch {
             agents.state
+                // Rows restored from disk are not tracked until a fetch has confirmed they are still running.
+                .filter { !it.isFromCache }
                 .map { st -> st.agents.filter { it.isRunning }.sortedByDescending { it.updatedAtMillis } }
                 .distinctUntilChanged()
                 .collect { reconcile(s, it) }
         }
         s.launch {
+            var tick = 0
             while (isActive) {
                 delay(refreshIntervalMs)
-                agents.refresh(silent = true)
+                tick++
+                // The newest page is where agents started elsewhere show up; a full pass every few ticks still
+                // catches follow-ups on old agents without paging through everything each minute.
+                agents.refresh(silent = true, depth = if (tick % FULL_REFRESH_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick)
             }
         }
     }
@@ -215,5 +222,6 @@ class RunMonitor(
          * the notification, never the count it reports.
          */
         const val MAX_TRACKED = 8
+        private const val FULL_REFRESH_EVERY = 5
     }
 }
