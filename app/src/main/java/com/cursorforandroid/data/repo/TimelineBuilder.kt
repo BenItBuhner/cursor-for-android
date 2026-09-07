@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
@@ -33,10 +34,14 @@ object TimelineBuilder {
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
      * ("Worked 3m 5s" + branches) is placed right before the next user message, and after the final assistant
      * message when that run has finished.
+     *
+     * The transcript carries no images, so [attachments] (kept on this device, keyed by run ID) are attached to the
+     * user message that started each run.
      */
     fun fromHistory(
         messages: List<V0ConversationMessageDto>,
         runs: List<RunDto>,
+        attachments: Map<String, List<MessageAttachment>> = emptyMap(),
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<TimelineItem> {
@@ -59,7 +64,7 @@ object TimelineBuilder {
                     val run = ordered.getOrNull(userIndex)
                     val stamp = run?.let { parseIsoMillis(it.createdAt) }
                     if (stamp != null) items += DateHeader("hdr-${msg.id}", TimeFormat.conversationStamp(stamp, nowMillis, zone))
-                    items += UserMessage(msg.id, msg.text, stamp)
+                    items += UserMessage(msg.id, msg.text, stamp, attachments = run?.let { attachments[it.id] } ?: emptyList())
                 }
                 else -> items += AssistantMessage(msg.id, msg.text)
             }

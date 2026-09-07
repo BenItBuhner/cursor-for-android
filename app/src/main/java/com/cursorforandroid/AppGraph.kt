@@ -4,6 +4,7 @@ import android.content.Context
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.AgentRepository
@@ -19,6 +20,8 @@ import com.cursorforandroid.data.repo.parseIsoMillis
 class AppGraph(context: Context) {
     val keyStore = SecureKeyStore(context)
     val prefs = PreferencesStore(context)
+    /** Images attached to prompts, kept on-device because the transcript API never returns them. */
+    val attachments = AttachmentStore(context)
 
     private val okHttp = CursorApiFactory.okHttp { keyStore.apiKey() }
     private val realBackend = CursorBackend(
@@ -29,11 +32,11 @@ class AppGraph(context: Context) {
     private val demoBackend = DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
 
     val session = SessionManager(keyStore, prefs, realBackend, demoBackend)
-    val agents = AgentRepository(session, prefs)
+    val agents = AgentRepository(session, prefs, attachments)
     val catalog = CatalogRepository(session)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
-    val conversations = ConversationRepository(session, agents, prefs, liveRuns)
+    val conversations = ConversationRepository(session, agents, prefs, liveRuns, attachments)
     val runMonitor = RunMonitor(
         agents = agents,
         hub = liveRuns,
@@ -45,6 +48,7 @@ class AppGraph(context: Context) {
         liveRuns.resetAll()
         conversations.resetAll()
         catalog.reset()
+        attachments.clear()
         session.signOut()
     }
 }

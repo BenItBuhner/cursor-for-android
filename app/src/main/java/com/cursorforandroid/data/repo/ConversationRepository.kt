@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.PromptImage
@@ -38,14 +39,16 @@ data class ConversationState(
 
 /**
  * Owns the transcript for each open agent. History comes from `/v0/agents/{id}/conversation` and
- * `/v1/agents/{id}/runs`; anything happening right now arrives through the [LiveRunHub], which shares one SSE
- * stream per run with the live-notification monitor.
+ * `/v1/agents/{id}/runs`, with the images of each prompt filled in from the on-device [AttachmentStore]; anything
+ * happening right now arrives through the [LiveRunHub], which shares one SSE stream per run with the
+ * live-notification monitor.
  */
 class ConversationRepository(
     private val session: SessionManager,
     private val agents: AgentRepository,
     private val prefs: PreferencesStore,
     private val hub: LiveRunHub,
+    private val attachments: AttachmentStore,
 ) {
     private inner class Entry(agentId: String) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -103,6 +106,7 @@ class ConversationRepository(
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
                 val runs = async { runCatching { api.listRuns(agentId, limit = 50).items } }
                 val detail = async { agents.loadDetail(agentId) }
+                val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
                 val runList = runs.await().getOrElse { emptyList() }
                 detail.await()
@@ -110,7 +114,7 @@ class ConversationRepository(
                 val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
                 val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                 val latestStatus = latest?.statusEnum()
-                e.history = TimelineBuilder.fromHistory(messages, runList)
+                e.history = TimelineBuilder.fromHistory(messages, runList, stored.await())
                 e.liveItems = emptyList()
                 e.state.update {
                     it.copy(
@@ -160,9 +164,12 @@ class ConversationRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
+        val localId = "local-$now"
+        // Written before the request so the bubble shows its images from the first frame, like the text.
+        val staged = attachments.stage(images)
         val optimistic = listOf(
-            DateHeader("hdr-local-$now", TimeFormat.conversationStamp(now)),
-            UserMessage("local-$now", trimmed, now),
+            DateHeader("hdr-$localId", TimeFormat.conversationStamp(now)),
+            UserMessage(localId, trimmed, now, staged.attachments),
         )
         e.history = e.history + optimistic
         e.state.update { it.copy(items = e.history + e.liveItems, error = null) }
@@ -170,11 +177,15 @@ class ConversationRepository(
         val result = agents.followUp(agentId, trimmed, images)
         return result.fold(
             onSuccess = { run ->
+                // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
+                val kept = attachments.commit(agentId, run.id, staged)
+                e.history = e.history.map { if (it.id == localId && it is UserMessage) it.copy(attachments = kept) else it }
                 startStreaming(e, agentId, run)
                 Result.success(Unit)
             },
             onFailure = { t ->
-                e.history = e.history.filterNot { it.id == "hdr-local-$now" || it.id == "local-$now" }
+                attachments.discard(staged)
+                e.history = e.history.filterNot { it.id == "hdr-$localId" || it.id == localId }
                 e.state.update { it.copy(items = e.history + e.liveItems, error = t.userMessage()) }
                 Result.failure(t)
             },

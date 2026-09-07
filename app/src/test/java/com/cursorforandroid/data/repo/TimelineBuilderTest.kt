@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.DateHeader
+import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
@@ -52,6 +53,23 @@ class TimelineBuilderTest {
         assertThat(footer.branches.single().branch).isEqualTo("cursor/readme")
         assertThat((items[1] as UserMessage).text).isEqualTo("Add a README")
         assertThat((items[0] as DateHeader).label).contains("at")
+    }
+
+    @Test
+    fun `history attaches on-device images to the user message that started their run`() {
+        val messages = listOf(
+            V0ConversationMessageDto("m1", "user_message", "Add a README"),
+            V0ConversationMessageDto("m2", "assistant_message", "Done."),
+            V0ConversationMessageDto("m3", "user_message", "Fix the layout in these screenshots"),
+            V0ConversationMessageDto("m4", "assistant_message", "Looking at those screenshots."),
+        )
+        val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z"), run("run-2", "2026-04-13T18:50:00.000Z"))
+        val shots = listOf(MessageAttachment("/data/attachments/bc-1/run-2/0.jpg", 720, 1600), MessageAttachment("/data/attachments/bc-1/run-2/1.jpg", 1600, 900))
+        val items = TimelineBuilder.fromHistory(messages, runs, mapOf("run-2" to shots), nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        val prompts = items.filterIsInstance<UserMessage>()
+        assertThat(prompts.map { it.text }).containsExactly("Add a README", "Fix the layout in these screenshots").inOrder()
+        assertThat(prompts[0].attachments).isEmpty()
+        assertThat(prompts[1].attachments).isEqualTo(shots)
     }
 
     @Test
