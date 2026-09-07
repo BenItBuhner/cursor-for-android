@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -165,6 +166,32 @@ class LiveRunMonitorTest {
         // Each finish is reported exactly once even though the reconcile pass also observes the terminal row.
         delay(100)
         assertThat(finished).hasSize(2)
+    }
+
+    @Test
+    fun `a result that lands after the row moved on to a newer run leaves the running follow-up alone`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val watched = scope.async { hub.snapshots("bc-1", "run-1").first { it.finished } }
+        awaitUntil { streamer.connections.contains("run-1") }
+
+        // A follow-up started elsewhere: the list now names run-2 as the latest and the agent as active again.
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:00:00.000Z")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.latestRunId).isEqualTo("run-2")
+        assertThat(agents.agent("bc-1")!!.isRunning).isTrue()
+
+        // The first run's result arrives late; it must not mark the row idle and finished.
+        val git = RunGitDto(listOf(RunGitBranchDto("github.com/acme/app", "cursor/first-1a2b", null)))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "First turn done.", 5_000, git))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        assertThat(watched.await().status).isEqualTo(RunStatus.FINISHED)
+        val row = agents.agent("bc-1")!!
+        assertThat(row.isRunning).isTrue()
+        assertThat(row.latestRunId).isEqualTo("run-2")
+        assertThat(row.summary).isNull()
+        // The pushed branch is per-agent state and is still taken.
+        assertThat(row.branchName).isEqualTo("cursor/first-1a2b")
     }
 
     @Test
