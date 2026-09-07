@@ -154,6 +154,24 @@ class LiveNotificationRendererTest {
     }
 
     @Test
+    fun `finished card skips leading screenshots and recordings and never shows raw tags`() {
+        val run = finished(digest = RunDigest(), prUrl = null).copy(
+            summary = "<img alt=\"Proof\" src=\"/opt/cursor/artifacts/proof.png\" />\n\n" +
+                "<video src=\"/opt/cursor/artifacts/demo.mp4\"></video>\n\n" +
+                "Re-recorded the 7 affected screenshots; see ![before/after](/opt/cursor/artifacts/diff.png) for the diff.",
+        )
+        val n = LiveNotificationRenderer.finished(context, run)
+        assertThat(n.bigText()).isEqualTo("Worked 3m 5s\nRe-recorded the 7 affected screenshots; see before/after for the diff.")
+
+        val onlyMedia = LiveNotificationRenderer.finished(context, run.copy(summary = "<img src=\"/opt/cursor/artifacts/proof.png\" />"))
+        assertThat(onlyMedia.bigText()).isEqualTo("Worked 3m 5s")
+
+        // Nothing but a captioned image: the caption is the best line there is.
+        val captioned = LiveNotificationRenderer.finished(context, run.copy(summary = "<img alt=\"Proof\" src=\"/opt/cursor/artifacts/proof.png\" />"))
+        assertThat(captioned.bigText()).isEqualTo("Worked 3m 5s\nProof")
+    }
+
+    @Test
     fun `finished ids are stable per agent and distinct from the live id`() {
         assertThat(LiveNotificationRenderer.finishedId("bc-1")).isEqualTo(LiveNotificationRenderer.finishedId("bc-1"))
         assertThat(LiveNotificationRenderer.finishedId("bc-1")).isNotEqualTo(LiveNotificationRenderer.finishedId("bc-2"))

@@ -33,7 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /** In-memory API for repository tests: agents and runs are plain maps the test mutates directly. */
-class FakeCursorApi : CursorApi {
+open class FakeCursorApi : CursorApi {
     val agents: MutableMap<String, AgentDto> = ConcurrentHashMap()
     val v0: MutableMap<String, V0AgentDto> = ConcurrentHashMap()
     val runs: MutableMap<String, RunDto> = ConcurrentHashMap()
@@ -85,7 +85,7 @@ class FakeCursorApi : CursorApi {
     override suspend fun delete(id: String) = IdResponseDto(id)
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
-    override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
+    open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
     override suspend fun listRuns(id: String, limit: Int, cursor: String?) = ListRunsResponseDto(items = runs.values.filter { it.agentId == id })
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++

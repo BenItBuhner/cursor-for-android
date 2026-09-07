@@ -10,6 +10,7 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.domain.ArtifactPaths
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
@@ -76,6 +77,18 @@ internal object DemoData {
     private const val REPO_ANDROID = "https://github.com/bennett/cursor-for-android"
     private const val REPO_ZEN = "https://github.com/bennett/zen-parity"
     private const val REPO_MARKET = "https://github.com/bennett/market-replay"
+    private const val ARTIFACT_ROOT = ArtifactPaths.VM_ROOT
+
+    /** A file under the VM's artifacts directory, served from the APK's `assets/demo/` in demo mode. */
+    class Artifact(val path: String, val asset: String, val sizeBytes: Long)
+
+    /** Artifacts by agent id, keyed the way `GET /v1/agents/{id}/artifacts` reports them (`artifacts/<name>`). */
+    val artifacts: Map<String, List<Artifact>> = mapOf(
+        "bc-demo-0012" to listOf(
+            Artifact(path = "artifacts/predictive_back_drawer.png", asset = "demo/predictive_back_drawer.png", sizeBytes = 40_040),
+            Artifact(path = "artifacts/predictive_back_demo.mp4", asset = "demo/predictive_back_demo.mp4", sizeBytes = 64_479),
+        ),
+    )
 
     val seeds: List<Seed> = listOf(
         Seed(
@@ -204,7 +217,14 @@ internal object DemoData {
             id = "bc-demo-0012", name = "Android mobile experience", repo = REPO_ANDROID, ageMillis = 10 * HOUR,
             runStatus = "FINISHED", branch = "cursor/mobile-experience-4e5f", durationMs = 28 * MIN,
             prompt = "Audit the Android app for gesture navigation gaps and predictive back support.",
-            replies = listOf("Predictive back was missing on the drawer and two dialogs; added `enableOnBackInvokedCallback` and migrated to `BackHandler`. Branch pushed."),
+            summary = "Predictive back was missing on the drawer and two dialogs; added `enableOnBackInvokedCallback` and migrated to `BackHandler`. Branch pushed.",
+            // Written the way a cloud agent reports walkthrough artifacts: raw <img> / <video> tags with VM paths.
+            replies = listOf(
+                "Predictive back was missing on the drawer and two dialogs; added `enableOnBackInvokedCallback` and migrated to `BackHandler`. Branch pushed.\n\n" +
+                    "The drawer now recedes with the gesture instead of snapping shut:\n\n" +
+                    "<img alt=\"Sidebar drawer mid-gesture\" src=\"${ARTIFACT_ROOT}predictive_back_drawer.png\" />\n\n" +
+                    "<video src=\"${ARTIFACT_ROOT}predictive_back_demo.mp4\"></video>",
+            ),
             trace = listOf(
                 thought("Anything still overriding onBackPressed opts out of predictive back. Find those first, then check the manifest flag."),
                 grep("onBackPressed"), grep("BackHandler"), read("app/src/main/AndroidManifest.xml"),
