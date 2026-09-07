@@ -175,7 +175,14 @@ fun HomeScreen(
             item("gap") { Spacer(Modifier.height(30.dp)) }
             if (recent.isEmpty() && listState.hasLoaded) {
                 item("empty") {
-                    Text("No chats yet", style = type.base, color = colors.textQuaternary, modifier = Modifier.padding(top = 24.dp))
+                    // A failed list request is not "no chats": say what happened (offline, rejected key, ...).
+                    val error = listState.error
+                    Text(
+                        error ?: "No chats yet",
+                        style = type.base,
+                        color = if (error != null) colors.red else colors.textQuaternary,
+                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(top = 24.dp, start = 7.dp, end = 7.dp),
+                    )
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
