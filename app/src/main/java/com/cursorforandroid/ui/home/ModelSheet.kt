@@ -54,11 +54,23 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The composer's model picker: "Default" (Cursor's configured model), the plan-mode / auto-PR options, then one row
- * per model from `GET /v1/models`. A model's parameters — effort, speed, context window — are not rows of their own:
+ * The row of the model picker that stands for sending no `model` at all. What that means depends on where the
+ * picker opens: on a new chat it is Cursor's configured default; on a follow-up the chat simply keeps the model it
+ * has been running on.
+ */
+internal data class NoModelRow(val title: String, val subtitle: String?) {
+    companion object {
+        val Default = NoModelRow("Default", "Your Cursor default model")
+    }
+}
+
+/**
+ * The composer's model picker: the [noModelRow] (null hides it), the plan-mode / auto-PR options, then one row per
+ * model from `GET /v1/models`. A model's parameters — effort, speed, context window — are not rows of their own:
  * they unfold under the model as pickers (a toggle for an on/off parameter, a row of choices otherwise), the way the
  * web app's "Options" panel shows them beside the model list. The selected model opens unfolded; any other model's
- * chevron unfolds its pickers, and changing one of them selects that model with the matching variant.
+ * chevron unfolds its pickers, and changing one of them selects that model with the matching variant. The auto-PR
+ * toggle is only shown with an [onAutoCreatePr]: it is a setting of the agent, which a follow-up cannot change.
  *
  * Tapping a model row selects it at the variant shown and closes the sheet; the pickers keep the sheet open so
  * several parameters can be set in one go, as the plan-mode / auto-PR toggles do.
@@ -77,10 +89,11 @@ internal fun ModelSheet(
     loading: Boolean,
     unavailable: Boolean,
     onPlanMode: (Boolean) -> Unit,
-    onAutoCreatePr: (Boolean) -> Unit,
+    onAutoCreatePr: ((Boolean) -> Unit)?,
     onRetry: () -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
     onDismiss: () -> Unit,
+    noModelRow: NoModelRow? = NoModelRow.Default,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -96,14 +109,16 @@ internal fun ModelSheet(
             if (loading && models.isNotEmpty()) SpinnerRing(modifier = Modifier.padding(end = 8.dp))
         }
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
-            item("default") {
-                SheetRow(title = "Default", subtitle = "Your Cursor default model", checked = selectedModel == null) { pick(null, null) }
-                HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            if (noModelRow != null) {
+                item("default") {
+                    SheetRow(title = noModelRow.title, subtitle = noModelRow.subtitle, checked = selectedModel == null) { pick(null, null) }
+                    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+                }
             }
             item("options") {
                 SheetSectionLabel("Options")
                 OptionRow("Plan mode", planMode, onPlanMode)
-                OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
+                if (onAutoCreatePr != null) OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
                 HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
             }
             if (models.isEmpty()) {

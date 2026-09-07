@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.flow.transformWhile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -49,15 +50,23 @@ open class FakeCursorApi : CursorApi {
     val transcripts: MutableMap<String, List<V0ConversationMessageDto>> = ConcurrentHashMap()
     val cancelled = CopyOnWriteArrayList<String>()
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
+    val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
     var failCreateRun = false
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
+    /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
+    @Volatile var createGate: CompletableDeferred<Unit>? = null
+    /** When set, [createAgent] answers without a name, as the server does before it has generated a title. */
+    @Volatile var blankCreatedNames = false
     /** When set, [listAgents] suspends until the deferred completes, so a test can interleave work with a refresh. */
     @Volatile var listGate: CompletableDeferred<Unit>? = null
     @Volatile var getRunCalls = 0
     @Volatile var getAgentCalls = 0
     @Volatile var listAgentsCalls = 0
+    @Volatile var meCalls = 0
+    /** When set, [me] throws it, as the real API does for a rejected key. */
+    @Volatile var failMe: Throwable? = null
     @Volatile var listAgentsV0Calls = 0
     @Volatile var listRunsCalls = 0
     @Volatile var conversationCalls = 0
@@ -70,6 +79,8 @@ open class FakeCursorApi : CursorApi {
     @Volatile var failListAgentsV0: Throwable? = null
     @Volatile var failConversation: Throwable? = null
     @Volatile var failListRuns: Throwable? = null
+    /** Runs the list endpoint does not return yet, although they exist: the list lagging behind a fresh follow-up. */
+    val runsHiddenFromList: MutableSet<String> = ConcurrentHashMap.newKeySet()
     @Volatile var failModels: Throwable? = null
     @Volatile var failRepositories: Throwable? = null
     /** When set, the v0 list waits for it before answering. */
@@ -133,7 +144,11 @@ open class FakeCursorApi : CursorApi {
 
     private fun newestFirst() = agents.values.sortedWith(compareByDescending<AgentDto> { it.createdAt }.thenBy { it.id })
 
-    override suspend fun me() = ApiKeyInfoDto(apiKeyName = "test")
+    override suspend fun me(): ApiKeyInfoDto {
+        meCalls++
+        failMe?.let { throw it }
+        return ApiKeyInfoDto(apiKeyName = "test")
+    }
     override suspend fun models(): ListModelsResponseDto {
         modelsCalls++
         failModels?.let { throw it }
@@ -161,14 +176,20 @@ open class FakeCursorApi : CursorApi {
         getAgentGate?.await()
         return agents[id] ?: throw notFound()
     }
+    /**
+     * Creates the agent and its `CREATING` run. Like the real API, the transcript endpoint knows nothing of the prompt
+     * yet: [transcripts] is left alone, so `conversationV0` answers with an empty list until a test fills it in.
+     */
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
         createRequests += body
         failNextCreate?.let { failNextCreate = null; throw it }
+        createGate?.await()
         val id = body.agentId ?: "bc-fake-${ids.incrementAndGet()}"
         if (agents.containsKey(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
         val runId = "run-fake-${ids.incrementAndGet()}"
         val now = "2026-04-13T18:30:00.000Z"
-        val agent = AgentDto(id = id, name = body.name ?: body.prompt.text.take(60), status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
+        val name = if (blankCreatedNames) null else body.name ?: body.prompt.text.take(60)
+        val agent = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = now, updatedAt = now)
         agents[id] = agent
         runs[runId] = run
@@ -183,7 +204,7 @@ open class FakeCursorApi : CursorApi {
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
-        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id })
+        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList })
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++
@@ -194,6 +215,7 @@ open class FakeCursorApi : CursorApi {
      * test streams the run through the fake streamer like any other.
      */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
+        runRequests += body
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         val agent = agents[id] ?: throw notFound()
         val sequence = ids.incrementAndGet()
@@ -226,17 +248,68 @@ open class FakeCursorApi : CursorApi {
     }
 }
 
-/** Scriptable streamer: tests push events per run; [RunStreamEvent.Done] closes the stream like the server does. */
+/**
+ * Scriptable streamer: tests push events per run; [RunStreamEvent.Done] closes the stream like the server does.
+ * Like the server, a connection without a `lastEventId` replays the run from its first event and one with an id
+ * continues after it (ids here are `<runId>#<position>`). [dropNextConnection] scripts the server ending a
+ * connection early with an in-band `error`, the way a worker that went away or a machine still waking up does.
+ */
 class FakeRunStreamer : RunStreamer {
     private val channels = ConcurrentHashMap<String, MutableSharedFlow<RunStreamEvent>>()
     val connections = CopyOnWriteArrayList<String>()
+    /** The `lastEventId` each connection was opened with, in order. */
+    val resumes = CopyOnWriteArrayList<String?>()
+    private val drops = ConcurrentHashMap<String, ArrayDeque<Drop>>()
+
+    private class Drop(val code: String, val message: String, val afterEvents: Int)
 
     private fun channel(runId: String) = channels.getOrPut(runId) { MutableSharedFlow(replay = 256) }
 
     suspend fun emit(runId: String, event: RunStreamEvent) = channel(runId).emit(event)
 
+    /**
+     * The next connection to [runId] delivers [afterEvents] events past the point it resumed from and then ends with
+     * an in-band error; zero ends it before anything arrives. A rejected resume position (`invalid_last_event_id`)
+     * comes without one, like the real thing.
+     */
+    fun dropNextConnection(runId: String, code: String = "stream_unavailable", message: String = "Run stream is no longer available", afterEvents: Int = 0) {
+        synchronized(drops) { drops.getOrPut(runId) { ArrayDeque() }.addLast(Drop(code, message, afterEvents)) }
+    }
+
+    /**
+     * Forgets what was emitted for [runId], so the next connection sees only what is emitted afterwards — the way a
+     * connection that dropped mid-run is followed, later, by a replay of the run's whole retained log.
+     */
+    fun reset(runId: String) {
+        channels.remove(runId)
+    }
+
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         connections += runId
-        channel(runId).takeWhile { it != RunStreamEvent.Done }.collect { emit(it) }
+        resumes += lastEventId
+        val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
+        val drop = synchronized(drops) { drops[runId]?.removeFirstOrNull() }
+        if (drop != null && drop.afterEvents == 0) {
+            emit(RunStreamEvent.Error(drop.code, drop.message, resumeFrom = lastEventId))
+            return@flow
+        }
+        var position = 0
+        var delivered = 0
+        channel(runId)
+            .takeWhile { it != RunStreamEvent.Done }
+            .transformWhile { event ->
+                position++
+                if (position <= skip) return@transformWhile true
+                emit(event)
+                delivered++
+                if (drop != null && delivered >= drop.afterEvents) {
+                    val resumeFrom = if (drop.code == RunStreamEvent.Error.INVALID_LAST_EVENT_ID) null else "$runId#$position"
+                    emit(RunStreamEvent.Error(drop.code, drop.message, resumeFrom = resumeFrom))
+                    false
+                } else {
+                    true
+                }
+            }
+            .collect { emit(it) }
     }
 }

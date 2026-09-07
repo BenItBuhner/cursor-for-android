@@ -8,6 +8,7 @@ import java.util.Locale
 object TimeFormat {
     // Resolved on every call so a runtime locale change is honoured.
     private val dateFormatter get() = DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())
+    private val dateYearFormatter get() = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
 
     /** Compact relative age for list rows: "now", "4m", "3h", "2d", "Sep 4". */
     fun relativeShort(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
@@ -22,6 +23,13 @@ object TimeFormat {
             days < 7 -> "${days}d"
             else -> dateFormatter.format(Instant.ofEpochMilli(epochMillis).atZone(zone))
         }
+    }
+
+    /** "Dec 6" this year, "Jan 3, 2027" otherwise — an absolute date for something that is going to happen. */
+    fun date(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {
+        val then = Instant.ofEpochMilli(epochMillis).atZone(zone)
+        val now = Instant.ofEpochMilli(nowMillis).atZone(zone)
+        return if (then.year == now.year) dateFormatter.format(then) else dateYearFormatter.format(then)
     }
 
     /** "3m 5s", "45s", "1h 12m" — matches the "Worked 3m 5s" row. */

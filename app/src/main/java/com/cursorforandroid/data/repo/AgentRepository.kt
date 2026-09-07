@@ -17,10 +17,12 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +45,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 data class AgentListState(
@@ -76,7 +79,27 @@ data class LaunchRequest(
     val agentId: String? = null,
     /** Sent inline as `mcpServers[]`; only the enabled ones go out. */
     val mcpServers: List<McpServer> = emptyList(),
-)
+) {
+    /**
+     * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
+     * stripped, cut at a word to about the length of the titles the server generates.
+     */
+    val provisionalName: String
+        get() {
+            val line = SlashCommands.strip(prompt).lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: return "New chat"
+            if (line.length <= PROVISIONAL_NAME_LENGTH) return line
+            val cut = line.take(PROVISIONAL_NAME_LENGTH)
+            val atWord = cut.lastIndexOf(' ').takeIf { it >= PROVISIONAL_NAME_LENGTH / 2 } ?: cut.length
+            return cut.substring(0, atWord).trimEnd() + "…"
+        }
+
+    private companion object {
+        const val PROVISIONAL_NAME_LENGTH = 60
+    }
+}
+
+/** What a launch created: the list row, and the first run as the server reported it (null when adopting an agent whose run could not be read). */
+data class Launched(val agent: Agent, val run: RunDto?)
 
 /**
  * The agent list. Restored from disk before the first fetch so the app opens on the last known state, then kept
@@ -105,6 +128,11 @@ class AgentRepository(
     private val generation = AtomicInteger()
     /** The backend the published list belongs to; a switch only clears a list that still belongs to the old one. */
     @Volatile private var owner: CursorBackend? = null
+    /**
+     * Chats shown in the list before the server has confirmed them (see [beginLaunch]). They exist only in memory:
+     * a row that may still fail to be created is never written to disk.
+     */
+    private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
@@ -136,6 +164,7 @@ class AgentRepository(
         generation.incrementAndGet()
         clear()
         restoredFor = null
+        pendingLaunches.clear()
     }
 
     private fun clear() {
@@ -306,7 +335,7 @@ class AgentRepository(
         val backend = session.current
         val s = _state.value
         if (cache == null || backend.isDemo || !s.hasLoaded || s.isFromCache) return
-        cache.write(s.agents)
+        cache.write(s.agents.filterNot { it.id in pendingLaunches })
     }
 
     /**
@@ -327,53 +356,110 @@ class AgentRepository(
     }
 
     /**
+     * Puts the chat about to be launched at the top of the list before the server has answered, so the screens that
+     * open on it (its header, the sidebar row) have something to show at once. The row is named after the prompt and
+     * carries what the request already knows — repository, ref, model — as a `CREATING` run without an id yet;
+     * [launch] replaces it with the server's record, or removes it when the request fails. Requires a client-minted
+     * [LaunchRequest.agentId]; without one there is nothing to key the row on and null is returned.
+     */
+    fun beginLaunch(request: LaunchRequest, modelDisplayName: String?): Agent? {
+        val id = request.agentId ?: return null
+        val now = AppClock.now()
+        val row = agent(id) ?: Agent(
+            id = id,
+            name = request.provisionalName,
+            lifecycle = AgentLifecycle.ACTIVE,
+            runStatus = RunStatus.CREATING,
+            envType = EnvType.CLOUD,
+            envName = null,
+            url = "https://cursor.com/agents/$id",
+            createdAtMillis = now,
+            updatedAtMillis = now,
+            latestRunId = null,
+            repoUrl = request.repoUrl,
+            startingRef = request.ref,
+            autoCreatePr = request.autoCreatePr,
+            modelDisplayName = modelDisplayName,
+            modelId = request.modelId,
+            modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+        )
+        // A retry of a launch whose reply was lost finds the row from the first attempt: it stays as it is.
+        if (agent(id) == null) {
+            pendingLaunches += id
+            upsert(row)
+        }
+        return row
+    }
+
+    /** Takes a [beginLaunch] row back out of the list; a no-op once the server has confirmed the chat. */
+    fun discardLaunch(agentId: String) {
+        if (!pendingLaunches.remove(agentId)) return
+        _state.update { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
+    }
+
+    /**
      * Creates the agent and its first run. When [LaunchRequest.agentId] is set and the server answers
      * `409 agent_id_conflict`, an earlier attempt already went through (its reply was lost to a timeout, a dropped
-     * connection or a cancel), so that agent is adopted instead of failing or creating a duplicate.
+     * connection or a cancel), so that agent is adopted instead of failing or creating a duplicate. A row
+     * [beginLaunch] put in the list is replaced by the server's record, or removed when the request fails.
+     * [saveImages] is off for a caller that staged the prompt's images itself and files them under the run.
      */
-    suspend fun launch(request: LaunchRequest, modelDisplayName: String?): Result<Agent> = runCatching {
-        val api = session.current.api
-        val (dto, run) = try {
-            // Off the main thread: base64-encoding the images and serializing the body happen before the call is
-            // enqueued, on whichever thread makes it.
-            withContext(Dispatchers.IO) {
-                val body = CreateAgentRequestDto(
-                    prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
-                    agentId = request.agentId,
-                    model = request.modelId?.let { id ->
-                        ModelRefDto(id = id, params = request.modelParams.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
-                    },
-                    name = request.name,
-                    env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
-                    repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
-                    autoCreatePR = request.autoCreatePr.takeIf { it },
-                    mcpServers = request.mcpServers.toInlineServers(),
-                    mode = if (request.planMode) "plan" else null,
-                )
-                api.createAgent(body)
-            }.let { it.agent to it.run }
-        } catch (t: Throwable) {
-            if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
-            val existing = api.getAgent(request.agentId)
-            existing to existing.latestRunId?.let { runId -> runCatching { api.getRun(existing.id, runId) }.getOrNull() }
+    suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true): Result<Launched> {
+        val result = runCatching {
+            val api = session.current.api
+            val (dto, run) = try {
+                // Off the main thread: base64-encoding the images and serializing the body happen before the call is
+                // enqueued, on whichever thread makes it.
+                withContext(Dispatchers.IO) {
+                    val body = CreateAgentRequestDto(
+                        prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
+                        agentId = request.agentId,
+                        model = modelRef(request.modelId, request.modelParams),
+                        name = request.name,
+                        env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
+                        repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
+                        autoCreatePR = request.autoCreatePr.takeIf { it },
+                        mcpServers = request.mcpServers.toInlineServers(),
+                        mode = if (request.planMode) "plan" else null,
+                    )
+                    api.createAgent(body)
+                }.let { it.agent to it.run }
+            } catch (t: Throwable) {
+                if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
+                val existing = api.getAgent(request.agentId)
+                existing to existing.latestRunId?.let { runId -> runCatching { api.getRun(existing.id, runId) }.getOrNull() }
+            }
+            // The provisional row, when there is one, fills in what the server's record leaves blank — its name
+            // above all, which the server may not have generated yet.
+            val agent = dto.mergeInto(agent(dto.id), run).copy(
+                runStatus = run?.let { RunStatus.parse(it.status) } ?: RunStatus.CREATING,
+                modelDisplayName = modelDisplayName,
+                modelId = request.modelId,
+                modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+            )
+            pendingLaunches -= agent.id
+            upsert(agent)
+            // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
+            // already created files the images under the same run, so this stays idempotent.
+            if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images) } }
+            prefs.markLaunchedHere(agent.id)
+            // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
+            prefs.markRead(agent.id, AppClock.now())
+            Launched(agent, run)
         }
-        val agent = dto.mergeInto(null, run).copy(
-            runStatus = run?.let { RunStatus.parse(it.status) } ?: RunStatus.CREATING,
-            modelDisplayName = modelDisplayName,
-        )
-        upsert(agent)
-        // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
-        // already created files the images under the same run, so this stays idempotent.
-        run?.let { runCatching { attachments.save(agent.id, it.id, request.images) } }
-        prefs.markLaunchedHere(agent.id)
-        // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
-        prefs.markRead(agent.id, AppClock.now())
-        agent
-    }.onFailure { if (it is CancellationException) throw it }
+        if (result.isFailure) {
+            request.agentId?.let(::discardLaunch)
+            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        }
+        return result
+    }
 
     /**
      * Enabled [mcpServers] ride along inline and replace the agent's create-time inline servers for this run; with
-     * none enabled the field is omitted and the agent keeps whatever it was created with.
+     * none enabled the field is omitted and the agent keeps whatever it was created with. A [modelId] switches the
+     * agent to that model — for this run and, as the server keeps the override, every run after it — so the row
+     * records it (under [modelDisplayName]) once the server has accepted the run; null keeps the current model.
+     * [planMode] asks for plan or agent mode explicitly; null keeps the conversation's mode.
      */
     suspend fun followUp(
         agentId: String,
@@ -381,6 +467,9 @@ class AgentRepository(
         images: List<PromptImage> = emptyList(),
         planMode: Boolean? = null,
         mcpServers: List<McpServer> = emptyList(),
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
     ): Result<RunDto> = runCatching {
         val api = session.current.api
         val response = withContext(Dispatchers.IO) {
@@ -389,12 +478,26 @@ class AgentRepository(
                 CreateRunRequestDto(
                     prompt = PromptEncoding.toPromptDto(text, images),
                     mcpServers = mcpServers.toInlineServers(),
+                    model = modelRef(modelId, modelParams),
                     mode = planMode?.let { if (it) "plan" else "agent" },
                 ),
             )
         }
-        agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())) }
+        agent(agentId)?.let { current ->
+            // The old label would describe the old model, so without a new one the id stands in.
+            val switched = if (modelId != null) {
+                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
+            } else {
+                current
+            }
+            upsert(switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now()))
+        }
         response.run
+    }
+
+    /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
+    private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
+        ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
     }
 
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {

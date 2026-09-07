@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -70,7 +71,7 @@ class LiveRunMonitorTest {
         session.enterDemo()
         attachments = AttachmentStore(context)
         agents = AgentRepository(session, prefs, attachments)
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         monitor = RunMonitor(agents, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
         finishedJob = scope.launch { monitor.finished.collect { finished += it } }
     }
@@ -148,12 +149,14 @@ class LiveRunMonitorTest {
         assertThat(replayed.items.filterIsInstance<ActivityGroup>().single().calls.single().status).isEqualTo("completed")
         assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
 
-        // The second stream closes without a result: the hub polls the run until it is terminal.
+        // The second stream closes without a result: the hub reads the run record and, while the run is still going,
+        // keeps coming back to the stream; the record ending the run is what ends the tracking.
         val pollsBefore = api.getRunCalls
         streamer.emit("run-2", RunStreamEvent.Status("run-2", RunStatus.RUNNING))
         streamer.emit("run-2", RunStreamEvent.Done)
         awaitUntil { api.getRunCalls > pollsBefore }
         assertThat(finished).hasSize(1)
+        awaitUntil { streamer.connections.count { it == "run-2" } >= 2 }
         api.runs["run-2"] = api.runs.getValue("run-2").copy(status = "ERROR", result = "Build failed", durationMs = 9_000)
         awaitUntil { finished.size == 2 }
         val failed = finished.last()
@@ -164,6 +167,32 @@ class LiveRunMonitorTest {
         // Each finish is reported exactly once even though the reconcile pass also observes the terminal row.
         delay(100)
         assertThat(finished).hasSize(2)
+    }
+
+    @Test
+    fun `a result that lands after the row moved on to a newer run leaves the running follow-up alone`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val watched = scope.async { hub.snapshots("bc-1", "run-1").first { it.finished } }
+        awaitUntil { streamer.connections.contains("run-1") }
+
+        // A follow-up started elsewhere: the list now names run-2 as the latest and the agent as active again.
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:00:00.000Z")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.latestRunId).isEqualTo("run-2")
+        assertThat(agents.agent("bc-1")!!.isRunning).isTrue()
+
+        // The first run's result arrives late; it must not mark the row idle and finished.
+        val git = RunGitDto(listOf(RunGitBranchDto("github.com/acme/app", "cursor/first-1a2b", null)))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "First turn done.", 5_000, git))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        assertThat(watched.await().status).isEqualTo(RunStatus.FINISHED)
+        val row = agents.agent("bc-1")!!
+        assertThat(row.isRunning).isTrue()
+        assertThat(row.latestRunId).isEqualTo("run-2")
+        assertThat(row.summary).isNull()
+        // The pushed branch is per-agent state and is still taken.
+        assertThat(row.branchName).isEqualTo("cursor/first-1a2b")
     }
 
     @Test
@@ -260,6 +289,117 @@ class LiveRunMonitorTest {
         assertThat(again.items).isEqualTo(snapshot.items)
         assertThat(streamer.connections).containsExactly("run-1")
         assertThat(hub.current("bc-1", "run-1")?.finished).isTrue()
+    }
+
+    @Test
+    fun `an outcome read by polling is not the whole story, so a replay reads the log again`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        // A live subscriber (the monitor's role) whose connection drops after the first tool call.
+        val watcher = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { streamer.connections.count { it == "run-1" } == 1 }
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", tool("c1", "read_file", "completed", "app/src/Composer.kt"))
+        awaitUntil { hub.current("bc-1", "run-1")?.items?.any { it is ActivityGroup } == true }
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Restyled the pills.", durationMs = 185_000)
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        // The hub polls the run record: the outcome is known, the final reply is there, but the trace is only what
+        // arrived before the connection dropped — which is not something to keep as the run's story.
+        awaitUntil { hub.current("bc-1", "run-1")?.finished == true }
+        val polled = hub.current("bc-1", "run-1")!!
+        assertThat(polled.streamed).isFalse()
+        assertThat(polled.hasTrace).isFalse()
+        assertThat(polled.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat((polled.items[1] as AssistantMessage).markdown).isEqualTo("Restyled the pills.")
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.FINISHED)
+        watcher.cancel()
+        val rowAfterFinish = agents.agent("bc-1")!!
+
+        // The retained log has the whole run; a replay reads it from the start and only then counts as a trace.
+        streamer.reset("run-1")
+        now += 60_000
+        retainStream("run-1", "Restyled the pills.")
+        val replayed = hub.replay("bc-1", "run-1")
+        assertThat(replayed.hasTrace).isTrue()
+        assertThat(replayed.streamed).isTrue()
+        assertThat(replayed.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(replayed.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(2)
+        // Reading history is not a second finish: the row keeps the timestamp of the real one.
+        assertThat(agents.agent("bc-1")).isEqualTo(rowAfterFinish)
+        assertThat(replayed.finishedAtMillis).isEqualTo(polled.finishedAtMillis)
+        // And it is remembered: the next look costs nothing.
+        assertThat(hub.replay("bc-1", "run-1").items).isEqualTo(replayed.items)
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(2)
+    }
+
+    @Test
+    fun `finishes reports every live outcome once and never a replay`() = runBlocking {
+        val reported = CopyOnWriteArrayList<LiveRunHub.Snapshot>()
+        val collector = scope.launch { hub.finishes.collect { reported += it } }
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.addRunningAgent("bc-2", "Agent", "run-2")
+        api.addFinishedAgent("bc-3", "Agent", Triple("run-3", "Add a README", "Added it."))
+        agents.refresh()
+        val first = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        val second = scope.launch { hub.snapshots("bc-2", "run-2").collect { } }
+        awaitUntil { streamer.connections.containsAll(listOf("run-1", "run-2")) }
+
+        // Finished on the stream.
+        streamer.emit("run-1", RunStreamEvent.Assistant("Done."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { reported.size == 1 }
+        assertThat(reported[0].runId).isEqualTo("run-1")
+        assertThat(reported[0].streamed).isTrue()
+        assertThat(reported[0].hasTrace).isTrue()
+
+        // Finished by polling after the stream closed early.
+        api.runs["run-2"] = api.runs.getValue("run-2").copy(status = "ERROR", result = "Build failed", durationMs = 9_000)
+        streamer.emit("run-2", RunStreamEvent.Done)
+        awaitUntil { reported.size == 2 }
+        assertThat(reported[1].runId).isEqualTo("run-2")
+        assertThat(reported[1].streamed).isFalse()
+        assertThat(reported[1].status).isEqualTo(RunStatus.ERROR)
+
+        // A replay of history is not a finish.
+        retainStream("run-3", "Added it.")
+        assertThat(hub.replay("bc-3", "run-3").hasTrace).isTrue()
+        delay(150)
+        assertThat(reported).hasSize(2)
+        first.cancel()
+        second.cancel()
+        collector.cancel()
+    }
+
+    @Test
+    fun `a replay through an entry once followed live reads history too and leaves the agent row alone`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        // A screen follows the run for a moment and leaves; the hub lets go of the stream after its grace period.
+        val follower = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { streamer.connections.size == 1 }
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Thinking("Reading the code first."))
+        awaitUntil { hub.current("bc-1", "run-1")?.eventCount == 2 }
+        follower.cancel()
+        delay(200)
+
+        // The run finishes unobserved; its retained log is complete. The row is whatever the last list fetch said.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Done.", durationMs = 42_000)
+        val rowBefore = agents.agent("bc-1")!!
+        streamer.emit("run-1", RunStreamEvent.Assistant("Done."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 42_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val snapshot = hub.replay("bc-1", "run-1")
+        assertThat(snapshot.hasTrace).isTrue()
+        assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(streamer.connections).containsExactly("run-1", "run-1").inOrder()
+        // Reading history is not news about the agent: no poll, no patch, no "updated just now".
+        assertThat(api.getRunCalls).isEqualTo(0)
+        assertThat(agents.agent("bc-1")).isEqualTo(rowBefore)
     }
 
     @Test

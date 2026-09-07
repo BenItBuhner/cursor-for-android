@@ -124,8 +124,8 @@ class AppScreenshotTest {
         val graph = AppGraph(ApplicationProvider.getApplicationContext())
         compose.setContent { App(graph) }
 
-        waitForText("Sign in")
-        compose.onNodeWithText("key_", substring = true).performTextInput("key_demo_1234567890abcdef")
+        // The account sign-in is the one primary action; the pasted-key field sits folded behind "Use an API key instead".
+        waitForText("Continue with Cursor")
         capture("01_sign_in")
 
         // Home: composer on top, recent chats below.
@@ -150,7 +150,7 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         capture("03_sidebar")
 
-        // Chats filter sheet from the filter icon next to "Chats".
+        // Chats filter sheet from the header's filter icon.
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText("Grouping")
         capture("04_chats_filter")

@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
@@ -66,6 +67,8 @@ import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.home.ModelSheet
+import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -96,12 +99,14 @@ fun ConversationScreen(
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
+    var modelSheet by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
@@ -111,6 +116,12 @@ fun ConversationScreen(
             snackbar.showSnackbar(it)
             viewModel.clearToast()
         }
+    }
+    // Coming back to the foreground: the network may have taken the stream down while the app was away, or the run
+    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op.
+    LifecycleStartEffect(agentId) {
+        viewModel.revalidate()
+        onStopOrDispose { }
     }
 
     val items = conversation.items
@@ -177,10 +188,17 @@ fun ConversationScreen(
             ) {
                 if (showWorking) {
                     item("working") {
+                        // A dropped connection is not the run's problem: the agent keeps working while the stream is
+                        // re-established, so the glyph keeps stepping and only the caption says what is going on.
+                        val caption = when {
+                            conversation.runStatus == RunStatus.CREATING -> "Starting…"
+                            conversation.isReconnecting -> "Reconnecting…"
+                            else -> "Working…"
+                        }
                         Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
                             RunningGlyph(size = 16.dp)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (conversation.runStatus == RunStatus.CREATING) "Starting…" else "Working…", style = type.base, color = colors.textTertiary)
+                            Text(caption, style = type.base, color = colors.textTertiary)
                         }
                     }
                 }
@@ -242,24 +260,47 @@ fun ConversationScreen(
             }
         }
 
+        val archived = agent?.isArchived == true
         Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(), contentAlignment = Alignment.Center) {
             ComposerBox(
                 value = draft,
                 onValueChange = viewModel::setDraft,
-                placeholder = if (agent?.isArchived == true) "Unarchive to follow up" else "Follow up…",
+                placeholder = if (archived) "Unarchive to follow up" else "Follow up…",
                 onSend = viewModel::send,
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && agent?.isArchived != true,
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && !archived,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
                 plusMenu = plusMenu,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
-                modelLabel = agent?.modelDisplayName,
-                onModel = null,
+                // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
+                // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
+                modelLabel = picker.chipLabel,
+                onModel = if (archived) null else ({ modelSheet = true }),
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }
+    }
+
+    if (modelSheet) {
+        ModelSheet(
+            models = picker.models,
+            selectedModel = picker.selected?.model,
+            selectedVariant = picker.selected?.variant,
+            planMode = picker.planMode == true,
+            autoCreatePr = false,
+            loading = picker.isLoading,
+            unavailable = picker.unavailable,
+            onPlanMode = viewModel::setPlanMode,
+            onAutoCreatePr = null,
+            onRetry = viewModel::refreshModels,
+            onSelect = viewModel::selectModel,
+            onDismiss = { modelSheet = false },
+            // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
+            // (started elsewhere), or no longer offered. It reads as the label when there is one.
+            noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),
+        )
     }
 
     if (confirmDelete) {

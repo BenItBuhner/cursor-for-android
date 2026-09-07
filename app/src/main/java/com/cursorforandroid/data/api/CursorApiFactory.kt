@@ -100,11 +100,31 @@ object CursorApiFactory {
         }
         .build()
 
-    /** SSE connections need no read or call timeout — heartbeats keep the socket alive indefinitely. */
+    /**
+     * For the browser login's `/auth/poll` and the dashboard RPC that mints the key: no stored credential may ride
+     * along, and nothing is logged, because the poll carries the verifier that redeems the login.
+     */
+    fun loginClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
+        }
+        .build()
+
+    /**
+     * SSE connections have no call timeout — a run streams for as long as it takes. The read timeout is a heartbeat
+     * watchdog: the server sends `heartbeat` frames on a quiet stream, so a socket that goes this long without a
+     * byte is one the network dropped without telling us (a Wi-Fi to cellular handoff, Doze). Reading it fails with
+     * an [java.io.IOException], which the streamer answers by resuming with `Last-Event-ID`; nothing is lost.
+     */
     fun sseClient(base: OkHttpClient): OkHttpClient = base.newBuilder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(SSE_SILENCE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+
+    private const val SSE_SILENCE_TIMEOUT_MS = 120_000L
 
     /**
      * For media bytes: artifact downloads are presigned S3 URLs, which reject a request that also carries an

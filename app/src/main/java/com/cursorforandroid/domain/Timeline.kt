@@ -1,12 +1,20 @@
 package com.cursorforandroid.domain
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
-/** One rendered entry in a conversation. */
+/**
+ * One rendered entry in a conversation. Serializable so the trace of a finished run — which the API only retains
+ * for a while — can be kept on disk once it has been seen; the serial names are the on-disk contract.
+ */
+@Serializable
 sealed interface TimelineItem {
     val id: String
 }
 
+@Serializable
+@SerialName("user")
 data class UserMessage(
     override val id: String,
     val text: String,
@@ -18,6 +26,7 @@ data class UserMessage(
  * An image that was attached to a prompt, as kept on this device. The transcript endpoint only returns the text of a
  * `user_message`, so the copy written when the prompt was sent is the only one there is; [path] points at it.
  */
+@Serializable
 data class MessageAttachment(
     val path: String,
     val width: Int,
@@ -26,6 +35,8 @@ data class MessageAttachment(
     val aspectRatio: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 1f
 }
 
+@Serializable
+@SerialName("assistant")
 data class AssistantMessage(
     override val id: String,
     val markdown: String,
@@ -33,6 +44,8 @@ data class AssistantMessage(
 ) : TimelineItem
 
 /** Compact key/value row such as "Worked 3m 5s" or "Explored 6 files, 7 searches". */
+@Serializable
+@SerialName("summary")
 data class SummaryRow(
     override val id: String,
     val label: String,
@@ -40,8 +53,11 @@ data class SummaryRow(
 ) : TimelineItem
 
 /** One step of an [ActivityGroup]: a stretch of reasoning or a tool call, in the order the agent took them. */
+@Serializable
 sealed interface ActivityStep
 
+@Serializable
+@SerialName("thinking")
 data class ThinkingBlock(
     val text: String,
     val durationSeconds: Long? = null,
@@ -50,6 +66,8 @@ data class ThinkingBlock(
 
 enum class ToolKind { Read, List, Search, Edit, Shell, Web, Task, Mcp, Other }
 
+@Serializable
+@SerialName("tool")
 data class ToolCall(
     val callId: String,
     val name: String,
@@ -59,7 +77,15 @@ data class ToolCall(
     val args: JsonElement? = null,
     val result: JsonElement? = null,
 ) : ActivityStep {
-    val isRunning: Boolean get() = status == "running"
+    val isRunning: Boolean get() = status == STATUS_RUNNING
+
+    companion object {
+        /** The two statuses the stream reports. */
+        const val STATUS_RUNNING = "running"
+        const val STATUS_COMPLETED = "completed"
+        /** Ours: the run ended (error, cancel) while the call was still reported as running. */
+        const val STATUS_INTERRUPTED = "interrupted"
+    }
 }
 
 /**
@@ -67,6 +93,8 @@ data class ToolCall(
  * one "Explored 6 files, 1 search · thought for 7s" row that expands to the trace. A run's work between two replies
  * is one thing to skim or dig into, not a stack of "Thought for 1s" / "Explored 2 files" rows.
  */
+@Serializable
+@SerialName("activity")
 data class ActivityGroup(
     override val id: String,
     val steps: List<ActivityStep>,
@@ -122,6 +150,7 @@ data class ActivityGroup(
         }
 }
 
+@Serializable
 data class Subagent(
     val id: String,
     val title: String,
@@ -130,11 +159,15 @@ data class Subagent(
     val detail: String? = null,
 )
 
+@Serializable
+@SerialName("subagents")
 data class SubagentsCard(
     override val id: String,
     val subagents: List<Subagent>,
 ) : TimelineItem
 
+@Serializable
+@SerialName("notice")
 data class NoticeCard(
     override val id: String,
     val title: String,
@@ -145,6 +178,8 @@ data class NoticeCard(
 enum class NoticeTone { Neutral, Success, Warning, Error }
 
 /** Terminal marker for a run: status, duration and pushed branches. */
+@Serializable
+@SerialName("footer")
 data class RunFooter(
     override val id: String,
     val runId: String,

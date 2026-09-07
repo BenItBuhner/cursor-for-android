@@ -114,8 +114,97 @@ class SseParserTest {
         val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
         val events = streamer.stream("bc-1", "run-1").toList()
         assertThat(events).hasSize(1)
-        assertThat((events.single() as RunStreamEvent.Error).code).isEqualTo("stream_expired")
+        val error = events.single() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_expired")
+        assertThat(error.isExpired).isTrue()
+        assertThat(error.isFatal).isTrue()
         assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
+    @Test
+    fun `an in-band error ends the pass at once with the position to resume from`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "event: status\ndata: {\"runId\":\"run-1\",\"status\":\"RUNNING\"}\n\n" +
+                    "id: 10-0\nevent: assistant\ndata: {\"text\":\"part one\"}\n\n" +
+                    "id: 11-0\nevent: error\ndata: {\"code\":\"stream_unavailable\",\"message\":\"Run stream is no longer available\"}\n\n" +
+                    "id: 11-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
+        val events = streamer.stream("bc-1", "run-1").toList()
+        // What arrived is kept; the error is the last word, and it is not retried here: only the caller can tell a
+        // dead stream from a finished run, by reading the run record.
+        assertThat(events.map { it::class.simpleName }).containsExactly("Status", "Assistant", "Error").inOrder()
+        val error = events.last() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_unavailable")
+        assertThat(error.message).isEqualTo("Run stream is no longer available")
+        assertThat(error.resumeFrom).isEqualTo("11-0")
+        assertThat(error.isFatal).isFalse()
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
+    @Test
+    fun `done without a result is a stream that ended early, not a finished run`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "event: status\ndata: {\"runId\":\"run-1\",\"status\":\"RUNNING\"}\n\n" +
+                    "id: 10-0\nevent: thinking\ndata: {\"text\":\"hmm\"}\n\n" +
+                    "id: 10-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
+        val events = streamer.stream("bc-1", "run-1").toList()
+        val error = events.last() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_closed")
+        assertThat(error.resumeFrom).isEqualTo("10-0")
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
+    @Test
+    fun `a rejected resume position asks for a fresh start instead of resuming again`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(400).setBody("{\"error\":{\"code\":\"invalid_last_event_id\",\"message\":\"Unknown event id\"}}"))
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
+        val events = streamer.stream("bc-1", "run-1", lastEventId = "stale-0").toList()
+        val error = events.single() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("invalid_last_event_id")
+        assertThat(error.resumeFrom).isNull()
+        assertThat(error.isFatal).isFalse()
+        assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("stale-0")
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
+    @Test
+    fun `transport failures are retried a few times, then handed back with the resume position`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "event: status\ndata: {\"runId\":\"run-1\",\"status\":\"RUNNING\"}\n\n" +
+                    "id: 10-0\nevent: assistant\ndata: {\"text\":\"part one\"}\n\n",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 1)
+        val events = streamer.stream("bc-1", "run-1").toList()
+        assertThat(events.map { it::class.simpleName }).containsExactly("Status", "Assistant", "Error").inOrder()
+        val error = events.last() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_unavailable")
+        assertThat(error.resumeFrom).isEqualTo("10-0")
+        // The connection that closed early was retried once, with the resume position; the 503 used up the budget.
+        assertThat(server.requestCount).isEqualTo(2)
+        server.takeRequest()
+        assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("10-0")
         server.shutdown()
     }
 }
