@@ -1,21 +1,12 @@
 package com.cursorforandroid.ui.navigation
 
 import android.app.Activity
-import androidx.compose.animation.AnimatedContentTransitionScope
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalDrawerSheet
@@ -30,18 +21,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavGraph.Companion.findStartDestination
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.rememberNavController
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
@@ -50,7 +38,6 @@ import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
-import com.cursorforandroid.ui.components.PredictiveBackEasing
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.ui.home.HomeScreen
@@ -59,16 +46,9 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
-object Routes {
-    const val HOME = "home"
-    const val SETTINGS = "settings"
-    const val AGENT = "agent/{id}"
-    fun agent(id: String) = "agent/$id"
-}
-
 /**
- * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent 280dp column on wide
- * screens and an edge-swipe drawer on phones.
+ * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent column on wide screens and
+ * an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered by [CursorNavHost].
  */
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -81,42 +61,43 @@ fun AppNavHost(
 ) {
     val activity = LocalContext.current as Activity
     val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
-    val navController = rememberNavController()
+    val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
-    val backStack by navController.currentBackStackEntryAsState()
-    val route = backStack?.destination?.route
-    val selectedAgentId = backStack?.arguments?.getString("id")?.takeIf { route == Routes.AGENT }
+    val topScreen = stack.top.screen
+    val selectedAgentId = (topScreen as? Screen.Agent)?.id
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
-    var sidebarCollapsed by remember { mutableStateOf(false) }
+    var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     val colors = CursorTheme.colors
+
+    fun closeDrawer() {
+        if (drawerState.isOpen) scope.launch { drawerState.close() }
+    }
+
+    fun openAgent(id: String) {
+        closeDrawer()
+        when {
+            selectedAgentId == id -> Unit
+            topScreen is Screen.Agent -> stack.replaceTop(Screen.Agent(id))
+            else -> stack.push(Screen.Agent(id))
+        }
+    }
+
+    fun navigateTop(screen: Screen) {
+        closeDrawer()
+        stack.resetTo(screen)
+    }
 
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let {
-            navController.navigate(Routes.agent(it)) { launchSingleTop = true }
+            openAgent(it)
             onDeepLinkConsumed()
         }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
-
-    fun openAgent(id: String) {
-        scope.launch { drawerState.close() }
-        navController.navigate(Routes.agent(id)) {
-            launchSingleTop = true
-            if (route == Routes.AGENT) popUpTo(Routes.AGENT) { inclusive = true }
-        }
-    }
-
-    fun navigateTop(target: String) {
-        scope.launch { drawerState.close() }
-        navController.navigate(target) {
-            launchSingleTop = true
-            popUpTo(navController.graph.findStartDestination().id) { saveState = false }
-        }
-    }
 
     val rowActions = AgentRowActions(
         onOpen = { row -> agentsViewModel.markRead(row.agent); openAgent(row.agent.id) },
@@ -125,13 +106,13 @@ fun AppNavHost(
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onDelete = { row ->
             agentsViewModel.delete(row.agent.id)
-            if (selectedAgentId == row.agent.id) navigateTop(Routes.HOME)
+            if (selectedAgentId == row.agent.id) navigateTop(Screen.Home)
         },
     )
-    val destination = when (route) {
-        Routes.HOME -> SidebarDestination.NewChat
-        Routes.SETTINGS -> SidebarDestination.Settings
-        else -> null
+    val destination = when (topScreen) {
+        Screen.Home -> SidebarDestination.NewChat
+        Screen.Settings -> SidebarDestination.Settings
+        is Screen.Agent -> null
     }
 
     @Composable
@@ -144,10 +125,10 @@ fun AppNavHost(
             selectedDestination = destination,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
-                onNewChat = { navigateTop(Routes.HOME) },
-                onSettings = { navigateTop(Routes.SETTINGS) },
+                onNewChat = { navigateTop(Screen.Home) },
+                onSettings = { navigateTop(Screen.Settings) },
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ scope.launch { drawerState.close() } }) else ({ sidebarCollapsed = true }),
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
             ),
@@ -160,39 +141,26 @@ fun AppNavHost(
         sidebarCollapsed -> ({ sidebarCollapsed = false })
         else -> null
     }
+    val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
 
     @Composable
     fun detailHost(modifier: Modifier) {
-        // NavHost drives the pop transitions with the predictive back gesture (seeking them as the finger moves,
-        // finishing on release, rewinding on cancel), so they double as the app's predictive back animation.
-        NavHost(
-            navController = navController,
-            startDestination = Routes.HOME,
-            modifier = modifier,
-            enterTransition = { slideIn() },
-            exitTransition = { fadeOut(tween(180)) },
-            popEnterTransition = { popReveal() },
-            popExitTransition = { popRecede() },
-        ) {
-            composable(Routes.HOME) {
-                HomeScreen(
+        CursorNavHost(stack = stack, modifier = modifier) { screen ->
+            when (screen) {
+                Screen.Home -> HomeScreen(
                     graph = graph,
                     listState = listState,
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
                     onLaunched = { agent -> openAgent(agent.id) },
                 )
-            }
-            composable(Routes.SETTINGS) {
-                SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = if (wide) null else ({ navController.popBackStack() }))
-            }
-            composable(Routes.AGENT) { entry ->
-                val id = entry.arguments?.getString("id") ?: return@composable
-                ConversationScreen(
+                Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
+                is Screen.Agent -> ConversationScreen(
                     graph = graph,
-                    agentId = id,
-                    onBack = if (wide) null else ({ navController.popBackStack() }),
-                    onDeleted = { navigateTop(Routes.HOME) },
+                    agentId = screen.id,
+                    onOpenSidebar = if (wide) openSidebar else null,
+                    onBack = onBack,
+                    onDeleted = { navigateTop(Screen.Home) },
                 )
             }
         }
@@ -231,23 +199,3 @@ fun AppNavHost(
         CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
     }
 }
-
-private fun AnimatedContentTransitionScope<*>.slideIn() =
-    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(240)) + fadeIn(tween(180))
-
-/**
- * The screen being left, drawn on top: it recedes toward its centre — the cue the system itself uses when a task
- * shrinks back to the launcher — and only dissolves over the last stretch. A gesture that stops half-way therefore
- * shows an intact, smaller screen that grows back if the gesture is cancelled; a fixed slide direction would fight
- * the finger whenever the swipe comes from the right edge, which the transition cannot know.
- */
-private fun popRecede(): ExitTransition =
-    scaleOut(targetScale = PopMinScale, animationSpec = tween(PopMillis, easing = PredictiveBackEasing)) +
-        fadeOut(tween(durationMillis = PopFadeMillis, delayMillis = PopMillis - PopFadeMillis, easing = LinearEasing))
-
-/** The screen underneath: still and full-size, brightening from the canvas as the one above recedes. */
-private fun popReveal(): EnterTransition = fadeIn(tween(PopMillis, easing = LinearEasing))
-
-private const val PopMillis = 300
-private const val PopFadeMillis = 120
-private const val PopMinScale = 0.85f

@@ -45,6 +45,7 @@ import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
@@ -78,11 +79,11 @@ fun SettingsScreen(
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding().padding(bottom = 24.dp)) {
             Group("Account")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Avatar(user, 28.dp)
-                    Spacer(Modifier.width(10.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(user, 34.dp)
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(user.displayName, style = type.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(user.displayName, style = type.rowMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             if (isDemo) "Demo · local mock backend" else listOfNotNull(user.email, user.apiKeyName).joinToString(" · "),
                             style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -99,7 +100,7 @@ fun SettingsScreen(
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 ThemeMode.entries.forEachIndexed { index, mode ->
                     Row(
-                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setThemeMode(mode) } }, CursorTheme.shapes.lg).height(38.dp).padding(horizontal = 12.dp),
+                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setThemeMode(mode) } }, CursorTheme.shapes.lg).height(CursorDimens.listRow).padding(horizontal = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
@@ -109,7 +110,7 @@ fun SettingsScreen(
                         )
                         if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
                     }
-                    if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 12.dp))
+                    if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 14.dp))
                 }
             }
 
@@ -127,12 +128,12 @@ fun SettingsScreen(
                 LinkRow("API documentation", "https://cursor.com/docs/cloud-agent/api/endpoints", uriHandler::openUri)
             }
             Text(
-                "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License.",
+                "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License; icons are derived from Lucide (ISC).",
                 style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 8.dp, start = 2.dp),
             )
 
-            Spacer(Modifier.height(20.dp))
-            CursorButton(if (isDemo) "Leave demo" else "Sign out", onClick = { scope.launch { graph.signOut() } }, destructive = true)
+            Spacer(Modifier.height(24.dp))
+            CursorButton(if (isDemo) "Leave demo" else "Sign out", onClick = { scope.launch { graph.signOut() } }, destructive = true, icon = CursorIcons.SignOut)
         }
     }
 }
@@ -158,7 +159,7 @@ private fun NotificationRows(graph: AppGraph) {
     val liveUpdatesIntent = remember(resumeCount) { LiveNotifications.liveUpdatesSettingsIntent(context) }
 
     Row(
-        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setLiveNotifications(!enabled) } }, CursorTheme.shapes.lg).padding(horizontal = 12.dp, vertical = 9.dp),
+        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setLiveNotifications(!enabled) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -193,9 +194,11 @@ private fun HintRow(title: String, subtitle: String, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
-        Modifier.fillMaxWidth().pressable(onClick, CursorTheme.shapes.lg).padding(horizontal = 12.dp, vertical = 9.dp),
+        Modifier.fillMaxWidth().pressable(onClick, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Icon(CursorIcons.Warning, null, tint = colors.orange, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, style = type.base, color = colors.textPrimary)
             Text(subtitle, style = type.small, color = colors.textTertiary)
@@ -207,14 +210,14 @@ private fun HintRow(title: String, subtitle: String, onClick: () -> Unit) {
 
 @Composable
 private fun Group(text: String) {
-    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(top = 16.dp, bottom = 6.dp, start = 2.dp))
+    Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.padding(top = 18.dp, bottom = 6.dp, start = 2.dp))
 }
 
 @Composable
 private fun LinkRow(label: String, url: String, open: (String) -> Unit) {
     val colors = CursorTheme.colors
     Row(
-        Modifier.fillMaxWidth().pressable({ open(url) }, CursorTheme.shapes.lg).height(38.dp).padding(horizontal = 12.dp),
+        Modifier.fillMaxWidth().pressable({ open(url) }, CursorTheme.shapes.lg).height(CursorDimens.listRow).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
@@ -225,7 +228,7 @@ private fun LinkRow(label: String, url: String, open: (String) -> Unit) {
 @Composable
 private fun InfoRow(label: String, value: String) {
     val colors = CursorTheme.colors
-    Row(Modifier.fillMaxWidth().height(38.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(CursorDimens.listRow).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
         Text(value, style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

@@ -4,21 +4,33 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.SheetValue
+import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlin.coroutines.cancellation.CancellationException
@@ -26,8 +38,9 @@ import kotlin.math.min
 import kotlinx.coroutines.launch
 
 /**
- * The app's modal bottom sheet: elevated surface, sheet radius, no drag handle, and predictive back handled inside
- * the sheet's own composition.
+ * The app's modal bottom sheet: elevated surface, sheet radius, no drag handle, opens straight to its full height,
+ * runs edge-to-edge behind the navigation bar (content is inset), never taller than 86 % of the window, and handles
+ * predictive back inside its own composition.
  *
  * Material's [ModalBottomSheet] registers a window-level back callback when its dialog attaches, after the dialog's
  * `OnBackPressedDispatcher` registered its own at the same priority; the later registration wins, so from Android 13
@@ -41,13 +54,14 @@ import kotlinx.coroutines.launch
 fun CursorSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    sheetState: SheetState = rememberModalBottomSheetState(),
-    scrimColor: Color = BottomSheetDefaults.ScrimColor,
+    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    scrimColor: Color = Color.Black.copy(alpha = 0.5f),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = CursorTheme.colors
     val scope = rememberCoroutineScope()
     val backProgress = remember { Animatable(0f) }
+    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.86f).dp
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -65,6 +79,7 @@ fun CursorSheet(
         shape = CursorTheme.shapes.sheet,
         dragHandle = null,
         scrimColor = scrimColor,
+        contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
         properties = ModalBottomSheetProperties(shouldDismissOnBackPress = false),
     ) {
         PredictiveBackHandler { events ->
@@ -84,19 +99,53 @@ fun CursorSheet(
             }
         }
         Column(
-            Modifier.fillMaxWidth().graphicsLayer {
-                // Counter-scale so the content keeps its aspect ratio while the surface shrinks (Material does too).
-                val progress = backProgress.value
-                val sx = predictiveBackScale(progress, size.width, SheetMaxShrinkX.toPx())
-                val sy = predictiveBackScale(progress, size.height, SheetMaxShrinkY.toPx())
-                scaleY = if (sy != 0f) sx / sy else 1f
-                transformOrigin = TransformOrigin(0.5f, 0f)
-            },
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .graphicsLayer {
+                    // Counter-scale so the content keeps its aspect ratio while the surface shrinks (Material does too).
+                    val progress = backProgress.value
+                    val sx = predictiveBackScale(progress, size.width, SheetMaxShrinkX.toPx())
+                    val sy = predictiveBackScale(progress, size.height, SheetMaxShrinkY.toPx())
+                    scaleY = if (sy != 0f) sx / sy else 1f
+                    transformOrigin = TransformOrigin(0.5f, 0f)
+                }
+                .navigationBarsPadding(),
         ) {
             content()
         }
     }
 }
+
+/** Sheet title row: 16sp semibold title, optional leading / trailing controls, 48dp tall. */
+@Composable
+fun SheetHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    leading: (@Composable RowScope.() -> Unit)? = null,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    Row(
+        modifier.fillMaxWidth().height(SheetHeaderHeight).padding(start = if (leading != null) 8.dp else 20.dp, end = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (leading != null) {
+            leading()
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(
+            title,
+            style = CursorTheme.typography.sectionTitle,
+            color = CursorTheme.colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        trailing?.invoke(this)
+    }
+}
+
+val SheetHeaderHeight = 52.dp
 
 /** Material's sheet shrink: at full progress the extent loses [maxDistancePx] (or all of it, if smaller). */
 private fun predictiveBackScale(progress: Float, extent: Float, maxDistancePx: Float): Float =
