@@ -83,7 +83,7 @@ class LaunchCancelledException : RuntimeException("The chat was stopped before i
  *
  * Opening a chat is cache-first: the transcript and traces saved on disk (by an earlier visit or the background
  * prefetch) render immediately and the network only revalidates them. What is written back for the transcript is
- * its inputs in the shape the server will report them — never the rendered items, whose date headers are relative.
+ * its inputs in the shape the server will report them — never the rendered items, which are derived from them.
  *
  * Prompts sent from this device are on screen before the server has answered — a new chat [launch]es around its
  * prompt, a follow-up appears the moment it is sent — and stay there while the server's transcript and run list
@@ -720,7 +720,8 @@ class ConversationRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
-        // The prompt shows up right away, paired with a placeholder run so it gets a timestamp like every other turn.
+        // The prompt shows up right away, paired with a placeholder run so it is built like every other turn — ordered by
+        // the run's stamp, its images keyed by the run — until the server's run takes its place.
         val localId = "$LOCAL_RUN_PREFIX$now"
         val placeholder = e.placeholderRun(localId, now)
         // Written before the request so the bubble shows its images from the first frame, like the text. Storage

@@ -106,7 +106,7 @@ data class RunDigest(
             is AssistantMessage -> if (last.isStreaming) Activity.Writing else Activity.Working
             is ActivityGroup, is SubagentsCard -> currentStep(items)
             is RunFooter, is NoticeCard -> Activity.Finishing
-            is UserMessage, is DateHeader, is SummaryRow -> Activity.Working
+            is UserMessage, is SummaryRow -> Activity.Working
         }
 
         /**
