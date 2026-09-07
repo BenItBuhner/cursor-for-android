@@ -4,12 +4,12 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import androidx.core.app.NotificationCompat
+import androidx.core.net.toUri
 import com.cursorforandroid.MainActivity
 import com.cursorforandroid.R
 import com.cursorforandroid.data.api.CursorEndpoints
@@ -82,13 +82,13 @@ object LiveNotificationRenderer {
         val lines = running.map { condensedLine(context, it) }
         val count = running.size
         return liveBuilder(context)
-            .setContentTitle(context.getString(R.string.notif_agents_running, count))
+            .setContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
             .setContentText(lines.first())
             .setStyle(NotificationCompat.BigTextStyle().bigText(lines.joinToString("\n")))
             .setWhen(running.minOf { it.startedAtMillis })
             .setShowWhen(false)
             // The chip shows either the chronometer or this text; with several agents the count is the useful one.
-            .setShortCriticalText(context.getString(R.string.notif_chip_agents, count))
+            .setShortCriticalText(context.resources.getQuantityString(R.plurals.notif_chip_agents, count, count))
             .setNumber(count)
             .setContentIntent(openApp(context))
             .build()
@@ -217,13 +217,13 @@ object LiveNotificationRenderer {
 
     /** Reuses the app's `https://cursor.com/agents/<id>` deep link so the conversation opens directly. */
     private fun openAgent(context: Context, agentId: String): PendingIntent {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(CursorEndpoints.webUrl(agentId)), context, MainActivity::class.java)
+        val intent = Intent(Intent.ACTION_VIEW, CursorEndpoints.webUrl(agentId).toUri(), context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return PendingIntent.getActivity(context, requestCode("agent", agentId), intent, flags())
     }
 
     private fun openUrl(context: Context, url: String, key: String): PendingIntent {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent = Intent(Intent.ACTION_VIEW, url.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return PendingIntent.getActivity(context, requestCode("url", key), intent, flags())
     }
 

@@ -1,8 +1,11 @@
 package com.cursorforandroid.notifications
 
+import android.Manifest
+import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -125,9 +128,19 @@ class LiveNotificationService : Service() {
         }
     }
 
-    private fun post(id: Int, notification: android.app.Notification) {
-        if (!LiveNotifications.hasPermission(this)) return
-        runCatching { NotificationManagerCompat.from(this).notify(id, notification) }
+    private fun post(id: Int, notification: Notification) {
+        // Checked inline (not via LiveNotifications.hasPermission) so lint's MissingPermission analysis can see it.
+        // POST_NOTIFICATIONS only exists from API 33; earlier releases report it as denied, hence the version guard.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        try {
+            NotificationManagerCompat.from(this).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission revoked between the check and the call; the next state change tries again.
+        }
     }
 
     private fun shutdown() {
