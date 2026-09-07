@@ -7,10 +7,12 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.CursorUser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 sealed interface SessionState {
     data object Loading : SessionState
@@ -43,7 +45,7 @@ class SessionManager(
             _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
             return
         }
-        val key = keyStore.apiKey()
+        val key = withContext(Dispatchers.IO) { keyStore.apiKey() }
         if (key.isNullOrBlank()) {
             _state.value = SessionState.SignedOut
             return
@@ -69,7 +71,7 @@ class SessionManager(
     suspend fun signIn(apiKey: String): Result<CursorUser> {
         val trimmed = apiKey.trim()
         if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Paste your Cursor API key first."))
-        keyStore.setApiKey(trimmed)
+        storeKey(trimmed)
         _backend.value = realBackend
         return runCatching { realBackend.api.me().toUser() }
             .onSuccess { user ->
@@ -78,7 +80,7 @@ class SessionManager(
                 _state.value = SessionState.SignedIn(user, isDemo = false)
             }
             .onFailure {
-                keyStore.setApiKey(null)
+                storeKey(null)
             }
             .recoverCatching { throw IllegalStateException(it.userMessage(), it) }
     }
@@ -92,11 +94,14 @@ class SessionManager(
     }
 
     suspend fun signOut() {
-        keyStore.setApiKey(null)
+        storeKey(null)
         prefs.clearSession()
         _backend.value = realBackend
         _state.value = SessionState.SignedOut
     }
+
+    /** The encrypted store opens the Android Keystore on first use, which is disk and IPC work, so keep it off Main. */
+    private suspend fun storeKey(key: String?) = withContext(Dispatchers.IO) { keyStore.setApiKey(key) }
 
     private fun demoUser() = CursorUser(
         apiKeyName = "Demo",
