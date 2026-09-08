@@ -210,7 +210,10 @@ open class FakeCursorApi : CursorApi {
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
-        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList })
+        // Oldest first and paged, like the endpoint: with fewer runs than the limit that is one page and no cursor.
+        val all = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList }.sortedWith(compareBy({ it.createdAt }, { it.id }))
+        val (items, next) = page(all, { it.id }, limit, cursor)
+        return ListRunsResponseDto(items = items, nextCursor = next)
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++

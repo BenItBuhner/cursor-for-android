@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.toCursorError
@@ -455,10 +457,11 @@ class ConversationRepository(
         try {
             coroutineScope {
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
-                val runPage = async { runCatching { api.listRuns(agentId, limit = 50).items } }
+                val runPage = async { runCatching { api.listRuns(agentId, limit = RUN_PAGE_SIZE) } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
-                val runResult = runPage.await()
+                val prompts = convResult.getOrNull()?.messages?.count { it.type == USER_MESSAGE } ?: 0
+                val runResult = runPage.await().mapCatching { runsCovering(api, agentId, it, prompts) }
                 val onDevice = stored.await()
                 // Each endpoint answers for itself: what one of them could not read is left as it was rather than
                 // reported as absent, so a timeout on the run list does not strip the footers and traces off an
@@ -531,6 +534,27 @@ class ConversationRepository(
             if (t is CancellationException) throw t
             e.reportLoadFailure(t)
         }
+    }
+
+    /**
+     * The transcript pairs its prompts with the runs by position, oldest first, so a run list that stops short of
+     * the transcript's prompts pairs every turn with the wrong run — footers, traces and images all one turn out.
+     * Further pages are fetched until the list covers the prompts, within a bound: a chat longer than that has
+     * older turns whose logs expired long ago, and the join is only ever asked about what is on screen.
+     */
+    private suspend fun runsCovering(api: CursorApi, agentId: String, first: ListRunsResponseDto, prompts: Int): List<RunDto> {
+        var cursor = first.nextCursor
+        if (first.items.size >= prompts || cursor == null) return first.items
+        val all = first.items.toMutableList()
+        var pages = 1
+        while (all.size < prompts && cursor != null && pages < MAX_RUN_PAGES) {
+            val page = api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor)
+            if (page.items.isEmpty()) break
+            all += page.items
+            cursor = page.nextCursor
+            pages++
+        }
+        return all
     }
 
     /**
@@ -1079,9 +1103,9 @@ class ConversationRepository(
             val ok = runCatching {
                 coroutineScope {
                     val conversation = async { api.conversationV0(agent.id) }
-                    val runs = async { api.listRuns(agent.id, limit = 50).items }
+                    val runs = async { api.listRuns(agent.id, limit = RUN_PAGE_SIZE) }
                     val transcript = conversation.await().messages
-                    val runList = runs.await()
+                    val runList = runsCovering(api, agent.id, runs.await(), transcript.count { it.type == USER_MESSAGE })
                     val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
@@ -1127,6 +1151,9 @@ class ConversationRepository(
         const val ABSENT = -1L
         /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
         const val MAX_PARALLEL_REPLAYS = 3
+        const val RUN_PAGE_SIZE = 50
+        /** Pages of runs one load will read to cover the transcript's prompts before giving the join up. */
+        const val MAX_RUN_PAGES = 8
         /** A chat opened this recently is not fetched again when the app comes to the foreground. */
         const val REVALIDATE_MIN_INTERVAL_MS = 5_000L
         /** The two message types of `/v0/agents/{id}/conversation`. */

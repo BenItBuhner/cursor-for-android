@@ -856,6 +856,38 @@ class ConversationRepositoryTest {
     }
 
     /**
+     * The transcript pairs its prompts with the runs by position, so a run list that stops at one page pairs the
+     * older turns with the wrong run and leaves the newest ones without one at all.
+     */
+    @Test
+    fun `a chat with more turns than one page of runs still pairs each turn with its own run`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+            Triple("run-3", "Prompt 3", "Reply 3"),
+        )
+        agents.refresh()
+        listOf("run-1", "run-2", "run-3").forEach { expireStream(it) }
+        api.pageSize = 2
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 3 }
+
+        val items = state(conversations).items
+        assertThat(items.map { it::class.simpleName }).containsExactly(
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+        ).inOrder()
+        assertThat(items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly("run-1", "run-2", "run-3").inOrder()
+        assertThat(items.filterIsInstance<RunFooter>().map { it.durationMs }).containsExactly(60_000L, 120_000L, 180_000L).inOrder()
+        // Two pages were enough to cover the three prompts; a third was not asked for.
+        assertThat(api.listRunsCalls).isEqualTo(2)
+    }
+
+    /**
      * The traces of one agent share a file, and writing it is a read-merge-write of everything already in it. A
      * chat with fifty finished runs must not turn its opening into fifty of those.
      */
