@@ -25,8 +25,10 @@ data class CursorShapes(
 /**
  * Geometry. Proportions follow the official web app (cursor.com/agents, measured at 2x; 1 CSS px == 1 dp since the
  * web body text is 14px and ours is 14sp), but anything a finger has to hit is sized for touch rather than for a
- * pointer: the desktop's 36px header and 24px round buttons become 44dp and 28dp, and every icon button accepts
- * touches over at least 44dp.
+ * pointer: the desktop's 36px header becomes 44dp and every icon button accepts touches over at least 44dp. The
+ * touch layer is separate from the visual box, so a control's painted size follows the web rather than the finger —
+ * the composer's round buttons stay at the web's 24px next to their 14sp text instead of growing with the 40dp hit
+ * area, which is what keeps text and buttons in proportion.
  */
 object CursorDimens {
     val hairline = 1.dp
@@ -52,9 +54,24 @@ object CursorDimens {
     /** State glyph slot in a chat row. */
     val glyph = 16.dp
     val unreadDot = 6.dp
-    /** Composer "+", send and stop: round buttons with ~13px glyphs. */
-    val roundButton = 28.dp
-    val roundButtonGlyph = 19.dp
+    /**
+     * Composer footer row, and the min height of the selector chips ("Model ⌄", repository, branch): a 28dp tap
+     * height for the chips, with the round buttons centred in it. The chips paint nothing, so the row's height is
+     * only ever seen as air.
+     */
+    val composerFooter = 28.dp
+    /**
+     * Composer "+", send and stop: the web's 24px disc beside its 14px text, kept at 24dp so the text stays the
+     * largest thing in the box (the disc is ~2.4x the text's cap height, as on cursor.com). Touches are accepted
+     * over 40dp regardless, so the disc never has to grow for the finger — growing it is what made the buttons
+     * dwarf the 13sp text before.
+     */
+    val roundButton = 24.dp
+    /**
+     * Icon box inside the disc. The 24-unit "+" and arrow span 14 units plus their round caps, the stop square 12,
+     * so a 17dp box shows a ~11dp "+": a little under half the disc, like the web's.
+     */
+    val roundButtonGlyph = 17.dp
     /** Composer box: 640px max, 12px padding. */
     val composerMaxWidth = 640.dp
     val composerPadding = 12.dp
