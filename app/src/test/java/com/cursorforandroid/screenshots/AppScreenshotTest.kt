@@ -209,6 +209,28 @@ class AppScreenshotTest {
     }
 
     @Test
+    fun oledBlack() {
+        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        compose.setContent { App(graph) }
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText("Appearance")
+        compose.onNodeWithText("Cursor Dark").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
+        waitForText("OLED black")
+        capture("20_settings_dark")
+        compose.onNodeWithText("OLED black").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.oledBlack.first() } }
+        compose.waitForIdle()
+        capture("21_settings_oled")
+        compose.onNodeWithContentDescription("Back").performClick()
+        scrollListTo("Ask Cursor to build, fix bugs, explore")
+        capture("22_home_oled")
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
     fun tabletTwoPane() {
         val graph = AppGraph(ApplicationProvider.getApplicationContext())
