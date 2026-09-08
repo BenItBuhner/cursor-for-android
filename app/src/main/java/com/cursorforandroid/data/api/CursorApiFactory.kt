@@ -51,11 +51,18 @@ class CursorApiException(
 /**
  * Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. An exception
  * that already is one (the demo backend raises them directly) passes through.
+ *
+ * The body is peeked rather than read: Retrofit buffers a failed response's body exactly once, and the same
+ * throwable is converted more than once on the way out — the launch path checks it for `agent_id_conflict` before
+ * the composer turns it into a message — so consuming it would leave the second reader with the bare HTTP reason
+ * phrase instead of what the server said.
  */
 fun Throwable.toCursorError(): CursorApiException? {
     if (this is CursorApiException) return this
     val http = this as? HttpException ?: return null
-    val body = runCatching { http.response()?.errorBody()?.string() }.getOrNull()
+    val body = runCatching {
+        http.response()?.errorBody()?.let { it.source().peek().readString(it.contentType()?.charset() ?: Charsets.UTF_8) }
+    }.getOrNull()
     val parsed = body?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
     return CursorApiException(
         httpCode = http.code(),
