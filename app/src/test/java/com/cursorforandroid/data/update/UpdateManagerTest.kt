@@ -36,6 +36,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -63,8 +64,9 @@ class UpdateManagerTest {
     private val stableApk = ByteArray(200_000) { (it % 199).toByte() }
     private val rcApk = ByteArray(150_000) { (it % 97).toByte() }
     private var stableApkBytes: ByteArray = stableApk
-    private val listRequests = mutableListOf<RecordedRequest>()
-    private val downloadRequests = mutableListOf<String>()
+    // Appended from MockWebServer's dispatcher thread while tests assert; copy-on-write keeps the reads race-free.
+    private val listRequests = CopyOnWriteArrayList<RecordedRequest>()
+    private val downloadRequests = CopyOnWriteArrayList<String>()
     private var releasesEtag = "W/\"list-1\""
     /** When set, the release list is held back until the latch opens, keeping a check (and the lock) in flight. */
     @Volatile
@@ -477,10 +479,11 @@ class UpdateManagerTest {
         assertThat(platform.abandoned).isEqualTo(1)
         assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
 
-        // Opening from the notification starts a new session.
+        // Opening from the notification starts a new session. The state flips before the session is written, so the
+        // session list is what to wait on.
         after.resumePendingInstall()
         after.awaitState { it is UpdateState.Installing }
-        assertThat(platform.installs).hasSize(2)
+        withTimeout(5_000) { while (platform.installs.size < 2) delay(10) }
     }
 
     @Test

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -67,5 +68,39 @@ class MessageActionsTest {
         compose.onNodeWithText("Nothing to see here.").performClick()
         compose.waitForIdle()
         assertThat(menuIsOpen()).isFalse()
+    }
+
+    private val injected = "<system_notification>\nThe following task has finished.\n\n<task>\nkind: subagent\nstatus: success\ntitle: Contacts and clipping\ndetail: This is the last output of the subagent:\n\nThe clipping is gone. Four commits, not pushed.\n</task>\n</system_notification>"
+
+    @Test
+    fun `an injected notification reads as one row, opens onto its report on a tap, and copies as injected`() {
+        show(SystemNotifications.parse("n1", injected)!!.items.single())
+        compose.onNodeWithText("Subagent completed").assertIsDisplayed()
+        compose.onNodeWithText("Contacts and clipping").assertIsDisplayed()
+        // The markup is nowhere on screen, and neither is the report until asked for.
+        assertThat(compose.onAllNodesWithText("<system_notification>", substring = true).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("The clipping is gone", substring = true).fetchSemanticsNodes()).isEmpty()
+
+        compose.onNodeWithText("Subagent completed").performClick()
+        compose.onNodeWithText("The clipping is gone. Four commits, not pushed.").assertIsDisplayed()
+        assertThat(menuIsOpen()).isFalse()
+        compose.onNodeWithText("Subagent completed").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("The clipping is gone", substring = true).fetchSemanticsNodes().isEmpty() }
+
+        compose.onNodeWithText("Subagent completed").performTouchInput { longClick() }
+        compose.onNodeWithText("Copy message").assertIsDisplayed().performClick()
+        compose.waitUntil(5_000) { !menuIsOpen() }
+        assertThat(clipboard.getText()?.text).isEqualTo(injected)
+    }
+
+    @Test
+    fun `a one-line notification the row shows in full has nothing to open`() {
+        show(SystemNotifications.parse("n2", "<system_notification>The user paused the goal.</system_notification>")!!.items.single())
+        compose.onNodeWithText("System notification").assertIsDisplayed()
+        compose.onNodeWithText("The user paused the goal.").assertIsDisplayed()
+        compose.onNodeWithText("System notification").performClick()
+        compose.waitForIdle()
+        // Still exactly one copy of the line: nothing unfolded.
+        assertThat(compose.onAllNodesWithText("The user paused the goal.").fetchSemanticsNodes()).hasSize(1)
     }
 }

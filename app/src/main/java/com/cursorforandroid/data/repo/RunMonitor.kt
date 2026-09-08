@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.LiveActivityState
@@ -42,8 +43,11 @@ import java.util.concurrent.ConcurrentHashMap
 class RunMonitor(
     private val agents: AgentRepository,
     private val hub: LiveRunHub,
-    /** Resolves a run's real start time (its `createdAt`); falls back to the agent's `updatedAt` when null. */
-    private val runStartedAt: suspend (agentId: String, runId: String) -> Long? = { _, _ -> null },
+    /**
+     * Reads a run's record (`GET /v1/agents/{id}/runs/{runId}`) before it is followed: the authority on whether the
+     * run is still going, and the source of its real start time (`createdAt`). Null when it cannot be read.
+     */
+    private val runRecord: suspend (agentId: String, runId: String) -> RunDto? = { _, _ -> null },
     private val refreshIntervalMs: Long = 60_000L,
     private val maxTracked: Int = MAX_TRACKED,
     private val nowProvider: () -> Long = AppClock::now,
@@ -151,8 +155,20 @@ class RunMonitor(
     }
 
     private suspend fun track(agent: Agent, runId: String) {
-        val startedAt = hub.current(agent.id, runId)?.startedAtMillis
-            ?: runCatching { runStartedAt(agent.id, runId) }.getOrNull()
+        // Unless the run is already being followed (a conversation screen has it open), its record is read first: the
+        // row only says the list called the run active, and the list can be behind the finish — or the row can be a
+        // cache from days ago. A run the record reports over is folded into the row and never streamed: replaying a
+        // finished run's log as though it were live is what stamped chats from weeks ago "updated just now".
+        val followed = hub.current(agent.id, runId)
+        val record = if (followed == null) runCatching { runRecord(agent.id, runId) }.getOrNull() else null
+        if (record != null && record.statusEnum().isTerminal) {
+            agents.patch(agent.id) { it.withLatestRun(record) }
+            trackers.remove(agent.id)
+            stopping.remove(agent.id)
+            return
+        }
+        val startedAt = followed?.startedAtMillis
+            ?: record?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } }
             ?: agent.updatedAtMillis.takeIf { it > 0 }
             ?: nowProvider()
         upsert(TrackedRun(agent.id, runId, agent.name, agent.runStatus ?: RunStatus.CREATING, LivePhase.Starting, startedAt, branch = agent.branchName, prUrl = agent.prUrl))

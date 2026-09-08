@@ -61,6 +61,7 @@ import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
+import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
@@ -89,6 +90,7 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
         is ActivityGroup -> ActivityGroupView(item, modifier)
         is SubagentsCard -> SubagentsView(item, modifier)
         is NoticeCard -> NoticeView(item, modifier)
+        is SystemNotification -> SystemNotificationView(item, modifier)
         is RunFooter -> RunFooterView(item, modifier)
     }
 }
@@ -137,9 +139,75 @@ private fun AssistantMessageView(item: AssistantMessage, modifier: Modifier) {
 }
 
 /**
+ * A turn Cursor injected rather than the user: one row in the trace's own voice — "Subagent completed · Contacts and
+ * clipping", "Goal continued · In the Verity photoreal engine…" — with the glyph of what it is and the tone of how it
+ * went. A tap opens it onto the part worth reading (the subagent's report, the goal's objective) as markdown in a
+ * faint card, when there is more of it than the row shows; press and hold copies the notification as injected,
+ * markup and all, like any other message.
+ */
+@Composable
+private fun SystemNotificationView(item: SystemNotification, modifier: Modifier) {
+    val colors = CursorTheme.colors
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    // A one-line notification is said in full by the row unless the row had to cut it short.
+    var summaryCut by remember(item.summary) { mutableStateOf(false) }
+    val body = item.body?.takeIf { it != item.summary || summaryCut }
+    val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
+    val icon = when (item.kind) {
+        SystemNotification.Kind.Goal -> CursorIcons.Target
+        SystemNotification.Kind.Subagent -> CursorIcons.Sparkle
+        SystemNotification.Kind.Task -> CursorIcons.Terminal
+        SystemNotification.Kind.Other -> CursorIcons.Bell
+    }
+    val tint = when (item.tone) {
+        NoticeTone.Neutral -> colors.iconTertiary
+        NoticeTone.Success -> colors.green.copy(alpha = 0.8f)
+        NoticeTone.Warning -> colors.orange
+        NoticeTone.Error -> colors.red
+    }
+    Column(modifier.fillMaxWidth()) {
+        MessageActions(
+            text = item.raw,
+            onClick = { if (body != null) expanded = !expanded },
+            modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
+        ) {
+            Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(item.title, style = CursorTheme.typography.base, color = colors.textTertiary)
+                item.summary?.let { summary ->
+                    Spacer(Modifier.width(6.dp))
+                    // Yields to the chevron: a long summary ellipsizes rather than pushing the chevron off the row.
+                    Text(
+                        summary,
+                        style = CursorTheme.typography.base,
+                        color = colors.textQuaternary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        onTextLayout = { summaryCut = it.hasVisualOverflow },
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                if (body != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
+                }
+            }
+        }
+        if (body != null) {
+            AnimatedVisibility(visible = expanded) {
+                CursorCard(Modifier.fillMaxWidth().padding(top = 6.dp), fill = colors.fillFaint, border = Color.Transparent) {
+                    MarkdownText(body, Modifier.padding(horizontal = 12.dp, vertical = 10.dp), style = CursorTheme.typography.base, color = colors.textSecondary)
+                }
+            }
+        }
+    }
+}
+
+/**
  * Press and hold on a message: a haptic tick, then a context menu at the finger with "Copy message" (the raw text or
- * markdown, so it pastes back into a prompt or an editor as written). A plain tap does nothing beyond the press
- * highlight, and links, images and code blocks inside keep their own gestures. The caller clips [modifier] to the
+ * markdown, so it pastes back into a prompt or an editor as written). A plain tap runs [onClick], which is nothing
+ * for a message, and links, images and code blocks inside keep their own gestures. The caller clips [modifier] to the
  * shape the highlight should take.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -148,6 +216,7 @@ private fun MessageActions(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onClick: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
@@ -170,7 +239,7 @@ private fun MessageActions(
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 menuOpen = true
             },
-            onClick = {},
+            onClick = onClick,
         ),
     ) {
         content()

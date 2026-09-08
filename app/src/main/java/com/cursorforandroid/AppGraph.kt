@@ -29,7 +29,6 @@ import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
-import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
@@ -97,7 +96,7 @@ class AppGraph(context: Context) {
     val runMonitor = RunMonitor(
         agents = agents,
         hub = liveRuns,
-        runStartedAt = { agentId, runId -> parseIsoMillis(session.current.api.getRun(agentId, runId).createdAt).takeIf { it > 0 } },
+        runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
     )
     /**
      * In-app updates from the GitHub releases of [BuildConfig.GITHUB_REPO]. Device-level, not account-level: its

@@ -3,6 +3,7 @@ package com.cursorforandroid.data.update
 import android.content.Intent
 import com.cursorforandroid.domain.AppRelease
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** A scriptable device: what is installed, how it is signed, what the network and the screen are doing. */
 class FakeUpdatePlatform(
@@ -19,12 +20,17 @@ class FakeUpdatePlatform(
     /** What a downloaded file parses as. By default the file name (its versionCode) decides, as the manager names them. */
     var inspection: (File) -> ApkInfo? = { file -> ApkInfo(applicationId, file.nameWithoutExtension.toLong(), signatures) }
 
-    val installs = mutableListOf<Pair<File, AppRelease>>()
+    // The manager appends from its own scope while tests assert; copy-on-write keeps the reads race-free.
+    val installs = CopyOnWriteArrayList<Pair<File, AppRelease>>()
     var installError: Throwable? = null
+
+    @Volatile
     var abandoned = 0
-    val confirmations = mutableListOf<Intent>()
+    val confirmations = CopyOnWriteArrayList<Intent>()
     var confirmationStarts = true
-    val notified = mutableListOf<AppRelease>()
+    val notified = CopyOnWriteArrayList<AppRelease>()
+
+    @Volatile
     var cancelledNotifications = 0
 
     override fun canRequestInstalls() = canInstall
