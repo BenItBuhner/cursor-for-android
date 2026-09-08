@@ -38,9 +38,12 @@ sealed interface PullRequestLookup {
     data object Failed : PullRequestLookup
 }
 
-/** Reads where one pull request stands: GitHub for a real account, the seeds for the demo. */
+/**
+ * Reads where one pull request stands: the account service or GitHub for a real account, the seeds for the demo.
+ * [ref] is the URL parsed as a GitHub pull request, or null for one on another SCM, which only the account can answer.
+ */
 fun interface PullRequestSource {
-    suspend fun lookup(url: String, ref: PullRequestRef): PullRequestLookup
+    suspend fun lookup(url: String, ref: PullRequestRef?): PullRequestLookup
 }
 
 /**
@@ -50,7 +53,8 @@ fun interface PullRequestSource {
  */
 class GitHubPullRequestSource(private val api: GitHubApi, private val now: () -> Long = AppClock::now) : PullRequestSource {
 
-    override suspend fun lookup(url: String, ref: PullRequestRef): PullRequestLookup {
+    override suspend fun lookup(url: String, ref: PullRequestRef?): PullRequestLookup {
+        if (ref == null) return PullRequestLookup.Unreadable
         val response = try {
             api.pullRequest(ref.owner, ref.repo, ref.number)
         } catch (e: CancellationException) {
@@ -89,13 +93,16 @@ class GitHubPullRequestSource(private val api: GitHubApi, private val now: () ->
 }
 
 /**
- * Where the agents' pull requests stand, read from GitHub because the Cloud Agents API only names them. States are
- * remembered on disk and restored before the network is asked, then revalidated on every list refresh according to
- * how likely they are to have moved: an open or draft PR every few minutes, a closed one a few times a day, a merged
- * one never. What GitHub would not answer — private repositories without a token — is remembered too, so the same
- * refused request is not repeated at every refresh; a token added later asks again at once. A spent rate limit stops
- * the pass and nothing is asked until GitHub says the budget is back. The demo answers from its seeds and never
- * touches the disk.
+ * Where the agents' pull requests stand. The Cloud Agents API only names them, so the states come from two places:
+ * the Cursor account, which keeps a status per agent in step with the SCM (the view the desktop and iOS apps show,
+ * private repositories and non-GitHub SCMs included) — in bulk with every read of the account's agent list
+ * ([seed]) and one at a time through [account] — and GitHub as the fallback for whatever the account does not
+ * answer. States are remembered on disk and restored before the network is asked, then revalidated on every list
+ * refresh according to how likely they are to have moved: an open or draft PR every few minutes, a closed one a few
+ * times a day, a merged one never. What neither source would answer — a private repository without a token — is
+ * remembered too, so the same refused request is not repeated at every refresh; a token added later asks again at
+ * once. A spent GitHub rate limit stops the pass and nothing is asked of GitHub until it says the budget is back.
+ * The demo answers from its seeds and never touches the disk.
  */
 class PullRequestRepository(
     private val gitHub: PullRequestSource,
@@ -106,6 +113,8 @@ class PullRequestRepository(
     private val cache: PullRequestCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val maxPerRefresh: Int = MAX_PER_REFRESH,
+    /** The account service, asked before GitHub; absent in tests that only exercise GitHub. */
+    private val account: PullRequestSource? = null,
 ) {
     private val _statuses = MutableStateFlow<Map<String, PullRequestStatus>>(emptyMap())
 
@@ -175,14 +184,20 @@ class PullRequestRepository(
         val now = AppClock.now()
         if (!demo && now < rateLimitedUntil) return
         val known = _statuses.value
+        val account = if (demo) null else this.account
         val due = urls.distinct()
-            .mapNotNull { url -> PullRequestRef.parse(url)?.let { url to it } }
+            .map { url -> url to PullRequestRef.parse(url) }
+            // Without the account only GitHub can be asked, so only GitHub pull requests are worth asking about.
+            .filter { (_, ref) -> ref != null || account != null }
             .filter { (url, _) -> known[url].isDue(now, eager) }
             .sortedBy { (url, _) -> known[url]?.checkedAtMillis ?: 0L }
             .take(maxPerRefresh)
-        val source = if (demo) this.demo else gitHub
+        val fallback = if (demo) this.demo else gitHub
         for ((url, ref) in due) {
-            when (val result = source.lookup(url, ref)) {
+            // The account's answer is the one the first-party apps show; GitHub is asked when the account has none.
+            val first = account?.lookup(url, ref)
+            val result = if (first is PullRequestLookup.Found) first else fallback.lookup(url, ref)
+            when (result) {
                 is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo)
                 PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo)
                 is PullRequestLookup.RateLimited -> {
@@ -194,6 +209,29 @@ class PullRequestRepository(
             }
         }
         if (!demo) forgetStale(now)
+    }
+
+    /**
+     * States the account service reported alongside its agent list (every read, whether or not the pins are being
+     * synced). They are what the first-party apps show, so they replace whatever GitHub said — except that a merge
+     * is final, so a stale report never undoes one.
+     */
+    suspend fun seed(states: Map<String, PullRequestState>) {
+        if (states.isEmpty() || isDemo()) return
+        if (demoMode == true) {
+            // Leaving the demo: its seeded states never mix with the account's.
+            _statuses.value = emptyMap()
+            restored = false
+        }
+        demoMode = false
+        restoreFromCache()
+        val at = AppClock.now()
+        val next = _statuses.updateAndGet { all ->
+            all + states.mapNotNull { (url, state) ->
+                if (all[url]?.state == PullRequestState.Merged && state != PullRequestState.Merged) null else url to PullRequestStatus(state, at)
+            }
+        }
+        cache?.write(next)
     }
 
     private fun PullRequestStatus?.isDue(now: Long, eager: Boolean): Boolean {

@@ -405,9 +405,9 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheck
 }
 
 /**
- * The GitHub token pull request states are read with. The Cloud Agents API names a chat's pull request but never
- * says whether it is open, a draft, merged or closed; GitHub does, and answers for a private repository only with a
- * token that may read it. Saving one re-asks at once about every pull request GitHub refused so far.
+ * The GitHub token the pull-request fallback reads with. States come from the Cursor account first; GitHub is asked
+ * for the pull requests the account has no answer for, and answers for a private repository only with a token that
+ * may read it. Saving one re-asks at once about every pull request that was refused so far.
  */
 @Composable
 private fun GitHubRows(graph: AppGraph) {
@@ -434,8 +434,8 @@ private fun GitHubRows(graph: AppGraph) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp)) {
         Text("Pull request states", style = type.base, color = colors.textPrimary)
         Text(
-            "Whether a chat's pull request is open, a draft, merged or closed is read from GitHub. Public repositories need no token; " +
-                "private ones need a personal access token that can read their pull requests.",
+            "Whether a chat's pull request is open, a draft, merged or closed comes from your Cursor account, like the desktop and iOS apps, " +
+                "private repositories included. GitHub is asked when the account has no answer; a personal access token lets that fallback read private repositories too.",
             style = type.small, color = colors.textTertiary,
         )
     }
