@@ -140,6 +140,9 @@ class AppGraph(context: Context) {
     init {
         // Whether the user signs out or the key is rejected, nothing of the account stays on disk.
         session.onSignedOut = {
+            // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
+            // flight can land after the wipe below re-creates the directories it deleted.
+            caches.invalidate()
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()

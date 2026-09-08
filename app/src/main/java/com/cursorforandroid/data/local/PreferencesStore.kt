@@ -313,6 +313,12 @@ class PreferencesStore(context: Context) {
         // The next account starts its own migration and owes the server nothing of this one's pending changes.
         p.remove(Keys.pinsMigrated)
         p.remove(Keys.pendingPins)
+        // Pins, read markers and launched-here markers are the account's, not the device's: with pin sync off
+        // nothing would ever rewrite them, so they would outlive the account they belong to. The demo re-seeds
+        // its own pins on the way back in.
+        p.remove(Keys.pinned)
+        p.remove(Keys.readMarkers)
+        p.remove(Keys.launchedHere)
     }
 
     private fun decodeMarkers(raw: String): Map<String, Long> =

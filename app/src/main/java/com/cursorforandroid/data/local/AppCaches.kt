@@ -27,6 +27,12 @@ class AppCaches(private val root: JsonDiskCache) {
     val catalog = CatalogCache(root.child("catalog"))
     val pullRequests = PullRequestCache(root.child("pullrequests"))
 
+    /**
+     * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
+     * flight cannot be cancelled, so this is what keeps it from landing behind [clear].
+     */
+    fun invalidate() = root.invalidate()
+
     suspend fun clear() = root.clear()
 }
 
