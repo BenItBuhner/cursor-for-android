@@ -97,6 +97,8 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
+    // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
+    // lists never disagree about which chats are visible; the cards are newest first.
     val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
@@ -173,7 +175,7 @@ fun HomeScreen(
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth())
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
             }
         }
     }

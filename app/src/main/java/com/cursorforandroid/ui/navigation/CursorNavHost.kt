@@ -92,10 +92,25 @@ fun CursorNavHost(
     }
 
     PredictiveBackHandler(enabled = stack.canPop) { events ->
-        val under = stack.underTop ?: return@PredictiveBackHandler
-        val gesture = scene.beginGesture(under)
+        val under = stack.underTop
+        if (under == null) {
+            // The stack emptied out in the frame before the callback's enabled state caught up. The gesture is ours all
+            // the same, and its flow must be consumed to the end — returning early is an error in the handler — so it is
+            // seen through with nothing to show for it.
+            try {
+                events.collect { }
+            } catch (_: CancellationException) {
+                return@PredictiveBackHandler
+            }
+            stack.pop()
+            return@PredictiveBackHandler
+        }
+        // The token is taken before anything can suspend: a gesture cancelled while the scene is still being handed
+        // over must be able to release it, or no navigation would ever move the scene again.
+        val gesture = scene.claimGesture()
         var originY: Float? = null
         try {
+            scene.beginGesture(under)
             events.collect { event ->
                 if (originY == null) {
                     originY = event.touchY
@@ -120,7 +135,17 @@ fun CursorNavHost(
         }
         // Committed: pop now and let the stack observer finish the animation from where the finger left it.
         scene.endGesture(gesture)
-        stack.pop()
+        if (!stack.pop()) {
+            // Nothing left to pop: the stack moved while the finger was down and the observer, finding the gesture in
+            // charge, left the scene alone. It has nothing new to observe now, so the scene is caught up by hand.
+            scope.launch {
+                try {
+                    scene.moveTo(stack.top, stack)
+                } catch (_: CancellationException) {
+                    // Another navigation or gesture took the scene over first.
+                }
+            }
+        }
     }
 
     val density = LocalDensity.current
@@ -215,12 +240,19 @@ private class NavScene(initialTop: NavEntry) {
     val gestureActive: Boolean get() = gesture != 0
 
     /**
-     * A back gesture began over [top]; [revealed] is what it uncovers. An in-flight transition toward the same pair
-     * hands over its progress (and is interrupted, so it cannot finish underneath the finger). Returns the token
-     * [endGesture] expects.
+     * A back gesture takes the scene over: until [endGesture] is called with the returned token, no navigation moves
+     * it. Synchronous on purpose, so the caller holds the token before anything that can be cancelled runs.
      */
-    suspend fun beginGesture(revealed: NavEntry): Int {
+    fun claimGesture(): Int {
         gesture = ++gestureCount
+        return gesture
+    }
+
+    /**
+     * The gesture that claimed the scene began over [top]; [revealed] is what it uncovers. An in-flight transition
+     * toward the same pair hands over its progress (and is interrupted, so it cannot finish underneath the finger).
+     */
+    suspend fun beginGesture(revealed: NavEntry) {
         if (under?.id != revealed.id) {
             under = revealed
             progress.snapTo(0f)
@@ -229,7 +261,6 @@ private class NavScene(initialTop: NavEntry) {
             progress.snapTo(progress.value)
             dragY.snapTo(dragY.value)
         }
-        return gesture
     }
 
     /** Ends the gesture with this token; false if a newer gesture has already taken the scene over. */
