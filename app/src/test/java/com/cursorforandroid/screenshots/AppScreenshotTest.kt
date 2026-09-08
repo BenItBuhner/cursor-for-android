@@ -1,5 +1,6 @@
 package com.cursorforandroid.screenshots
 
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
@@ -27,6 +28,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.ActivityGroup
@@ -84,6 +86,15 @@ class AppScreenshotTest {
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
+    /**
+     * Robolectric has no Android Keystore, so the real [SecureKeyStore] would report itself unavailable and every
+     * capture would carry the warning a device never shows. An ordinary private file stands in for the encrypted one.
+     */
+    private fun appGraph(): AppGraph {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun App(graph: AppGraph) {
@@ -125,7 +136,7 @@ class AppScreenshotTest {
 
     @Test
     fun phoneWalkthrough() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        val graph = appGraph()
         compose.setContent { App(graph) }
 
         // The account sign-in is the one primary action; the pasted-key field sits folded behind "Use an API key instead".
@@ -244,7 +255,7 @@ class AppScreenshotTest {
 
     @Test
     fun oledBlack() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        val graph = appGraph()
         compose.setContent { App(graph) }
         enterDemo(graph)
         compose.onNodeWithContentDescription("Open sidebar").performClick()
@@ -273,7 +284,7 @@ class AppScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
     fun tabletTwoPane() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        val graph = appGraph()
         compose.setContent { App(graph) }
         enterDemo(graph)
         capture("09_tablet_home")

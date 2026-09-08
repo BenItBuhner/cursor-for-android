@@ -42,8 +42,11 @@ import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
-class AppGraph(context: Context) {
-    val keyStore = SecureKeyStore(context)
+class AppGraph(
+    context: Context,
+    /** Injectable for tests only: Robolectric has no Android Keystore, so the real one reports itself unavailable. */
+    val keyStore: SecureKeyStore = SecureKeyStore(context),
+) {
     val prefs = PreferencesStore(context)
     /** Disk copies of what the API last returned; the app opens on them and revalidates in the background. */
     val caches = AppCaches(JsonDiskCache(File(context.applicationContext.cacheDir, "cursor")))
