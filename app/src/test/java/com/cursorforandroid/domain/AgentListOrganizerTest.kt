@@ -155,6 +155,22 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `sidebar search filters organize but not the New Chat recent list`() {
+        val agents = listOf(
+            agent("login", name = "Fix login bug", updatedAgo = hour),
+            agent("billing", name = "Billing pipeline", updatedAgo = 0),
+            agent("arch", name = "Login archive", lifecycle = AgentLifecycle.ARCHIVED, updatedAgo = 2 * hour),
+        )
+        val queried = AgentListOrganizer.organize(agents, ListPreferences(), LocalAgentState(), query = "login", nowMillis = now, zone = zone)
+        assertThat(queried.flatMap { it.rows }.map { it.agent.id }).containsExactly("login")
+
+        val recent = AgentListOrganizer.recentRows(agents, ListPreferences(), LocalAgentState())
+        assertThat(recent.map { it.agent.id }).containsExactly("billing", "login").inOrder()
+        assertThat(AgentListOrganizer.recentRows(agents, ListPreferences(statuses = StatusFilter.entries.toSet()), LocalAgentState()).map { it.agent.id })
+            .containsExactly("billing", "login", "arch").inOrder()
+    }
+
+    @Test
     fun `sorting by name and by created`() {
         val agents = listOf(agent("b", name = "Beta", updatedAgo = 0), agent("a", name = "alpha", updatedAgo = hour))
         val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.None, sortOrder = SortOrder.Name), LocalAgentState(), nowMillis = now, zone = zone)

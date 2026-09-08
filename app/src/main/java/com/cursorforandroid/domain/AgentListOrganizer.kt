@@ -30,8 +30,9 @@ data class LocalAgentState(
 )
 
 /**
- * Pure grouping / filtering / sorting of agents. Everything the Customize sheet and the search field can
- * do is expressed here so it can be unit-tested without Android.
+ * Pure grouping / filtering / sorting of agents. Everything the Customize sheet and the sidebar search field
+ * can do is expressed here so it can be unit-tested without Android. Search is a find-in-rail: [organize]
+ * takes [query], [recentRows] does not.
  */
 object AgentListOrganizer {
 
@@ -94,6 +95,16 @@ object AgentListOrganizer {
             agent.branchName?.contains(q, ignoreCase = true) == true ||
             agent.summary?.contains(q, ignoreCase = true) == true
     }
+
+    /**
+     * The New Chat pane (and the widget's Recent mode): Customize / Chats filters apply, the sidebar search
+     * field does not. Newest first, pinned mixed in by recency rather than pulled into their own group.
+     */
+    fun recentRows(agents: List<Agent>, prefs: ListPreferences, local: LocalAgentState): List<AgentRow> =
+        agents
+            .map { toRow(it, local) }
+            .filter { matchesFilters(it, prefs) }
+            .sortedByDescending { it.agent.updatedAtMillis }
 
     fun sort(rows: List<AgentRow>, order: SortOrder): List<AgentRow> = when (order) {
         SortOrder.Updated -> rows.sortedByDescending { it.agent.updatedAtMillis }

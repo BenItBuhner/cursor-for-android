@@ -43,11 +43,9 @@ object WidgetList {
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentRow> = when (mode) {
-        // The New Chat pane's recent list: every row the Chats filters let through, newest first.
-        WidgetMode.Recent -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
-            .flatMap { it.rows }
-            .distinctBy { it.agent.id }
-            .sortedByDescending { it.agent.updatedAtMillis }
+        // The New Chat pane's recent list: every row the Chats filters let through, newest first. Sidebar search
+        // is a find-in-rail, not a second filter on this list.
+        WidgetMode.Recent -> AgentListOrganizer.recentRows(agents, prefs, local)
         // The sidebar's "Pinned" group, in the sidebar's order.
         WidgetMode.Pinned -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
             .firstOrNull { it.key == "pinned" }?.rows.orEmpty()
