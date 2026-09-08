@@ -272,13 +272,13 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
 
 /**
  * Leading state glyph of a sidebar row (12px slot). Web semantics: stepping dot grid while running, unread blue
- * dot, error red dot, nothing for a plain read agent. A read agent that pushed shows what it pushed, in the same
- * glyphs and tints as the recent rows and the conversation header: the pull-request glyph in the git-added green
- * once it has a PR, else the branch glyph in a neutral tint. The API reports a PR's URL but never its state, so
- * neither glyph may borrow GitHub's merged purple — a chat whose PR is open would read as merged.
+ * dot, error red dot, nothing for a plain read agent. A read agent that pushed shows what it pushed, as the recent
+ * rows do: the pull-request glyph in the colour of the state GitHub reports ([pullRequestTint] — green open, grey
+ * draft, purple merged, red closed, neutral while the state is not known), else the branch glyph in a neutral tint.
+ * The Cloud Agents API only names a PR, so purple is never a guess: it appears once GitHub has said "merged".
  */
 @Composable
-fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Boolean, modifier: Modifier = Modifier) {
+fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Boolean, pullRequest: PullRequestState?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     Box(modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
         when (indicator) {
@@ -286,7 +286,7 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
             AgentIndicator.Unread -> Dot(colors.unreadDot)
             AgentIndicator.Error -> Dot(colors.red)
             AgentIndicator.Read -> when {
-                hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(16.dp))
+                hasPullRequest -> Icon(CursorIcons.GitPullRequest, pullRequest?.label ?: "Pull request", tint = pullRequestTint(pullRequest), modifier = Modifier.size(16.dp))
                 hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))

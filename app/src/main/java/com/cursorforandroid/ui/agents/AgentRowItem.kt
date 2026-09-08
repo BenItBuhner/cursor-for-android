@@ -88,7 +88,7 @@ fun AgentRowItem(
                 .padding(start = 8.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest)
+            StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
             Spacer(Modifier.width(10.dp))
             Text(
                 agent.name,
