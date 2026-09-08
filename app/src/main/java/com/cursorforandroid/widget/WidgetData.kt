@@ -37,6 +37,7 @@ data class WidgetSnapshot(
     val prefs: ListPreferences,
     val local: LocalAgentState,
     val theme: ThemeMode,
+    val oledBlack: Boolean = false,
 ) {
     val isSignedOut: Boolean get() = session is SessionState.SignedOut
 
@@ -61,9 +62,9 @@ object WidgetData {
         graph.prefs.listPreferences,
         // The Git filter goes by the pull request states the app last read; the widget itself never asks GitHub.
         combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states -> local.copy(pullRequests = states) },
-        graph.prefs.themeMode,
-    ) { session, list, prefs, local, theme ->
-        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, theme)
+        combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
+    ) { session, list, prefs, local, appearance ->
+        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second)
     }.distinctUntilChanged()
 
     suspend fun snapshot(graph: AppGraph): WidgetSnapshot = snapshots(graph).first()

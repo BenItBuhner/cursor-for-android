@@ -4,10 +4,14 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.GitHubApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
+import com.cursorforandroid.data.auth.CursorLoginEndpoints
+import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
@@ -24,6 +28,7 @@ import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
@@ -48,17 +53,28 @@ class AppGraph(context: Context) {
         isDemo = false,
     )
     private val demoBackend = DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
+    /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
+    private val accountClient = CursorApiFactory.loginClient()
 
     val session = SessionManager(
         keyStore,
         prefs,
         realBackend,
         demoBackend,
-        browserLogin = CursorLogin(CursorApiFactory.loginClient()),
+        browserLogin = CursorLogin(accountClient),
         // What the key is called on cursor.com/dashboard/api, so the user can tell this phone's key from others.
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
     )
     val agents = AgentRepository(session, prefs, attachments, caches.agents)
+    /** The account session the pin RPCs take, derived from the stored key when needed and kept in memory only. */
+    val sessionTokens = SessionTokenProvider(accountClient, { keyStore.apiKey() })
+    /** Pins shared with the desktop Agents window and the iOS app through the account. */
+    val pins = PinRepository(
+        session = session,
+        prefs = prefs,
+        agents = agents,
+        api = BackgroundComposerApi(ConnectJsonClient(accountClient, CursorLoginEndpoints.API_URL), sessionTokens),
+    )
     val catalog = CatalogRepository(session, caches.catalog)
     /** Where the agents' pull requests stand, read from GitHub: the API names a PR but never says if it is open, merged or closed. */
     val pullRequests = PullRequestRepository(
@@ -96,6 +112,8 @@ class AppGraph(context: Context) {
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()
+            pins.reset()
+            sessionTokens.clear()
             // Signing out of one real account and into another keeps the same backend, so the list must be
             // reset explicitly or the previous account's agents would show.
             agents.reset()

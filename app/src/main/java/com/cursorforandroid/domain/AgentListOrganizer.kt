@@ -146,6 +146,21 @@ object AgentListOrganizer {
         return sections
     }
 
+    /**
+     * The New Chat pane's recent list: Chats filters apply, sidebar search does not. Pinned chats are included
+     * once, newest first, matching the home-screen widget's Recent mode.
+     */
+    fun recentRows(
+        agents: List<Agent>,
+        prefs: ListPreferences,
+        local: LocalAgentState,
+        nowMillis: Long = AppClock.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): List<AgentRow> = organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone)
+        .flatMap { it.rows }
+        .distinctBy { it.agent.id }
+        .sortedByDescending { it.agent.updatedAtMillis }
+
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"
         AgentIndicator.Unread -> "Unread"

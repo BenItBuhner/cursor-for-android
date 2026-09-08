@@ -87,7 +87,8 @@ class AppScreenshotTest {
     private fun App(graph: AppGraph) {
         var pending by remember { mutableStateOf<String?>(null) }
         val mode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.Dark)
-        CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode) {
+        val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+        CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode, oledBlack = oledBlack) {
             // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
             CompositionLocalProvider(LocalRippleConfiguration provides null) {
                 CursorRoot(graph = graph, deepLinkAgentId = pending, onDeepLinkConsumed = { pending = null })
@@ -205,6 +206,28 @@ class AppScreenshotTest {
         compose.onNodeWithContentDescription("Back").performClick()
         scrollListTo("Ask Cursor to build, fix bugs, explore")
         capture("08_home_light")
+    }
+
+    @Test
+    fun oledBlack() {
+        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        compose.setContent { App(graph) }
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText("Appearance")
+        compose.onNodeWithText("Cursor Dark").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
+        waitForText("OLED black")
+        capture("20_settings_dark")
+        compose.onNodeWithText("OLED black").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.oledBlack.first() } }
+        compose.waitForIdle()
+        capture("21_settings_oled")
+        compose.onNodeWithContentDescription("Back").performClick()
+        scrollListTo("Ask Cursor to build, fix bugs, explore")
+        capture("22_home_oled")
     }
 
     @Test
