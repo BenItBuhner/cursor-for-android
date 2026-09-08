@@ -152,6 +152,31 @@ class AgentsViewModelTest {
     }
 
     @Test
+    fun `each completed refresh re-reads the pull requests once their own interval has passed`() = runBlocking<Unit> {
+        val vm = AgentsViewModel(graph, pollIntervalMs = 100)
+        vm.loaded()
+        awaitUntil { graph.pullRequests.statuses.value.isNotEmpty() }
+        val first = graph.pullRequests.statuses.value
+        assertThat(first.values.map { it.checkedAtMillis }.toSet()).containsExactly(now)
+
+        val polling = vm.pollWhileVisible()
+        try {
+            // A poll while the states are fresh leaves them alone, however many times the list is fetched.
+            now += 60_000
+            awaitUntil { graph.agents.lastRefreshedAt == now }
+            delay(300)
+            assertThat(graph.pullRequests.statuses.value).isEqualTo(first)
+
+            // Past the interval an open pull request is re-read on, without a single URL having changed.
+            now += 10 * 60_000
+            awaitUntil { graph.pullRequests.statuses.value.values.any { it.checkedAtMillis == now } }
+            assertThat(graph.pullRequests.statuses.value.keys).isEqualTo(first.keys)
+        } finally {
+            polling.cancel()
+        }
+    }
+
+    @Test
     fun `a delete the server refuses keeps the chat and its transcript, and says so`() = runBlocking<Unit> {
         val vm = AgentsViewModel(graph)
         val id = vm.loaded().recentRows.first().agent.id

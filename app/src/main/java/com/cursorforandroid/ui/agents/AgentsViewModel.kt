@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -165,6 +166,13 @@ class AgentsViewModel(
             graph.agents.state.map { s -> s.agents.mapNotNullTo(LinkedHashSet()) { it.prUrl } }.distinctUntilChanged().collect { urls ->
                 graph.pullRequests.refresh(urls)
             }
+        }
+        viewModelScope.launch {
+            // Every completed list fetch, whoever asked for it — a pull, a poll, coming back to the foreground, the
+            // widget — is also when the pull requests are re-read, so an open one that has since been merged does not
+            // stay open for as long as the app is left running with the same chats in the list. What that costs is
+            // decided by their own re-read intervals, not by how often the list is fetched.
+            graph.agents.refreshCompleted.filter { it > 0L }.collect { refreshPullRequests() }
         }
     }
 
