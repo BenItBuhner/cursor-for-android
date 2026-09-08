@@ -1,5 +1,6 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.data.api.CursorJson
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import java.time.LocalDate
@@ -105,16 +106,75 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `git filter distinguishes pull requests, branches and no changes`() {
+    fun `git filter goes by the pull request state, with branches and no changes as no pull request`() {
         val agents = listOf(
-            agent("pr", branch = "cursor/x", pr = "https://github.com/acme/app/pull/1"),
-            agent("branch", branch = "cursor/y"),
+            agent("open", branch = "cursor/a", pr = "https://github.com/acme/app/pull/1"),
+            agent("draft", branch = "cursor/b", pr = "https://github.com/acme/app/pull/2"),
+            agent("merged", branch = "cursor/c", pr = "https://github.com/acme/app/pull/3"),
+            agent("closed", branch = "cursor/d", pr = "https://github.com/acme/app/pull/4"),
+            agent("branch", branch = "cursor/e"),
             agent("none"),
         )
-        fun ids(prefs: ListPreferences) = AgentListOrganizer.organize(agents, prefs, LocalAgentState(), nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.PullRequest)))).containsExactly("pr")
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.Branch)))).containsExactly("branch")
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.NoChanges)))).containsExactly("none")
+        val local = LocalAgentState(
+            pullRequests = mapOf(
+                "https://github.com/acme/app/pull/1" to PullRequestState.Open,
+                "https://github.com/acme/app/pull/2" to PullRequestState.Draft,
+                "https://github.com/acme/app/pull/3" to PullRequestState.Merged,
+                "https://github.com/acme/app/pull/4" to PullRequestState.Closed,
+            ),
+        )
+        fun ids(vararg git: GitFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(git = git.toSet()), local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(GitFilter.Open)).containsExactly("open")
+        assertThat(ids(GitFilter.Draft)).containsExactly("draft")
+        assertThat(ids(GitFilter.Merged)).containsExactly("merged")
+        assertThat(ids(GitFilter.Closed)).containsExactly("closed")
+        assertThat(ids(GitFilter.NoPullRequest)).containsExactly("branch", "none")
+        assertThat(ids(GitFilter.Open, GitFilter.Draft)).containsExactly("open", "draft")
+        assertThat(ids(*GitFilter.entries.toTypedArray())).hasSize(6)
+        assertThat(ids()).isEmpty()
+
+        val rows = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone).flatMap { it.rows }.associateBy { it.agent.id }
+        assertThat(rows.getValue("merged").pullRequest).isEqualTo(PullRequestState.Merged)
+        assertThat(rows.getValue("branch").pullRequest).isNull()
+    }
+
+    @Test
+    fun `a pull request whose state is not known is hidden only when every state is unchecked`() {
+        val agents = listOf(
+            agent("unknown", branch = "cursor/a", pr = "https://github.com/acme/app/pull/9"),
+            agent("none"),
+        )
+        fun ids(vararg git: GitFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(git = git.toSet()), LocalAgentState(), nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(GitFilter.Closed)).containsExactly("unknown")
+        assertThat(ids(GitFilter.Open, GitFilter.NoPullRequest)).containsExactly("unknown", "none")
+        assertThat(ids(GitFilter.NoPullRequest)).containsExactly("none")
+        assertThat(ids()).isEmpty()
+    }
+
+    @Test
+    fun `git filter saved by an earlier version is read into the states it stood for`() {
+        val json = """{"groupBy":"Repo","git":["Branch","PullRequest","NoChanges"]}"""
+        val all = CursorJson.decodeFromString(ListPreferences.serializer(), json)
+        assertThat(all.groupBy).isEqualTo(GroupBy.Repo)
+        assertThat(all.git).containsExactlyElementsIn(GitFilter.entries)
+
+        // "Pull request" alone meant every pull request; a branch or nothing both meant no pull request.
+        val prOnly = CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["PullRequest"]}""")
+        assertThat(prOnly.git).containsExactlyElementsIn(GitFilter.pullRequestStates)
+        val branchOnly = CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["Branch"]}""")
+        assertThat(branchOnly.git).containsExactly(GitFilter.NoPullRequest)
+
+        // A name nobody knows is dropped rather than failing the record, which would reset every other setting with it.
+        val odd = CursorJson.decodeFromString(ListPreferences.serializer(), """{"sortOrder":"Name","git":["Merged","Rebased"]}""")
+        assertThat(odd.sortOrder).isEqualTo(SortOrder.Name)
+        assertThat(odd.git).containsExactly(GitFilter.Merged)
+
+        val roundTrip = ListPreferences(git = setOf(GitFilter.Draft, GitFilter.NoPullRequest))
+        assertThat(CursorJson.decodeFromString(ListPreferences.serializer(), CursorJson.encodeToString(ListPreferences.serializer(), roundTrip))).isEqualTo(roundTrip)
+        assertThat(all.isDefault).isFalse()
+        assertThat(CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["Branch","PullRequest","NoChanges"]}""").isDefault).isTrue()
     }
 
     @Test
@@ -168,7 +228,8 @@ class AgentListOrganizerTest {
         val prefs = ListPreferences()
         assertThat(prefs.summaryFor(FilterKind.Repo)).isEqualTo("All")
         assertThat(prefs.summaryFor(FilterKind.Status)).isEqualTo("Read +3")
-        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("Branch +2")
+        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("Open +4")
+        assertThat(prefs.copy(git = setOf(GitFilter.Merged, GitFilter.Closed)).summaryFor(FilterKind.Git)).isEqualTo("Merged +1")
         assertThat(prefs.summaryFor(FilterKind.Source)).isEqualTo("Cloud +3")
         assertThat(prefs.copy(repos = setOf("acme/app")).summaryFor(FilterKind.Repo)).isEqualTo("app")
         assertThat(prefs.copy(statuses = emptySet()).summaryFor(FilterKind.Status)).isEqualTo("None")
