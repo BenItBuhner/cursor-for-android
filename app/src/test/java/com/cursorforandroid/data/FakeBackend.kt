@@ -91,6 +91,10 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationGate: CompletableDeferred<Unit>? = null
     /** When set, the agent detail endpoint waits for it before answering. */
     @Volatile var getAgentGate: CompletableDeferred<Unit>? = null
+    /** When set, the model list waits for it before answering. */
+    @Volatile var modelsGate: CompletableDeferred<Unit>? = null
+    /** When set, the repository list waits for it before answering, like the slow endpoint it is. */
+    @Volatile var repositoriesGate: CompletableDeferred<Unit>? = null
     var modelItems: List<ModelListItemDto> = emptyList()
     var repositoryUrls: List<String> = emptyList()
     private val ids = AtomicInteger()
@@ -151,11 +155,13 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun models(): ListModelsResponseDto {
         modelsCalls++
+        modelsGate?.await()
         failModels?.let { throw it }
         return ListModelsResponseDto(items = modelItems)
     }
     override suspend fun repositories(): ListRepositoriesResponseDto {
         repositoriesCalls++
+        repositoriesGate?.await()
         failRepositories?.let { throw it }
         return ListRepositoriesResponseDto(items = repositoryUrls.map(::RepositoryDto))
     }

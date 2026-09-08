@@ -72,6 +72,19 @@ fun Throwable.toCursorError(): CursorApiException? {
     )
 }
 
+/**
+ * How long the server asked us to wait, from a `Retry-After` on a throttled response. Delta-seconds only — the HTTP-date
+ * form would need the server's clock — and capped, so a header we cannot make sense of cannot wedge a picker shut.
+ */
+fun Throwable.retryAfterMillis(): Long? {
+    val http = this as? HttpException ?: return null
+    if (http.code() != 429 && http.code() != 503) return null
+    val seconds = http.response()?.headers()?.get("Retry-After")?.trim()?.toLongOrNull() ?: return null
+    return seconds.takeIf { it > 0 }?.coerceAtMost(MAX_RETRY_AFTER_SECONDS)?.times(1000L)
+}
+
+private const val MAX_RETRY_AFTER_SECONDS = 15 * 60L
+
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {
