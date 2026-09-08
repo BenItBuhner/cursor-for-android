@@ -66,9 +66,27 @@ class RunMonitor(
     private val trackers = ConcurrentHashMap<String, Tracker>()
     private val detailRequested: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val stopping: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    private val finishedEmitted: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /**
+     * Runs already reported on [finished]. Kept across [stop] — the service comes and goes as agents do, and a run
+     * that finishes over a restart would otherwise be announced twice — and bounded, since nothing else would ever
+     * take an id out of it.
+     */
+    private val finishedEmitted = RecentIds(MAX_REMEMBERED_FINISHES)
 
     private class Tracker(val runId: String, val job: Job)
+
+    /** Remembers the last [max] ids it was shown, so "have I seen this?" cannot grow without end. */
+    private class RecentIds(private val max: Int) {
+        private val ids = LinkedHashSet<String>()
+
+        /** True the first time an id is offered, false every time after. */
+        @Synchronized
+        fun add(id: String): Boolean {
+            if (!ids.add(id)) return false
+            if (ids.size > max) ids.iterator().run { next(); remove() }
+            return true
+        }
+    }
 
     val isRunning: Boolean get() = scope != null
 
@@ -102,7 +120,6 @@ class RunMonitor(
         trackers.clear()
         detailRequested.clear()
         stopping.clear()
-        finishedEmitted.clear()
         _state.value = LiveActivityState()
     }
 
@@ -125,7 +142,9 @@ class RunMonitor(
         // tracker is dropped so an intermediate state never reports fewer agents than it lists.
         _state.update { st -> st.copy(runningCount = running.size) }
         val wanted = running.filter { it.latestRunId != null }.take(maxTracked).associateBy { it.id }
-        // Agents without a known run id come from a summary-only list: load the detail record once to learn it.
+        // Agents without a known run id come from a summary-only list: load the detail record once to learn it. The
+        // note is dropped once an agent stops running, so the set tracks the list rather than everything ever seen.
+        detailRequested.retainAll(running.mapTo(HashSet()) { it.id })
         running.filter { it.latestRunId == null && detailRequested.add(it.id) }.forEach { agent ->
             scope.launch { agents.loadDetail(agent.id) }
         }
@@ -239,5 +258,7 @@ class RunMonitor(
          */
         const val MAX_TRACKED = 8
         private const val FULL_REFRESH_EVERY = 5
+        /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
+        private const val MAX_REMEMBERED_FINISHES = 256
     }
 }

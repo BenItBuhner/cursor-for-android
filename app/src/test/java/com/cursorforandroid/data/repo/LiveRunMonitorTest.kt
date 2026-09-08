@@ -221,6 +221,30 @@ class LiveRunMonitorTest {
         assertThat(finished).isEmpty()
     }
 
+    /** The service starts and stops as agents come and go; a run finishing across one restart is still one finish. */
+    @Test
+    fun `a finish across a stop and start is still reported once`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        monitor.start()
+        awaitUntil { running().size == 1 }
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { finished.size == 1 }
+
+        // The run is running again as far as the list is concerned, which is how a restart rediscovers it.
+        monitor.stop()
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "RUNNING")
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        streamer.reset("run-1")
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        monitor.start()
+        awaitUntil { monitor.state.value.hasReconciled }
+        delay(200)
+        assertThat(finished.map { it.runId }).containsExactly("run-1")
+    }
+
     @Test
     fun `tracks at most eight agents like the iOS Live Activity but counts every running one`() = runBlocking {
         repeat(10) { api.addRunningAgent("bc-$it", "Agent $it", "run-$it") }
