@@ -9,6 +9,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -25,8 +26,9 @@ object CursorLoginEndpoints {
 }
 
 /**
- * One browser-login attempt. The [verifier] never leaves the device except in the body of `/auth/poll`; the page only
- * ever sees its SHA-256 [challenge][loginUrl], so nothing that can observe the browser can redeem the login.
+ * One browser-login attempt. The [verifier] never leaves the device except to `/auth/poll` — in its body, or in the
+ * query string of the GET a backend without that route falls back to; the page only ever sees its SHA-256
+ * [challenge][loginUrl], so nothing that can observe the browser can redeem the login.
  */
 data class LoginHandshake(val uuid: String, val verifier: String, val loginUrl: String)
 
@@ -166,19 +168,27 @@ class CursorLogin(
         val base = "${apiUrl.trimEnd('/')}/auth/poll"
         val builder = Request.Builder().header("Accept", "application/json")
         return if (useGet) {
-            builder.url("$base?uuid=${handshake.uuid}&verifier=${handshake.verifier}").get().build()
+            val url = base.toHttpUrl().newBuilder()
+                .addQueryParameter("uuid", handshake.uuid)
+                .addQueryParameter("verifier", handshake.verifier)
+                .build()
+            builder.url(url).get().build()
         } else {
             val json = CursorJson.encodeToString(PollRequestDto.serializer(), PollRequestDto(handshake.uuid, handshake.verifier))
             builder.url(base).post(ConnectRpc.jsonBody(json)).build()
         }
     }
 
-    /** Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text. */
+    /**
+     * Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text.
+     * Anchored on the whole shape — the word, the route this actually is, and the verdict — so a message that merely
+     * mentions a missing route somewhere else cannot send the poll down the fallback.
+     */
     private fun isRouteNotFound(body: String): Boolean {
         if (!body.startsWith("{")) return false
         val message = runCatching { CursorJson.parseToJsonElement(body).jsonObject["message"]?.jsonPrimitive?.content }.getOrNull()
             ?: return false
-        return Regex("""^Route \w+:""").containsMatchIn(message) && message.contains("not found")
+        return message.startsWith("Route ") && message.contains("/auth/poll") && message.contains("not found")
     }
 
     private fun ByteArray.base64Url(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(this)

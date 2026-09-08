@@ -95,6 +95,21 @@ class CursorLoginTest {
     }
 
     @Test
+    fun `a 404 that is not this route's keeps the verifier out of the query string`() = runBlocking<Unit> {
+        // Pending logins answer "Not found" in plain text; a route-not-found for something else is not our cue either.
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"message":"Route GET:/v1/nope not found","error":"Not Found","statusCode":404}"""))
+        server.enqueue(MockResponse().setBody("""{"accessToken":"at","refreshToken":"rt"}"""))
+        val handshake = login.startHandshake()
+
+        assertThat(login.awaitTokens(handshake).accessToken).isEqualTo("at")
+
+        assertThat(server.takeRequest().method).isEqualTo("POST")
+        val second = server.takeRequest()
+        assertThat(second.method).isEqualTo("POST")
+        assertThat(second.path).doesNotContain(handshake.verifier)
+    }
+
+    @Test
     fun `gives up after three consecutive unexpected answers`() = runBlocking<Unit> {
         repeat(3) { server.enqueue(MockResponse().setResponseCode(500)) }
 
