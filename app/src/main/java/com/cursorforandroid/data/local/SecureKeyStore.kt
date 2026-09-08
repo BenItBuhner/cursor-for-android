@@ -183,16 +183,19 @@ class SecureKeyStore(
      */
     private fun migrateLegacyFallback(prefs: SharedPreferences) {
         if (!legacyFallbackFile().isFile) return
-        runCatching {
+        // Committed rather than applied, and the plaintext file is only deleted once it has landed: an apply() that
+        // had not reached the disk yet would take the values with it.
+        val carried = runCatching {
             val legacy = context.getSharedPreferences(LEGACY_FALLBACK_FILE, Context.MODE_PRIVATE)
-            val carried = MIGRATED_KEYS.mapNotNull { key ->
+            val values = MIGRATED_KEYS.mapNotNull { key ->
                 legacy.getString(key, null)?.takeIf { it.isNotBlank() && prefs.getString(key, null) == null }?.let { key to it }
             }
-            if (carried.isNotEmpty()) {
-                prefs.edit().apply { carried.forEach { (key, value) -> putString(key, value) } }.commit()
-            }
-        }.onFailure { Log.w(TAG, "Couldn't migrate the legacy plaintext store", it) }
-        discardLegacyFallback()
+            values.isEmpty() || prefs.edit().apply { values.forEach { (key, value) -> putString(key, value) } }.commit()
+        }.getOrElse {
+            Log.w(TAG, "Couldn't migrate the legacy plaintext store", it)
+            false
+        }
+        if (carried) discardLegacyFallback()
     }
 
     private fun discardLegacyFallback() {
