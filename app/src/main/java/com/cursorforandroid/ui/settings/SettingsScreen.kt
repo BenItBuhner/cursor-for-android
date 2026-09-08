@@ -53,6 +53,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.api.GitHubEndpoints
+import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateManager
@@ -97,6 +98,7 @@ fun SettingsScreen(
     val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
     val session by graph.session.state.collectAsStateWithLifecycle()
     val credential = (session as? SessionState.SignedIn)?.credential
+    val keyStorage by graph.keyStore.availability.collectAsStateWithLifecycle()
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
@@ -136,6 +138,16 @@ fun SettingsScreen(
                         // The key this app minted lapses on its own; a fresh sign-in issues a new one.
                         InfoRow("Key expires", TimeFormat.date(credential.expiresAtMs))
                     }
+                }
+                if (keyStorage != SecureKeyStore.Availability.Encrypted) {
+                    HairlineDivider()
+                    InfoRow(
+                        "Key storage",
+                        when (keyStorage) {
+                            SecureKeyStore.Availability.Reset -> "Reset — sign in again"
+                            else -> "Unavailable on this device"
+                        },
+                    )
                 }
                 HairlineDivider()
                 LinkRow(if (credential?.method == SignInMethod.Cursor) "Manage this app's key" else "Manage API keys", CursorEndpoints.DASHBOARD_API_KEYS, uriHandler::openUri)

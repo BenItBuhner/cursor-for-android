@@ -17,9 +17,12 @@ class McpServerStoreTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
+    /** Robolectric has no Android Keystore, so the encrypted store is stood in for by an ordinary private file. */
+    private fun secureStore() = SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }
+
     @Test
     fun `saves, toggles and deletes persist across store instances`() {
-        val secure = SecureKeyStore(context)
+        val secure = secureStore()
         val store = McpServerStore(secure)
         assertThat(store.servers.value).isEmpty()
 
@@ -32,14 +35,14 @@ class McpServerStoreTest {
 
         // Replacing by id keeps the position; a fresh store reads the same list back from the encrypted prefs.
         store.save(github.copy(command = "bunx"))
-        val reloaded = McpServerStore(SecureKeyStore(context))
+        val reloaded = McpServerStore(secureStore())
         assertThat(reloaded.servers.value.map { it.id to it.command }).containsExactly("1" to "", "2" to "bunx").inOrder()
         assertThat(reloaded.servers.value.first().enabled).isFalse()
         assertThat(reloaded.servers.value.last().env).containsExactly("TOKEN", "t")
 
         reloaded.delete("1")
         reloaded.delete("2")
-        assertThat(McpServerStore(SecureKeyStore(context)).servers.value).isEmpty()
+        assertThat(McpServerStore(secureStore()).servers.value).isEmpty()
         assertThat(secure.mcpServersJson()).isNull()
     }
 }

@@ -131,6 +131,11 @@ class SessionManager(
         // The encrypted key store initialises the Android Keystore on first access; never on the main thread.
         val key = withContext(Dispatchers.IO) { keyStore.apiKey() }
         if (key.isNullOrBlank()) {
+            _signedOutReason.value = when (keyStore.availability.value) {
+                SecureKeyStore.Availability.Encrypted -> null
+                SecureKeyStore.Availability.Reset -> KEY_STORE_RESET_MESSAGE
+                SecureKeyStore.Availability.Unavailable -> KEY_STORE_UNAVAILABLE_MESSAGE
+            }
             _state.value = SessionState.SignedOut
             return
         }
@@ -297,5 +302,8 @@ class SessionManager(
     private companion object {
         const val RESTORE_TIMEOUT_MS = 8_000L
         const val STORAGE_FAILURE_MESSAGE = "This device's saved sign-in couldn't be read. Sign in again."
+        const val KEY_STORE_RESET_MESSAGE = "This device's secure storage had to be reset, so the saved key was cleared. Sign in again."
+        const val KEY_STORE_UNAVAILABLE_MESSAGE =
+            "This device can't store a key securely right now, so signing in will only last until the app closes."
     }
 }
