@@ -259,6 +259,15 @@ object CursorIcons {
         }
     }
 
+    /** Concentric rings: a goal the agent keeps working toward. */
+    val Target: ImageVector by lazy {
+        icon("Target") {
+            circle(12f, 12f, 10f)
+            circle(12f, 12f, 6f)
+            circle(12f, 12f, 2f)
+        }
+    }
+
     val Cloud: ImageVector by lazy { icon("Cloud") { path("M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z") } }
 
     val Desktop: ImageVector by lazy {

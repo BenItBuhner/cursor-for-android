@@ -1,5 +1,6 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.data.api.CursorJson
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import java.time.LocalDate
@@ -56,9 +57,36 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `active lifecycle without run status counts as running`() {
+    fun `active lifecycle without run status is at rest, not running`() {
+        // The server reports ACTIVE for every unarchived agent, finished or not; only a run status can say "running".
         val a = agent("x", lifecycle = AgentLifecycle.ACTIVE, runStatus = null)
-        assertThat(a.isRunning).isTrue()
+        assertThat(a.isRunning).isFalse()
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState())).isEqualTo(AgentIndicator.Unread)
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState(readMarkers = mapOf("x" to now)))).isEqualTo(AgentIndicator.Read)
+    }
+
+    @Test
+    fun `the recent list is the sidebar's rows newest first, pins and groups aside, however the sidebar is arranged`() {
+        val agents = listOf(
+            agent("today", updatedAgo = 2 * hour),
+            agent("yesterday", updatedAgo = day + hour),
+            agent("pinned", updatedAgo = 3 * day),
+            agent("newest", updatedAgo = 0),
+            agent("arch", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val local = LocalAgentState(pinnedIds = setOf("pinned"))
+        val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
+        assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday").inOrder()
+        // The same rows (the archived one is filtered out on both surfaces), by recency, the pinned one in its place.
+        val recent = AgentListOrganizer.recentRows(sections)
+        assertThat(recent.map { it.agent.id }).containsExactly("newest", "today", "yesterday", "pinned").inOrder()
+        assertThat(recent).isEqualTo(AgentListOrganizer.recentRows(agents, ListPreferences(), local, nowMillis = now, zone = zone))
+        // Grouping and sort order arrange the sidebar only; the recents stay newest first.
+        val byName = ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name)
+        assertThat(AgentListOrganizer.recentRows(AgentListOrganizer.organize(agents, byName, local, nowMillis = now, zone = zone))).isEqualTo(recent)
+        // A filter narrows both surfaces alike.
+        val onlyRunning = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
+        assertThat(AgentListOrganizer.recentRows(onlyRunning)).isEmpty()
     }
 
     @Test
@@ -105,16 +133,75 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `git filter distinguishes pull requests, branches and no changes`() {
+    fun `git filter goes by the pull request state, with branches and no changes as no pull request`() {
         val agents = listOf(
-            agent("pr", branch = "cursor/x", pr = "https://github.com/acme/app/pull/1"),
-            agent("branch", branch = "cursor/y"),
+            agent("open", branch = "cursor/a", pr = "https://github.com/acme/app/pull/1"),
+            agent("draft", branch = "cursor/b", pr = "https://github.com/acme/app/pull/2"),
+            agent("merged", branch = "cursor/c", pr = "https://github.com/acme/app/pull/3"),
+            agent("closed", branch = "cursor/d", pr = "https://github.com/acme/app/pull/4"),
+            agent("branch", branch = "cursor/e"),
             agent("none"),
         )
-        fun ids(prefs: ListPreferences) = AgentListOrganizer.organize(agents, prefs, LocalAgentState(), nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.PullRequest)))).containsExactly("pr")
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.Branch)))).containsExactly("branch")
-        assertThat(ids(ListPreferences(git = setOf(GitFilter.NoChanges)))).containsExactly("none")
+        val local = LocalAgentState(
+            pullRequests = mapOf(
+                "https://github.com/acme/app/pull/1" to PullRequestState.Open,
+                "https://github.com/acme/app/pull/2" to PullRequestState.Draft,
+                "https://github.com/acme/app/pull/3" to PullRequestState.Merged,
+                "https://github.com/acme/app/pull/4" to PullRequestState.Closed,
+            ),
+        )
+        fun ids(vararg git: GitFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(git = git.toSet()), local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(GitFilter.Open)).containsExactly("open")
+        assertThat(ids(GitFilter.Draft)).containsExactly("draft")
+        assertThat(ids(GitFilter.Merged)).containsExactly("merged")
+        assertThat(ids(GitFilter.Closed)).containsExactly("closed")
+        assertThat(ids(GitFilter.NoPullRequest)).containsExactly("branch", "none")
+        assertThat(ids(GitFilter.Open, GitFilter.Draft)).containsExactly("open", "draft")
+        assertThat(ids(*GitFilter.entries.toTypedArray())).hasSize(6)
+        assertThat(ids()).isEmpty()
+
+        val rows = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone).flatMap { it.rows }.associateBy { it.agent.id }
+        assertThat(rows.getValue("merged").pullRequest).isEqualTo(PullRequestState.Merged)
+        assertThat(rows.getValue("branch").pullRequest).isNull()
+    }
+
+    @Test
+    fun `a pull request whose state is not known is hidden only when every state is unchecked`() {
+        val agents = listOf(
+            agent("unknown", branch = "cursor/a", pr = "https://github.com/acme/app/pull/9"),
+            agent("none"),
+        )
+        fun ids(vararg git: GitFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(git = git.toSet()), LocalAgentState(), nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(GitFilter.Closed)).containsExactly("unknown")
+        assertThat(ids(GitFilter.Open, GitFilter.NoPullRequest)).containsExactly("unknown", "none")
+        assertThat(ids(GitFilter.NoPullRequest)).containsExactly("none")
+        assertThat(ids()).isEmpty()
+    }
+
+    @Test
+    fun `git filter saved by an earlier version is read into the states it stood for`() {
+        val json = """{"groupBy":"Repo","git":["Branch","PullRequest","NoChanges"]}"""
+        val all = CursorJson.decodeFromString(ListPreferences.serializer(), json)
+        assertThat(all.groupBy).isEqualTo(GroupBy.Repo)
+        assertThat(all.git).containsExactlyElementsIn(GitFilter.entries)
+
+        // "Pull request" alone meant every pull request; a branch or nothing both meant no pull request.
+        val prOnly = CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["PullRequest"]}""")
+        assertThat(prOnly.git).containsExactlyElementsIn(GitFilter.pullRequestStates)
+        val branchOnly = CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["Branch"]}""")
+        assertThat(branchOnly.git).containsExactly(GitFilter.NoPullRequest)
+
+        // A name nobody knows is dropped rather than failing the record, which would reset every other setting with it.
+        val odd = CursorJson.decodeFromString(ListPreferences.serializer(), """{"sortOrder":"Name","git":["Merged","Rebased"]}""")
+        assertThat(odd.sortOrder).isEqualTo(SortOrder.Name)
+        assertThat(odd.git).containsExactly(GitFilter.Merged)
+
+        val roundTrip = ListPreferences(git = setOf(GitFilter.Draft, GitFilter.NoPullRequest))
+        assertThat(CursorJson.decodeFromString(ListPreferences.serializer(), CursorJson.encodeToString(ListPreferences.serializer(), roundTrip))).isEqualTo(roundTrip)
+        assertThat(all.isDefault).isFalse()
+        assertThat(CursorJson.decodeFromString(ListPreferences.serializer(), """{"git":["Branch","PullRequest","NoChanges"]}""").isDefault).isTrue()
     }
 
     @Test
@@ -155,6 +242,22 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `recent rows ignore search and still honour Chats filters`() {
+        val agents = listOf(
+            agent("login", name = "Fix login", updatedAgo = hour),
+            agent("billing", name = "Billing pipeline"),
+            agent("gone", name = "Login leftover", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val prefs = ListPreferences()
+        val local = LocalAgentState()
+        val searched = AgentListOrganizer.organize(agents, prefs, local, query = "login", nowMillis = now, zone = zone)
+        assertThat(searched.flatMap { it.rows }.map { it.agent.id }).containsExactly("login")
+
+        val recent = AgentListOrganizer.recentRows(agents, prefs, local, nowMillis = now, zone = zone)
+        assertThat(recent.map { it.agent.id }).containsExactly("billing", "login").inOrder()
+    }
+
+    @Test
     fun `sorting by name and by created`() {
         val agents = listOf(agent("b", name = "Beta", updatedAgo = 0), agent("a", name = "alpha", updatedAgo = hour))
         val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.None, sortOrder = SortOrder.Name), LocalAgentState(), nowMillis = now, zone = zone)
@@ -168,7 +271,8 @@ class AgentListOrganizerTest {
         val prefs = ListPreferences()
         assertThat(prefs.summaryFor(FilterKind.Repo)).isEqualTo("All")
         assertThat(prefs.summaryFor(FilterKind.Status)).isEqualTo("Read +3")
-        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("Branch +2")
+        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("Open +4")
+        assertThat(prefs.copy(git = setOf(GitFilter.Merged, GitFilter.Closed)).summaryFor(FilterKind.Git)).isEqualTo("Merged +1")
         assertThat(prefs.summaryFor(FilterKind.Source)).isEqualTo("Cloud +3")
         assertThat(prefs.copy(repos = setOf("acme/app")).summaryFor(FilterKind.Repo)).isEqualTo("app")
         assertThat(prefs.copy(statuses = emptySet()).summaryFor(FilterKind.Status)).isEqualTo("None")

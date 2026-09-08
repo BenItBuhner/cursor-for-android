@@ -46,12 +46,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -214,6 +218,32 @@ fun Pill(
     }
 }
 
+/**
+ * The colour a pull request is shown in, GitHub's: green while open, grey as a draft, purple once merged, red when
+ * closed. A pull request whose state is not known is shown in the neutral pill colour.
+ */
+@Composable
+fun pullRequestTint(state: PullRequestState?): Color = when (state) {
+    PullRequestState.Open -> CursorTheme.colors.gitAdded
+    PullRequestState.Draft -> CursorTheme.colors.textTertiary
+    PullRequestState.Merged -> CursorTheme.colors.purple
+    PullRequestState.Closed -> CursorTheme.colors.red
+    null -> CursorTheme.colors.textSecondary
+}
+
+/** The pill a chat's pull request is shown as: its state, or just "Pull request" while the state is not known. */
+@Composable
+fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier) {
+    val tint = pullRequestTint(state)
+    Pill(
+        text = state?.label ?: "Pull request",
+        modifier = modifier,
+        icon = CursorIcons.GitPullRequest,
+        tint = tint,
+        fill = if (state != null) tint.copy(alpha = 0.14f) else CursorTheme.colors.fill,
+    )
+}
+
 /** Cursor's flat toggle at a tappable size (36 x 20): green track when on, 14 % fill when off, white knob. */
 @Composable
 fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
@@ -224,7 +254,9 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
         modifier
             .size(width = 36.dp, height = 20.dp)
             .background(track, CircleShape)
-            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch),
+            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch)
+            // On / off for TalkBack (and for tests that wait for the switch itself, not the preference behind it).
+            .semantics { toggleableState = ToggleableState(checked) },
     ) {
         Box(
             Modifier
