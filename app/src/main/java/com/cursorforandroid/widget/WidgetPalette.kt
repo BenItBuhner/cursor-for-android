@@ -6,20 +6,23 @@ import androidx.glance.unit.ColorProvider
 import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDarkColors
 import com.cursorforandroid.ui.theme.CursorLightColors
+import com.cursorforandroid.ui.theme.CursorOledColors
 import com.cursorforandroid.ui.theme.ThemeMode
 
 /**
  * [CursorColors] as Glance colour providers, following the app's theme setting: Cursor Dark and Cursor Light are
  * fixed colours; "Match system" is a day / night pair the launcher resolves itself, so the widget flips with the
- * system theme even while the app is not running. Only the tokens the widget draws are exposed — the sidebar
- * surface and the text / icon / state colours of its rows.
+ * system theme even while the app is not running. OLED black replaces the dark side of either pair. Only the tokens
+ * the widget draws are exposed — the sidebar surface and the text / icon / state colours of its rows.
  */
-class WidgetPalette private constructor(private val mode: ThemeMode) {
+class WidgetPalette private constructor(private val mode: ThemeMode, private val oledBlack: Boolean) {
+
+    private val darkColors: CursorColors = if (oledBlack) CursorOledColors else CursorDarkColors
 
     private fun token(pick: (CursorColors) -> Color): ColorProvider = when (mode) {
-        ThemeMode.Dark -> ColorProvider(pick(CursorDarkColors))
+        ThemeMode.Dark -> ColorProvider(pick(darkColors))
         ThemeMode.Light -> ColorProvider(pick(CursorLightColors))
-        ThemeMode.System -> ColorProvider(day = pick(CursorLightColors), night = pick(CursorDarkColors))
+        ThemeMode.System -> ColorProvider(day = pick(CursorLightColors), night = pick(darkColors))
     }
 
     /** `--cursor-sidebar`. */
@@ -36,6 +39,6 @@ class WidgetPalette private constructor(private val mode: ThemeMode) {
     val gitAdded: ColorProvider = token { it.gitAdded }
 
     companion object {
-        fun forMode(mode: ThemeMode): WidgetPalette = WidgetPalette(mode)
+        fun forMode(mode: ThemeMode, oledBlack: Boolean = false): WidgetPalette = WidgetPalette(mode, oledBlack)
     }
 }

@@ -76,12 +76,13 @@ class WidgetConfigureActivity : ComponentActivity() {
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
+            val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
             // Null until the widget's stored choice has been read: a fresh widget starts on the default.
             var selected by remember { mutableStateOf<WidgetMode?>(null) }
             LaunchedEffect(Unit) {
                 selected = WidgetMode.parse(getAppWidgetState(this@WidgetConfigureActivity, PreferencesGlanceStateDefinition, glanceId)[ChatsWidget.MODE_KEY])
             }
-            CursorTheme(mode = themeMode) {
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 WidgetConfigureScreen(
                     selected = selected,
                     onPick = { mode ->

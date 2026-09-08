@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -34,6 +35,7 @@ private data class CachedUser(
     val firstName: String?,
     val lastName: String?,
     val userId: Long?,
+    val profilePictureUrl: String? = null,
 )
 
 /** Everything that is device-local: theme, list customization, pins, read markers and composer defaults. */
@@ -46,6 +48,7 @@ class PreferencesStore(context: Context) {
 
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
+        val oledBlack = booleanPreferencesKey("oled_black")
         val listPrefs = stringPreferencesKey("list_prefs")
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
@@ -62,7 +65,73 @@ class PreferencesStore(context: Context) {
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
+        val autoUpdate = booleanPreferencesKey("auto_update")
+        val includePreReleases = booleanPreferencesKey("update_include_pre_releases")
+        val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
+        val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
+        val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
+        val pinSync = booleanPreferencesKey("pin_sync")
+        val pinsMigrated = booleanPreferencesKey("pins_migrated")
+        val pendingPins = stringPreferencesKey("pending_pin_changes")
     }
+
+    // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
+
+    /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
+    val autoUpdate: Flow<Boolean> = store.data.map { it[Keys.autoUpdate] ?: true }
+
+    /** Whether `-rc.N` / `-beta.N` releases are offered; null until the user decides (the installed channel then applies). */
+    val includePreReleases: Flow<Boolean?> = store.data.map { it[Keys.includePreReleases] }
+
+    val updateLastCheckedAt: Flow<Long?> = store.data.map { it[Keys.updateLastCheckedAt] }
+
+    /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
+    val pendingUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.pendingUpdateVersionCode] }
+
+    /** versionCode the "ready to install" notification was last shown for, so it is posted once per release. */
+    val notifiedUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.notifiedUpdateVersionCode] }
+
+    suspend fun setAutoUpdate(enabled: Boolean) = store.edit { it[Keys.autoUpdate] = enabled }
+
+    suspend fun setIncludePreReleases(include: Boolean) = store.edit { it[Keys.includePreReleases] = include }
+
+    suspend fun setUpdateLastCheckedAt(epochMillis: Long) = store.edit { it[Keys.updateLastCheckedAt] = epochMillis }
+
+    suspend fun setPendingUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+        if (versionCode == null) p.remove(Keys.pendingUpdateVersionCode) else p[Keys.pendingUpdateVersionCode] = versionCode
+    }
+
+    suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+        if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
+    }
+
+    /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */
+    val pinSyncEnabled: Flow<Boolean> = store.data.map { it[Keys.pinSync] ?: true }
+
+    suspend fun setPinSyncEnabled(enabled: Boolean) = store.edit { it[Keys.pinSync] = enabled }
+
+    /** True once this account's first sync has pushed the pins that were made on this device before syncing existed. */
+    val pinsMigrated: Flow<Boolean> = store.data.map { it[Keys.pinsMigrated] ?: false }
+
+    suspend fun setPinsMigrated(migrated: Boolean) = store.edit { it[Keys.pinsMigrated] = migrated }
+
+    /** agentId -> pinned, for pin changes made here that the server has not acknowledged yet (offline, or a failed call). */
+    val pendingPinChanges: Flow<Map<String, Boolean>> = store.data.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
+
+    /** Records [pinned] as awaiting the server, or forgets the entry when [pinned] is null. */
+    suspend fun setPendingPinChange(agentId: String, pinned: Boolean?) = store.edit { p ->
+        val current = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
+        val next = if (pinned == null) current - agentId else current + (agentId to pinned)
+        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
+    }
+
+    suspend fun clearPendingPinChanges(agentIds: Collection<String>) = store.edit { p ->
+        val next = (p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()) - agentIds
+        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
+    }
+
+    /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
+    suspend fun setPinnedIds(agentIds: Set<String>) = store.edit { it[Keys.pinned] = agentIds }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
     val recentSkills: Flow<List<String>> = store.data.map { p ->
@@ -89,10 +158,13 @@ class PreferencesStore(context: Context) {
         p[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System
     }
 
-    val listPreferences: Flow<ListPreferences> = store.data.map { p ->
-        p[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() }
-            ?: ListPreferences()
-    }
+    /** True-black surfaces while the resolved theme is dark (Cursor Dark, or Match system at night). Off by default. */
+    val oledBlack: Flow<Boolean> = store.data.map { it[Keys.oledBlack] ?: false }
+
+    val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
+
+    private fun Preferences.listPreferences(): ListPreferences =
+        this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
 
     val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
         LocalAgentState(
@@ -106,7 +178,7 @@ class PreferencesStore(context: Context) {
 
     val cachedUser: Flow<CursorUser?> = store.data.map { p ->
         p[Keys.cachedUser]?.let { runCatching { CursorJson.decodeFromString(CachedUser.serializer(), it) }.getOrNull() }
-            ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId) }
+            ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId, it.profilePictureUrl) }
     }
 
     /** How the stored key was obtained and when it lapses. A key stored before this was recorded counts as pasted. */
@@ -140,8 +212,15 @@ class PreferencesStore(context: Context) {
 
     suspend fun setThemeMode(mode: ThemeMode) = store.edit { it[Keys.theme] = mode.name }
 
-    suspend fun setListPreferences(prefs: ListPreferences) = store.edit {
-        it[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), prefs)
+    suspend fun setOledBlack(enabled: Boolean) = store.edit { it[Keys.oledBlack] = enabled }
+
+    /**
+     * Changes the list preferences in one transaction against what is stored, not against a snapshot a screen holds:
+     * two quick taps in the filter menu compose, instead of the second being computed from the state before the first
+     * had landed and undoing it.
+     */
+    suspend fun updateListPreferences(transform: (ListPreferences) -> ListPreferences) = store.edit { p ->
+        p[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), transform(p.listPreferences()))
     }
 
     suspend fun pinIfNonePinned(agentIds: Collection<String>) = store.edit { p ->
@@ -173,7 +252,7 @@ class PreferencesStore(context: Context) {
         } else {
             p[Keys.cachedUser] = CursorJson.encodeToString(
                 CachedUser.serializer(),
-                CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId),
+                CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId, user.profilePictureUrl),
             )
         }
     }
@@ -203,6 +282,9 @@ class PreferencesStore(context: Context) {
         p.remove(Keys.cachedUser)
         p.remove(Keys.signInMethod)
         p.remove(Keys.apiKeyExpiresAt)
+        // The next account starts its own migration and owes the server nothing of this one's pending changes.
+        p.remove(Keys.pinsMigrated)
+        p.remove(Keys.pendingPins)
     }
 
     private fun decodeMarkers(raw: String): Map<String, Long> =
@@ -210,6 +292,12 @@ class PreferencesStore(context: Context) {
 
     private fun encodeMarkers(map: Map<String, Long>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map)
+
+    private fun decodePendingPins(raw: String): Map<String, Boolean> =
+        runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), Boolean.serializer()), raw) }.getOrDefault(emptyMap())
+
+    private fun encodePendingPins(map: Map<String, Boolean>): String =
+        CursorJson.encodeToString(MapSerializer(String.serializer(), Boolean.serializer()), map)
 
     private fun decodeStringMap(raw: String): Map<String, String> =
         runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), String.serializer()), raw) }.getOrDefault(emptyMap())

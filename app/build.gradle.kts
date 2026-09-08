@@ -18,13 +18,21 @@ plugins {
 //     MAJOR * 1_000_000 + MINOR * 10_000 + PATCH * 100 + STAGE
 //     STAGE: alpha.N -> N (0..24), beta.N -> 25 + N, rc.N -> 50 + N, stable (no pre-release) -> 99
 //
-// e.g. 0.2.0-alpha.1 -> 20101, 0.2.0-beta.1 -> 20126, 0.2.0-rc.1 -> 20151, 0.2.0 -> 20199. Build metadata after `+`
+// e.g. 0.2.0-alpha.1 -> 20001, 0.2.0-beta.1 -> 20026, 0.2.0-rc.1 -> 20051, 0.2.0 -> 20099. Build metadata after `+`
 // is ignored. `-Papp.versionCode=N` overrides the derived value; `-Papp.versionNameSuffix=...` is appended to the
 // versionName only (CI uses it to stamp dev builds with the run number and commit).
+//
+// The in-app updater (domain/AppUpdate.kt, AppVersion.versionCode) reproduces this scheme to compare a release tag
+// with the installed BuildConfig.VERSION_CODE; AppVersionTest pins both to the same examples. Change them together.
 // ---------------------------------------------------------------------------------------------------------------------
 val appVersionName: String = providers.gradleProperty("app.versionName").get()
 val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appVersionName))
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
+// The GitHub repository whose releases the app updates itself from (`owner/name`); a fork points this at its own.
+val appGitHubRepo: String = providers.gradleProperty("app.githubRepo").get().also {
+    require(Regex("""^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$""").matches(it)) { "app.githubRepo must be 'owner/name', got '$it'" }
+}
+val GITHUB_API_BASE_URL = "https://api.github.com/"
 
 fun versionCodeFor(versionName: String): Int {
     val semver = Regex("""^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$""")
@@ -86,6 +94,7 @@ android {
         versionName = appVersionName
         versionNameSuffix = appVersionNameSuffix
         vectorDrawables.useSupportLibrary = true
+        buildConfigField("String", "GITHUB_REPO", "\"$appGitHubRepo\"")
     }
 
     signingConfigs {
@@ -105,9 +114,15 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            buildConfigField("String", "UPDATE_API_BASE_URL", "\"$GITHUB_API_BASE_URL\"")
         }
         debug {
             applicationIdSuffix = ".debug"
+            // Debug builds can be pointed at a stand-in for the GitHub API (`-Papp.updateApiBaseUrl=http://10.0.2.2:8080/`)
+            // to exercise the updater against an emulator; src/debug's network security config permits cleartext to
+            // the emulator host for exactly that. Release builds always use GitHub.
+            val override = providers.gradleProperty("app.updateApiBaseUrl").orNull?.takeIf { it.isNotBlank() }
+            buildConfigField("String", "UPDATE_API_BASE_URL", "\"${override ?: GITHUB_API_BASE_URL}\"")
         }
     }
 

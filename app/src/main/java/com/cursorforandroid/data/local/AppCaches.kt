@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TimelineItem
@@ -24,8 +25,28 @@ class AppCaches(private val root: JsonDiskCache) {
     val conversations = ConversationCache(root.child("conversations"))
     val traces = TraceCache(root.child("traces"))
     val catalog = CatalogCache(root.child("catalog"))
+    val pullRequests = PullRequestCache(root.child("pullrequests"))
 
     suspend fun clear() = root.clear()
+}
+
+@Serializable
+private data class CachedPullRequests(val statuses: Map<String, PullRequestStatus>)
+
+/** What GitHub last said about the agents' pull requests, by `prUrl`, so the Git filter is right from the first frame. */
+class PullRequestCache(private val cache: JsonDiskCache) {
+    suspend fun read(): Map<String, PullRequestStatus>? = cache.read(KEY, CachedPullRequests.serializer(), VERSION)?.value?.statuses
+
+    suspend fun write(statuses: Map<String, PullRequestStatus>) {
+        cache.write(KEY, CachedPullRequests.serializer(), VERSION, CachedPullRequests(statuses))
+    }
+
+    suspend fun clear() = cache.clear()
+
+    private companion object {
+        const val KEY = "states"
+        const val VERSION = 1
+    }
 }
 
 @Serializable

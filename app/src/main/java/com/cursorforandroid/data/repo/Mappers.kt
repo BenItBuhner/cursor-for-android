@@ -71,33 +71,50 @@ fun AgentSummaryDto.toAgent(v0: V0AgentDto?, previous: Agent?): Agent =
 
 /**
  * The run status a row keeps when a record arrives without run-level state (the v1 list, or the detail without its
- * run). The v1 lifecycle is authoritative for whether anything is running, so a remembered status only survives
- * while it still describes the same run and does not contradict the lifecycle: an active status cannot outlive an
- * idle lifecycle (a row cached as RUNNING stops spinning once the agent went idle), and a terminal one cannot hide
- * a turn the row has not seen yet — an ACTIVE lifecycle together with activity newer than the row knows. A terminal
- * status is kept when nothing newer is reported, which is what a list answer that predates a finish the row just
- * watched looks like.
+ * run). Runs only move forward, so a status remembered for the run the record names still describes it: a finished
+ * run stays finished however long the lifecycle reads `ACTIVE` (it always does, see [AgentLifecycle]), and a running
+ * one keeps running until a run-level source — the legacy list, the record, its stream — says how it ended (the
+ * repository verifies every active row against its record after a refresh, so a stale cache cannot spin for long). A
+ * record that names a different run is a turn the row has not seen; its state is unknown until one of those sources
+ * reports it. A lifecycle that rules out running (`IDLE`, `ARCHIVED`) ends an active status at once, and how the
+ * turn ended is left to those sources too. When either side does not name its run, activity newer than the row
+ * knows is taken as a new turn.
  */
 private fun carriedRunStatus(previous: Agent?, lifecycle: AgentLifecycle, latestRunId: String?, updatedAtMillis: Long): RunStatus? {
     val remembered = previous?.runStatus ?: return null
-    val sameRun = latestRunId == null || previous.latestRunId == null || latestRunId == previous.latestRunId
-    return remembered.takeIf {
-        sameRun &&
-            !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) &&
-            !(it.isTerminal && lifecycle == AgentLifecycle.ACTIVE && updatedAtMillis > previous.updatedAtMillis)
+    if (remembered.isActive && lifecycle.excludesRunning) return null
+    val previousRunId = previous.latestRunId
+    return when {
+        latestRunId != null && previousRunId != null -> remembered.takeIf { latestRunId == previousRunId }
+        remembered.isTerminal && updatedAtMillis > previous.updatedAtMillis -> null
+        else -> remembered
     }
 }
 
 /**
+ * The row's activity time once the server has spoken: the server's `updatedAt`, which advances while a turn works
+ * and goes quiet when it is over. A value this device stamped itself — a follow-up sent, a finish watched — stays
+ * only while it is barely ahead of the server (a list answer that has not caught up with it yet, or clock skew),
+ * never when it is hours or days ahead: that is what a row wrongly marked "updated just now" looks like, and the
+ * next refresh must put it back where it belongs rather than carry the mistake forward for good.
+ */
+internal fun reconcileUpdatedAt(serverMillis: Long, previousMillis: Long?): Long {
+    if (serverMillis <= 0L) return previousMillis ?: 0L
+    if (previousMillis == null || previousMillis <= serverMillis) return serverMillis
+    return if (previousMillis - serverMillis <= LOCAL_ACTIVITY_GRACE_MS) previousMillis else serverMillis
+}
+
+/** How far ahead of the server a locally stamped activity time may run before the server's value replaces it. */
+internal const val LOCAL_ACTIVITY_GRACE_MS = 5 * 60_000L
+
+/**
  * Builds the list-row model from the v1 summary alone, carrying over what only richer sources knew (repo, branch,
  * summary, model, duration) from the row it replaces — which may have been restored from disk and be hours old.
- * The remembered run status is subject to [carriedRunStatus], so a new run started elsewhere shows as running
- * through the lifecycle whether or not the list already names it.
+ * The remembered run status is subject to [carriedRunStatus]; the activity time to [reconcileUpdatedAt].
  */
 fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
     val lifecycle = AgentLifecycle.parse(status)
     val runId = latestRunId ?: previous?.latestRunId
-    val sameRun = previous != null && (latestRunId == null || previous.latestRunId == null || latestRunId == previous.latestRunId)
     val serverUpdatedAt = parseIsoMillis(updatedAt, parseIsoMillis(createdAt))
     return Agent(
         id = id,
@@ -108,7 +125,7 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         envName = env.name,
         url = url.ifBlank { "https://cursor.com/agents/$id" },
         createdAtMillis = parseIsoMillis(createdAt, previous?.createdAtMillis ?: 0L),
-        updatedAtMillis = maxOf(serverUpdatedAt, previous?.updatedAtMillis?.takeIf { sameRun } ?: 0L),
+        updatedAtMillis = reconcileUpdatedAt(serverUpdatedAt, previous?.updatedAtMillis),
         latestRunId = runId,
         repoUrl = previous?.repoUrl,
         startingRef = previous?.startingRef,
@@ -125,11 +142,14 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
 
 /**
  * Folds the legacy `GET /v0/agents` record (repo, branch, PR, summary, agent-level status) into a v1 row. The v0
- * status predates runs: it is one value per agent, fetched independently of the v1 list, and may be older than the
- * v1 lifecycle or describe an earlier run. It is therefore advisory only — it fills in a status the row does not
- * know from a richer source (the run itself, or its stream), and it never contradicts the lifecycle in either
- * direction: an active v0 status is ignored for an agent v1 reports as idle or archived, and a terminal one for an
- * agent v1 reports as active, which otherwise showed a running agent as done.
+ * status is the agent's execution state — one value per agent, for its current turn, in a run's vocabulary — and
+ * the only source of it the list can afford for every row at once. It fills in a status the row does not know from a
+ * richer source (the run itself, or its stream), and the v1 lifecycle does not get to overrule it: `ACTIVE` is what
+ * v1 says about finished agents too, so a terminal v0 status must land whatever the lifecycle reads — refusing it is
+ * what left finished chats without a status and, from there, "running". The one veto the lifecycle keeps is against
+ * an active v0 status for an agent v1 reports idle or archived. A status the row already holds for its current run
+ * stands: a terminal one came from a run-level source the v0 list cannot contradict, and an active one is settled
+ * by the repository against the run record rather than flipped by a list that may lag it.
  */
 fun Agent.withLegacy(v0: V0AgentDto): Agent {
     val v0Branch = v0.target?.branchName
@@ -137,8 +157,7 @@ fun Agent.withLegacy(v0: V0AgentDto): Agent {
     val v0Repo = v0.source?.repository
     val v0Status = v0.status?.let { RunStatus.parse(it) }
         ?.takeIf { it != RunStatus.UNKNOWN }
-        ?.takeIf { !(it.isActive && lifecycle != AgentLifecycle.ACTIVE) }
-        ?.takeIf { !(it.isTerminal && lifecycle == AgentLifecycle.ACTIVE) }
+        ?.takeIf { !(it.isActive && lifecycle.excludesRunning) }
     return copy(
         name = if (name == UNTITLED) v0.name?.ifBlank { null } ?: name else name,
         runStatus = runStatus?.takeIf { it != RunStatus.UNKNOWN } ?: v0Status,
@@ -176,7 +195,7 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         envName = env.name,
         url = url.ifBlank { previous?.url ?: "https://cursor.com/agents/$id" },
         createdAtMillis = parseIsoMillis(createdAt, previous?.createdAtMillis ?: 0L),
-        updatedAtMillis = maxOf(serverUpdatedAt, previous?.updatedAtMillis ?: 0L),
+        updatedAtMillis = reconcileUpdatedAt(serverUpdatedAt, previous?.updatedAtMillis),
         latestRunId = runId ?: previous?.latestRunId,
         repoUrl = repo?.url ?: previous?.repoUrl,
         startingRef = repo?.startingRef ?: previous?.startingRef,

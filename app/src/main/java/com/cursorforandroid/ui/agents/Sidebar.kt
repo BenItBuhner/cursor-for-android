@@ -6,6 +6,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -37,27 +39,36 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
-import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -89,6 +100,8 @@ fun Sidebar(
     onQueryChange: (String) -> Unit,
     callbacks: SidebarCallbacks,
     modifier: Modifier = Modifier,
+    /** "Update available · 0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
+    updateHint: String? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -131,7 +144,10 @@ fun Sidebar(
         if (searching) LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
         PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = callbacks.onRefresh, modifier = Modifier.weight(1f)) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
+            // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
+            // rule above the footer, the fade is what separates the two.
+            val listState = rememberLazyListState()
+            LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
                 if (!state.hasLoaded && state.sections.isEmpty()) {
                     item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                 }
@@ -161,14 +177,33 @@ fun Sidebar(
                             prefs = state.prefs,
                             actions = callbacks.rowActions,
                             modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                            nowMillis = state.nowMillis,
                         )
                     }
                 }
             }
         }
 
-        HairlineDivider()
+        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart.
+        if (updateHint != null) {
+            UpdateHintRow(updateHint, onClick = callbacks.onSettings)
+        }
         AccountFooter(user, isDemo, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
+    }
+}
+
+/** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
+@Composable
+private fun UpdateHintRow(text: String, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    Row(
+        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.ArrowDown, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = CursorTheme.typography.small, color = colors.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
     }
 }
 
@@ -237,7 +272,20 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
 @Composable
 fun Avatar(user: CursorUser, size: Dp = CursorDimens.avatar) {
     val colors = CursorTheme.colors
+    val loader = LocalMediaLoader.current
+    val url = user.profilePictureUrl
+    val px = with(LocalDensity.current) { size.roundToPx() }
+    // The picture, once it has been fetched (cached by URL, so a second sidebar or screen shows it at once); the
+    // initials underneath stand in until then, and stay when there is no picture or it cannot be loaded.
+    val picture by produceState<ImageBitmap?>(initialValue = null, url, loader, px) {
+        value = if (url == null || loader == null) null else runCatching { loader.image(MediaRef.Remote(url), px, px).asImageBitmap() }.getOrNull()
+    }
+    // The circle is drawn as before (pixel for pixel, for the screenshots); only the picture is clipped to it.
     Box(Modifier.size(size).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
         Text(user.initials, style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium), color = colors.textPrimary)
+        picture?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(CircleShape)) }
     }
 }
+
+/** How [Avatar] fetches profile pictures; null (the default, and the screenshot tests' case) leaves the initials. */
+val LocalMediaLoader = staticCompositionLocalOf<MediaLoader?> { null }

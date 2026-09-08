@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.ProfileApi
 import com.cursorforandroid.data.api.RunStreamer
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
@@ -66,6 +67,8 @@ class SessionManager(
     /** Name of the key a browser sign-in mints, as listed on cursor.com/dashboard/api. */
     private val mintedKeyName: String = "Cursor for Android",
     private val mintedKeyTtlMs: Long = CursorLogin.API_KEY_TTL_MS,
+    /** The account service's view of the user (the profile picture, above all); absent in tests that stop at `/v1/me`. */
+    private val profile: ProfileApi? = null,
 ) {
     private val _state = MutableStateFlow<SessionState>(SessionState.Loading)
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -133,10 +136,12 @@ class SessionManager(
     }
 
     private suspend fun validateStoredKey(cached: CursorUser?, credential: CredentialInfo) {
-        runCatching { realBackend.api.me().toUser() }
+        // `/v1/me` knows nothing of the picture; the one shown last time stays until the account service answers.
+        runCatching { realBackend.api.me().toUser().copy(profilePictureUrl = cached?.profilePictureUrl) }
             .onSuccess { user ->
                 prefs.setCachedUser(user)
                 if (_backend.value === realBackend) _state.value = SessionState.SignedIn(user, isDemo = false, credential = credential)
+                enrichProfile(user, credential)
             }
             .onFailure { t ->
                 val err = t.toCursorError()
@@ -163,11 +168,34 @@ class SessionManager(
                 prefs.setCachedUser(user)
                 prefs.setCredentialInfo(credential)
                 _state.value = SessionState.SignedIn(user, isDemo = false, credential = credential)
+                // The picture arrives behind the sign-in rather than holding it up.
+                scope.launch { enrichProfile(user, credential) }
             }
             .onFailure {
                 storeKey(null)
             }
             .recoverCatching { throw IllegalStateException(it.userMessage(), it) }
+    }
+
+    /**
+     * Fills in what the public API does not say about the account — the profile picture above all, and a name or
+     * email `/v1/me` left blank — from the account service. Best effort: a failure leaves the user as `/v1/me`
+     * described it, and an answer that arrives after a sign-out or a backend switch is dropped.
+     */
+    private suspend fun enrichProfile(user: CursorUser, credential: CredentialInfo) {
+        val api = profile ?: return
+        val fetched = runCatching { api.profile() }.getOrNull() ?: return
+        val enriched = user.copy(
+            profilePictureUrl = fetched.profilePictureUrl,
+            firstName = user.firstName ?: fetched.firstName,
+            lastName = user.lastName ?: fetched.lastName,
+            email = user.email ?: fetched.email,
+        )
+        if (enriched == user) return
+        val current = _state.value as? SessionState.SignedIn ?: return
+        if (_backend.value !== realBackend || current.isDemo || current.user.userId != user.userId) return
+        prefs.setCachedUser(enriched)
+        _state.value = SessionState.SignedIn(enriched, isDemo = false, credential = credential)
     }
 
     /**
