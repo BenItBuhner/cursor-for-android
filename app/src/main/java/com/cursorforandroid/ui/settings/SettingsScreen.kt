@@ -69,6 +69,7 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
+    val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
     val session by graph.session.state.collectAsStateWithLifecycle()
     val credential = (session as? SessionState.SignedIn)?.credential
 
@@ -132,6 +133,28 @@ fun SettingsScreen(
                         if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
                     }
                     if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 14.dp))
+                }
+                // OLED only does anything while dark is on — Cursor Dark, or Match system when the phone is dark.
+                if (themeMode != ThemeMode.Light) {
+                    HairlineDivider(Modifier.padding(horizontal = 14.dp))
+                    Row(
+                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setOledBlack(!oledBlack) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("OLED black", style = type.base, color = colors.textPrimary)
+                            Text(
+                                if (themeMode == ThemeMode.System) {
+                                    "True-black surfaces when the system is in dark theme."
+                                } else {
+                                    "True-black surfaces instead of Cursor Dark's charcoal."
+                                },
+                                style = type.small, color = colors.textTertiary,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        CursorToggle(checked = oledBlack, onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } })
+                    }
                 }
             }
 
