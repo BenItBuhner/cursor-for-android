@@ -13,6 +13,10 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +29,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 data class PinSyncState(
@@ -65,7 +72,24 @@ class PinRepository(
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
 
-    private val syncMutex = Mutex()
+    /** One round with the server at a time: a pin tap never overtakes, or is overtaken by, a sync. */
+    private val serverMutex = Mutex()
+
+    /** Orders the local flip against its revision, so the revisions describe the order the taps landed in. */
+    private val localMutex = Mutex()
+
+    /**
+     * Bumped by every local pin change. A change is only forgotten once the server has acknowledged the revision
+     * that is still the current one: a tap made while the call was in flight is a newer wish and is replayed.
+     */
+    private val revision = AtomicLong()
+    private val revisions = ConcurrentHashMap<String, Long>()
+
+    /** Bumped by [reset]; nothing started for the previous account may write state, preferences or rows after it. */
+    private val generation = AtomicInteger()
+
+    /** Where the account's rounds run, so [reset] can cancel one half-way through without taking the collectors with it. */
+    @Volatile private var work: CoroutineScope = workScope()
 
     /** Set after a failure retrying cannot fix (a rejected key, a device policy); cleared by a sign-in or the setting. */
     @Volatile private var halted = false
@@ -95,34 +119,60 @@ class PinRepository(
         if (settingWatcher.compareAndSet(null, job)) job.start() else job.cancel()
     }
 
-    /** On sign-out or a backend switch: nothing of the previous account's sync survives. */
+    /**
+     * On sign-out or a backend switch: nothing of the previous account's sync survives. The round in flight is
+     * cancelled and, since a response can already be on its way back, the generation it captured is invalidated so
+     * it cannot write the previous account's pins into this one's state, preferences or rows.
+     */
     fun reset() {
+        generation.incrementAndGet()
+        work.cancel()
+        work = workScope()
         halted = false
+        revisions.clear()
         _state.value = PinSyncState()
     }
+
+    private fun workScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
     /**
      * Pins or unpins [agentId]. The change shows immediately; the server hears about it now, or, when it cannot be
      * reached, at the next sync. The result says whether the server has it — the pin itself has already been applied.
      */
     suspend fun toggle(agentId: String): Result<Unit> {
-        val wasPinned = agentId in prefs.localAgentState.first().pinnedIds
-        prefs.togglePinned(agentId)
-        if (!eligible()) return Result.success(Unit)
-        prefs.setPendingPinChange(agentId, !wasPinned)
-        return runCatching {
-            if (wasPinned) api.unpin(listOf(agentId)) else api.pin(listOf(agentId))
-        }.onSuccess {
-            prefs.setPendingPinChange(agentId, null)
-            _state.update { it.copy(active = true, lastSyncedAtMillis = now(), error = null, pendingCount = pendingCount()) }
-        }.onFailure { t ->
-            if (t is CancellationException) throw t
-            if (t is ConnectRpcException && !t.isUnauthenticated && t.httpCode in 400..499) {
-                // The server will not take this change (the agent is gone, or not the account's); do not keep asking.
-                prefs.setPendingPinChange(agentId, null)
-            }
-            noteFailure(t)
-        }.map { }
+        val eligible = eligible()
+        // The flip and the wish it records are one transaction: two taps in quick succession cannot both read the
+        // state before the other's flip has landed. The revision then orders the wishes they left behind.
+        val tapRevision = localMutex.withLock {
+            prefs.togglePinnedAwaitingServer(agentId, recordPending = eligible)
+            revision.incrementAndGet().also { revisions[agentId] = it }
+        }
+        if (!eligible) return Result.success(Unit)
+        val startedIn = generation.get()
+        return serverMutex.withLock {
+            // What the wish is now, not what it was at the tap: a tap that landed while this one waited its turn is
+            // the state the server should end up in, and it makes no difference which of the two gets here first.
+            val wish = prefs.pendingPinChanges.first()[agentId]
+            val sentUnder = revisions[agentId] ?: tapRevision
+            // Nothing left to say: a call that got here first already sent the final wish and had it acknowledged.
+            if (wish == null) return@withLock Result.success(Unit)
+            runCatching {
+                if (wish) api.pin(listOf(agentId)) else api.unpin(listOf(agentId))
+            }.onSuccess {
+                if (generation.get() != startedIn) return@onSuccess
+                acknowledge(mapOf(agentId to wish), sentUnder)
+                _state.update { it.copy(active = true, lastSyncedAtMillis = now(), error = null, pendingCount = pendingCount()) }
+            }.onFailure { t ->
+                if (t is CancellationException) throw t
+                if (generation.get() != startedIn) return@onFailure
+                if (t is ConnectRpcException && !t.isUnauthenticated && t.httpCode in 400..499) {
+                    // The server will not take this change (the agent is gone, or not the account's); do not keep asking.
+                    acknowledge(mapOf(agentId to wish), sentUnder)
+                }
+                noteFailure(t)
+            }.map { }
+        }
     }
 
     /**
@@ -130,11 +180,23 @@ class PinRepository(
      * existed), then adopts the account's pin list. Returns the failure when a step could not reach or convince the
      * server; pending changes are kept for the next round.
      */
-    suspend fun sync(): Result<Unit> = syncMutex.withLock {
+    suspend fun sync(): Result<Unit> {
+        val round = work.async { round() }
+        return try {
+            round.await()
+        } catch (e: CancellationException) {
+            // A reset cancelled the round; the caller is owed nothing else. Its own cancellation still propagates.
+            currentCoroutineContext().ensureActive()
+            Result.success(Unit)
+        }
+    }
+
+    private suspend fun round(): Result<Unit> = serverMutex.withLock {
         if (!sessionUsable()) {
             _state.update { it.copy(active = false, isSyncing = false) }
             return Result.success(Unit)
         }
+        val startedIn = generation.get()
         // The account list is read either way: it also carries the pull request states (see [onList]). Only the pins
         // themselves are subject to the setting.
         val pinsEnabled = prefs.pinSyncEnabled.first()
@@ -148,11 +210,13 @@ class PinRepository(
                 if (migrating) {
                     prefs.localAgentState.first().pinnedIds.filter { it in known && it !in pending }.forEach { pending[it] = true }
                 }
-                refused = replay(pending)
+                refused = replay(pending, startedIn)
+                if (generation.get() != startedIn) return Result.success(Unit)
                 if (migrating) prefs.setPinsMigrated(true)
             }
 
             val list = api.list()
+            if (generation.get() != startedIn) return Result.success(Unit)
             runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
@@ -160,15 +224,18 @@ class PinRepository(
                 // Changes made while this round was in flight are not in the server's answer yet; they win.
                 val late = prefs.pendingPinChanges.first()
                 val merged = (server.ids + late.filterValues { it }.keys) - late.filterValues { !it }.keys
+                if (generation.get() != startedIn) return Result.success(Unit)
                 if (merged != prefs.localAgentState.first().pinnedIds) prefs.setPinnedIds(merged)
-                materialize(merged.filterNot { it in known })
+                materialize(merged.filterNot { it in known }, startedIn)
             }
+            if (generation.get() != startedIn) return Result.success(Unit)
             _state.update {
                 it.copy(isSyncing = false, lastSyncedAtMillis = now(), error = refused?.let(::describe), pendingCount = pendingCount())
             }
             Result.success(Unit)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
+            if (generation.get() != startedIn) return Result.success(Unit)
             noteFailure(t)
             Result.failure(t)
         }
@@ -178,29 +245,45 @@ class PinRepository(
      * Sends the pending changes, pins first. A change the server refuses outright (the agent is gone, or not the
      * account's) is dropped rather than retried forever; the first such refusal is returned for the status line.
      */
-    private suspend fun replay(pending: Map<String, Boolean>): ConnectRpcException? {
+    private suspend fun replay(pending: Map<String, Boolean>, startedIn: Int): ConnectRpcException? {
         if (pending.isEmpty()) return null
-        val refusedPin = send(pending.filterValues { it }.keys) { api.pin(it) }
-        val refusedUnpin = send(pending.filterValues { !it }.keys) { api.unpin(it) }
+        val refusedPin = send(pending.filterValues { it }, startedIn) { api.pin(it.keys) }
+        val refusedUnpin = send(pending.filterValues { !it }, startedIn) { api.unpin(it.keys) }
         return refusedPin ?: refusedUnpin
     }
 
-    private suspend fun send(ids: Set<String>, call: suspend (Set<String>) -> Unit): ConnectRpcException? {
-        if (ids.isEmpty()) return null
+    private suspend fun send(
+        wishes: Map<String, Boolean>,
+        startedIn: Int,
+        call: suspend (Map<String, Boolean>) -> Unit,
+    ): ConnectRpcException? {
+        if (wishes.isEmpty()) return null
+        // Captured before the call: a tap that lands while it is in flight raises these and keeps its wish pending.
+        val sent = wishes.keys.associateWith { revisions[it] ?: 0L }
         val refused = try {
-            call(ids)
+            call(wishes)
             null
         } catch (e: ConnectRpcException) {
             if (e.isUnauthenticated || e.httpCode !in 400..499) throw e
             e
         }
-        prefs.clearPendingPinChanges(ids)
+        if (generation.get() != startedIn) return refused
+        prefs.clearAcknowledgedPinChanges(wishes.filterKeys { (revisions[it] ?: 0L) == sent.getValue(it) })
         return refused
     }
 
+    /** Forgets [wishes] the server took, unless a later tap has raised the revision they were sent under. */
+    private suspend fun acknowledge(wishes: Map<String, Boolean>, sentUnder: Long) {
+        val stillCurrent = wishes.filterKeys { (revisions[it] ?: 0L) == sentUnder }
+        if (stillCurrent.isNotEmpty()) prefs.clearAcknowledgedPinChanges(stillCurrent)
+    }
+
     /** Rows for pinned agents the list window does not include, so the Pinned group is complete. */
-    private suspend fun materialize(ids: List<String>) {
-        ids.take(maxMaterialized).forEach { id -> agents.loadDetail(id) }
+    private suspend fun materialize(ids: List<String>, startedIn: Int) {
+        for (id in ids.take(maxMaterialized)) {
+            if (generation.get() != startedIn) return
+            agents.loadDetail(id)
+        }
     }
 
     /** The account service can be asked at all: a real backend, and no failure that retrying cannot fix. */

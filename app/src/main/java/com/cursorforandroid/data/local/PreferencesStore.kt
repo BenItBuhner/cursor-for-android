@@ -158,6 +158,16 @@ class PreferencesStore(context: Context) {
         if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
     }
 
+    /**
+     * Forgets the pending entries the server has just acknowledged, but only where the recorded wish is still the
+     * one that was sent: a change made while the call was in flight is a newer wish and stays for the next round.
+     */
+    suspend fun clearAcknowledgedPinChanges(acknowledged: Map<String, Boolean>) = edit { p ->
+        val current = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
+        val next = current.filterNot { (id, pinned) -> acknowledged[id] == pinned }
+        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
+    }
+
     /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
     suspend fun setPinnedIds(agentIds: Set<String>) = edit { it[Keys.pinned] = agentIds }
 
@@ -258,6 +268,25 @@ class PreferencesStore(context: Context) {
     suspend fun togglePinned(agentId: String) = edit { p ->
         val current = p[Keys.pinned] ?: emptySet()
         p[Keys.pinned] = if (agentId in current) current - agentId else current + agentId
+    }
+
+    /**
+     * Flips [agentId]'s pin and, when [recordPending] is set, records what the flip produced as the state the server
+     * still owes — both in one transaction, so two quick taps cannot each read the state before the other's flip and
+     * leave the device and the account disagreeing. Returns whether the agent is pinned now.
+     */
+    suspend fun togglePinnedAwaitingServer(agentId: String, recordPending: Boolean): Boolean {
+        var pinned = false
+        edit { p ->
+            val current = p[Keys.pinned] ?: emptySet()
+            pinned = agentId !in current
+            p[Keys.pinned] = if (pinned) current + agentId else current - agentId
+            if (recordPending) {
+                val pending = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
+                p[Keys.pendingPins] = encodePendingPins(pending + (agentId to pinned))
+            }
+        }
+        return pinned
     }
 
     suspend fun markRead(agentId: String, updatedAtMillis: Long) = edit { p ->

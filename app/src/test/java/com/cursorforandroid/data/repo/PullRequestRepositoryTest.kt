@@ -8,9 +8,11 @@ import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -21,6 +23,9 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 class PullRequestRepositoryTest {
 
@@ -91,6 +96,27 @@ class PullRequestRepositoryTest {
     private fun requestsFor(url: String) = synchronized(requests) { requests.count { it.path == "/repos/${url.removePrefix("https://github.com/").replace("/pull/", "/pulls/")}" } }
 
     private suspend fun PullRequestRepository.known() = states.first()
+
+    @Test
+    fun `an answer that arrives after a sign-out is neither shown nor saved`() = runBlocking<Unit> {
+        val gitlab = "https://gitlab.com/acme/app/-/merge_requests/7"
+        val asked = CompletableDeferred<Unit>()
+        var release: Continuation<Unit>? = null
+        val account = PullRequestSource { _, _ ->
+            suspendCoroutine<Unit> { release = it; asked.complete(Unit) }
+            PullRequestLookup.Found(PullRequestState.Open)
+        }
+        val repo = repository(account = account)
+
+        val pass = launch(Dispatchers.Default) { repo.refresh(listOf(gitlab)) }
+        asked.await()
+        repo.reset()
+        release!!.resume(Unit)
+        pass.join()
+
+        assertThat(repo.statuses.value).isEmpty()
+        assertThat(cache.read()).isNull()
+    }
 
     @Test
     fun `reads each state from GitHub, remembers what it refused and saves the lot`() = runBlocking<Unit> {

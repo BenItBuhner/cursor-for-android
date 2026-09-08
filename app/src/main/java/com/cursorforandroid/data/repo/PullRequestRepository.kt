@@ -9,7 +9,11 @@ import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import retrofit2.Response
+import java.util.concurrent.atomic.AtomicInteger
 
 /** How reading one pull request ended. */
 sealed interface PullRequestLookup {
@@ -142,6 +147,15 @@ class PullRequestRepository(
     @Volatile private var demoMode: Boolean? = null
     @Volatile private var rateLimitedUntil = 0L
 
+    /** Bumped by [reset]; a lookup that started for the previous account may not write what it learned afterwards. */
+    private val generation = AtomicInteger()
+
+    /** Where the passes run, so [reset] can cancel one that is half-way through without taking this scope with it. */
+    @Volatile private var work: CoroutineScope = workScope()
+
+    private fun workScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+
     init {
         // The encrypted store opens the Android Keystore on first use, so the token is not read where this is built.
         scope.launch { _hasToken.value = !readToken().isNullOrBlank() }
@@ -150,10 +164,12 @@ class PullRequestRepository(
     /** Shows what was saved by the previous session. Idempotent, and a no-op for the demo. */
     suspend fun restoreFromCache() {
         if (cache == null || restored || isDemo()) return
+        val startedIn = generation.get()
         restoreMutex.withLock {
             if (restored) return
             restored = true
             val saved = cache.read() ?: return
+            if (generation.get() != startedIn) return
             // Anything learned in the meantime is newer than the disk.
             _statuses.update { current -> saved + current }
         }
@@ -165,7 +181,7 @@ class PullRequestRepository(
      * Runs in the repository's own scope, so a caller that goes away does not abandon a pass half-way through.
      */
     suspend fun refresh(urls: Collection<String>, eager: Boolean = false) {
-        scope.launch {
+        val pass = work.launch {
             // Best effort, like the legacy enrichment of the list: a pass that fails leaves the states as they were.
             try {
                 pass(urls, eager)
@@ -173,10 +189,17 @@ class PullRequestRepository(
                 throw e
             } catch (_: Throwable) {
             }
-        }.join()
+        }
+        try {
+            pass.join()
+        } catch (e: CancellationException) {
+            // A reset cancelled the pass; only the caller's own cancellation concerns the caller.
+            currentCoroutineContext().ensureActive()
+        }
     }
 
     private suspend fun pass(urls: Collection<String>, eager: Boolean) = passMutex.withLock {
+        val startedIn = generation.get()
         val demo = isDemo()
         if (demoMode != demo) {
             if (demoMode != null) {
@@ -209,6 +232,9 @@ class PullRequestRepository(
                 ref == null && first != null -> first
                 else -> fallback.lookup(url, ref)
             }
+            // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
+            // account this repository no longer speaks for.
+            if (generation.get() != startedIn) return
             when (result) {
                 is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo)
                 PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo)
@@ -220,7 +246,7 @@ class PullRequestRepository(
                 PullRequestLookup.Failed -> return
             }
         }
-        if (!demo) forgetStale(now)
+        if (!demo && generation.get() == startedIn) forgetStale(now)
     }
 
     /**
@@ -230,6 +256,7 @@ class PullRequestRepository(
      */
     suspend fun seed(states: Map<String, PullRequestState>) {
         if (states.isEmpty() || isDemo()) return
+        val startedIn = generation.get()
         if (demoMode == true) {
             // Leaving the demo: its seeded states never mix with the account's.
             _statuses.value = emptyMap()
@@ -237,6 +264,7 @@ class PullRequestRepository(
         }
         demoMode = false
         restoreFromCache()
+        if (generation.get() != startedIn) return
         val at = AppClock.now()
         val next = _statuses.updateAndGet { all ->
             all + states.mapNotNull { (url, state) ->
@@ -283,8 +311,10 @@ class PullRequestRepository(
      * asks again — with the token, private repositories answer; without it, they are marked unreadable once more.
      */
     suspend fun setToken(token: String?) {
+        val startedIn = generation.get()
         val trimmed = token?.trim()?.takeIf { it.isNotEmpty() }
         withContext(Dispatchers.IO) { writeToken(trimmed) }
+        if (generation.get() != startedIn) return
         _hasToken.value = trimmed != null
         // A token has a budget of its own; a limit spent anonymously says nothing about it.
         rateLimitedUntil = 0L
@@ -292,8 +322,15 @@ class PullRequestRepository(
         if (!isDemo()) cache?.write(next)
     }
 
-    /** Forgets everything on sign-out; the disk copy goes with the other caches. */
+    /**
+     * Forgets everything on sign-out; the disk copy goes with the other caches. The pass in flight is cancelled and
+     * the generation it captured invalidated, so a lookup already on its way back cannot restore what it learned for
+     * the previous account into the state or the cache this has just cleared.
+     */
     fun reset() {
+        generation.incrementAndGet()
+        work.cancel()
+        work = workScope()
         _statuses.value = emptyMap()
         restored = false
         demoMode = null

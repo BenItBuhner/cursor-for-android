@@ -15,12 +15,14 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -31,6 +33,9 @@ import org.robolectric.annotation.Config
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * Pins kept in step with the account: the first sync's migration, the server's authority afterwards, changes that
@@ -269,6 +274,95 @@ class PinRepositoryTest {
         prefs.setPinSyncEnabled(false)
         prefs.setPinSyncEnabled(true)
         awaitUntil { listCalls == 2 }
+    }
+
+    @Test
+    fun `two taps in quick succession leave this device, the account and the pending changes agreeing`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        val listed = CompletableDeferred<Unit>()
+        var release: Continuation<Unit>? = null
+        val gated = object : PinsApi by pinsApi {
+            override suspend fun list(): AccountList {
+                suspendCoroutine<Unit> { release = it; listed.complete(Unit) }
+                return pinsApi.list()
+            }
+        }
+        val repository = PinRepository(session, prefs, agents, gated, scope, now = { now })
+
+        // A round in flight has the server to itself, so both taps land locally before either can send anything.
+        val sync = scope.launch { repository.sync() }
+        listed.await()
+        val first = scope.launch { repository.toggle("bc-1") }
+        val second = scope.launch { repository.toggle("bc-1") }
+        // Both flips have landed once the pin is back where it started and a wish is still waiting for the server.
+        awaitUntil { pinnedIds().isEmpty() && prefs.pendingPinChanges.first().isNotEmpty() }
+        release!!.resume(Unit)
+        sync.join()
+        first.join()
+        second.join()
+
+        // What goes out is where the taps left things, once: the call that gets there second finds nothing to say.
+        assertThat(pinnedIds()).isEmpty()
+        assertThat(pinsApi.server).isEmpty()
+        assertThat(pinsApi.pinCalls).isEmpty()
+        assertThat(pinsApi.unpinCalls).containsExactly(listOf("bc-1"))
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
+        assertThat(repository.state.value.pendingCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a pin tapped while a sync is in flight outlives the account's answer`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        pinsApi.server += "bc-2"
+        val listed = CompletableDeferred<Unit>()
+        var release: Continuation<Unit>? = null
+        val gated = object : PinsApi by pinsApi {
+            override suspend fun list(): AccountList {
+                suspendCoroutine<Unit> { release = it; listed.complete(Unit) }
+                return pinsApi.list()
+            }
+        }
+        val repository = PinRepository(session, prefs, agents, gated, scope, now = { now })
+
+        val sync = scope.launch { repository.sync() }
+        listed.await()
+        val tap = scope.launch { repository.toggle("bc-1") }
+        awaitUntil { pinnedIds().contains("bc-1") }
+        release!!.resume(Unit)
+        sync.join()
+        tap.join()
+
+        assertThat(pinnedIds()).containsExactly("bc-1", "bc-2")
+        assertThat(pinsApi.server).containsExactly("bc-1", "bc-2")
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
+    }
+
+    @Test
+    fun `a sync answered after a sign-out writes none of the previous account's pins`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        pinsApi.server += setOf("bc-1", "bc-2")
+        val listed = CompletableDeferred<Unit>()
+        var release: Continuation<Unit>? = null
+        val gated = object : PinsApi by pinsApi {
+            override suspend fun list(): AccountList {
+                suspendCoroutine<Unit> { release = it; listed.complete(Unit) }
+                return pinsApi.list()
+            }
+        }
+        val handed = CopyOnWriteArrayList<AccountList>()
+        val repository = PinRepository(session, prefs, agents, gated, scope, now = { now }, onList = { handed += it })
+
+        val sync = scope.launch { repository.sync() }
+        listed.await()
+        repository.reset()
+        release!!.resume(Unit)
+        sync.join()
+        // Serialized behind the round: this returning means the round has let go, having written nothing.
+        assertThat(repository.toggle("bc-3").isSuccess).isTrue()
+
+        assertThat(pinnedIds()).containsExactly("bc-3")
+        assertThat(handed).isEmpty()
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
     }
 
     @Test
