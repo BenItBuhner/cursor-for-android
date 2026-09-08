@@ -192,6 +192,19 @@ class ConversationViewModelTest {
         assertThat(graph.agents.agent(RUNNING)?.modelId).isNull()
     }
 
+    /** The composer stays editable while a follow-up is in flight, so the restore must not undo what was typed. */
+    @Test
+    fun `a refused follow-up does not overwrite a draft typed while it was in flight`() = runBlocking {
+        val vm = open(RUNNING)
+        vm.setDraft("Try it")
+        vm.send()
+        vm.setDraft("Actually, do this instead")
+        withTimeout(10_000) { vm.isSending.first { !it } }
+
+        assertThat(vm.draftText.value).isEqualTo("Actually, do this instead")
+        assertThat(vm.toastMessage.value).isNotNull()
+    }
+
     @Test
     fun `plan mode is not asked for until toggled, then shows on the chip`() {
         val vm = open(IDLE)

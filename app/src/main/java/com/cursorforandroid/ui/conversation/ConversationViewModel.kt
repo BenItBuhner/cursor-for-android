@@ -148,8 +148,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 // chat's model rather than a pending override — unless another one was made while this was in flight.
                 picker.update { if (it.override == options.override) it.copy(override = null) else it }
             }.onFailure {
-                draft.value = text
-                attachments.value = images
+                // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
+                // prompt that did not go out only comes back to an empty one.
+                if (draft.value.isBlank()) draft.value = text
+                if (attachments.value.isEmpty()) attachments.value = images
                 toast.value = it.userMessage()
             }
             sending.value = false
