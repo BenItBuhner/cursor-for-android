@@ -205,6 +205,37 @@ class AppScreenshotTest {
         compose.onNodeWithContentDescription("Back").performClick()
         scrollListTo("Ask Cursor to build, fix bugs, explore")
         capture("08_home_light")
+
+        // Last, because opening it lets its live run finish, which would reorder the home list captured above. Back
+        // in the dark theme: a chat with a goal on it. The turns Cursor started by itself — the goal picked up again,
+        // a subagent reporting back — reach the transcript as user messages made of markup; each is one row that
+        // opens onto the objective or the report. The live run plays out first, and the earlier turns' traces are
+        // replayed alongside it.
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText("Appearance")
+        compose.onNodeWithText("Cursor Dark").performClick()
+        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Back").performClick()
+        scrollListTo("Hyper-realistic human limbs")
+        compose.onAllNodesWithText("Hyper-realistic human limbs").onFirst().performClick()
+        waitForText("Follow up")
+        val limbsId = graph.agents.state.value.agents.first { it.name == "Hyper-realistic human limbs" }.id
+        compose.waitUntil(90_000) {
+            val items = graph.conversations.state(limbsId).value.items
+            items.count { it is RunFooter } == 4 && items.count { it is ActivityGroup } == 4
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("Goal continued").performClick()
+        waitForText("In the Verity photoreal engine")
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Goal continued"))
+        compose.waitForIdle()
+        capture("23_conversation_notifications")
+        // Leave the chat, so nothing of it is still streaming when the next test brings up its own app.
+        Espresso.pressBack()
+        compose.waitForIdle()
     }
 
     @Test

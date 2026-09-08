@@ -78,13 +78,18 @@ internal class DemoStore {
     init {
         DemoData.seeds.forEach { seed ->
             val run = DemoData.initialRun(seed, now)
+            val earlier = DemoData.earlierRuns(seed, now)
             agents[seed.id] = DemoData.agentDto(seed, now, run.id)
             v0[seed.id] = DemoData.v0Dto(seed, now)
-            runs[seed.id] = mutableListOf(run)
+            runs[seed.id] = (earlier.map { it.second } + run).toMutableList()
             transcripts[seed.id] = DemoData.transcript(seed).toMutableList()
             seed.liveScript?.let { scripts[run.id] = it }
             prompts[run.id] = seed.prompt
-            if (seed.trace.isNotEmpty()) eventLogs[run.id] = seedEventLog(seed, run).toMutableList()
+            if (seed.trace.isNotEmpty()) eventLogs[run.id] = eventLog(seed.trace, seed.replies, run).toMutableList()
+            earlier.forEach { (turn, turnRun) ->
+                prompts[turnRun.id] = turn.prompt
+                if (turn.trace.isNotEmpty()) eventLogs[turnRun.id] = eventLog(turn.trace, turn.replies, turnRun).toMutableList()
+            }
         }
     }
 
@@ -97,12 +102,12 @@ internal class DemoStore {
     @Synchronized
     fun eventLog(runId: String): List<RunStreamEvent>? = eventLogs[runId]?.toList()
 
-    /** Turns a seed's scripted steps into the events its stream would have carried, mirroring the transcript. */
-    private fun seedEventLog(seed: DemoData.Seed, run: RunDto): List<RunStreamEvent> = buildList {
+    /** Turns a finished turn's scripted steps into the events its stream would have carried, mirroring the transcript. */
+    private fun eventLog(trace: List<DemoData.Step>, turnReplies: List<String>, run: RunDto): List<RunStreamEvent> = buildList {
         add(RunStreamEvent.Status(run.id, RunStatus.RUNNING))
-        val replies = seed.replies.iterator()
+        val replies = turnReplies.iterator()
         var calls = 0
-        seed.trace.forEach { step ->
+        trace.forEach { step ->
             when (step) {
                 is DemoData.Step.Thought -> add(RunStreamEvent.Thinking(step.text))
                 is DemoData.Step.Tool -> {
