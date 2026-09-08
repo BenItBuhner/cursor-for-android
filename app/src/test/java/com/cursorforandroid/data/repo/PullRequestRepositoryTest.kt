@@ -150,6 +150,38 @@ class PullRequestRepositoryTest {
     }
 
     @Test
+    fun `an account failure on a pull request only it can answer is not remembered as unreadable`() = runBlocking<Unit> {
+        val gitlab = "https://gitlab.com/acme/app/-/merge_requests/7"
+        var answer: PullRequestLookup = PullRequestLookup.Failed
+        var asked = 0
+        val account = PullRequestSource { _, _ -> asked++; answer }
+        val repo = repository(account = account)
+
+        repo.refresh(listOf(gitlab))
+
+        // Only Cursor can say where a GitLab merge request stands, so its failure leaves nothing behind and GitHub,
+        // which would only ever call it unreadable, is not asked.
+        assertThat(repo.statuses.value).isEmpty()
+        assertThat(synchronized(requests) { requests.size }).isEqualTo(0)
+        assertThat(asked).isEqualTo(1)
+
+        // Nothing was remembered, so the very next pass tries again rather than waiting out the unreadable interval.
+        answer = PullRequestLookup.Found(PullRequestState.Open)
+        repo.refresh(listOf(gitlab))
+        assertThat(asked).isEqualTo(2)
+        assertThat(repo.known()).containsExactly(gitlab, PullRequestState.Open)
+
+        // An account that will not say (gone, or not the account's) is a real answer, and remembered like GitHub's:
+        // the same refused request is not repeated at every refresh.
+        val other = "https://gitlab.com/acme/app/-/merge_requests/8"
+        answer = PullRequestLookup.Unreadable
+        repo.refresh(listOf(other))
+        assertThat(repo.statuses.value.getValue(other).state).isNull()
+        repo.refresh(listOf(other))
+        assertThat(asked).isEqualTo(3)
+    }
+
+    @Test
     fun `without the account, pull requests on other SCMs are left alone`() = runBlocking<Unit> {
         val repo = repository()
 
@@ -319,6 +351,11 @@ class PullRequestRepositoryTest {
 
         responses["/repos/acme/app/pulls/1"] = { MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "7") }
         assertThat(gitHub.lookup(open, ref)).isEqualTo(PullRequestLookup.Unreadable)
+        // A secondary (abuse) limit: 403 with a Retry-After while the primary budget still has requests left in it.
+        responses["/repos/acme/app/pulls/1"] = {
+            MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "7").setHeader("Retry-After", "120")
+        }
+        assertThat(gitHub.lookup(open, ref)).isEqualTo(PullRequestLookup.RateLimited(now + 120_000))
         responses["/repos/acme/app/pulls/1"] = { MockResponse().setResponseCode(401) }
         assertThat(gitHub.lookup(open, ref)).isEqualTo(PullRequestLookup.Unreadable)
         responses["/repos/acme/app/pulls/1"] = { MockResponse().setResponseCode(503) }

@@ -71,16 +71,21 @@ class GitHubPullRequestSource(private val api: GitHubApi, private val now: () ->
         val remaining = response.headers()["X-RateLimit-Remaining"]?.trim()?.toLongOrNull()
         return when (val code = response.code()) {
             429 -> PullRequestLookup.RateLimited(resetAt(response))
-            403 -> if (remaining == 0L) PullRequestLookup.RateLimited(resetAt(response)) else PullRequestLookup.Unreadable
+            // A secondary (abuse) limit answers 403 with `Retry-After` while the primary budget still has requests
+            // left in it; without either, a 403 is an authorization failure.
+            403 -> if (remaining == 0L || retryAfterSeconds(response) != null) PullRequestLookup.RateLimited(resetAt(response)) else PullRequestLookup.Unreadable
             401, 404, 410, 451 -> PullRequestLookup.Unreadable
             else -> if (code in 400..499) PullRequestLookup.Unreadable else PullRequestLookup.Failed
         }
     }
 
+    private fun retryAfterSeconds(response: Response<*>): Long? =
+        response.headers()["Retry-After"]?.trim()?.toLongOrNull()?.takeIf { it > 0 }
+
     /** When to ask again: `Retry-After` (seconds from now) first, else `X-RateLimit-Reset` (epoch seconds), bounded either way. */
     private fun resetAt(response: Response<*>): Long {
         val at = now()
-        val retryAfter = response.headers()["Retry-After"]?.trim()?.toLongOrNull()?.let { at + it * 1000 }
+        val retryAfter = retryAfterSeconds(response)?.let { at + it * 1000 }
         val reset = response.headers()["X-RateLimit-Reset"]?.trim()?.toLongOrNull()?.let { it * 1000 }
         return (retryAfter ?: reset ?: (at + DEFAULT_BACKOFF_MS)).coerceIn(at + MIN_BACKOFF_MS, at + MAX_BACKOFF_MS)
     }
@@ -196,7 +201,14 @@ class PullRequestRepository(
         for ((url, ref) in due) {
             // The account's answer is the one the first-party apps show; GitHub is asked when the account has none.
             val first = account?.lookup(url, ref)
-            val result = if (first is PullRequestLookup.Found) first else fallback.lookup(url, ref)
+            val result = when {
+                first is PullRequestLookup.Found -> first
+                // A pull request that is not GitHub's (GitLab, Bitbucket, an enterprise host) is only the account's
+                // to answer: GitHub would call every one of them unreadable, which would remember a passing account
+                // failure as a private repository and stop asking for an hour.
+                ref == null && first != null -> first
+                else -> fallback.lookup(url, ref)
+            }
             when (result) {
                 is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo)
                 PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo)
