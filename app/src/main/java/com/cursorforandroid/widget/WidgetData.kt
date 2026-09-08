@@ -60,7 +60,8 @@ object WidgetData {
         graph.session.state,
         graph.agents.state,
         graph.prefs.listPreferences,
-        graph.prefs.localAgentState,
+        // The Git filter goes by the pull request states the app last read; the widget itself never asks GitHub.
+        combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states -> local.copy(pullRequests = states) },
         combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
     ) { session, list, prefs, local, appearance ->
         WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second)
@@ -78,6 +79,7 @@ object WidgetData {
         graph.session.restoreIfNeeded()
         if (graph.session.state.value !is SessionState.SignedIn) return
         graph.agents.restoreFromCache()
+        graph.pullRequests.restoreFromCache()
         if (graph.agents.state.value.hasLoaded) {
             scope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
         } else {
