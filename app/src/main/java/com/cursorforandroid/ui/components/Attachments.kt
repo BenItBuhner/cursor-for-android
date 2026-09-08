@@ -31,13 +31,30 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 /** An image the user attached to the composer, kept with a small decoded thumbnail for the strip. */
 class PendingAttachment(
     val id: String,
     val image: PromptImage,
     val thumbnail: ImageBitmap?,
-)
+) {
+    companion object {
+        /**
+         * The strip's entry for an image that went out with a draft the composer takes back: the same bytes, a
+         * thumbnail decoded from them again. Decodes a bitmap, so not for the main thread.
+         */
+        fun of(image: PromptImage): PendingAttachment =
+            PendingAttachment(id = "returned@" + UUID.randomUUID(), image = image, thumbnail = thumbnailOf(image))
+    }
+}
+
+private fun thumbnailOf(image: PromptImage): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, bounds)
+    val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 160)
+    return BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+}
 
 /**
  * Launches the system photo picker and converts the selection into [PendingAttachment]s, enforcing the API's
@@ -76,11 +93,7 @@ private fun loadAttachment(context: Context, uri: Uri): Result<PendingAttachment
     if (bytes.size > PromptImage.MAX_BYTES) error("Images must be 15 MB or smaller.")
     // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
     val image = AttachmentImages.prepare(bytes, mime)
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, bounds)
-    val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 160)
-    val thumb = BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, BitmapFactory.Options().apply { inSampleSize = sample })
-    PendingAttachment(id = uri.toString() + "@" + System.nanoTime(), image = image, thumbnail = thumb?.asImageBitmap())
+    PendingAttachment(id = uri.toString() + "@" + System.nanoTime(), image = image, thumbnail = thumbnailOf(image))
 }
 
 /** 40px thumbnails with a remove control, shown above the composer text once something is attached. */

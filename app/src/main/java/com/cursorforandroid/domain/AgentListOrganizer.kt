@@ -13,6 +13,8 @@ data class AgentRow(
     val isPinned: Boolean,
     val isUnread: Boolean,
     val launchedFromThisDevice: Boolean,
+    /** Where the agent's pull request stands; null for an agent without one, or one whose state is not known (yet). */
+    val pullRequest: PullRequestState? = null,
 )
 
 data class AgentSection(
@@ -21,12 +23,17 @@ data class AgentSection(
     val rows: List<AgentRow>,
 )
 
-/** Local-only state that the public API has no notion of: pins, read markers and locally launched agents. */
+/**
+ * What this device knows about agents beyond the public API: pins, read markers, which agents were launched here,
+ * and where their pull requests stand as last read from GitHub.
+ */
 data class LocalAgentState(
     val pinnedIds: Set<String> = emptySet(),
     /** agentId -> updatedAt (epoch millis) at the moment the user last opened it. */
     val readMarkers: Map<String, Long> = emptyMap(),
     val launchedHereIds: Set<String> = emptySet(),
+    /** prUrl (as the API reports it) -> state; a pull request GitHub would not or has not yet answered for is absent. */
+    val pullRequests: Map<String, PullRequestState> = emptyMap(),
 )
 
 /**
@@ -55,6 +62,7 @@ object AgentListOrganizer {
         isPinned = agent.id in local.pinnedIds,
         isUnread = isUnread(agent, local),
         launchedFromThisDevice = agent.id in local.launchedHereIds,
+        pullRequest = agent.prUrl?.let { local.pullRequests[it] },
     )
 
     fun matchesFilters(row: AgentRow, prefs: ListPreferences): Boolean {
@@ -70,10 +78,12 @@ object AgentListOrganizer {
         }
         if (!statusOk) return false
 
+        // A pull request whose state is not known (not read yet, or a private repository without a GitHub token) is
+        // hidden only when every state is unchecked: whichever state it is in, the user has not asked to hide it.
         val gitOk = when {
-            agent.hasPullRequest -> GitFilter.PullRequest in prefs.git
-            agent.hasBranch -> GitFilter.Branch in prefs.git
-            else -> GitFilter.NoChanges in prefs.git
+            !agent.hasPullRequest -> GitFilter.NoPullRequest in prefs.git
+            row.pullRequest != null -> GitFilter.of(row.pullRequest) in prefs.git
+            else -> GitFilter.pullRequestStates.any { it in prefs.git }
         }
         if (!gitOk) return false
 
@@ -138,7 +148,8 @@ object AgentListOrganizer {
 
     /**
      * The New Chat pane's recent list: Chats filters apply, sidebar search does not. Pinned chats are included
-     * once, newest first, matching the home-screen widget's Recent mode.
+     * once, newest first, matching the home-screen widget's Recent mode. Built from [organize] rather than from the
+     * agents again, so the two surfaces can never disagree about which chats the filters let through.
      */
     fun recentRows(
         agents: List<Agent>,
@@ -146,10 +157,11 @@ object AgentListOrganizer {
         local: LocalAgentState,
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
-    ): List<AgentRow> = organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone)
-        .flatMap { it.rows }
-        .distinctBy { it.agent.id }
-        .sortedByDescending { it.agent.updatedAtMillis }
+    ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
+
+    /** [recentRows] for sections already organized without a search query: every row once, newest first. */
+    fun recentRows(sections: List<AgentSection>): List<AgentRow> =
+        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
 
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"

@@ -66,6 +66,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
@@ -187,8 +188,10 @@ fun ConversationScreen(
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
-                // Not fillMaxSize: a short transcript then sizes to its content and reads from the top.
-                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
+                // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
+                // flat against the header or the composer.
+                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,

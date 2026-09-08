@@ -140,6 +140,26 @@ object CursorApiFactory {
         }
         .build()
 
+    /**
+     * For the GitHub releases API and the APK downloads it points at. Anonymous by design — the Cursor API key must
+     * never leave for GitHub — and without a call timeout, since an APK download on a slow link takes what it takes;
+     * the read timeout still catches a stalled connection, and GETs ride out blips through the retry interceptor.
+     */
+    fun updateClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
+        }
+        .addInterceptor(RetryInterceptor())
+        .apply {
+            if (BuildConfig.DEBUG) {
+                addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            }
+        }
+        .build()
+
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(client)

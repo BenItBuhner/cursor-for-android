@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
@@ -80,13 +81,15 @@ fun AppNavHost(
         if (drawerState.isOpen) scope.launch { drawerState.close() }
     }
 
+    // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
+    // at composition. A screen can hold on to an older callback: `HomeScreen` is composed underneath a chat while a
+    // back gesture reveals it, and when the pop lands its parameters compare equal (a `::localFunction` reference is
+    // equal to any other reference to the same function, whatever it captured), so it is skipped and keeps the ones
+    // it has. A callback that trusted its captured "a chat is on top" then swapped the New Chat root out for the new
+    // chat, cleared its view models — and with them the launch in flight — and left the chat with nothing under it.
     fun openAgent(id: String) {
         closeDrawer()
-        when {
-            selectedAgentId == id -> Unit
-            topScreen is Screen.Agent -> stack.replaceTop(Screen.Agent(id))
-            else -> stack.push(Screen.Agent(id))
-        }
+        stack.openAgent(id)
     }
 
     fun navigateTop(screen: Screen) {
@@ -97,6 +100,12 @@ fun AppNavHost(
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
     fun leaveFailedLaunch(agentId: String) {
         if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
+    }
+
+    // The launch outlives the composer that sent it, so the chat's fate is heard from the launcher rather than from
+    // the New Chat pane: the composer takes the draft back on its own, this only leaves the chat that never was.
+    LaunchedEffect(Unit) {
+        graph.launcher.failures.collect { leaveFailedLaunch(it.agentId) }
     }
 
     LaunchedEffect(deepLinkAgentId) {
@@ -114,10 +123,12 @@ fun AppNavHost(
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
-    // session, whose list sign-out cleared.
+    // session, whose list sign-out cleared. While on screen the list then keeps itself current, so chats started or
+    // finished elsewhere show up without a pull.
     LifecycleStartEffect(Unit) {
         agentsViewModel.refreshIfStale()
-        onStopOrDispose { }
+        val polling = agentsViewModel.pollWhileVisible()
+        onStopOrDispose { polling.cancel() }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
@@ -128,13 +139,20 @@ fun AppNavHost(
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onDelete = { row ->
             agentsViewModel.delete(row.agent.id)
-            if (selectedAgentId == row.agent.id) navigateTop(Screen.Home)
+            if ((stack.top.screen as? Screen.Agent)?.id == row.agent.id) navigateTop(Screen.Home)
         },
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
         is Screen.Agent -> null
+    }
+    val updateState by graph.updates.state.collectAsStateWithLifecycle()
+    val updateHint = when (val s = updateState) {
+        is UpdateState.Available -> if (s.signatureMismatch) null else "Update available · ${s.release.versionName}"
+        is UpdateState.Downloaded -> "Update ready to install · ${s.release.versionName}"
+        is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
+        else -> null
     }
 
     @Composable
@@ -145,6 +163,7 @@ fun AppNavHost(
             isDemo = isDemo,
             selectedAgentId = selectedAgentId,
             selectedDestination = destination,
+            updateHint = updateHint,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
                 onNewChat = { navigateTop(Screen.Home) },
@@ -175,7 +194,6 @@ fun AppNavHost(
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
                     onLaunchOpen = ::openAgent,
-                    onLaunchFailed = ::leaveFailedLaunch,
                 )
                 Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
                 is Screen.Agent -> ConversationScreen(

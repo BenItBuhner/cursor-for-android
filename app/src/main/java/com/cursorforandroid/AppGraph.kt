@@ -4,10 +4,17 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.cursorforandroid.data.api.AccountApi
+import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.GitHubApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
+import com.cursorforandroid.data.auth.CursorLoginEndpoints
+import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -18,12 +25,19 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.CatalogRepository
+import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.PinRepository
+import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
-import com.cursorforandroid.data.repo.parseIsoMillis
+import com.cursorforandroid.data.update.GitHubReleasesClient
+import com.cursorforandroid.data.update.UpdateCache
+import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
@@ -44,18 +58,40 @@ class AppGraph(context: Context) {
         isDemo = false,
     )
     private val demoBackend = DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
+    /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
+    private val accountClient = CursorApiFactory.loginClient()
+    private val accountRpc = ConnectJsonClient(accountClient, CursorLoginEndpoints.API_URL)
+    /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only. */
+    val sessionTokens = SessionTokenProvider(accountClient, { keyStore.apiKey() })
 
     val session = SessionManager(
         keyStore,
         prefs,
         realBackend,
         demoBackend,
-        browserLogin = CursorLogin(CursorApiFactory.loginClient()),
+        browserLogin = CursorLogin(accountClient),
         // What the key is called on cursor.com/dashboard/api, so the user can tell this phone's key from others.
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
+        profile = AccountApi(accountRpc, sessionTokens),
     )
     val agents = AgentRepository(session, prefs, attachments, caches.agents)
+    /** Pins shared with the desktop Agents window and the iOS app through the account. */
+    val pins = PinRepository(
+        session = session,
+        prefs = prefs,
+        agents = agents,
+        api = BackgroundComposerApi(accountRpc, sessionTokens),
+    )
     val catalog = CatalogRepository(session, caches.catalog)
+    /** Where the agents' pull requests stand, read from GitHub: the API names a PR but never says if it is open, merged or closed. */
+    val pullRequests = PullRequestRepository(
+        gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
+        demo = DemoPullRequests,
+        isDemo = { session.isDemo },
+        readToken = { keyStore.gitHubToken() },
+        writeToken = { keyStore.setGitHubToken(it) },
+        cache = caches.pullRequests,
+    )
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
     val conversations = ConversationRepository(
@@ -68,13 +104,28 @@ class AppGraph(context: Context) {
         traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
     )
+    /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
+    val launcher = ChatLauncher(conversations)
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
     val artifacts = ArtifactRepository(session)
     val media = MediaLoader(context, CursorApiFactory.mediaClient(), artifacts)
     val runMonitor = RunMonitor(
         agents = agents,
         hub = liveRuns,
-        runStartedAt = { agentId, runId -> parseIsoMillis(session.current.api.getRun(agentId, runId).createdAt).takeIf { it > 0 } },
+        runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
+    )
+    /**
+     * In-app updates from the GitHub releases of [BuildConfig.GITHUB_REPO]. Device-level, not account-level: its
+     * cache and downloads sit next to (not inside) [caches], so signing out leaves them alone.
+     */
+    val updates = UpdateManager(
+        client = GitHubReleasesClient(CursorApiFactory.updateClient(), BuildConfig.GITHUB_REPO, apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL),
+        prefs = prefs,
+        cache = UpdateCache(JsonDiskCache(File(context.applicationContext.cacheDir, "update-check"))),
+        platform = AndroidUpdatePlatform(context),
+        downloadDir = File(context.applicationContext.cacheDir, "updates"),
+        // The background service streaming a run is the one thing a silent self-update would cut off.
+        agentsRunning = { runMonitor.isRunning },
     )
 
     init {
@@ -83,10 +134,13 @@ class AppGraph(context: Context) {
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()
+            pins.reset()
+            sessionTokens.clear()
             // Signing out of one real account and into another keeps the same backend, so the list must be
             // reset explicitly or the previous account's agents would show.
             agents.reset()
             catalog.reset()
+            pullRequests.reset()
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()

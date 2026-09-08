@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
@@ -17,18 +18,29 @@ import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 data class AgentListUiState(
+    /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
     val sections: List<AgentSection> = emptyList(),
-    /** New Chat recent cards: same Chats filters as the sidebar, never the sidebar search query. */
+    /**
+     * New Chat recent cards: the same Chats filters as the sidebar, never the sidebar search query, every row once and
+     * newest first — so both surfaces always agree on which chats the filters let through.
+     */
     val recentRows: List<AgentRow> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
@@ -40,24 +52,63 @@ data class AgentListUiState(
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
+    /** True while GitHub refuses to say where some of the listed pull requests stand — private repositories, read without a token. */
+    val pullRequestsUnreadable: Boolean = false,
+    val hasGitHubToken: Boolean = false,
+    /**
+     * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
+     * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
+     * saying "now" for as long as nothing else about it happens to change.
+     */
+    val nowMillis: Long = AppClock.now(),
 )
 
-class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
+/**
+ * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
+ * from the preferences, with the pull request states GitHub last gave folded in; alongside, the pull requests GitHub
+ * refused to answer for and whether a GitHub token is set, for the Git filter page's hint.
+ */
+private class DeviceState(
+    val local: LocalAgentState,
+    val unreadablePullRequests: Set<String>,
+    val hasGitHubToken: Boolean,
+)
+
+class AgentsViewModel(
+    private val graph: AppGraph,
+    private val pollIntervalMs: Long = POLL_INTERVAL_MS,
+    private val clockTickMs: Long = CLOCK_TICK_MS,
+) : ViewModel() {
 
     private val query = MutableStateFlow("")
+
+    /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
+    private val clock: Flow<Long> = flow {
+        while (true) {
+            emit(AppClock.now())
+            delay(clockTickMs)
+        }
+    }
+
+    private val device: Flow<DeviceState> = combine(graph.prefs.localAgentState, graph.pullRequests.statuses, graph.pullRequests.hasToken) { local, statuses, hasToken ->
+        DeviceState(
+            local = local.copy(pullRequests = statuses.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap()),
+            unreadablePullRequests = statuses.filterValues { it.state == null }.keys,
+            hasGitHubToken = hasToken,
+        )
+    }
 
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
         graph.prefs.listPreferences,
-        graph.prefs.localAgentState,
+        device,
         query,
-    ) { list, prefs, local, q ->
-        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q)
-        val recentRows = if (q.isBlank()) {
-            sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
-        } else {
-            AgentListOrganizer.recentRows(list.agents, prefs, local)
-        }
+        clock,
+    ) { list, prefs, device, q, now ->
+        val local = device.local
+        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
+        // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
+        val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
         AgentListUiState(
             sections = sections,
@@ -72,6 +123,9 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             error = list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
+            pullRequestsUnreadable = list.agents.any { it.prUrl in device.unreadablePullRequests },
+            hasGitHubToken = device.hasGitHubToken,
+            nowMillis = now,
         )
     }
         // Grouping, filtering and sorting a few hundred rows is cheap, but not free on every keystroke of the search
@@ -84,28 +138,66 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             // Disk first, so the list is on screen before the network is consulted; the refresh is then silent
             // when there was something to show and visible (pull-to-refresh indicator) on a truly cold start.
             graph.agents.restoreFromCache()
+            graph.pullRequests.restoreFromCache()
             graph.agents.refresh(silent = graph.agents.state.value.hasLoaded)
+            refreshPullRequests()
         }
         viewModelScope.launch {
             graph.agents.state.collect { s ->
                 graph.catalog.seedRepositories(s.agents.mapNotNull { it.repoUrl })
             }
         }
+        viewModelScope.launch {
+            // A pull request the list has not seen before — restored from disk, paged in, or opened by a run that just
+            // finished — is looked up as soon as it appears; states already known are left to their own schedule.
+            graph.agents.state.map { s -> s.agents.mapNotNullTo(LinkedHashSet()) { it.prUrl } }.distinctUntilChanged().collect { urls ->
+                graph.pullRequests.refresh(urls)
+            }
+        }
     }
 
-    fun refresh() = viewModelScope.launch { graph.agents.refresh() }
+    fun refresh() = viewModelScope.launch {
+        graph.agents.refresh()
+        refreshPullRequests(eager = true)
+    }
 
     /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
-    fun refreshIfStale() = viewModelScope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
+    fun refreshIfStale() = viewModelScope.launch {
+        graph.agents.refreshIfStale(STALE_AFTER_MS)
+        refreshPullRequests()
+    }
+
+    private suspend fun refreshPullRequests(eager: Boolean = false) =
+        graph.pullRequests.refresh(graph.agents.state.value.agents.mapNotNull { it.prUrl }, eager)
+
+    /**
+     * Keeps the list current while it is on screen, without anyone pulling to refresh: a run started on the web, a
+     * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
+     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), the whole
+     * list every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent, and
+     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Runs until the
+     * returned job is cancelled; the caller ties it to the list being visible.
+     */
+    fun pollWhileVisible(): Job = viewModelScope.launch {
+        var tick = 0
+        while (true) {
+            delay(pollIntervalMs)
+            tick++
+            val depth = if (tick % FULL_POLL_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick
+            graph.agents.refreshIfStale(pollIntervalMs / 2, depth)
+        }
+    }
 
     fun setQuery(value: String) { query.value = value }
 
-    fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    /** Applies at once; the account hears about it now or at the next sync, so a failure needs no attention here. */
+    fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 
+    /** Against the stored preferences, in one transaction, so quick successive changes compose (see the store). */
     fun updatePrefs(transform: (ListPreferences) -> ListPreferences) = viewModelScope.launch {
-        graph.prefs.setListPreferences(transform(uiState.value.prefs))
+        graph.prefs.updateListPreferences(transform)
     }
 
     fun setGroupBy(groupBy: GroupBy) = updatePrefs { it.copy(groupBy = groupBy) }
@@ -132,6 +224,9 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     private companion object {
         const val STALE_AFTER_MS = 30_000L
+        const val POLL_INTERVAL_MS = 30_000L
+        const val FULL_POLL_EVERY = 5
+        const val CLOCK_TICK_MS = 60_000L
     }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {

@@ -181,7 +181,7 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 private const val CancelOfferDelayMillis = 2_500L
 
 /**
- * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 1M Max ⌄". Nothing is
+ * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 ⌄". Nothing is
  * painted around it until pressed; a chip that cannot be changed drops the chevron instead of greying out.
  */
 @Composable

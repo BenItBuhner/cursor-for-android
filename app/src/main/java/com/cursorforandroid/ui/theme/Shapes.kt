@@ -91,6 +91,8 @@ object CursorDimens {
     val buttonHeight = 34.dp
     /** Settings / sheet rows. */
     val listRow = 44.dp
+    /** Depth of the fade a scrolling list dissolves into at an edge that still has content behind it. */
+    val scrollFade = 28.dp
 }
 
 val LocalCursorShapes = staticCompositionLocalOf { CursorShapes() }

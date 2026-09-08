@@ -55,7 +55,7 @@ import com.cursorforandroid.util.TimeFormat
 @Composable
 fun ChatsWidgetContent(snapshot: WidgetSnapshot, mode: WidgetMode, appWidgetId: Int, nowMillis: Long = AppClock.now()) {
     val context = LocalContext.current
-    val palette = remember(snapshot.theme) { WidgetPalette.forMode(snapshot.theme) }
+    val palette = remember(snapshot.theme, snapshot.oledBlack) { WidgetPalette.forMode(snapshot.theme, snapshot.oledBlack) }
     val rows = remember(snapshot, mode, nowMillis) { snapshot.rows(mode, nowMillis) }
 
     Column(GlanceModifier.fillMaxSize().appWidgetBackground().surface(palette)) {

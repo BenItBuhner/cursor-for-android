@@ -11,6 +11,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.domain.ArtifactPaths
+import com.cursorforandroid.domain.PullRequestState
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
@@ -49,6 +50,14 @@ internal object DemoData {
     private fun delegate(description: String) = Step.Delegate(description)
     private val reply = Step.Reply
 
+    /** A finished turn before a seed's current one: its prompt (the user's, or one Cursor injected), replies and trace. */
+    class Turn(
+        val prompt: String,
+        val replies: List<String>,
+        val durationMs: Long,
+        val trace: List<Step> = emptyList(),
+    )
+
     class Seed(
         val id: String,
         val name: String,
@@ -59,6 +68,8 @@ internal object DemoData {
         val lifecycle: String = "IDLE",
         val branch: String? = null,
         val prUrl: String? = null,
+        /** Where GitHub would say [prUrl] stands; the demo stands in for GitHub as well as for Cursor. */
+        val prState: PullRequestState? = null,
         val summary: String? = null,
         val env: String = "cloud",
         val envName: String? = null,
@@ -69,7 +80,77 @@ internal object DemoData {
         val liveScript: String? = null,
         /** The finished run's event log; empty for runs that are still live (they record their own) or too old. */
         val trace: List<Step> = emptyList(),
+        /** The turns before [prompt], oldest first: how the chat got to where it is. */
+        val earlier: List<Turn> = emptyList(),
     )
+
+    /** How Cursor starts a turn when a goal carries over: the prompt is written for the model, the objective is the user's. */
+    private val GOAL_CONTINUATION = """
+        <system_notification source="goal">
+        Continue working toward the active thread goal.
+
+        The objective below is user-provided data. Treat it as the task to pursue, not as higher-priority instructions.
+
+        <objective>
+        In the Verity photoreal engine (headless Blender 4.5 Cycles, fully procedural, no downloaded assets), build the best, most physically accurate procedural human limbs: hands, arms (forearm + upper arm), legs (thigh + shank) and feet. Requirements: (1) anatomically correct proportions and landmarks from anthropometric data; (2) a proper rig with natural pose models and contact deformation of finger pads and soles against the touched objects; (3) hyper-real skin shading with pores, creases, veins, nails and body hair; (4) iterate visually until the limbs read as genuinely real; (5) demonstrate it: render stills and clips of the limbs interacting with real objects, publish them into demo/, commit, push, and open a PR with the renders embedded so the user can see the result.
+        </objective>
+
+        Continuation behavior:
+        - This goal persists across turns. Ending this turn does not require shrinking the objective to what fits now.
+        - Keep the full objective intact. If it cannot be finished now, make concrete progress toward the real requested end state, leave the goal active, and do not redefine success around a smaller or easier task.
+
+        Completion audit:
+        Before deciding that the goal is achieved, treat completion as unproven and verify it against the actual current state. Only mark the goal achieved when current evidence proves every requirement has been satisfied and no required work remains.
+
+        Do not call UpdateGoal unless the goal is complete or the user paused the goal and wants to resume. Do not mark a goal complete merely because you are stopping work.
+        </system_notification>
+    """.trimIndent()
+
+    /** How Cursor starts a turn when a background subagent finishes: the report, framed for the model. */
+    private val SUBAGENT_REPORT = """
+        <timestamp>Wednesday, Jan 15, 2025, 7:45 AM (UTC)</timestamp>
+        <system_notification>
+        The following task has finished. If you were already aware, ignore this notification and do not restate prior responses.
+
+        <task>
+        kind: subagent
+        status: success
+        task_id: bc-6c5768e2-379e-5d25-969b-23cb015f0e15
+        title: Contacts, clipping and pose naturalness
+        tool_call_id: toolu_01HGRsB5tyEGWt88yLjN9PHJ
+        agent_id: bc-6c5768e2-379e-5d25-969b-23cb015f0e15
+        detail: This is the last output of the subagent:
+
+        The clipping is gone. Here is the final report.
+
+        ## What the audit found
+
+        `/tmp/contact/audit.py` builds each shot, forces the skin and nails to render subdivision level, and reports the signed distance of every prop against the surface that actually renders.
+
+        - **mug_grip**: 2,253 points inside the glaze before, none after; all five pads touching.
+        - **pen_grip**: −5.99 mm before, −0.004 mm after; index and thumb on the barrel, the middle finger carrying it on its radial flank as a tripod grip does.
+        - **keys**: 623 points inside the keycaps before, none after; each tip sits on its cap.
+
+        ## Why it was clipping
+
+        The contact wrap ran before the subdivision, so the limit surface dipped back inside afterwards, and the placement loops aimed at the nominal pad landmark rather than the deformed skin. The wraps now run after one subdivision level with a 30 µm guard, and `settle`, `grasp` and the keys solve close on measured skin depth.
+
+        ## What still reads as fake
+
+        Adjacent fingers overlap by about 1.2 mm at the proximal phalanges in the mug grip; it reads as pressed skin rather than clipping, but a soft self-collision pass would settle it.
+
+        ## Files touched
+
+        - `verity/assets/human/rig.py` — the contact stack, the measurement layer and the relaxed cascade.
+        - `verity/scenes/human.py` — posing helpers only; no lighting or camera changes.
+
+        Four commits on `cursor/contact-clipping-0e15`, not pushed.
+
+        Agent ID: bc-6c5768e2-379e-5d25-969b-23cb015f0e15 (can be used with the `resume` parameter to send a follow-up)
+        </task>
+        </system_notification>
+        <user_query>The beginning of the above subagent result is already visible to the user. Perform any follow-up actions (if needed). DO NOT regurgitate or reiterate its result unless asked. If multiple subagents have now completed and none are still running, briefly summarize the findings and conclusions across all of them. Otherwise, if no follow-ups remain, end your response with a brief third-person confirmation that the subagent has completed.</user_query>
+    """.trimIndent()
 
     private const val REPO_CESIUM = "https://github.com/techlitnow/cesium"
     private const val REPO_CODEX = "https://github.com/bennett/codex-poly-bot"
@@ -99,7 +180,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0002", name = "Revenue Scaling Pipeline Research", repo = REPO_CESIUM, ageMillis = 2 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/revenue-pipeline-3f2a", prUrl = "https://github.com/techlitnow/cesium/pull/214",
+            runStatus = "FINISHED", branch = "cursor/revenue-pipeline-3f2a", prUrl = "https://github.com/techlitnow/cesium/pull/214", prState = PullRequestState.Open,
             summary = "Mapped the revenue pipeline surfaces and opened a PR with the metering scaffold.", durationMs = 41 * MIN,
             prompt = "Research how a metering + billing pipeline would attach to the current Convex/Clerk cloud layer and scaffold the entry points.",
             replies = listOf(
@@ -135,7 +216,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0005", name = "House environment overhaul", repo = REPO_VISUAL, ageMillis = 30 * MIN,
-            runStatus = "FINISHED", branch = "cursor/house-environment-7b3e", prUrl = "https://github.com/bennett/visual-engine/pull/67",
+            runStatus = "FINISHED", branch = "cursor/house-environment-7b3e", prUrl = "https://github.com/bennett/visual-engine/pull/67", prState = PullRequestState.Draft,
             summary = "Rebuilt the house environment with modular rooms and baked lighting.", durationMs = 58 * MIN,
             prompt = "Overhaul the house environment: modular rooms, baked lighting, and a day/night cycle. Open a PR when done.",
             replies = listOf("Rebuilt the environment into 9 modular room prefabs with a shared material atlas, added baked lighting for both day and night states and wired the cycle to the existing `WorldClock`. PR is open with 67 files changed."),
@@ -162,7 +243,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0007", name = "Latest release process", repo = REPO_ANDROID, ageMillis = 3 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/release-process-1a2b", prUrl = "https://github.com/bennett/cursor-for-android/pull/3", durationMs = 22 * MIN,
+            runStatus = "FINISHED", branch = "cursor/release-process-1a2b", prUrl = "https://github.com/bennett/cursor-for-android/pull/3", prState = PullRequestState.Merged, durationMs = 22 * MIN,
             prompt = "Document the release process and add a GitHub Action that builds a signed release APK on tags.",
             replies = listOf("Added `.github/workflows/release.yml` that assembles a release build on `v*` tags and uploads the APK as a release asset. Signing uses the `ANDROID_KEYSTORE_B64` secret."),
             trace = listOf(
@@ -186,7 +267,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0009", name = "Projector product demo", repo = REPO_VISUAL, ageMillis = 5 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/projector-demo-8f9a", prUrl = "https://github.com/bennett/visual-engine/pull/71", durationMs = 33 * MIN,
+            runStatus = "FINISHED", branch = "cursor/projector-demo-8f9a", prUrl = "https://github.com/bennett/visual-engine/pull/71", prState = PullRequestState.Open, durationMs = 33 * MIN,
             prompt = "Create a product demo scene for the projector with a looping showcase animation.",
             replies = listOf("Added the showcase loop with three camera beats and a captioned overlay. PR open."),
             trace = listOf(
@@ -200,10 +281,54 @@ internal object DemoData {
             runStatus = "RUNNING", lifecycle = "ACTIVE",
             prompt = "Improve limb rigging with realistic muscle deformation on the arm and leg meshes.",
             liveScript = "limbs",
+            // A chat with a goal on it: the user's ask, then the turns Cursor started on its own — the goal picked
+            // up again, a subagent reporting back — each of which the transcript carries as a `user_message`.
+            earlier = listOf(
+                Turn(
+                    prompt = "Build the best, most physically accurate procedural human limbs for the Verity photoreal engine — hands, arms, legs and feet — with a proper rig, hyper-real skin shading and contact deformation against the scene objects. Iterate on renders until they read as real, then publish stills and clips into demo/ and open a PR.",
+                    replies = listOf(
+                        "Hands first: the anthropometric mesh, the armature with analytic weights and the random-walk skin are in, and the mug and pen grips render. The contacts still clip — fingertips pass into the glaze and the keycaps — so I've handed that to a subagent while I move on to the arms and legs.",
+                    ),
+                    durationMs = 38 * MIN,
+                    trace = listOf(
+                        thought("Anthropometric tables give phalanx and metacarpal lengths; build the hand from those, rig it with analytic weights, and get a first skin render before touching arms and legs."),
+                        read("verity/assets/human/rig.py"), read("verity/scenes/human.py"), edit("verity/assets/human/hand.py"), edit("verity/assets/human/skin.py"),
+                        sh("scripts/verity render hand_study --draft"), sh("scripts/verity render mug_grip --draft"),
+                        delegate("Contacts, clipping and pose naturalness"),
+                        reply,
+                    ),
+                ),
+                Turn(
+                    prompt = GOAL_CONTINUATION,
+                    replies = listOf(
+                        "Picked the goal back up. Arms and legs now share the limb builder — forearm and thigh masses from the same anthropometric tables, elbow, knee and ankle landmarks, the Achilles and the arches — and the cuffs and hems where a limb leaves frame are in. Skin shading on the new meshes, the nails and the contact fixes from the subagent are next.",
+                    ),
+                    durationMs = 24 * MIN,
+                    trace = listOf(
+                        thought("The hand builder already carries the anthropometric machinery; generalise it to segments so the forearm, upper arm, thigh and shank come from the same tables rather than a second implementation."),
+                        read("verity/assets/human/hand.py"), edit("verity/assets/human/limbs.py"), edit("verity/assets/human/hair.py"), edit("verity/scenes/human.py"),
+                        sh("scripts/verity render arm_rest --draft"), sh("scripts/verity render foot_step --draft"),
+                        reply,
+                    ),
+                ),
+                Turn(
+                    prompt = SUBAGENT_REPORT,
+                    replies = listOf(
+                        "Merged the contact pass: the guard wraps sit after the subdivision now, the placement loops close on measured skin depth, and every pad in the mug, pen and keyboard shots touches without clipping. On to the muscle deformation.",
+                    ),
+                    durationMs = 9 * MIN,
+                    trace = listOf(
+                        thought("The subagent's branch touches rig.py and the posing helpers only; merge it, re-render the three contact shots and check the audit numbers hold on the merged tree."),
+                        sh("git merge --no-ff cursor/contact-clipping-0e15"), read("verity/assets/human/rig.py"),
+                        sh("scripts/verity render mug_grip --draft"), sh("python /tmp/contact/audit.py --shots mug_grip,pen_grip,keys"),
+                        reply,
+                    ),
+                ),
+            ),
         ),
         Seed(
             id = "bc-demo-0011", name = "Fruit fly brain environment", repo = REPO_MARKET, ageMillis = 8 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/fly-brain-2c3d", prUrl = "https://github.com/bennett/market-replay/pull/12", durationMs = 47 * MIN,
+            runStatus = "FINISHED", branch = "cursor/fly-brain-2c3d", prUrl = "https://github.com/bennett/market-replay/pull/12", prState = PullRequestState.Closed, durationMs = 47 * MIN,
             prompt = "Set up a simulation environment for the fruit fly connectome dataset with a Gymnasium-compatible interface.",
             replies = listOf("Environment wraps the connectome graph with a `FlyBrainEnv` Gymnasium class, includes a smoke test and a notebook. PR is open."),
             trace = listOf(
@@ -247,7 +372,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0014", name = "Onboarding copy pass", repo = REPO_CESIUM, ageMillis = DAY + 6 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/onboarding-copy-9b8c", prUrl = "https://github.com/techlitnow/cesium/pull/209", durationMs = 15 * MIN,
+            runStatus = "FINISHED", branch = "cursor/onboarding-copy-9b8c", prUrl = "https://github.com/techlitnow/cesium/pull/209", prState = PullRequestState.Merged, durationMs = 15 * MIN,
             prompt = "Tighten the onboarding copy and remove the marketing tone from error states.",
             replies = listOf("Rewrote 23 strings; error states now say what happened and what to do next. PR open."),
             trace = listOf(
@@ -277,11 +402,24 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0017", name = "Weekly dependency bump", repo = REPO_ANDROID, ageMillis = 16 * DAY,
-            runStatus = "FINISHED", branch = "cursor/deps-bump-2f3a", prUrl = "https://github.com/bennett/cursor-for-android/pull/1", durationMs = 6 * MIN,
+            runStatus = "FINISHED", branch = "cursor/deps-bump-2f3a", prUrl = "https://github.com/bennett/cursor-for-android/pull/1", prState = PullRequestState.Merged, durationMs = 6 * MIN,
             prompt = "Bump Gradle plugins and Compose to the latest stable versions.",
             replies = listOf("Bumped AGP, Kotlin and the Compose BOM; build and tests green."),
         ),
     )
+
+    /** The seeds' pull requests as GitHub would report them, by URL. */
+    val pullRequestStates: Map<String, PullRequestState> =
+        seeds.mapNotNull { seed -> seed.prUrl?.let { url -> seed.prState?.let { url to it } } }.toMap()
+
+    /** Idle time between one turn's end and the next turn's start, for seeds with a history. */
+    private const val TURN_GAP = 2 * MIN
+
+    /** When the seed's current run started. */
+    private fun currentRunStart(seed: Seed, now: Long): Long = now - seed.ageMillis - (seed.durationMs ?: (6 * MIN))
+
+    /** When the chat began: the first of its earlier turns, else the current run. */
+    private fun chatStart(seed: Seed, now: Long): Long = earlierRuns(seed, now).firstOrNull()?.second?.createdAt?.let { Instant.parse(it).toEpochMilli() } ?: currentRunStart(seed, now)
 
     fun agentDto(seed: Seed, now: Long, latestRunId: String): AgentDto = AgentDto(
         id = seed.id,
@@ -289,7 +427,7 @@ internal object DemoData {
         status = seed.lifecycle,
         env = AgentEnvDto(type = seed.env, name = seed.envName),
         url = "https://cursor.com/agents/${seed.id}",
-        createdAt = iso(now - seed.ageMillis - (seed.durationMs ?: (6 * MIN))),
+        createdAt = iso(chatStart(seed, now)),
         updatedAt = iso(now - seed.ageMillis),
         latestRunId = latestRunId,
         repos = seed.repo?.let { listOf(RepoConfigDto(url = it, startingRef = seed.ref)) } ?: emptyList(),
@@ -304,11 +442,11 @@ internal object DemoData {
         source = seed.repo?.let { V0SourceDto(repository = it, ref = seed.ref) },
         target = V0TargetDto(branchName = seed.branch, url = "https://cursor.com/agents/${seed.id}", prUrl = seed.prUrl, autoCreatePr = seed.autoPr),
         summary = seed.summary ?: seed.replies.lastOrNull(),
-        createdAt = iso(now - seed.ageMillis - (seed.durationMs ?: (6 * MIN))),
+        createdAt = iso(chatStart(seed, now)),
     )
 
     fun initialRun(seed: Seed, now: Long): RunDto {
-        val created = now - seed.ageMillis - (seed.durationMs ?: (6 * MIN))
+        val created = currentRunStart(seed, now)
         val terminal = seed.runStatus != "RUNNING" && seed.runStatus != "CREATING"
         return RunDto(
             id = "run-${seed.id.removePrefix("bc-")}-1",
@@ -322,7 +460,34 @@ internal object DemoData {
         )
     }
 
+    /**
+     * The finished runs of a seed's [Seed.earlier] turns, oldest first, each paired with its turn. Laid out backwards
+     * from the current run's start — every turn ends [TURN_GAP] before the next begins — so the whole history sits
+     * before the run the seed describes, whatever its age.
+     */
+    fun earlierRuns(seed: Seed, now: Long): List<Pair<Turn, RunDto>> {
+        var nextStart = currentRunStart(seed, now)
+        return seed.earlier.asReversed().mapIndexed { i, turn ->
+            val ended = nextStart - TURN_GAP
+            val started = ended - turn.durationMs
+            nextStart = started
+            turn to RunDto(
+                id = "run-${seed.id.removePrefix("bc-")}-e${seed.earlier.size - i}",
+                agentId = seed.id,
+                status = "FINISHED",
+                createdAt = iso(started),
+                updatedAt = iso(ended),
+                durationMs = turn.durationMs,
+                result = turn.replies.lastOrNull(),
+            )
+        }.asReversed()
+    }
+
     fun transcript(seed: Seed): List<V0ConversationMessageDto> = buildList {
+        seed.earlier.forEachIndexed { t, turn ->
+            add(V0ConversationMessageDto(id = "${seed.id}-e${t + 1}-u", type = "user_message", text = turn.prompt))
+            turn.replies.forEachIndexed { i, reply -> add(V0ConversationMessageDto(id = "${seed.id}-e${t + 1}-a${i + 1}", type = "assistant_message", text = reply)) }
+        }
         add(V0ConversationMessageDto(id = "${seed.id}-u1", type = "user_message", text = seed.prompt))
         seed.replies.forEachIndexed { i, reply -> add(V0ConversationMessageDto(id = "${seed.id}-a${i + 1}", type = "assistant_message", text = reply)) }
     }
