@@ -55,12 +55,14 @@ import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.Pill
+import com.cursorforandroid.ui.components.PullRequestPill
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SelectorChip
 import com.cursorforandroid.ui.components.SelectorRow
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
@@ -245,7 +247,7 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
-                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, null, tint = colors.gitAdded, modifier = Modifier.size(14.dp))
+                    agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, row.pullRequest?.label ?: "Pull request", tint = pullRequestTint(row.pullRequest), modifier = Modifier.size(14.dp))
                     agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
                     row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
                     else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
@@ -267,7 +269,7 @@ private fun PreviewCard(row: AgentRow) {
     CursorCard(Modifier.size(width = CursorDimens.previewCardWidth, height = CursorDimens.previewCardHeight), shape = CursorTheme.shapes.lg) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
             when {
-                agent.hasPullRequest -> Pill("Open", icon = CursorIcons.GitPullRequest, tint = colors.gitAdded, fill = colors.gitAdded.copy(alpha = 0.14f))
+                agent.hasPullRequest -> PullRequestPill(row.pullRequest)
                 row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
                 row.indicator == AgentIndicator.Error -> Pill("Failed", icon = CursorIcons.Warning, tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)

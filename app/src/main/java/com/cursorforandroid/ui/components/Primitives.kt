@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -214,6 +215,33 @@ fun Pill(
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/**
+ * The colour a pull request is shown in, GitHub's: green while open, grey as a draft, purple once merged, red when
+ * closed. A pull request whose state is not known is shown in the neutral pill colour.
+ */
+@Composable
+fun pullRequestTint(state: PullRequestState?): Color = when (state) {
+    PullRequestState.Open -> CursorTheme.colors.gitAdded
+    PullRequestState.Draft -> CursorTheme.colors.textTertiary
+    PullRequestState.Merged -> CursorTheme.colors.purple
+    PullRequestState.Closed -> CursorTheme.colors.red
+    null -> CursorTheme.colors.textSecondary
+}
+
+/** The pill a chat's pull request is shown as: its state, or just "Pull request" while the state is not known. */
+@Composable
+fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    val tint = pullRequestTint(state)
+    Pill(
+        text = state?.label ?: "Pull request",
+        modifier = modifier,
+        icon = CursorIcons.GitPullRequest,
+        tint = tint,
+        fill = if (state != null) tint.copy(alpha = 0.14f) else CursorTheme.colors.fill,
+        onClick = onClick,
+    )
 }
 
 /** Cursor's flat toggle at a tappable size (36 x 20): green track when on, 14 % fill when off, white knob. */
