@@ -100,6 +100,8 @@ fun Sidebar(
     onQueryChange: (String) -> Unit,
     callbacks: SidebarCallbacks,
     modifier: Modifier = Modifier,
+    /** "Update available · 0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
+    updateHint: String? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -182,7 +184,26 @@ fun Sidebar(
             }
         }
 
+        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart.
+        if (updateHint != null) {
+            UpdateHintRow(updateHint, onClick = callbacks.onSettings)
+        }
         AccountFooter(user, isDemo, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
+    }
+}
+
+/** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
+@Composable
+private fun UpdateHintRow(text: String, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    Row(
+        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.ArrowDown, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = CursorTheme.typography.small, color = colors.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
     }
 }
 

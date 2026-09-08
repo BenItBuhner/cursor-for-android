@@ -19,6 +19,8 @@ import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.update.UpdateCoordinator
+import com.cursorforandroid.update.UpdateNotifications
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -40,6 +42,8 @@ class MainActivity : ComponentActivity() {
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
         LiveNotifications.ensureChannels(this)
         LiveNotificationCoordinator.bind(this, graph)
+        UpdateCoordinator.bind(this, graph)
+        resumeUpdateIfAsked(intent)
         returnFromBrowserWhenLoginEnds(graph)
 
         setContent {
@@ -61,6 +65,12 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         agentIdFrom(intent)?.let { pendingAgentId = it }
         if (intent.action == ACTION_NEW_CHAT) pendingNewChat = true
+        resumeUpdateIfAsked(intent)
+    }
+
+    /** The "ready to install" notification opens the app with this action; the confirmation the system wants follows. */
+    private fun resumeUpdateIfAsked(intent: Intent?) {
+        if (intent?.action == UpdateNotifications.ACTION_INSTALL_UPDATE) appGraph.updates.resumePendingInstall()
     }
 
     /**

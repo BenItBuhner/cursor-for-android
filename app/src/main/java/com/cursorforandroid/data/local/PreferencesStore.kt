@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -64,9 +65,44 @@ class PreferencesStore(context: Context) {
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
+        val autoUpdate = booleanPreferencesKey("auto_update")
+        val includePreReleases = booleanPreferencesKey("update_include_pre_releases")
+        val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
+        val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
+        val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
         val pinSync = booleanPreferencesKey("pin_sync")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
+    }
+
+    // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
+
+    /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
+    val autoUpdate: Flow<Boolean> = store.data.map { it[Keys.autoUpdate] ?: true }
+
+    /** Whether `-rc.N` / `-beta.N` releases are offered; null until the user decides (the installed channel then applies). */
+    val includePreReleases: Flow<Boolean?> = store.data.map { it[Keys.includePreReleases] }
+
+    val updateLastCheckedAt: Flow<Long?> = store.data.map { it[Keys.updateLastCheckedAt] }
+
+    /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
+    val pendingUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.pendingUpdateVersionCode] }
+
+    /** versionCode the "ready to install" notification was last shown for, so it is posted once per release. */
+    val notifiedUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.notifiedUpdateVersionCode] }
+
+    suspend fun setAutoUpdate(enabled: Boolean) = store.edit { it[Keys.autoUpdate] = enabled }
+
+    suspend fun setIncludePreReleases(include: Boolean) = store.edit { it[Keys.includePreReleases] = include }
+
+    suspend fun setUpdateLastCheckedAt(epochMillis: Long) = store.edit { it[Keys.updateLastCheckedAt] = epochMillis }
+
+    suspend fun setPendingUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+        if (versionCode == null) p.remove(Keys.pendingUpdateVersionCode) else p[Keys.pendingUpdateVersionCode] = versionCode
+    }
+
+    suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+        if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
     }
 
     /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */
