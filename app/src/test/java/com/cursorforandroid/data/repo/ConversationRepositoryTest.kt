@@ -762,6 +762,53 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `a run list that fails to load leaves the footers and the cached runs alone`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"), Triple("run-2", "Prompt 2", "Reply 2"))
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 2 }
+        awaitUntil { cache.read("bc-1")?.value?.runs?.size == 2 }
+
+        // The transcript answers, the run list times out: the turn footers and the run state must survive it.
+        api.failListRuns = CursorApiException(503, "unavailable", "Try again later.")
+        val before = api.conversationCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.conversationCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        val degraded = state(conversations)
+        assertThat(degraded.items.count { it is RunFooter }).isEqualTo(2)
+        assertThat(degraded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
+        assertThat(degraded.activeRunId).isEqualTo("run-2")
+        assertThat(degraded.runStatus).isEqualTo(RunStatus.FINISHED)
+        // And the degraded shape is never the one written back.
+        assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2").inOrder()
+    }
+
+    @Test
+    fun `a transcript that fails to load does not erase the cached one`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && prompts(conversations, "bc-1").size == 1 }
+        awaitUntil { cache.read("bc-1")?.value?.messages?.size == 2 }
+
+        api.failConversation = CursorApiException(500, "internal_error", "Server error.")
+        val before = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        val kept = state(conversations)
+        assertThat(kept.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1")
+        assertThat(kept.items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Reply 1")
+        assertThat(kept.transcriptUnavailable).isFalse()
+        assertThat(cache.read("bc-1")!!.value.messages.map { it.text }).containsExactly("Prompt 1", "Reply 1").inOrder()
+    }
+
+    @Test
     fun `forgetting an agent removes its transcript from disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")

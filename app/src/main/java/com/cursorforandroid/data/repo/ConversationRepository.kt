@@ -377,23 +377,30 @@ class ConversationRepository(
                 val runPage = async { runCatching { api.listRuns(agentId, limit = 50).items } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
-                val runList = runPage.await().getOrElse { emptyList() }
+                val runResult = runPage.await()
                 val onDevice = stored.await()
-                val transcript = convResult.getOrNull()?.messages ?: emptyList()
-                val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
-                val fetched = convResult.isSuccess || runList.isNotEmpty()
+                // Each endpoint answers for itself: what one of them could not read is left as it was rather than
+                // reported as absent, so a timeout on the run list does not strip the footers and traces off an
+                // otherwise healthy transcript — nor write that shape to disk.
+                val transcript = convResult.getOrNull()?.messages
+                val fetchedRuns = runResult.getOrNull()
+                val transcriptFailed = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
+                val fetched = convResult.isSuccess || fetchedRuns?.isNotEmpty() == true
                 // The newest run once the inputs are merged: usually the server's, but a follow-up sent from here
                 // that the list has not caught up with yet is newer, and a reload must keep following it rather
                 // than declare the previous run the active one.
                 var latest: RunDto? = null
+                var merged: List<RunDto> = emptyList()
+                var unavailable = false
                 if (fetched) {
                     // The traces are kept: they are complete, and a finished run's log does not change. Local prompts
                     // hand over to the server once it reports them in full.
                     e.publish(
                         mutate = {
-                            messages = transcript
-                            runs = runList
-                            this.transcriptUnavailable = transcriptUnavailable && transcript.isEmpty()
+                            transcript?.let { messages = it }
+                            fetchedRuns?.let { runs = it }
+                            unavailable = transcriptFailed && messages.isEmpty()
+                            this.transcriptUnavailable = unavailable
                             inputsUpdatedAt = agents.agent(agentId)?.updatedAtMillis ?: 0L
                             pruneLocal()
                             // The disk knows every filed prompt; only prompts still in flight exist solely in memory.
@@ -401,6 +408,7 @@ class ConversationRepository(
                             this.fetched = true
                             fetchedAt = AppClock.now()
                             latest = latestRun()
+                            merged = runs
                         },
                         transform = {
                             copy(
@@ -410,7 +418,7 @@ class ConversationRepository(
                                 runStatus = latest?.statusEnum(),
                                 isStreaming = false,
                                 isReconnecting = false,
-                                transcriptUnavailable = transcriptUnavailable && transcript.isEmpty(),
+                                transcriptUnavailable = unavailable,
                             )
                         },
                     )
@@ -433,9 +441,9 @@ class ConversationRepository(
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
                         // longer — the transcript has the reply now, and the replay below brings the whole trace.
                         val followed = synchronized(e) { e.live?.runId }
-                        if (followed != null && runList.any { it.id == followed && it.statusEnum().isTerminal }) e.stopFollowing()
+                        if (followed != null && merged.any { it.id == followed && it.statusEnum().isTerminal }) e.stopFollowing()
                     }
-                    loadTraces(e, agentId, runList.filter { it.statusEnum().isTerminal })
+                    loadTraces(e, agentId, merged.filter { it.statusEnum().isTerminal })
                 }
             }
         } catch (t: Throwable) {
