@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The sidebar's 6dp state dot (unread blue, error red), centred in the 16dp glyph slot so it lines up with the other
+  row glyphs without a wrapper. Tinted at render time.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="16"
+    android:viewportHeight="16">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5 8a3 3 0 1 0 6 0a3 3 0 1 0 -6 0z" />
+</vector>

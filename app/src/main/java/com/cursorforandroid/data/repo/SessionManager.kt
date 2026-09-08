@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.coroutineContext
@@ -74,12 +76,25 @@ class SessionManager(
     private val _loginProgress = MutableStateFlow<LoginProgress>(LoginProgress.Idle)
     val loginProgress: StateFlow<LoginProgress> = _loginProgress.asStateFlow()
     private var loginJob: Job? = null
+    private val restoreMutex = Mutex()
 
     val current: CursorBackend get() = _backend.value
     val isDemo: Boolean get() = current.isDemo
 
     /** Runs on every sign-out, including the automatic one after a rejected key; the app graph wipes its caches here. */
     var onSignedOut: suspend () -> Unit = {}
+
+    /**
+     * [restore], unless the session has already been decided. The activity and a widget render can both be the
+     * first thing that needs the session in a fresh process; whichever comes second waits for the first instead of
+     * restoring again.
+     */
+    suspend fun restoreIfNeeded() {
+        if (_state.value !is SessionState.Loading) return
+        restoreMutex.withLock {
+            if (_state.value is SessionState.Loading) restore()
+        }
+    }
 
     /**
      * Called once at startup. Signs in from the stored key or demo flag; tolerates being offline. The cached account

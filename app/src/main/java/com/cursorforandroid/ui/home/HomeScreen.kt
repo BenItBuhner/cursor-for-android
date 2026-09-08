@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.MediaMarkup
@@ -73,6 +72,10 @@ import com.cursorforandroid.util.TimeFormat
 /**
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then the recent chats
  * list with preview cards (cursor.com/agents). On phones a 44dp header carries the sidebar toggle.
+ *
+ * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
+ * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
+ * ready for the next chat whatever the last one is still waiting on.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,7 +84,7 @@ fun HomeScreen(
     listState: AgentListUiState,
     onOpenSidebar: (() -> Unit)?,
     onOpenAgent: (AgentRow) -> Unit,
-    onLaunched: (Agent) -> Unit,
+    onLaunchOpen: (agentId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
@@ -92,7 +95,7 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
-    val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
+    val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
         onPicked = viewModel::addAttachments,
@@ -124,7 +127,7 @@ fun HomeScreen(
                         SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             // A blank ref leaves the starting point to the repository's default branch.
-                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch, mono = true)
+                            SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
                         }
                         SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
                     }
@@ -132,10 +135,9 @@ fun HomeScreen(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
                         placeholder = "Ask Cursor to build, fix bugs, explore",
-                        onSend = { viewModel.launch(onLaunched) },
+                        onSend = { viewModel.launch(onOpen = onLaunchOpen) },
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
-                        onCancelSend = viewModel::cancelLaunch,
                         minLines = 3,
                         plusMenu = plusMenu,
                         attachments = state.attachments,
@@ -370,12 +372,9 @@ internal fun SheetSearchField(value: String, onValueChange: (String) -> Unit, pl
     }
 }
 
-/**
- * Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. [mono]
- * sets the title in JetBrains Mono at body size, as the composer chips do for branch names.
- */
+/** Sheet list row: optional 17px glyph, title with an optional 12sp detail line, accent check when selected. */
 @Composable
-internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, mono: Boolean = false, onClick: () -> Unit) {
+internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: ImageVector? = null, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
@@ -392,8 +391,7 @@ internal fun SheetRow(title: String, subtitle: String?, checked: Boolean, icon: 
             Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
-            val titleStyle = if (mono) type.code.copy(fontSize = type.base.fontSize, lineHeight = type.base.lineHeight) else type.base
-            Text(title, style = titleStyle, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (checked) {

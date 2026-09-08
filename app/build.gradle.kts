@@ -181,6 +181,9 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
 
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.work.runtime)
+
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)

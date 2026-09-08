@@ -4,4 +4,19 @@
     <color name="cursor_canvas">#141414</color>
     <!-- Background of the official dark app icon (APP_ICON_25D_DARK.png in the https://cursor.com/brand kit). -->
     <color name="ic_launcher_background">#14120B</color>
+
+    <!--
+      Widget tokens for the two layouts the launcher inflates on its own (the loading placeholder and the picker
+      preview), which cannot read the app's theme preference and so follow the system. Light values of CursorColors;
+      values-night carries the dark ones. The rendered widget derives its colours from CursorColors directly.
+    -->
+    <color name="widget_surface">#FCFCFC</color>
+    <color name="widget_text_primary">#141414</color>
+    <color name="widget_text_tertiary">#99141414</color>
+    <color name="widget_text_quaternary">#5C141414</color>
+    <color name="widget_icon_secondary">#A8141414</color>
+    <color name="widget_icon_tertiary">#85141414</color>
+    <color name="widget_icon_quaternary">#47141414</color>
+    <color name="widget_unread_dot">#2778C1</color>
+    <color name="widget_error_dot">#CE405B</color>
 </resources>

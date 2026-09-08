@@ -60,6 +60,8 @@ fun AppNavHost(
     isDemo: Boolean,
     deepLinkAgentId: String?,
     onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
 ) {
     val activity = LocalContext.current as Activity
     val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
@@ -93,10 +95,28 @@ fun AppNavHost(
         stack.resetTo(screen)
     }
 
+    /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
+    fun leaveFailedLaunch(agentId: String) {
+        if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
+    }
+
+    // The launch outlives the composer that sent it, so the chat's fate is heard from the launcher rather than from
+    // the New Chat pane: the composer takes the draft back on its own, this only leaves the chat that never was.
+    LaunchedEffect(Unit) {
+        graph.launcher.failures.collect { leaveFailedLaunch(it.agentId) }
+    }
+
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let {
             openAgent(it)
             onDeepLinkConsumed()
+        }
+    }
+    // The widget's "+": the New Chat pane, as the sidebar's "+" reaches it.
+    LaunchedEffect(newChatRequested) {
+        if (newChatRequested) {
+            navigateTop(Screen.Home)
+            onNewChatConsumed()
         }
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
@@ -169,7 +189,7 @@ fun AppNavHost(
                     listState = listState,
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
-                    onLaunched = { agent -> openAgent(agent.id) },
+                    onLaunchOpen = ::openAgent,
                 )
                 Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
                 is Screen.Agent -> ConversationScreen(

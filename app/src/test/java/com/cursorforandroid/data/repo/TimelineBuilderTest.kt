@@ -8,7 +8,6 @@ import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
@@ -21,7 +20,6 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
-import java.time.ZoneOffset
 
 class TimelineBuilderTest {
 
@@ -43,18 +41,17 @@ class TimelineBuilderTest {
             run("run-2", "2026-04-13T18:50:00.000Z", status = "RUNNING", duration = null),
             run("run-1", "2026-04-13T18:30:00.000Z", branch = "cursor/readme"),
         )
-        val items = TimelineBuilder.fromHistory(messages, runs, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        val items = TimelineBuilder.fromHistory(messages, runs)
         val types = items.map { it::class.simpleName }
         assertThat(types).containsExactly(
-            "DateHeader", "UserMessage", "AssistantMessage", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "AssistantMessage",
+            "UserMessage", "AssistantMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage",
         ).inOrder()
         val footer = items.filterIsInstance<RunFooter>().single()
         assertThat(footer.runId).isEqualTo("run-1")
         assertThat(footer.durationMs).isEqualTo(185_000L)
         assertThat(footer.branches.single().branch).isEqualTo("cursor/readme")
-        assertThat((items[1] as UserMessage).text).isEqualTo("Add a README")
-        assertThat((items[0] as DateHeader).label).contains("at")
+        assertThat((items[0] as UserMessage).text).isEqualTo("Add a README")
     }
 
     @Test
@@ -67,7 +64,7 @@ class TimelineBuilderTest {
         )
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z"), run("run-2", "2026-04-13T18:50:00.000Z"))
         val shots = listOf(MessageAttachment("/data/attachments/bc-1/run-2/0.jpg", 720, 1600), MessageAttachment("/data/attachments/bc-1/run-2/1.jpg", 1600, 900))
-        val items = TimelineBuilder.fromHistory(messages, runs, attachments = mapOf("run-2" to shots), nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        val items = TimelineBuilder.fromHistory(messages, runs, attachments = mapOf("run-2" to shots))
         val prompts = items.filterIsInstance<UserMessage>()
         assertThat(prompts.map { it.text }).containsExactly("Add a README", "Fix the layout in these screenshots").inOrder()
         assertThat(prompts[0].attachments).isEmpty()
@@ -83,7 +80,7 @@ class TimelineBuilderTest {
             V0ConversationMessageDto("m1", "user_message", "Again"),
         )
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z"), run("run-1", "2026-04-13T18:50:00.000Z"))
-        val items = TimelineBuilder.fromHistory(messages, runs, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        val items = TimelineBuilder.fromHistory(messages, runs)
         assertThat(items.map { it.id }).containsNoDuplicates()
         assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Working on it.", "Done.").inOrder()
         assertThat(items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Add a README", "Again").inOrder()
@@ -92,9 +89,9 @@ class TimelineBuilderTest {
     @Test
     fun `history without transcript falls back to run results`() {
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z", result = "Final answer"))
-        val items = TimelineBuilder.fromHistory(emptyList(), runs, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
-        assertThat(items.map { it::class.simpleName }).containsExactly("DateHeader", "AssistantMessage", "RunFooter").inOrder()
-        assertThat((items[1] as AssistantMessage).markdown).isEqualTo("Final answer")
+        val items = TimelineBuilder.fromHistory(emptyList(), runs)
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "RunFooter").inOrder()
+        assertThat((items[0] as AssistantMessage).markdown).isEqualTo("Final answer")
     }
 
     private fun tool(id: String, name: String, status: String, vararg args: Pair<String, String>) = RunStreamEvent.ToolCall(
@@ -132,31 +129,31 @@ class TimelineBuilderTest {
             "run-1" to trace("run-1", "Done, README added."),
             "run-3" to trace("run-3", "Drafting the FAQ", finished = false),
         )
-        val items = TimelineBuilder.fromHistory(messages, runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
+        val items = TimelineBuilder.fromHistory(messages, runs, traces)
         assertThat(items.map { it::class.simpleName }).containsExactly(
-            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage",
+            "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "ActivityGroup", "AssistantMessage",
         ).inOrder()
         // The transcript's copies of run-1's replies are gone; the trace's own text and footer took their place.
         assertThat(items.none { it.id == "m2" || it.id == "m3" || it.id == "run-run-1" }).isTrue()
-        assertThat((items[3] as AssistantMessage).markdown).isEqualTo("Done, README added.")
-        assertThat((items[4] as RunFooter).runId).isEqualTo("run-1")
-        assertThat((items[4] as RunFooter).durationMs).isEqualTo(42_000L)
+        assertThat((items[2] as AssistantMessage).markdown).isEqualTo("Done, README added.")
+        assertThat((items[3] as RunFooter).runId).isEqualTo("run-1")
+        assertThat((items[3] as RunFooter).durationMs).isEqualTo(42_000L)
         // The expired run keeps the transcript text and a footer built from the run record.
-        assertThat(items[7].id).isEqualTo("m5")
-        assertThat((items[8] as RunFooter).durationMs).isEqualTo(185_000L)
+        assertThat(items[5].id).isEqualTo("m5")
+        assertThat((items[6] as RunFooter).durationMs).isEqualTo(185_000L)
         // The live run has no footer yet, and its work sits right after its prompt rather than after the older runs.
-        assertThat((items[10] as UserMessage).text).isEqualTo("And a FAQ")
-        assertThat((items[11] as ActivityGroup).calls.map { it.callId }).containsExactly("run-3-c1", "run-3-c2").inOrder()
+        assertThat((items[7] as UserMessage).text).isEqualTo("And a FAQ")
+        assertThat((items[8] as ActivityGroup).calls.map { it.callId }).containsExactly("run-3-c1", "run-3-c2").inOrder()
     }
 
     @Test
     fun `a trace also replaces the result fallback of runs missing from the transcript`() {
         val runs = listOf(run("run-1", "2026-04-13T18:30:00.000Z", result = "Final answer"))
         val traces = mapOf("run-1" to trace("run-1", "Final answer"))
-        val items = TimelineBuilder.fromHistory(emptyList(), runs, traces, nowMillis = 1_776_200_000_000L, zone = ZoneOffset.UTC)
-        assertThat(items.map { it::class.simpleName }).containsExactly("DateHeader", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        val items = TimelineBuilder.fromHistory(emptyList(), runs, traces)
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(items.none { it.id == "res-run-1" }).isTrue()
     }
 

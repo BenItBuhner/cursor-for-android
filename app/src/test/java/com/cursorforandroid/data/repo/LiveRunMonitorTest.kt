@@ -226,7 +226,10 @@ class LiveRunMonitorTest {
         repeat(10) { api.addRunningAgent("bc-$it", "Agent $it", "run-$it") }
         agents.refresh()
         monitor.start()
-        awaitUntil { monitor.state.value.hasReconciled && running().size == 8 }
+        // A run is listed as tracked the moment its tracker starts; the hub opens its stream a beat later, on its own
+        // scope, so the connections are waited for in their own right rather than assumed to keep pace with the state.
+        awaitUntil { monitor.state.value.hasReconciled && running().size == 8 && streamer.connections.distinct().size == 8 }
+        // Left to settle: the cap must hold, so nothing beyond the eight may follow.
         delay(100)
         assertThat(running()).hasSize(8)
         assertThat(streamer.connections.distinct()).hasSize(8)
@@ -244,6 +247,9 @@ class LiveRunMonitorTest {
         streamer.emit(finishedRun, RunStreamEvent.Done)
         awaitUntil { monitor.state.value.runningCount == 9 && running().size == 8 && running().none { it.agentId == finishedId } }
         assertThat(monitor.state.value.untrackedCount).isEqualTo(1)
+        // The slot's new occupant is tracked before its stream is open; wait for the connection it is about to be
+        // counted by.
+        awaitUntil { streamer.connections.distinct().size == 9 }
         assertThat(streamer.connections.distinct()).hasSize(9)
     }
 
@@ -452,12 +458,12 @@ class LiveRunMonitorTest {
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
         val types = state.items.map { it::class.simpleName }
         // Four text-only turns from the transcript, then the replayed trace of run-5 in place of its reply.
-        assertThat(types.take(16)).isEqualTo(List(4) { listOf("DateHeader", "UserMessage", "AssistantMessage", "RunFooter") }.flatten())
-        assertThat(types.drop(16)).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
-        assertThat((state.items[17] as UserMessage).text).isEqualTo("Prompt 5")
-        assertThat((state.items[19] as AssistantMessage).markdown).isEqualTo("Reply 5")
-        assertThat((state.items[20] as RunFooter).durationMs).isEqualTo(42_000L)
-        assertThat((state.items[2] as AssistantMessage).id).isEqualTo("run-1-a")
+        assertThat(types.take(12)).isEqualTo(List(4) { listOf("UserMessage", "AssistantMessage", "RunFooter") }.flatten())
+        assertThat(types.drop(12)).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat((state.items[12] as UserMessage).text).isEqualTo("Prompt 5")
+        assertThat((state.items[14] as AssistantMessage).markdown).isEqualTo("Reply 5")
+        assertThat((state.items[15] as RunFooter).durationMs).isEqualTo(42_000L)
+        assertThat((state.items[1] as AssistantMessage).id).isEqualTo("run-1-a")
         assertThat(streamer.connections.count { it == "run-5" }).isEqualTo(1)
         assertThat(streamer.connections.count { it == "run-4" }).isEqualTo(1)
         assertThat(streamer.connections).doesNotContain("run-1")
@@ -469,7 +475,7 @@ class LiveRunMonitorTest {
         assertThat(result.isSuccess).isTrue()
         awaitUntil { conversations.state("bc-1").value.isStreaming }
         val pending = conversations.state("bc-1").value
-        assertThat(pending.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(pending.items.last()).isInstanceOf(UserMessage::class.java)
         assertThat((pending.items.last() as UserMessage).text).isEqualTo("Prompt 6")
         val runId = pending.activeRunId!!
         assertThat(runId).startsWith("run-followup-")
@@ -482,7 +488,7 @@ class LiveRunMonitorTest {
         streamer.emit(runId, RunStreamEvent.Done)
         awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && !conversations.state("bc-1").value.isStreaming }
         val done = conversations.state("bc-1").value
-        assertThat(done.items.map { it::class.simpleName }.takeLast(5)).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(done.items.map { it::class.simpleName }.takeLast(4)).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat((done.items.last() as RunFooter).runId).isEqualTo(runId)
         // Reloading rebuilds history from the server; every trace survives without a single reconnection.
         val connectionsBefore = streamer.connections.size
@@ -504,8 +510,8 @@ class LiveRunMonitorTest {
         conversations.attach("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isLoading && "run-1" in streamer.connections }
         delay(100)
-        // Without a transcript the run is shown from its record: a header, its result and the footer.
-        assertThat(conversations.state("bc-1").value.items.map { it.id }).containsExactly("hdr-run-1", "res-run-1", "run-run-1").inOrder()
+        // Without a transcript the run is shown from its record: its result and the footer.
+        assertThat(conversations.state("bc-1").value.items.map { it.id }).containsExactly("res-run-1", "run-run-1").inOrder()
 
         assertThat(conversations.sendFollowUp("bc-1", "Prompt 2").isSuccess).isTrue()
         val runId = conversations.state("bc-1").value.activeRunId!!
@@ -517,11 +523,11 @@ class LiveRunMonitorTest {
         awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && !conversations.state("bc-1").value.isStreaming }
         val items = conversations.state("bc-1").value.items
         assertThat(items.map { it::class.simpleName }).containsExactly(
-            "DateHeader", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
+            "AssistantMessage", "RunFooter",
+            "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter",
         ).inOrder()
-        assertThat((items[4] as UserMessage).text).isEqualTo("Prompt 2")
-        assertThat((items[7] as RunFooter).runId).isEqualTo(runId)
+        assertThat((items[2] as UserMessage).text).isEqualTo("Prompt 2")
+        assertThat((items[5] as RunFooter).runId).isEqualTo(runId)
     }
 
     @Test
