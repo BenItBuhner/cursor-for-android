@@ -457,6 +457,21 @@ class TimelineBuilderTest {
         assertThat(live.snapshot()).isEqualTo(items)
     }
 
+    /** The live notification times a run whose outcome carries no duration; the footer used to say nothing at all. */
+    @Test
+    fun `a finished run without a reported duration still says how long it worked`() {
+        var clock = 60_000L
+        val live = TimelineBuilder.LiveRun("run-1", startedAtMillis = 5_000L, nowProvider = { clock })
+        clock = 95_000L
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", null, null))
+        assertThat((live.snapshot().last() as RunFooter).durationMs).isEqualTo(90_000L)
+
+        // A replay is not happening now, so its clock says nothing about the run and no duration is invented.
+        val replayed = TimelineBuilder.LiveRun("run-2", timed = false, startedAtMillis = 5_000L, nowProvider = { clock })
+        replayed.apply(RunStreamEvent.Result("run-2", RunStatus.FINISHED, "Done.", null, null))
+        assertThat((replayed.snapshot().last() as RunFooter).durationMs).isNull()
+    }
+
     @Test
     fun `result text is used when no assistant deltas arrived`() {
         val live = TimelineBuilder.LiveRun("run-1")

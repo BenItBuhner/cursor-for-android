@@ -860,7 +860,9 @@ class ConversationRepository(
         val terminal = run.copy(
             status = snapshot.status.name,
             updatedAt = Instant.ofEpochMilli(finishedAt).toString(),
-            durationMs = result?.durationMs ?: run.durationMs,
+            // What the run reports of itself, else how long it was actually watched for: the footer of a run whose
+            // outcome carries no duration would otherwise say nothing, about a run the notification timed.
+            durationMs = result?.durationMs ?: run.durationMs ?: (finishedAt - snapshot.startedAtMillis).takeIf { it > 0 },
             result = text.ifEmpty { run.result },
             git = result?.git ?: run.git,
         )

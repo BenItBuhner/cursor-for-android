@@ -91,7 +91,7 @@ class LiveRunHub(
     }
 
     private inner class Entry(val agentId: String, val runId: String, startedAt: Long) {
-        var live = TimelineBuilder.LiveRun(runId, nowProvider = nowProvider)
+        var live = TimelineBuilder.LiveRun(runId, nowProvider = nowProvider, startedAtMillis = startedAt)
         val state = MutableStateFlow(Snapshot(agentId = agentId, runId = runId, startedAtMillis = startedAt))
         var subscribers = 0
         var job: Job? = null
@@ -366,7 +366,7 @@ class LiveRunHub(
     private fun restartAccumulator(entry: Entry, timed: Boolean) {
         entry.catchUp = entry.live.applied
         entry.catchUpArmedAt = nowProvider()
-        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider)
+        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis)
     }
 
     /** True while this coroutine is still the entry's stream; a cancelled one may not touch anything shared. */

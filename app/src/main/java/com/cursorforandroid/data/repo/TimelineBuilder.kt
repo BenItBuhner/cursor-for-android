@@ -200,6 +200,8 @@ object TimelineBuilder {
     class LiveRun(
         private val runId: String,
         private val timed: Boolean = true,
+        /** When the run started, for the footer of a run whose outcome reports no duration of its own. */
+        private val startedAtMillis: Long? = null,
         private val nowProvider: () -> Long = AppClock::now,
     ) {
         private val items = mutableListOf<TimelineItem>()
@@ -397,7 +399,10 @@ object TimelineBuilder {
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
-            items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
+            // The notification computes a duration from the run's own timestamps when the outcome carries none; the
+            // footer said nothing at all about the same run. Only for a run ending now: a replay's clock is not its.
+            val elapsed = startedAtMillis?.takeIf { timed && it > 0 }?.let { nowProvider() - it }?.takeIf { it > 0 }
+            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
         }
 
         /**
