@@ -265,4 +265,63 @@ class LiveRunHubTest {
         assertThat(current().items.filterIsInstance<ActivityGroup>().single().thoughts).hasSize(1)
         second.cancel()
     }
+
+    /**
+     * Nothing is published until a pass that started over has caught up with what the last one had applied, so the
+     * trace never collapses and grows back. A replay that is shorter than that — a log the server trimmed — must
+     * not leave the trace and "Reconnecting…" frozen for the rest of the run.
+     */
+    @Test
+    fun `a replay shorter than the pass before it stops holding the trace still`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        listOf("One ", "two ", "three ", "four").forEach { streamer.emit("run-1", RunStreamEvent.Assistant(it)) }
+        val first = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "One two three four" }
+        first.cancel()
+        delay(150)
+
+        // The retained log has been trimmed: the fresh connection replays less than the last pass had applied.
+        streamer.reset("run-1")
+        streamer.emit("run-1", RunStreamEvent.Assistant("One "))
+        val second = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { connections() == 2 }
+        delay(150)
+        assertThat((current().items.last() as AssistantMessage).markdown).isEqualTo("One two three four")
+
+        // Past the bound the rebuilt story is published, short as it is, rather than never.
+        now += 30_000
+        streamer.emit("run-1", RunStreamEvent.Assistant("again"))
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "One again" }
+        assertThat(current().reconnecting).isFalse()
+        second.cancel()
+    }
+
+    /**
+     * Cancelling a coroutine does not stop it: a released pass can still be applying events when the next
+     * subscriber restarts the stream. Whatever the scheduling, it must not write into the accumulator that
+     * replaced its own — the trace would read as the agent saying everything twice.
+     */
+    @Test
+    fun `resubscribing while the released pass is still winding down never doubles the trace`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
+
+        repeat(8) {
+            val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+            awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+            subscription.cancel()
+            delay(55)
+        }
+
+        val settled = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Hello", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { snapshot()?.finished == true }
+
+        val replies = current().items.filterIsInstance<AssistantMessage>()
+        assertThat(replies.map { it.markdown }).containsExactly("Hello")
+        settled.cancel()
+    }
 }

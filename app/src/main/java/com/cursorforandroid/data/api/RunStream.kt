@@ -82,13 +82,27 @@ data class SseFrame(val event: String, val id: String?, val data: String)
 
 /** Minimal, spec-compliant Server-Sent Events parser over an okio [BufferedSource]. */
 object SseParser {
+    /** A line longer than this, or a frame whose data is, is not one of ours; the connection is given up on. */
+    private const val MAX_LINE_BYTES = 1L shl 20
+    private const val MAX_DATA_CHARS = 4 shl 20
+
+    /**
+     * The next complete frame, or null when there is not going to be one: the stream ended (whatever it had
+     * half-written when it did is discarded, as the SSE spec requires — a truncated frame is not a frame, and
+     * passing one on would have the caller resume from an event it never really received), or a line ran past
+     * anything this protocol has a use for, which is a connection to give up on rather than a buffer to grow.
+     */
     fun readFrame(source: BufferedSource): SseFrame? {
         var event = "message"
         var id: String? = null
         val data = StringBuilder()
         var sawField = false
         while (true) {
-            val line = source.readUtf8Line() ?: return if (sawField) SseFrame(event, id, data.toString().removeSuffix("\n")) else null
+            val line = try {
+                source.readUtf8LineStrict(MAX_LINE_BYTES)
+            } catch (_: IOException) {
+                return null
+            }
             if (line.isEmpty()) {
                 if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"))
                 continue
@@ -101,15 +115,25 @@ object SseParser {
             sawField = true
             when (field) {
                 "event" -> event = value
-                "data" -> data.append(value).append('\n')
+                // Past the cap the frame is left short, so it fails to decode and is skipped rather than kept whole.
+                "data" -> if (data.length <= MAX_DATA_CHARS) data.append(value).append('\n')
                 "id" -> id = value
             }
         }
     }
 
-    fun toEvent(frame: SseFrame): RunStreamEvent? {
+    /** What a frame turned out to be. Only a frame that said something may be resumed from. */
+    sealed interface Parsed {
+        data class Delivered(val event: RunStreamEvent) : Parsed
+        /** A frame of a kind this client has no use for (`interaction_update`, anything new). */
+        data object Ignored : Parsed
+        /** The frame's data is not what its name promised: truncated, or a shape this version cannot read. */
+        data object Undecodable : Parsed
+    }
+
+    fun parse(frame: SseFrame): Parsed {
         val json = CursorJson
-        return runCatching {
+        val decoded = runCatching {
             when (frame.event) {
                 "status" -> json.decodeFromString(SseStatusDto.serializer(), frame.data).let { RunStreamEvent.Status(it.runId, RunStatus.parse(it.status)) }
                 "assistant" -> RunStreamEvent.Assistant(json.decodeFromString(SseTextDto.serializer(), frame.data).text)
@@ -121,10 +145,13 @@ object SseParser {
                 }
                 "error" -> json.decodeFromString(SseErrorDto.serializer(), frame.data).let { RunStreamEvent.Error(it.code, it.message) }
                 "done" -> RunStreamEvent.Done
-                else -> null // interaction_update and unknown events are intentionally ignored
+                else -> return Parsed.Ignored // interaction_update and unknown events are intentionally ignored
             }
-        }.getOrNull()
+        }
+        return decoded.getOrNull()?.let { Parsed.Delivered(it) } ?: Parsed.Undecodable
     }
+
+    fun toEvent(frame: SseFrame): RunStreamEvent? = (parse(frame) as? Parsed.Delivered)?.event
 }
 
 /**
@@ -145,8 +172,16 @@ class SseRunStreamer(
         var attempt = 0
         while (currentCoroutineContext().isActive) {
             val outcome = connectOnce(agentId, runId, lastId) { frame ->
-                frame.id?.let { lastId = it }
-                SseParser.toEvent(frame)?.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
+                // Only a frame this client actually read may move the resume position: reconnecting past one it
+                // could not decode would skip whatever the frame was carrying for good.
+                when (val parsed = SseParser.parse(frame)) {
+                    is SseParser.Parsed.Delivered -> {
+                        frame.id?.let { lastId = it }
+                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
+                    }
+                    SseParser.Parsed.Ignored -> frame.id?.let { lastId = it }
+                    SseParser.Parsed.Undecodable -> Unit
+                }
             }
             when (outcome) {
                 is Outcome.Terminal -> return@flow
@@ -162,7 +197,11 @@ class SseRunStreamer(
                 }
                 is Outcome.Retry -> {
                     attempt++
-                    if (attempt > maxAttempts) {
+                    // Without a position to resume from, the next connection replays the run from its first event —
+                    // into an accumulator that already holds part of it, which would read as the agent saying
+                    // everything twice. Ending the pass hands that decision to the caller, which rebuilds from
+                    // nothing when it comes back (see [RunStreamEvent.Error.resumeFrom]).
+                    if (attempt > maxAttempts || lastId == null) {
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
