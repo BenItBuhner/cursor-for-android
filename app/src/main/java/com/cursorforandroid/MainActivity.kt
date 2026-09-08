@@ -44,7 +44,8 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
-            CursorTheme(mode = themeMode) {
+            val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 CursorRoot(
                     graph = graph,
                     deepLinkAgentId = pendingAgentId,

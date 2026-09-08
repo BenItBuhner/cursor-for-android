@@ -22,6 +22,7 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.CatalogRepository
+import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LiveRunHub
@@ -84,6 +85,8 @@ class AppGraph(context: Context) {
         traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
     )
+    /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
+    val launcher = ChatLauncher(conversations)
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
     val artifacts = ArtifactRepository(session)
     val media = MediaLoader(context, CursorApiFactory.mediaClient(), artifacts)

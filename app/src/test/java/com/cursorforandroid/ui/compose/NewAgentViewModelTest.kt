@@ -23,9 +23,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * The composer remembers what the last agent was launched with, and opens the chat it launches before the server has
- * answered. Runs against the demo backend, whose catalogue mirrors the live one — "Composer 2.5" has two variants of
- * the same name, `fast` on (the default) and off — and which answers a create after half a second, like a real server.
+ * The composer remembers what the last agent was launched with, opens the chat it launches before the server has
+ * answered and is free for the next one from that moment; a launch that does not go through brings its draft back.
+ * Runs against the demo backend, whose catalogue mirrors the live one — "Composer 2.5" has two variants of the same
+ * name, `fast` on (the default) and off — and which answers a create after half a second, like a real server.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -52,11 +53,17 @@ class NewAgentViewModelTest {
         return vm
     }
 
-    private fun NewAgentViewModel.launchAndWait() = runBlocking {
-        setPrompt("Do the thing")
-        launch(onOpen = {}, onFailed = {})
+    /** Sends and waits for the composer to be free again — which is before the server has answered, defaults saved. */
+    private fun NewAgentViewModel.launchAndWait(prompt: String = "Do the thing"): String = runBlocking {
+        setPrompt(prompt)
+        var opened: String? = null
+        launch(onOpen = { opened = it })
         withTimeout(10_000) { state.first { !it.isLaunching && it.prompt.isEmpty() } }
+        opened!!
     }
+
+    /** The demo backend answers a create after half a second; this is the answer having landed. */
+    private fun accepted(agentId: String) = graph.agents.agent(agentId)?.latestRunId != null
 
     /** The composer derives its branch list from the agent list, which the sidebar normally loads. */
     private fun loadedWithAgents(): NewAgentViewModel {
@@ -71,51 +78,118 @@ class NewAgentViewModelTest {
     }
 
     @Test
-    fun `sending opens the chat on its prompt before the server has answered`() = runBlocking {
+    fun `sending opens the chat on its prompt before the server has answered and leaves the composer free`() = runBlocking {
         val vm = loaded()
         vm.setPrompt("Do the thing")
         var opened: String? = null
-        var failed: String? = null
 
-        vm.launch(onOpen = { opened = it }, onFailed = { failed = it })
+        vm.launch(onOpen = { opened = it })
         awaitUntil { opened != null }
 
-        // The chat is open and showing the prompt while the request is still in flight; the draft stays until it lands.
+        // The chat is open and showing the prompt while the request is still in flight...
         val id = opened!!
-        assertThat(vm.state.value.isLaunching).isTrue()
-        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(accepted(id)).isFalse()
         assertThat(graph.conversations.state(id).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Do the thing")
         assertThat(graph.conversations.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
         assertThat(graph.agents.agent(id)?.name).isEqualTo("Do the thing")
 
+        // ...and the composer is already empty and ready for another chat, not waiting on this one.
         awaitUntil { !vm.state.value.isLaunching }
+        assertThat(accepted(id)).isFalse()
+        assertThat(vm.state.value.prompt).isEmpty()
+        assertThat(vm.state.value.attachments).isEmpty()
+        assertThat(vm.state.value.error).isNull()
+        assertThat(vm.state.value.isFree).isTrue()
+
+        awaitUntil { graph.conversations.state(id).value.activeRunId != null }
         assertThat(vm.state.value.prompt).isEmpty()
         assertThat(vm.state.value.error).isNull()
-        assertThat(failed).isNull()
-        assertThat(graph.agents.agent(id)?.latestRunId).isNotNull()
         assertThat(graph.conversations.state(id).value.activeRunId).isEqualTo(graph.agents.agent(id)?.latestRunId)
     }
 
     @Test
-    fun `stopping the chat before the server has answered returns to the composer with the draft`() = runBlocking {
+    fun `a second chat can be written and sent while the first is still waiting on the server`() = runBlocking {
         val vm = loaded()
-        vm.setPrompt("Do the thing")
-        var opened: String? = null
-        var failed: String? = null
+        val first = vm.launchAndWait("Do the thing")
+        assertThat(accepted(first)).isFalse()
 
-        vm.launch(onOpen = { opened = it }, onFailed = { failed = it })
-        awaitUntil { opened != null }
-        graph.conversations.attach(opened!!)
-        assertThat(graph.conversations.cancelActiveRun(opened!!).isSuccess).isTrue()
+        // Back on the New Chat pane, the composer takes a fresh draft as if nothing were in flight.
+        vm.setPrompt("Then do the other thing")
+        assertThat(vm.state.value.canLaunch).isTrue()
+        val second = vm.launchAndWait("Then do the other thing")
+        assertThat(second).isNotEqualTo(first)
+        assertThat(graph.agents.agent(first)?.isRunning).isTrue()
+        assertThat(graph.agents.agent(second)?.isRunning).isTrue()
 
-        // The composer hears of it after it has put its own state back; wait for the last of the two.
-        awaitUntil { failed != null }
-        assertThat(failed).isEqualTo(opened)
-        assertThat(vm.state.value.isLaunching).isFalse()
-        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        // Both land on their own, without the composer's involvement.
+        awaitUntil { accepted(first) && accepted(second) }
+        assertThat(graph.conversations.state(first).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Do the thing")
+        assertThat(graph.conversations.state(second).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Then do the other thing")
+        assertThat(vm.state.value.isFree).isTrue()
         assertThat(vm.state.value.error).isNull()
-        assertThat(graph.conversations.state(opened!!).value.items).isEmpty()
-        assertThat(graph.agents.agent(opened!!)).isNull()
+    }
+
+    @Test
+    fun `stopping the chat before the server has answered returns the draft to the composer`() = runBlocking {
+        val vm = loaded()
+        val id = vm.launchAndWait("Do the thing")
+        assertThat(vm.state.value.isFree).isTrue()
+        graph.conversations.attach(id)
+        assertThat(graph.conversations.cancelActiveRun(id).isSuccess).isTrue()
+
+        // Stopped on purpose: the draft is simply back, with nothing to explain.
+        awaitUntil { vm.state.value.prompt == "Do the thing" }
+        assertThat(vm.state.value.isLaunching).isFalse()
+        assertThat(vm.state.value.error).isNull()
+        assertThat(vm.state.value.canLaunch).isTrue()
+        assertThat(graph.conversations.state(id).value.items).isEmpty()
+        assertThat(graph.agents.agent(id)).isNull()
+
+        // Sent again unchanged, it is the same chat: the id is minted from the draft and the nonce it went out under.
+        assertThat(vm.launchAndWait("Do the thing")).isEqualTo(id)
+        awaitUntil { accepted(id) }
+    }
+
+    @Test
+    fun `a draft that comes back does not overwrite what is being written, and waits for the composer to be free`() = runBlocking {
+        val vm = loaded()
+        val id = vm.launchAndWait("Do the thing")
+        vm.setPrompt("Then do the other th")
+        graph.conversations.attach(id)
+        assertThat(graph.conversations.cancelActiveRun(id).isSuccess).isTrue()
+        awaitUntil { graph.agents.agent(id) == null }
+
+        // The launch is gone, and given time to reach the composer it still leaves what the user is writing alone.
+        delay(300)
+        assertThat(vm.state.value.prompt).isEqualTo("Then do the other th")
+        vm.setPrompt("Then do the other thing")
+
+        // Sent, the composer clears — and the returned draft takes it at once, ready to be sent again.
+        var second: String? = null
+        vm.launch(onOpen = { second = it })
+        awaitUntil { second != null && !vm.state.value.isLaunching && vm.state.value.prompt == "Do the thing" }
+        assertThat(second).isNotEqualTo(id)
+        assertThat(vm.state.value.error).isNull()
+        assertThat(vm.state.value.canLaunch).isTrue()
+        awaitUntil { accepted(second!!) }
+        assertThat(vm.state.value.prompt).isEqualTo("Do the thing")
+        assertThat(graph.conversations.state(second!!).value.items.filterIsInstance<UserMessage>().single().text).isEqualTo("Then do the other thing")
+    }
+
+    @Test
+    fun `clearing the composer lets a waiting draft back in`() = runBlocking {
+        val vm = loaded()
+        val id = vm.launchAndWait("Do the thing")
+        vm.setPrompt("Something else")
+        graph.conversations.attach(id)
+        assertThat(graph.conversations.cancelActiveRun(id).isSuccess).isTrue()
+        awaitUntil { graph.agents.agent(id) == null }
+        delay(300)
+        assertThat(vm.state.value.prompt).isEqualTo("Something else")
+
+        vm.setPrompt("")
+        awaitUntil { vm.state.value.prompt == "Do the thing" }
+        assertThat(vm.state.value.error).isNull()
     }
 
     /** The chip names the model; the variant's parameters (here 1M context, max effort) are the picker's to show. */

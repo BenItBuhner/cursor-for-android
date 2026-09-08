@@ -99,6 +99,12 @@ fun AppNavHost(
         if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
     }
 
+    // The launch outlives the composer that sent it, so the chat's fate is heard from the launcher rather than from
+    // the New Chat pane: the composer takes the draft back on its own, this only leaves the chat that never was.
+    LaunchedEffect(Unit) {
+        graph.launcher.failures.collect { leaveFailedLaunch(it.agentId) }
+    }
+
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let {
             openAgent(it)
@@ -175,7 +181,6 @@ fun AppNavHost(
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
                     onLaunchOpen = ::openAgent,
-                    onLaunchFailed = ::leaveFailedLaunch,
                 )
                 Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
                 is Screen.Agent -> ConversationScreen(

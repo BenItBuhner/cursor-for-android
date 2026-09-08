@@ -13,6 +13,7 @@ import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SubagentsCard
+import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.UserMessage
@@ -69,6 +70,43 @@ class TimelineBuilderTest {
         assertThat(prompts.map { it.text }).containsExactly("Add a README", "Fix the layout in these screenshots").inOrder()
         assertThat(prompts[0].attachments).isEmpty()
         assertThat(prompts[1].attachments).isEqualTo(shots)
+    }
+
+    @Test
+    fun `turns Cursor injected are notification rows that still begin their run`() {
+        val report = "<timestamp>Monday, Sep 7, 2026, 9:35 PM (UTC)</timestamp>\n<system_notification>\nThe following task has finished.\n\n<task>\nkind: subagent\nstatus: success\ntitle: Contacts and clipping\ndetail: This is the last output of the subagent:\n\nThe clipping is gone.\n</task>\n</system_notification>\n<user_query>The beginning of the above subagent result is already visible to the user. Perform any follow-up actions (if needed).</user_query>"
+        val continuation = "<system_notification source=\"goal\">\nContinue working toward the active thread goal.\n\n<objective>\nBuild procedural hands.\n</objective>\n</system_notification>"
+        val messages = listOf(
+            V0ConversationMessageDto("m1", "user_message", "Build procedural hands."),
+            V0ConversationMessageDto("m2", "assistant_message", "Delegated the contact pass."),
+            V0ConversationMessageDto("m3", "user_message", report),
+            V0ConversationMessageDto("m4", "assistant_message", "Merged it."),
+            V0ConversationMessageDto("m5", "user_message", continuation),
+            V0ConversationMessageDto("m6", "assistant_message", "Picking the goal back up."),
+        )
+        val runs = listOf(
+            run("run-1", "2026-09-07T20:30:00.000Z"),
+            run("run-2", "2026-09-07T21:35:00.000Z", branch = "cursor/contact-clipping"),
+            run("run-3", "2026-09-07T21:50:00.000Z", status = "RUNNING", duration = null),
+        )
+        val items = TimelineBuilder.fromHistory(messages, runs)
+        assertThat(items.map { it::class.simpleName }).containsExactly(
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "SystemNotification", "AssistantMessage", "RunFooter",
+            "SystemNotification", "AssistantMessage",
+        ).inOrder()
+        val done = items[3] as SystemNotification
+        assertThat(done.id).isEqualTo("m3")
+        assertThat(done.title).isEqualTo("Subagent completed")
+        assertThat(done.summary).isEqualTo("Contacts and clipping")
+        assertThat(done.body).isEqualTo("The clipping is gone.")
+        // Paired with its run like any prompt: stamped with the run's start, and the run's footer follows its reply.
+        assertThat(done.timestampMillis).isEqualTo(parseIsoMillis("2026-09-07T21:35:00.000Z"))
+        assertThat((items[5] as RunFooter).runId).isEqualTo("run-2")
+        val goal = items[6] as SystemNotification
+        assertThat(goal.title).isEqualTo("Goal continued")
+        assertThat(goal.summary).isEqualTo("Build procedural hands.")
+        assertThat(items.none { it is UserMessage && it.text.contains("<") }).isTrue()
     }
 
     @Test

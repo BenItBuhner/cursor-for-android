@@ -18,6 +18,20 @@ import androidx.core.view.WindowCompat
 
 enum class ThemeMode { System, Dark, Light }
 
+/** Colours for [mode], applying OLED black only while the resolved theme is dark. */
+fun cursorColorsFor(mode: ThemeMode, oledBlack: Boolean, systemInDarkTheme: Boolean): CursorColors {
+    val dark = when (mode) {
+        ThemeMode.System -> systemInDarkTheme
+        ThemeMode.Dark -> true
+        ThemeMode.Light -> false
+    }
+    return when {
+        !dark -> CursorLightColors
+        oledBlack -> CursorOledColors
+        else -> CursorDarkColors
+    }
+}
+
 object CursorTheme {
     val colors: CursorColors
         @Composable @ReadOnlyComposable get() = LocalCursorColors.current
@@ -30,14 +44,11 @@ object CursorTheme {
 @Composable
 fun CursorTheme(
     mode: ThemeMode = ThemeMode.System,
+    oledBlack: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val dark = when (mode) {
-        ThemeMode.System -> isSystemInDarkTheme()
-        ThemeMode.Dark -> true
-        ThemeMode.Light -> false
-    }
-    val colors = if (dark) CursorDarkColors else CursorLightColors
+    val colors = cursorColorsFor(mode, oledBlack, isSystemInDarkTheme())
+    val dark = colors.isDark
     val typography = CursorTypography()
     val shapes = CursorShapes()
 

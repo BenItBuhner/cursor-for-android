@@ -784,7 +784,8 @@ class ConversationRepository(
      * where the composer navigates to the chat. The server's reply swaps in the run it created and,
      * while a screen is attached, starts its stream. A failure takes the prompt and the row down again and is
      * returned. Stopping the chat before the server has answered ([cancelLaunch]) fails the launch with
-     * [LaunchCancelledException]; cancelling the caller abandons the request itself.
+     * [LaunchCancelledException]; cancelling the caller abandons the request itself — which is why the caller is the
+     * [ChatLauncher], whose scope no screen owns, and not the composer.
      *
      * Requires the client-minted [LaunchRequest.agentId] the composer always sends: it is what the chat is shown under
      * before the server has named it, and what lets a retry adopt an agent the first attempt already created.
