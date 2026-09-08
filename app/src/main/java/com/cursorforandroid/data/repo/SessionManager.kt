@@ -78,6 +78,14 @@ class SessionManager(
 
     private val _loginProgress = MutableStateFlow<LoginProgress>(LoginProgress.Idle)
     val loginProgress: StateFlow<LoginProgress> = _loginProgress.asStateFlow()
+
+    private val _signedOutReason = MutableStateFlow<String?>(null)
+
+    /**
+     * Why the app is at the sign-in screen when the user did not ask to be: this device's settings or its secure
+     * store could not be read, so the stored key is gone or was never readable. Null for an ordinary signed-out state.
+     */
+    val signedOutReason: StateFlow<String?> = _signedOutReason.asStateFlow()
     private var loginJob: Job? = null
     private val restoreMutex = Mutex()
 
@@ -95,7 +103,17 @@ class SessionManager(
     suspend fun restoreIfNeeded() {
         if (_state.value !is SessionState.Loading) return
         restoreMutex.withLock {
-            if (_state.value is SessionState.Loading) restore()
+            if (_state.value !is SessionState.Loading) return
+            try {
+                restore()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // The splash screen is held for as long as the session is Loading, so a store that cannot be read
+                // has to end somewhere: the sign-in screen, with the reason, rather than a frozen splash or a crash.
+                _signedOutReason.value = STORAGE_FAILURE_MESSAGE
+                _state.value = SessionState.SignedOut
+            }
         }
     }
 
@@ -167,6 +185,7 @@ class SessionManager(
                 prefs.setDemoMode(false)
                 prefs.setCachedUser(user)
                 prefs.setCredentialInfo(credential)
+                _signedOutReason.value = null
                 _state.value = SessionState.SignedIn(user, isDemo = false, credential = credential)
                 // The picture arrives behind the sign-in rather than holding it up.
                 scope.launch { enrichProfile(user, credential) }
@@ -243,6 +262,7 @@ class SessionManager(
 
     suspend fun enterDemo() {
         cancelCursorLogin()
+        _signedOutReason.value = null
         prefs.setDemoMode(true)
         // Mirror the reference layout: the three showcase agents start pinned.
         prefs.pinIfNonePinned(listOf("bc-demo-0001", "bc-demo-0002", "bc-demo-0003"))
@@ -252,6 +272,7 @@ class SessionManager(
 
     suspend fun signOut() {
         cancelCursorLogin()
+        _signedOutReason.value = null
         storeKey(null)
         prefs.clearSession()
         runCatching { onSignedOut() }
@@ -275,5 +296,6 @@ class SessionManager(
 
     private companion object {
         const val RESTORE_TIMEOUT_MS = 8_000L
+        const val STORAGE_FAILURE_MESSAGE = "This device's saved sign-in couldn't be read. Sign in again."
     }
 }

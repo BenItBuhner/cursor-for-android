@@ -1,11 +1,15 @@
 package com.cursorforandroid.data.local
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -22,11 +26,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import java.io.IOException
 
 @Serializable
 private data class CachedUser(
@@ -42,9 +48,31 @@ private data class CachedUser(
 class PreferencesStore(context: Context) {
 
     private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create(
+        // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read for the
+        // rest of the install's life; everything here is device-local and re-derivable, so it starts over instead.
+        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
         produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
     )
+
+    /**
+     * What every flow below reads. A settings file that cannot be read even after being replaced degrades to
+     * defaults rather than throwing into whatever is collecting — a Compose screen, or the session restore the
+     * splash screen waits on.
+     */
+    private val data: Flow<Preferences> = store.data.catch { t ->
+        if (t !is IOException) throw t
+        Log.w(TAG, "Settings could not be read; using defaults", t)
+        emit(emptyPreferences())
+    }
+
+    /** A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. */
+    private suspend fun edit(transform: (MutablePreferences) -> Unit) {
+        runCatching { store.edit(transform) }.onFailure { t ->
+            if (t !is IOException) throw t
+            Log.w(TAG, "Settings could not be written", t)
+        }
+    }
 
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
@@ -78,95 +106,95 @@ class PreferencesStore(context: Context) {
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
 
     /** Check GitHub for new releases in the background, download them on Wi-Fi and install when the app is idle. On by default. */
-    val autoUpdate: Flow<Boolean> = store.data.map { it[Keys.autoUpdate] ?: true }
+    val autoUpdate: Flow<Boolean> = data.map { it[Keys.autoUpdate] ?: true }
 
     /** Whether `-rc.N` / `-beta.N` releases are offered; null until the user decides (the installed channel then applies). */
-    val includePreReleases: Flow<Boolean?> = store.data.map { it[Keys.includePreReleases] }
+    val includePreReleases: Flow<Boolean?> = data.map { it[Keys.includePreReleases] }
 
-    val updateLastCheckedAt: Flow<Long?> = store.data.map { it[Keys.updateLastCheckedAt] }
+    val updateLastCheckedAt: Flow<Long?> = data.map { it[Keys.updateLastCheckedAt] }
 
     /** versionCode of the update whose install session was committed; equal to the running build once it succeeded. */
-    val pendingUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.pendingUpdateVersionCode] }
+    val pendingUpdateVersionCode: Flow<Int?> = data.map { it[Keys.pendingUpdateVersionCode] }
 
     /** versionCode the "ready to install" notification was last shown for, so it is posted once per release. */
-    val notifiedUpdateVersionCode: Flow<Int?> = store.data.map { it[Keys.notifiedUpdateVersionCode] }
+    val notifiedUpdateVersionCode: Flow<Int?> = data.map { it[Keys.notifiedUpdateVersionCode] }
 
-    suspend fun setAutoUpdate(enabled: Boolean) = store.edit { it[Keys.autoUpdate] = enabled }
+    suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
-    suspend fun setIncludePreReleases(include: Boolean) = store.edit { it[Keys.includePreReleases] = include }
+    suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
 
-    suspend fun setUpdateLastCheckedAt(epochMillis: Long) = store.edit { it[Keys.updateLastCheckedAt] = epochMillis }
+    suspend fun setUpdateLastCheckedAt(epochMillis: Long) = edit { it[Keys.updateLastCheckedAt] = epochMillis }
 
-    suspend fun setPendingUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+    suspend fun setPendingUpdateVersionCode(versionCode: Int?) = edit { p ->
         if (versionCode == null) p.remove(Keys.pendingUpdateVersionCode) else p[Keys.pendingUpdateVersionCode] = versionCode
     }
 
-    suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = store.edit { p ->
+    suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = edit { p ->
         if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
     }
 
     /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */
-    val pinSyncEnabled: Flow<Boolean> = store.data.map { it[Keys.pinSync] ?: true }
+    val pinSyncEnabled: Flow<Boolean> = data.map { it[Keys.pinSync] ?: true }
 
-    suspend fun setPinSyncEnabled(enabled: Boolean) = store.edit { it[Keys.pinSync] = enabled }
+    suspend fun setPinSyncEnabled(enabled: Boolean) = edit { it[Keys.pinSync] = enabled }
 
     /** True once this account's first sync has pushed the pins that were made on this device before syncing existed. */
-    val pinsMigrated: Flow<Boolean> = store.data.map { it[Keys.pinsMigrated] ?: false }
+    val pinsMigrated: Flow<Boolean> = data.map { it[Keys.pinsMigrated] ?: false }
 
-    suspend fun setPinsMigrated(migrated: Boolean) = store.edit { it[Keys.pinsMigrated] = migrated }
+    suspend fun setPinsMigrated(migrated: Boolean) = edit { it[Keys.pinsMigrated] = migrated }
 
     /** agentId -> pinned, for pin changes made here that the server has not acknowledged yet (offline, or a failed call). */
-    val pendingPinChanges: Flow<Map<String, Boolean>> = store.data.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
+    val pendingPinChanges: Flow<Map<String, Boolean>> = data.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
 
     /** Records [pinned] as awaiting the server, or forgets the entry when [pinned] is null. */
-    suspend fun setPendingPinChange(agentId: String, pinned: Boolean?) = store.edit { p ->
+    suspend fun setPendingPinChange(agentId: String, pinned: Boolean?) = edit { p ->
         val current = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
         val next = if (pinned == null) current - agentId else current + (agentId to pinned)
         if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
     }
 
-    suspend fun clearPendingPinChanges(agentIds: Collection<String>) = store.edit { p ->
+    suspend fun clearPendingPinChanges(agentIds: Collection<String>) = edit { p ->
         val next = (p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()) - agentIds
         if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
     }
 
     /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
-    suspend fun setPinnedIds(agentIds: Set<String>) = store.edit { it[Keys.pinned] = agentIds }
+    suspend fun setPinnedIds(agentIds: Set<String>) = edit { it[Keys.pinned] = agentIds }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
-    val recentSkills: Flow<List<String>> = store.data.map { p ->
+    val recentSkills: Flow<List<String>> = data.map { p ->
         p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
     }
 
-    suspend fun rememberSkill(name: String) = store.edit { p ->
+    suspend fun rememberSkill(name: String) = edit { p ->
         val current = p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
         val next = (listOf(name) + current.filterNot { it == name }).take(MAX_RECENT_SKILLS)
         p[Keys.recentSkills] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
     }
 
     /** Live notification for running agents (the Android counterpart of iOS Live Activities). On by default. */
-    val liveNotifications: Flow<Boolean> = store.data.map { it[Keys.liveNotifications] ?: true }
+    val liveNotifications: Flow<Boolean> = data.map { it[Keys.liveNotifications] ?: true }
 
     /** True once the POST_NOTIFICATIONS prompt has been shown, so a refusal is not nagged about. */
-    val notificationPermissionAsked: Flow<Boolean> = store.data.map { it[Keys.notificationPermissionAsked] ?: false }
+    val notificationPermissionAsked: Flow<Boolean> = data.map { it[Keys.notificationPermissionAsked] ?: false }
 
-    suspend fun setLiveNotifications(enabled: Boolean) = store.edit { it[Keys.liveNotifications] = enabled }
+    suspend fun setLiveNotifications(enabled: Boolean) = edit { it[Keys.liveNotifications] = enabled }
 
-    suspend fun setNotificationPermissionAsked() = store.edit { it[Keys.notificationPermissionAsked] = true }
+    suspend fun setNotificationPermissionAsked() = edit { it[Keys.notificationPermissionAsked] = true }
 
-    val themeMode: Flow<ThemeMode> = store.data.map { p ->
+    val themeMode: Flow<ThemeMode> = data.map { p ->
         p[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System
     }
 
     /** True-black surfaces while the resolved theme is dark (Cursor Dark, or Match system at night). Off by default. */
-    val oledBlack: Flow<Boolean> = store.data.map { it[Keys.oledBlack] ?: false }
+    val oledBlack: Flow<Boolean> = data.map { it[Keys.oledBlack] ?: false }
 
-    val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
+    val listPreferences: Flow<ListPreferences> = data.map { it.listPreferences() }
 
     private fun Preferences.listPreferences(): ListPreferences =
         this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
 
-    val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
+    val localAgentState: Flow<LocalAgentState> = data.map { p ->
         LocalAgentState(
             pinnedIds = p[Keys.pinned] ?: emptySet(),
             readMarkers = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap(),
@@ -174,15 +202,15 @@ class PreferencesStore(context: Context) {
         )
     }
 
-    val demoMode: Flow<Boolean> = store.data.map { it[Keys.demoMode] ?: false }
+    val demoMode: Flow<Boolean> = data.map { it[Keys.demoMode] ?: false }
 
-    val cachedUser: Flow<CursorUser?> = store.data.map { p ->
+    val cachedUser: Flow<CursorUser?> = data.map { p ->
         p[Keys.cachedUser]?.let { runCatching { CursorJson.decodeFromString(CachedUser.serializer(), it) }.getOrNull() }
             ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId, it.profilePictureUrl) }
     }
 
     /** How the stored key was obtained and when it lapses. A key stored before this was recorded counts as pasted. */
-    val credentialInfo: Flow<CredentialInfo?> = store.data.map { p ->
+    val credentialInfo: Flow<CredentialInfo?> = data.map { p ->
         val method = p[Keys.signInMethod]?.let { raw -> SignInMethod.entries.firstOrNull { it.name == raw } }
         method?.let { CredentialInfo(it, p[Keys.apiKeyExpiresAt]) }
     }
@@ -199,7 +227,7 @@ class PreferencesStore(context: Context) {
         val modelChosen: Boolean,
     )
 
-    val composerDefaults: Flow<ComposerDefaults> = store.data.map { p ->
+    val composerDefaults: Flow<ComposerDefaults> = data.map { p ->
         ComposerDefaults(
             repoUrl = p[Keys.lastRepo],
             ref = p[Keys.lastRef],
@@ -210,29 +238,29 @@ class PreferencesStore(context: Context) {
         )
     }
 
-    suspend fun setThemeMode(mode: ThemeMode) = store.edit { it[Keys.theme] = mode.name }
+    suspend fun setThemeMode(mode: ThemeMode) = edit { it[Keys.theme] = mode.name }
 
-    suspend fun setOledBlack(enabled: Boolean) = store.edit { it[Keys.oledBlack] = enabled }
+    suspend fun setOledBlack(enabled: Boolean) = edit { it[Keys.oledBlack] = enabled }
 
     /**
      * Changes the list preferences in one transaction against what is stored, not against a snapshot a screen holds:
      * two quick taps in the filter menu compose, instead of the second being computed from the state before the first
      * had landed and undoing it.
      */
-    suspend fun updateListPreferences(transform: (ListPreferences) -> ListPreferences) = store.edit { p ->
+    suspend fun updateListPreferences(transform: (ListPreferences) -> ListPreferences) = edit { p ->
         p[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), transform(p.listPreferences()))
     }
 
-    suspend fun pinIfNonePinned(agentIds: Collection<String>) = store.edit { p ->
+    suspend fun pinIfNonePinned(agentIds: Collection<String>) = edit { p ->
         if ((p[Keys.pinned] ?: emptySet()).isEmpty()) p[Keys.pinned] = agentIds.toSet()
     }
 
-    suspend fun togglePinned(agentId: String) = store.edit { p ->
+    suspend fun togglePinned(agentId: String) = edit { p ->
         val current = p[Keys.pinned] ?: emptySet()
         p[Keys.pinned] = if (agentId in current) current - agentId else current + agentId
     }
 
-    suspend fun markRead(agentId: String, updatedAtMillis: Long) = store.edit { p ->
+    suspend fun markRead(agentId: String, updatedAtMillis: Long) = edit { p ->
         val markers = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap()
         val existing = markers[agentId] ?: 0L
         if (updatedAtMillis > existing) {
@@ -240,13 +268,13 @@ class PreferencesStore(context: Context) {
         }
     }
 
-    suspend fun markLaunchedHere(agentId: String) = store.edit { p ->
+    suspend fun markLaunchedHere(agentId: String) = edit { p ->
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
     }
 
-    suspend fun setDemoMode(enabled: Boolean) = store.edit { it[Keys.demoMode] = enabled }
+    suspend fun setDemoMode(enabled: Boolean) = edit { it[Keys.demoMode] = enabled }
 
-    suspend fun setCachedUser(user: CursorUser?) = store.edit { p ->
+    suspend fun setCachedUser(user: CursorUser?) = edit { p ->
         if (user == null) {
             p.remove(Keys.cachedUser)
         } else {
@@ -257,7 +285,7 @@ class PreferencesStore(context: Context) {
         }
     }
 
-    suspend fun setCredentialInfo(info: CredentialInfo?) = store.edit { p ->
+    suspend fun setCredentialInfo(info: CredentialInfo?) = edit { p ->
         if (info == null) {
             p.remove(Keys.signInMethod)
             p.remove(Keys.apiKeyExpiresAt)
@@ -269,7 +297,7 @@ class PreferencesStore(context: Context) {
 
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
     suspend fun setComposerDefaults(repoUrl: String?, ref: String?, modelId: String?, params: Map<String, String>, autoCreatePr: Boolean) =
-        store.edit { p ->
+        edit { p ->
             if (repoUrl == null) p.remove(Keys.lastRepo) else p[Keys.lastRepo] = repoUrl
             if (ref == null) p.remove(Keys.lastRef) else p[Keys.lastRef] = ref
             p[Keys.lastModel] = modelId ?: ""
@@ -277,7 +305,7 @@ class PreferencesStore(context: Context) {
             p[Keys.autoCreatePr] = autoCreatePr
         }
 
-    suspend fun clearSession() = store.edit { p ->
+    suspend fun clearSession() = edit { p ->
         p.remove(Keys.demoMode)
         p.remove(Keys.cachedUser)
         p.remove(Keys.signInMethod)
@@ -307,5 +335,6 @@ class PreferencesStore(context: Context) {
 
     private companion object {
         const val MAX_RECENT_SKILLS = 8
+        const val TAG = "PreferencesStore"
     }
 }

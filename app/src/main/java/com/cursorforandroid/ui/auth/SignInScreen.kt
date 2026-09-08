@@ -73,6 +73,7 @@ fun SignInScreen(graph: AppGraph) {
     val type = CursorTheme.typography
     val context = LocalContext.current
     val login by graph.session.loginProgress.collectAsStateWithLifecycle()
+    val signedOutReason by graph.session.signedOutReason.collectAsStateWithLifecycle()
     var noBrowser by remember { mutableStateOf(false) }
 
     fun openBrowser(url: String) {
@@ -96,6 +97,10 @@ fun SignInScreen(graph: AppGraph) {
             Text("Sign in", style = type.pageTitle, color = colors.textPrimary)
             Spacer(Modifier.height(6.dp))
             Text("Use your Cursor account to see and run your cloud agents.", style = type.base, color = colors.textSecondary)
+            signedOutReason?.let {
+                Spacer(Modifier.height(14.dp))
+                ErrorLine(it)
+            }
             Spacer(Modifier.height(22.dp))
 
             when (val progress = login) {

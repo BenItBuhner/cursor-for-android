@@ -25,7 +25,9 @@ fun CursorRoot(
     onNewChatConsumed: () -> Unit = {},
 ) {
     val session by graph.session.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { graph.session.restoreIfNeeded() }
+    // The session settles itself to signed-out when a store cannot be read; this only keeps a future throw from
+    // taking the composition (and the process) with it.
+    LaunchedEffect(Unit) { runCatching { graph.session.restoreIfNeeded() } }
     CompositionLocalProvider(LocalMediaLoader provides graph.media) {
         Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
             when (val s = session) {
