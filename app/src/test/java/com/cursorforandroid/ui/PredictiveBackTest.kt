@@ -9,11 +9,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -93,6 +100,37 @@ class PredictiveBackTest {
     private fun sheetDispatcher(): OnBackPressedDispatcher = (ShadowDialog.getLatestDialog() as ComponentDialog).onBackPressedDispatcher
 
     private fun sheetShowing() = ShadowDialog.getLatestDialog()?.isShowing == true
+
+    private fun scrollListTo(text: String) {
+        compose.waitUntil(30_000) { compose.onAllNodes(hasScrollToNodeAction()).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) {
+            runCatching { compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText(text, substring = true)) }.isSuccess
+        }
+        waitForText(text, 30_000)
+    }
+
+    /**
+     * Unlike `waitUntil`, lets the main looper run between checks: state that reaches the UI through a coroutine on
+     * the main dispatcher never arrives while the test thread merely sleeps.
+     */
+    private fun awaitOnMain(timeoutMillis: Long = 20_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (true) {
+            compose.waitForIdle()
+            if (condition()) return
+            check(System.currentTimeMillis() < deadline) { "Condition still not satisfied after $timeoutMillis ms" }
+            Thread.sleep(50)
+        }
+    }
+
+    /** The composer is ready to launch once the repository catalog has picked a repository. */
+    private fun sendFromComposer(prompt: String) {
+        scrollListTo(HOME_PLACEHOLDER)
+        compose.onNodeWithText(HOME_PLACEHOLDER).performTextInput(prompt)
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Send") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitForIdle()
+    }
 
     @Test
     fun `filter sheet drill-in is scrubbed by the gesture, rewinds on cancel and pops on commit`() {
@@ -193,7 +231,52 @@ class PredictiveBackTest {
         assertThat(onScreen(SETTINGS_PAGE)).isFalse()
     }
 
+    /**
+     * The gesture composes the New Chat pane underneath the chat it is leaving, while that chat is still on top of
+     * the stack; once the pop lands the pane's parameters compare equal and it keeps the callbacks it was given. A
+     * chat then launched from it used to be opened *in place of* the New Chat root — its view models, launch
+     * included, cleared along with the root — and sat alone on the stack: "Loading…" with nothing sent, nothing to
+     * go back to, and the system's back-to-home animation instead of a pop. An idle chat, so the list stays put and
+     * nothing else makes the pane recompose in between.
+     */
+    @Test
+    fun `a chat launched after a back gesture revealed the composer opens over it, not in its place`() {
+        val dispatcher = compose.activity.onBackPressedDispatcher
+        scrollListTo(IDLE_CHAT)
+        compose.onAllNodesWithText(IDLE_CHAT).onFirst().performClick()
+        waitForText(CHAT_PLACEHOLDER)
+        compose.waitForIdle()
+
+        dispatcher.swipe(0.3f, 0.7f)
+        dispatcher.release()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("Back")).fetchSemanticsNodes().isEmpty() }
+        compose.waitForIdle()
+        assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
+
+        sendFromComposer(PROMPT)
+        waitForText(CHAT_PLACEHOLDER)
+        val launched = graph.agents.state.value.agents.single { it.name == PROMPT }
+        // The chat is on top of the New Chat pane, its prompt on screen, and the launch is still going.
+        assertThat(dispatcher.hasEnabledCallbacks()).isTrue()
+        assertThat(onScreen(PROMPT)).isTrue()
+        assertThat(graph.conversations.state(launched.id).value.items).isNotEmpty()
+        awaitOnMain { graph.conversations.state(launched.id).value.activeRunId != null }
+        assertThat(graph.agents.agent(launched.id)?.latestRunId).isNotNull()
+        assertThat(onScreen(PROMPT)).isTrue()
+        assertThat(onScreen("Loading…")).isFalse()
+
+        // And back from it is the pane the chat was launched from.
+        dispatcher.swipe(0.7f)
+        dispatcher.release()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("Back")).fetchSemanticsNodes().isEmpty() }
+        scrollListTo(HOME_PLACEHOLDER)
+        assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
+    }
+
     private companion object {
+        const val IDLE_CHAT = "Cli exploration"
+        const val CHAT_PLACEHOLDER = "Follow up"
+        const val PROMPT = "Do the thing"
         const val HOME_PLACEHOLDER = "Ask Cursor to build, fix bugs, explore"
         const val ROOT_PAGE = "Grouping"
         const val STATUS_PAGE = "Archived"
