@@ -2,8 +2,16 @@ package com.cursorforandroid.domain
 
 import kotlinx.serialization.Serializable
 
-/** Durable agent lifecycle as reported by `GET /v1/agents`. */
+/**
+ * Durable agent lifecycle as reported by `GET /v1/agents`. In practice the server reports `ACTIVE` for every agent
+ * that is not archived, whether or not a turn is running — the value never changes when a run finishes, and
+ * execution state lives on the runs (`GET /v1/agents/{id}/runs/{runId}`). So `ACTIVE` says nothing about running;
+ * `IDLE` (when reported) and `ARCHIVED` do say a turn is not.
+ */
 enum class AgentLifecycle { ACTIVE, IDLE, ARCHIVED, UNKNOWN;
+    /** True when the lifecycle rules out a running turn; false when it is silent on the matter. */
+    val excludesRunning: Boolean get() = this == IDLE || this == ARCHIVED
+
     companion object {
         fun parse(raw: String?): AgentLifecycle = entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: UNKNOWN
     }
@@ -76,12 +84,15 @@ data class Agent(
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
     /**
-     * A known run status decides; without one — or with one this build does not recognise — the lifecycle does, as
-     * `ACTIVE` means a turn is running, about to start, or waiting on background work.
+     * Only the latest run's status can say a turn is going. The lifecycle cannot: the server reports `ACTIVE` for
+     * every unarchived agent, finished or not (see [AgentLifecycle]), so a row whose run status is unknown is shown
+     * at rest until a run-level source — the legacy list, the run record, its stream — reports otherwise. Guessing
+     * "running" from the lifecycle is what put spinners on, and then "updated just now" under, chats from weeks ago.
      */
-    val isRunning: Boolean
-        get() = !isArchived && (runStatus?.isActive == true || ((runStatus == null || runStatus == RunStatus.UNKNOWN) && lifecycle == AgentLifecycle.ACTIVE))
+    val isRunning: Boolean get() = !isArchived && runStatus?.isActive == true
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
+    /** The row has no run-level word on its latest turn yet: nothing remembered, or nothing this build recognises. */
+    val runStatusUnknown: Boolean get() = runStatus == null || runStatus == RunStatus.UNKNOWN
 
     companion object {
         fun repoSlugOf(url: String): String? {

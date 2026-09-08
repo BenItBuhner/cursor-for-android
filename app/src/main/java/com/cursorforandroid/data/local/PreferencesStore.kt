@@ -125,10 +125,10 @@ class PreferencesStore(context: Context) {
     /** True-black surfaces while the resolved theme is dark (Cursor Dark, or Match system at night). Off by default. */
     val oledBlack: Flow<Boolean> = store.data.map { it[Keys.oledBlack] ?: false }
 
-    val listPreferences: Flow<ListPreferences> = store.data.map { p ->
-        p[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() }
-            ?: ListPreferences()
-    }
+    val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
+
+    private fun Preferences.listPreferences(): ListPreferences =
+        this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
 
     val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
         LocalAgentState(
@@ -178,8 +178,13 @@ class PreferencesStore(context: Context) {
 
     suspend fun setOledBlack(enabled: Boolean) = store.edit { it[Keys.oledBlack] = enabled }
 
-    suspend fun setListPreferences(prefs: ListPreferences) = store.edit {
-        it[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), prefs)
+    /**
+     * Changes the list preferences in one transaction against what is stored, not against a snapshot a screen holds:
+     * two quick taps in the filter menu compose, instead of the second being computed from the state before the first
+     * had landed and undoing it.
+     */
+    suspend fun updateListPreferences(transform: (ListPreferences) -> ListPreferences) = store.edit { p ->
+        p[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), transform(p.listPreferences()))
     }
 
     suspend fun pinIfNonePinned(agentIds: Collection<String>) = store.edit { p ->

@@ -138,7 +138,8 @@ object AgentListOrganizer {
 
     /**
      * The New Chat pane's recent list: Chats filters apply, sidebar search does not. Pinned chats are included
-     * once, newest first, matching the home-screen widget's Recent mode.
+     * once, newest first, matching the home-screen widget's Recent mode. Built from [organize] rather than from the
+     * agents again, so the two surfaces can never disagree about which chats the filters let through.
      */
     fun recentRows(
         agents: List<Agent>,
@@ -146,10 +147,11 @@ object AgentListOrganizer {
         local: LocalAgentState,
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
-    ): List<AgentRow> = organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone)
-        .flatMap { it.rows }
-        .distinctBy { it.agent.id }
-        .sortedByDescending { it.agent.updatedAtMillis }
+    ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
+
+    /** [recentRows] for sections already organized without a search query: every row once, newest first. */
+    fun recentRows(sections: List<AgentSection>): List<AgentRow> =
+        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
 
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"
