@@ -134,6 +134,16 @@ val CursorDarkColors = CursorColors(
     codeType = Color(0xFF82D2CE),
 )
 
+/**
+ * Cursor Dark with true-black chrome. OLED pixels turn off at #000000; cards and inputs sit one step up so they
+ * still read as surfaces against the canvas. Accents and type stay the dark theme's.
+ */
+val CursorOledColors = CursorDarkColors.copy(
+    canvas = Color.Black,
+    sidebar = Color.Black,
+    elevated = Color(0xFF0A0A0A),
+)
+
 val CursorLightColors = CursorColors(
     isDark = false,
     canvas = Color(0xFFF3F3F3),

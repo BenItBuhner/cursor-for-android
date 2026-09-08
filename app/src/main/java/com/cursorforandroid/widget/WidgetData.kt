@@ -37,6 +37,7 @@ data class WidgetSnapshot(
     val prefs: ListPreferences,
     val local: LocalAgentState,
     val theme: ThemeMode,
+    val oledBlack: Boolean = false,
 ) {
     val isSignedOut: Boolean get() = session is SessionState.SignedOut
 
@@ -60,9 +61,9 @@ object WidgetData {
         graph.agents.state,
         graph.prefs.listPreferences,
         graph.prefs.localAgentState,
-        graph.prefs.themeMode,
-    ) { session, list, prefs, local, theme ->
-        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, theme)
+        combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair),
+    ) { session, list, prefs, local, appearance ->
+        WidgetSnapshot(session, list.hasLoaded, list.agents, prefs, local, appearance.first, appearance.second)
     }.distinctUntilChanged()
 
     suspend fun snapshot(graph: AppGraph): WidgetSnapshot = snapshots(graph).first()

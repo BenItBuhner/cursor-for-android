@@ -46,6 +46,7 @@ class PreferencesStore(context: Context) {
 
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
+        val oledBlack = booleanPreferencesKey("oled_black")
         val listPrefs = stringPreferencesKey("list_prefs")
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
@@ -88,6 +89,9 @@ class PreferencesStore(context: Context) {
     val themeMode: Flow<ThemeMode> = store.data.map { p ->
         p[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System
     }
+
+    /** True-black surfaces while the resolved theme is dark (Cursor Dark, or Match system at night). Off by default. */
+    val oledBlack: Flow<Boolean> = store.data.map { it[Keys.oledBlack] ?: false }
 
     val listPreferences: Flow<ListPreferences> = store.data.map { p ->
         p[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() }
@@ -139,6 +143,8 @@ class PreferencesStore(context: Context) {
     }
 
     suspend fun setThemeMode(mode: ThemeMode) = store.edit { it[Keys.theme] = mode.name }
+
+    suspend fun setOledBlack(enabled: Boolean) = store.edit { it[Keys.oledBlack] = enabled }
 
     suspend fun setListPreferences(prefs: ListPreferences) = store.edit {
         it[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), prefs)

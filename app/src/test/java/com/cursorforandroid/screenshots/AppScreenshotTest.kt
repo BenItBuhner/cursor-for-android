@@ -87,7 +87,8 @@ class AppScreenshotTest {
     private fun App(graph: AppGraph) {
         var pending by remember { mutableStateOf<String?>(null) }
         val mode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.Dark)
-        CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode) {
+        val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+        CursorTheme(mode = if (mode == ThemeMode.System) ThemeMode.Dark else mode, oledBlack = oledBlack) {
             // Ripples on API 31+ animate a noise "sparkle", so a frame caught mid-fade is never reproducible.
             CompositionLocalProvider(LocalRippleConfiguration provides null) {
                 CursorRoot(graph = graph, deepLinkAgentId = pending, onDeepLinkConsumed = { pending = null })
