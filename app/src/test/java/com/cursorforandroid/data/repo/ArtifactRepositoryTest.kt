@@ -3,7 +3,10 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.dto.DownloadArtifactResponseDto
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.time.Instant
@@ -13,9 +16,12 @@ class ArtifactRepositoryTest {
     private class RecordingApi : FakeCursorApi() {
         val requests = mutableListOf<Pair<String, String>>()
         var response: (String) -> DownloadArtifactResponseDto = { path -> DownloadArtifactResponseDto(url = "https://s3.test/$path?sig=1", expiresAt = null) }
+        /** When set, the first artifact asked for waits on it, so a second caller arrives while it is in flight. */
+        @Volatile var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun artifactUrl(id: String, path: String): DownloadArtifactResponseDto {
             requests += id to path
+            if (path.endsWith("a.png")) gate?.await()
             return response(path)
         }
     }
@@ -54,6 +60,43 @@ class ArtifactRepositoryTest {
 
         repo.invalidate("bc-1", "artifacts/a.png")
         assertThat(repo.downloadUrl("bc-1", "artifacts/a.png")).endsWith("sig=3")
+    }
+
+    @Test
+    fun `the cache is bounded, so browsing many agents' artifacts cannot grow it without limit`() = runBlocking {
+        val bounded = ArtifactRepository(api = { api }, now = { now }, maxEntries = 4)
+        repeat(4) { bounded.downloadUrl("bc-1", "artifacts/$it.png") }
+        assertThat(api.requests).hasSize(4)
+
+        // The four are all still cached; a fifth evicts the one used longest ago, which is then re-resolved.
+        repeat(4) { bounded.downloadUrl("bc-1", "artifacts/$it.png") }
+        assertThat(api.requests).hasSize(4)
+        bounded.downloadUrl("bc-1", "artifacts/4.png")
+        bounded.downloadUrl("bc-1", "artifacts/0.png")
+        assertThat(api.requests).hasSize(6)
+        assertThat(api.requests.last()).isEqualTo("bc-1" to "artifacts/0.png")
+
+        // An entry read after it expired is dropped and resolved again, evicting nothing live in the process.
+        now += ArtifactRepository.DEFAULT_TTL_MS
+        bounded.downloadUrl("bc-1", "artifacts/0.png")
+        repeat(4) { bounded.downloadUrl("bc-1", "artifacts/${it + 5}.png") }
+        assertThat(api.requests).hasSize(11)
+    }
+
+    @Test
+    fun `two loaders asking for the same artifact at once spend one request`() = runBlocking {
+        api.gate = CompletableDeferred()
+        val both = listOf(
+            async { repo.downloadUrl("bc-1", "artifacts/a.png") },
+            async { repo.downloadUrl("bc-1", "artifacts/a.png") },
+        )
+        val other = async { repo.downloadUrl("bc-1", "artifacts/b.png") }
+        yield()
+
+        api.gate!!.complete(Unit)
+        both.forEach { assertThat(it.await()).isEqualTo("https://s3.test/artifacts/a.png?sig=1") }
+        assertThat(other.await()).isEqualTo("https://s3.test/artifacts/b.png?sig=1")
+        assertThat(api.requests.count { it.second == "artifacts/a.png" }).isEqualTo(1)
     }
 
     @Test
