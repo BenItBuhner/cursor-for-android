@@ -37,8 +37,9 @@ data class LocalAgentState(
 )
 
 /**
- * Pure grouping / filtering / sorting of agents. Everything the Customize sheet and the search field can
- * do is expressed here so it can be unit-tested without Android.
+ * Pure grouping / filtering / sorting of agents. Everything the Customize sheet and the sidebar search field
+ * can do is expressed here so it can be unit-tested without Android. Search is a find-in-rail: [organize]
+ * takes [query], [recentRows] does not.
  */
 object AgentListOrganizer {
 
