@@ -165,6 +165,7 @@ fun Sidebar(
                             prefs = state.prefs,
                             actions = callbacks.rowActions,
                             modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                            nowMillis = state.nowMillis,
                         )
                     }
                 }

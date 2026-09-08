@@ -56,9 +56,36 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `active lifecycle without run status counts as running`() {
+    fun `active lifecycle without run status is at rest, not running`() {
+        // The server reports ACTIVE for every unarchived agent, finished or not; only a run status can say "running".
         val a = agent("x", lifecycle = AgentLifecycle.ACTIVE, runStatus = null)
-        assertThat(a.isRunning).isTrue()
+        assertThat(a.isRunning).isFalse()
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState())).isEqualTo(AgentIndicator.Unread)
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState(readMarkers = mapOf("x" to now)))).isEqualTo(AgentIndicator.Read)
+    }
+
+    @Test
+    fun `the recent list is the sidebar's rows newest first, pins and groups aside, however the sidebar is arranged`() {
+        val agents = listOf(
+            agent("today", updatedAgo = 2 * hour),
+            agent("yesterday", updatedAgo = day + hour),
+            agent("pinned", updatedAgo = 3 * day),
+            agent("newest", updatedAgo = 0),
+            agent("arch", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val local = LocalAgentState(pinnedIds = setOf("pinned"))
+        val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
+        assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday").inOrder()
+        // The same rows (the archived one is filtered out on both surfaces), by recency, the pinned one in its place.
+        val recent = AgentListOrganizer.recentRows(sections)
+        assertThat(recent.map { it.agent.id }).containsExactly("newest", "today", "yesterday", "pinned").inOrder()
+        assertThat(recent).isEqualTo(AgentListOrganizer.recentRows(agents, ListPreferences(), local, nowMillis = now, zone = zone))
+        // Grouping and sort order arrange the sidebar only; the recents stay newest first.
+        val byName = ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name)
+        assertThat(AgentListOrganizer.recentRows(AgentListOrganizer.organize(agents, byName, local, nowMillis = now, zone = zone))).isEqualTo(recent)
+        // A filter narrows both surfaces alike.
+        val onlyRunning = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
+        assertThat(AgentListOrganizer.recentRows(onlyRunning)).isEmpty()
     }
 
     @Test

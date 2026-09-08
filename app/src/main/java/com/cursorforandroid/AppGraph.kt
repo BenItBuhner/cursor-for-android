@@ -29,7 +29,6 @@ import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
-import com.cursorforandroid.data.repo.parseIsoMillis
 import java.io.File
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
@@ -93,7 +92,7 @@ class AppGraph(context: Context) {
     val runMonitor = RunMonitor(
         agents = agents,
         hub = liveRuns,
-        runStartedAt = { agentId, runId -> parseIsoMillis(session.current.api.getRun(agentId, runId).createdAt).takeIf { it > 0 } },
+        runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
     )
 
     init {

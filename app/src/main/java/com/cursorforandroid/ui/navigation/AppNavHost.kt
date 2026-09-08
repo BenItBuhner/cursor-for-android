@@ -120,10 +120,12 @@ fun AppNavHost(
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
-    // session, whose list sign-out cleared.
+    // session, whose list sign-out cleared. While on screen the list then keeps itself current, so chats started or
+    // finished elsewhere show up without a pull.
     LifecycleStartEffect(Unit) {
         agentsViewModel.refreshIfStale()
-        onStopOrDispose { }
+        val polling = agentsViewModel.pollWhileVisible()
+        onStopOrDispose { polling.cancel() }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 

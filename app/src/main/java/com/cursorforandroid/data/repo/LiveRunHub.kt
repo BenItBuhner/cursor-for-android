@@ -303,7 +303,8 @@ class LiveRunHub(
         if (!run.statusEnum().isTerminal) return false
         val result = RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git)
         entry.live.apply(result)
-        finish(entry, result, historical = false, streamed = false)
+        // The record says when the run ended; that, not the moment this connection happened to read it, is the finish.
+        finish(entry, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
         return true
     }
 
@@ -340,14 +341,19 @@ class LiveRunHub(
     /**
      * Publishes the terminal snapshot first, then patches the agent row with the same timestamp, so a subscriber
      * that reacts to `finished` before the row changes still knows the `updatedAt` the list is about to show. The
-     * finish is reported last, once both are in place. A replay changes nothing about the agent: the row already
-     * reflects this run, or a later one. Nor does a result that arrives once the row has moved on to a newer run (a
-     * record read after a follow-up was sent, a stream read to its end after the list picked up a run started
-     * elsewhere): marking that row idle and finished would show the running follow-up as done. Only the branches,
-     * which are per-agent state, are still worth taking.
+     * finish is reported last, once both are in place. The moment of the finish is [finishedAtMillis] when the caller
+     * read it off the run record, else now — right for a result that just arrived on a stream being followed live,
+     * and the only choice when a stream's `result` carries no timestamp. The stamp is what the row shows until the
+     * next list refresh reconciles it with the server's `updatedAt` (see `reconcileUpdatedAt`), so a finish read off
+     * an old record puts the row where the server has it, not at the top of the list.
+     *
+     * A replay changes nothing about the agent: the row already reflects this run, or a later one. Nor does a result
+     * that arrives once the row has moved on to a newer run (a record read after a follow-up was sent, a stream read
+     * to its end after the list picked up a run started elsewhere): marking that row idle and finished would show the
+     * running follow-up as done. Only the branches, which are per-agent state, are still worth taking.
      */
-    private fun finish(entry: Entry, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean) {
-        val now = nowProvider()
+    private fun finish(entry: Entry, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean, finishedAtMillis: Long? = null) {
+        val finishedAt = finishedAtMillis ?: nowProvider()
         entry.catchUp = 0
         entry.state.update {
             it.copy(
@@ -357,7 +363,7 @@ class LiveRunHub(
                 eventCount = it.eventCount + 1,
                 result = result,
                 // A replay of a run that already finished here keeps the moment it did.
-                finishedAtMillis = it.finishedAtMillis ?: now,
+                finishedAtMillis = it.finishedAtMillis ?: finishedAt,
                 streamed = streamed,
                 reconnecting = false,
             )
@@ -371,7 +377,7 @@ class LiveRunHub(
                 durationMs = result.durationMs ?: a.durationMs,
                 branches = result.git.toBranches().ifEmpty { a.branches },
                 summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
-                updatedAtMillis = now,
+                updatedAtMillis = finishedAt,
             )
         }
         _finishes.tryEmit(entry.state.value)
