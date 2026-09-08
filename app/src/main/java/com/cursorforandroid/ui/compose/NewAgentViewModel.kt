@@ -55,7 +55,8 @@ data class NewAgentUiState(
     val modelsUnavailable: Boolean = false,
 ) {
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
-    val modelLabel: String get() = selectedModel?.labelFor(selectedVariant) ?: "Default model"
+    /** The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. */
+    val modelLabel: String get() = selectedModel?.displayName ?: "Default model"
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
 }
