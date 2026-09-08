@@ -73,8 +73,9 @@ import com.cursorforandroid.util.TimeFormat
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then the recent chats
  * list with preview cards (cursor.com/agents). On phones a 44dp header carries the sidebar toggle.
  *
- * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered; [onLaunchFailed]
- * is how a launch that did not go through (or was stopped from the chat) asks to come back to this pane.
+ * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
+ * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
+ * ready for the next chat whatever the last one is still waiting on.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,7 +85,6 @@ fun HomeScreen(
     onOpenSidebar: (() -> Unit)?,
     onOpenAgent: (AgentRow) -> Unit,
     onLaunchOpen: (agentId: String) -> Unit,
-    onLaunchFailed: (agentId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
@@ -95,7 +95,7 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
-    val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
+    val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
         onPicked = viewModel::addAttachments,
@@ -135,10 +135,9 @@ fun HomeScreen(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
                         placeholder = "Ask Cursor to build, fix bugs, explore",
-                        onSend = { viewModel.launch(onOpen = onLaunchOpen, onFailed = onLaunchFailed) },
+                        onSend = { viewModel.launch(onOpen = onLaunchOpen) },
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
-                        onCancelSend = viewModel::cancelLaunch,
                         minLines = 3,
                         plusMenu = plusMenu,
                         attachments = state.attachments,

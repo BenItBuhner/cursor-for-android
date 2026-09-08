@@ -50,6 +50,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
 
@@ -68,6 +69,7 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
+    val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
     val session by graph.session.state.collectAsStateWithLifecycle()
     val credential = (session as? SessionState.SignedIn)?.credential
 
@@ -131,6 +133,35 @@ fun SettingsScreen(
                         if (themeMode == mode) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
                     }
                     if (index != ThemeMode.entries.lastIndex) HairlineDivider(Modifier.padding(horizontal = 14.dp))
+                }
+                // OLED only does anything while dark is on — Cursor Dark, or Match system when the phone is dark.
+                if (themeMode != ThemeMode.Light) {
+                    HairlineDivider(Modifier.padding(horizontal = 14.dp))
+                    Row(
+                        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setOledBlack(!oledBlack) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("OLED black", style = type.base, color = colors.textPrimary)
+                            Text(
+                                if (themeMode == ThemeMode.System) {
+                                    "True-black surfaces when the system is in dark theme."
+                                } else {
+                                    "True-black surfaces instead of Cursor Dark's charcoal."
+                                },
+                                style = type.small, color = colors.textTertiary,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        CursorToggle(checked = oledBlack, onCheckedChange = { scope.launch { graph.prefs.setOledBlack(it) } })
+                    }
+                }
+            }
+
+            if (!isDemo) {
+                Group("Chats")
+                CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                    PinSyncRows(graph)
                 }
             }
 
@@ -206,6 +237,62 @@ private fun NotificationRows(graph: AppGraph) {
             subtitle = "Adds the status-bar chip and the lock-screen card on Android 16.",
             onClick = { runCatching { context.startActivity(liveUpdatesIntent) } },
         )
+    }
+}
+
+/**
+ * The pin sync toggle and, under it, where the sync stands: the last time it went through, changes still waiting for
+ * the server, or why it is not going through.
+ */
+@Composable
+private fun PinSyncRows(graph: AppGraph) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val scope = rememberCoroutineScope()
+    val enabled by graph.prefs.pinSyncEnabled.collectAsStateWithLifecycle(initialValue = true)
+    val sync by graph.pins.state.collectAsStateWithLifecycle()
+
+    Row(
+        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setPinSyncEnabled(!enabled) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Sync pinned chats", style = type.base, color = colors.textPrimary)
+            Text(
+                "Pins follow your Cursor account, like the desktop Agents window and the iOS app. Off keeps them on this device.",
+                style = type.small, color = colors.textTertiary,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        CursorToggle(checked = enabled, onCheckedChange = { scope.launch { graph.prefs.setPinSyncEnabled(it) } })
+    }
+    if (enabled && sync.error != null) {
+        HairlineDivider()
+        StatusRow(title = "Pins are staying on this device", subtitle = sync.error.orEmpty(), warning = true)
+    } else if (enabled && sync.pendingCount > 0) {
+        HairlineDivider()
+        StatusRow(
+            title = "Waiting to sync ${sync.pendingCount} ${if (sync.pendingCount == 1) "change" else "changes"}",
+            subtitle = "They go up the next time Cursor is reachable.",
+            warning = false,
+        )
+    } else if (enabled && sync.lastSyncedAtMillis != null) {
+        HairlineDivider()
+        InfoRow("Last synced", TimeFormat.relativeShort(sync.lastSyncedAtMillis ?: 0L, AppClock.now()))
+    }
+}
+
+@Composable
+private fun StatusRow(title: String, subtitle: String, warning: Boolean) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (warning) CursorIcons.Warning else CursorIcons.Cloud, null, tint = if (warning) colors.orange else colors.iconTertiary, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = type.base, color = colors.textPrimary)
+            Text(subtitle, style = type.small, color = colors.textTertiary)
+        }
     }
 }
 
