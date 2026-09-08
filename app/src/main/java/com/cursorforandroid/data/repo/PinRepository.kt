@@ -91,6 +91,9 @@ class PinRepository(
     /** Where the account's rounds run, so [reset] can cancel one half-way through without taking the collectors with it. */
     @Volatile private var work: CoroutineScope = workScope()
 
+    /** Pinned ids whose fetch failed, tried again after the ones never tried, so one bad id starves none. */
+    private val deferred = LinkedHashSet<String>()
+
     /** Set after a failure retrying cannot fix (a rejected key, a device policy); cleared by a sign-in or the setting. */
     @Volatile private var halted = false
     private val settingWatcher = AtomicReference<Job?>(null)
@@ -130,6 +133,7 @@ class PinRepository(
         work = workScope()
         halted = false
         revisions.clear()
+        synchronized(deferred) { deferred.clear() }
         _state.value = PinSyncState()
     }
 
@@ -278,11 +282,23 @@ class PinRepository(
         if (stillCurrent.isNotEmpty()) prefs.clearAcknowledgedPinChanges(stillCurrent)
     }
 
-    /** Rows for pinned agents the list window does not include, so the Pinned group is complete. */
+    /**
+     * Rows for pinned agents the list window does not include, so the Pinned group is complete. More of them than
+     * one round's budget are worked through over successive rounds; an id whose fetch failed goes behind the ones
+     * that have not been tried yet, so it never keeps them from arriving.
+     */
     private suspend fun materialize(ids: List<String>, startedIn: Int) {
-        for (id in ids.take(maxMaterialized)) {
+        val order = synchronized(deferred) {
+            deferred.retainAll(ids.toSet())
+            ids.filterNot { it in deferred } + deferred.toList()
+        }
+        for (id in order.take(maxMaterialized)) {
             if (generation.get() != startedIn) return
-            agents.loadDetail(id)
+            val loaded = agents.loadDetail(id).isSuccess
+            synchronized(deferred) {
+                deferred -= id
+                if (!loaded) deferred += id
+            }
         }
     }
 

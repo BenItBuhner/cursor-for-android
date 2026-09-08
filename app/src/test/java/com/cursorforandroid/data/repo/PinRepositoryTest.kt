@@ -366,6 +366,27 @@ class PinRepositoryTest {
     }
 
     @Test
+    fun `more pinned agents than one round fetches arrive over the next rounds, however many fail`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        val order = object : PinsApi by pinsApi {
+            override suspend fun list(): AccountList =
+                AccountList(PinnedIds(linkedSetOf("bc-gone-1", "bc-gone-2", "bc-1", "bc-2"), loaded = true), emptyMap())
+        }
+        // Two per round, and the two the account can no longer produce are tried first.
+        val repository = PinRepository(session, prefs, agents, order, scope, now = { now }, maxMaterialized = 2)
+
+        assertThat(repository.sync().isSuccess).isTrue()
+        assertThat(agents.agent("bc-1")).isNull()
+        assertThat(agents.agent("bc-2")).isNull()
+
+        assertThat(repository.sync().isSuccess).isTrue()
+
+        assertThat(agents.agent("bc-1")?.name).isEqualTo("One")
+        assertThat(agents.agent("bc-2")?.name).isEqualTo("Two")
+        assertThat(pinnedIds()).containsExactly("bc-gone-1", "bc-gone-2", "bc-1", "bc-2")
+    }
+
+    @Test
     fun `pinned agents the list window left behind are fetched by id and survive the next listing`() = runBlocking<Unit> {
         prefs.setPinsMigrated(true)
         // Six agents, one per page, five pages per full refresh: the oldest is never listed.
