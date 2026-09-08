@@ -129,7 +129,8 @@ object WidgetData {
             hasLoaded = true,
             agents = agents,
             prefs = ListPreferences(),
-            // Read with a branch pushed shows the sidebar's purple branch glyph; the rest are unread.
+            // Two read rows that pushed — one with a PR (the green pull-request glyph), one with a branch alone (the
+            // neutral branch glyph); the rest are unread.
             local = LocalAgentState(readMarkers = mapOf("bc-preview-5" to nowMillis, "bc-preview-6" to nowMillis)),
             theme = theme,
         )

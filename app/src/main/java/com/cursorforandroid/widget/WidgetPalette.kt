@@ -33,7 +33,7 @@ class WidgetPalette private constructor(private val mode: ThemeMode) {
     val iconQuaternary: ColorProvider = token { it.iconQuaternary }
     val unreadDot: ColorProvider = token { it.unreadDot }
     val red: ColorProvider = token { it.red }
-    val branchGlyph: ColorProvider = token { it.branchGlyph }
+    val gitAdded: ColorProvider = token { it.gitAdded }
 
     companion object {
         fun forMode(mode: ThemeMode): WidgetPalette = WidgetPalette(mode)

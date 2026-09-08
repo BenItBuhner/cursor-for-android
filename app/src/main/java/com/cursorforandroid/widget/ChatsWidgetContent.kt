@@ -179,8 +179,9 @@ private fun AgentRowItem(row: AgentRow, prefs: ListPreferences, palette: WidgetP
 
 /**
  * The row's leading glyph with the sidebar's semantics (`StateGlyph` in Primitives.kt): the dot grid while
- * working, the blue unread dot, the red error dot, the purple branch glyph for a read chat that pushed a branch,
- * the archive box, and nothing for a plain read chat.
+ * working, the blue unread dot, the red error dot, the archive box, nothing for a plain read chat, and for a read
+ * chat that pushed, the green pull-request glyph once it has a PR, else the neutral branch glyph — never GitHub's
+ * merged purple, since the API does not say whether a PR is open or merged.
  */
 @Composable
 private fun StateGlyph(row: AgentRow, palette: WidgetPalette) {
@@ -189,7 +190,10 @@ private fun StateGlyph(row: AgentRow, palette: WidgetPalette) {
         AgentIndicator.Running -> Image(ImageProvider(R.drawable.widget_working), "Working", slot, colorFilter = ColorFilter.tint(palette.iconSecondary))
         AgentIndicator.Unread -> Image(ImageProvider(R.drawable.widget_dot), "Unread", slot, colorFilter = ColorFilter.tint(palette.unreadDot))
         AgentIndicator.Error -> Image(ImageProvider(R.drawable.widget_dot), "Failed", slot, colorFilter = ColorFilter.tint(palette.red))
-        AgentIndicator.Read -> if (row.agent.hasBranch) Image(ImageProvider(R.drawable.widget_git_branch), "Branch", slot, colorFilter = ColorFilter.tint(palette.branchGlyph))
+        AgentIndicator.Read -> when {
+            row.agent.hasPullRequest -> Image(ImageProvider(R.drawable.widget_git_pull_request), "Pull request", slot, colorFilter = ColorFilter.tint(palette.gitAdded))
+            row.agent.hasBranch -> Image(ImageProvider(R.drawable.widget_git_branch), "Branch", slot, colorFilter = ColorFilter.tint(palette.iconTertiary))
+        }
         AgentIndicator.Archived -> Image(ImageProvider(R.drawable.widget_archive), "Archived", slot, colorFilter = ColorFilter.tint(palette.iconQuaternary))
     }
 }
