@@ -4,6 +4,11 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
+import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
+import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
@@ -21,6 +26,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The composer remembers what the last agent was launched with, opens the chat it launches before the server has
@@ -35,10 +41,24 @@ class NewAgentViewModelTest {
 
     private lateinit var graph: AppGraph
 
+    /** Every create the composer sent, as the API received it. */
+    private val created = CopyOnWriteArrayList<CreateAgentRequestDto>()
+
     @Before
     fun setUp() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        graph = AppGraph(ApplicationProvider.getApplicationContext<Context>())
+        // The demo's own catalogue and data, with the requests it is sent recorded.
+        val (demoApi, demoStreamer) = DemoBackendFactory.create()
+        val api = object : CursorApi by demoApi {
+            override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
+                created += body
+                return demoApi.createAgent(body)
+            }
+        }
+        graph = AppGraph(
+            ApplicationProvider.getApplicationContext<Context>(),
+            demo = CursorBackend(api, demoStreamer, isDemo = true),
+        )
         graph.session.enterDemo()
     }
 
@@ -315,5 +335,21 @@ class NewAgentViewModelTest {
         second.launchAndWait()
         // Blank means "the repository's default branch", not "never launched": it must not come back as "main".
         assertThat(loaded().state.value.ref).isEmpty()
+    }
+
+    @Test
+    fun `a never-launched composer starts from the repository's default branch, not from main`() {
+        val vm = loaded()
+        // Nothing here knows what a repository's default branch is called: /v1/repositories returns bare URLs.
+        assertThat(vm.state.value.ref).isEmpty()
+        vm.launchAndWait()
+        assertThat(created.single().repos?.single()?.startingRef).isNull()
+
+        // "main" chosen on purpose is a choice: it goes out as the starting ref and comes back next time.
+        val second = loaded()
+        second.setRef("main")
+        second.launchAndWait("Do the other thing")
+        assertThat(created.last().repos?.single()?.startingRef).isEqualTo("main")
+        assertThat(loaded().state.value.ref).isEqualTo("main")
     }
 }

@@ -33,8 +33,12 @@ data class NewAgentUiState(
     val repositories: List<Repository> = emptyList(),
     val selectedRepo: Repository? = null,
     val noRepo: Boolean = false,
-    /** The branch (or commit) the agent starts from; blank leaves it to the repository's default branch. */
-    val ref: String = "main",
+    /**
+     * The branch (or commit) the agent starts from; blank leaves it to the repository's default branch, which is
+     * where a chat starts until a launch has recorded a choice. Nothing here knows what a repository's default
+     * branch is called — `GET /v1/repositories` returns bare URLs — so it is never guessed at.
+     */
+    val ref: String = "",
     /** What the branch picker lists for [selectedRepo]: the branches its agents started from or pushed, most recent first. */
     val branches: List<BranchOption> = emptyList(),
     val models: List<ModelOption> = emptyList(),
@@ -99,7 +103,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
-            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main") }
+            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty()) }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
             graph.catalog.restoreFromCache()
@@ -239,8 +243,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             launchNonce = LaunchIdempotency.newNonce()
             graph.prefs.setComposerDefaults(
                 repoUrl = request.repoUrl,
-                // Blank is a choice too (the repository's default branch), saved as such so it is not mistaken for a
-                // first launch and replaced with "main" next time.
+                // Blank is a choice too (the repository's default branch), saved as such rather than removed.
                 ref = request.ref ?: "",
                 modelId = request.modelId,
                 params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
