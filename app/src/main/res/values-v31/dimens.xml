@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- From Android 12 every widget on the home screen shares the launcher's radius. -->
+    <dimen name="widget_corner_radius">@android:dimen/system_app_widget_background_radius</dimen>
+</resources>

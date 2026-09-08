@@ -137,12 +137,21 @@ object AgentListOrganizer {
     }
 
     /**
-     * The rows [organize] produced as one flat list in the chosen sort order: the same filters and query, without the
-     * groups and without the pinned rows lifted out — for the New Chat pane's recent list, which has no headers. Built
-     * from the sections rather than the agents again so the two surfaces can never disagree about what is visible.
+     * The New Chat pane's recent list: Chats filters apply, sidebar search does not. Pinned chats are included
+     * once, newest first, matching the home-screen widget's Recent mode. Built from [organize] rather than from the
+     * agents again, so the two surfaces can never disagree about which chats the filters let through.
      */
-    fun flatten(sections: List<AgentSection>, order: SortOrder): List<AgentRow> =
-        sort(sections.flatMap { it.rows }.distinctBy { it.agent.id }, order)
+    fun recentRows(
+        agents: List<Agent>,
+        prefs: ListPreferences,
+        local: LocalAgentState,
+        nowMillis: Long = AppClock.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
+
+    /** [recentRows] for sections already organized without a search query: every row once, newest first. */
+    fun recentRows(sections: List<AgentSection>): List<AgentRow> =
+        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
 
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"

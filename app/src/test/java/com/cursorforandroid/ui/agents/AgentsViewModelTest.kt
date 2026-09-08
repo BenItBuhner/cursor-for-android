@@ -56,21 +56,21 @@ class AgentsViewModelTest {
     }
 
     private suspend fun AgentsViewModel.loaded(): AgentListUiState = withTimeout(10_000) {
-        uiState.first { it.hasLoaded && !it.isRefreshing && it.rows.isNotEmpty() }
+        uiState.first { it.hasLoaded && !it.isRefreshing && it.recentRows.isNotEmpty() }
     }
 
     @Test
-    fun `the recent list shows the sidebar's rows in its sort order and follows its filters`() = runBlocking<Unit> {
+    fun `the recent list is the sidebar's rows newest first and follows its filters but not its search`() = runBlocking<Unit> {
         val vm = AgentsViewModel(graph)
         val loaded = vm.loaded()
-        assertThat(loaded.rows.map { it.agent.id }).isEqualTo(AgentListOrganizer.flatten(loaded.sections, loaded.prefs.sortOrder).map { it.agent.id })
-        assertThat(loaded.rows.map { it.agent.updatedAtMillis }).isInOrder(reverseOrder<Long>())
+        assertThat(loaded.recentRows.map { it.agent.id }).isEqualTo(AgentListOrganizer.recentRows(loaded.sections).map { it.agent.id })
+        assertThat(loaded.recentRows.map { it.agent.updatedAtMillis }).isInOrder(reverseOrder<Long>())
         // The demo pins its three showcase chats: the sidebar lifts them out into a Pinned group, the recent list
         // leaves them in their place by recency.
         assertThat(loaded.sections.first().title).isEqualTo("Pinned")
         assertThat(loaded.sections.first().rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
-        assertThat(loaded.rows.first().agent.id).isEqualTo("bc-demo-0004")
-        assertThat(loaded.rows.count { it.indicator == AgentIndicator.Running }).isEqualTo(3)
+        assertThat(loaded.recentRows.first().agent.id).isEqualTo("bc-demo-0004")
+        assertThat(loaded.recentRows.count { it.indicator == AgentIndicator.Running }).isEqualTo(3)
         assertThat(loaded.runningCount).isEqualTo(3)
         // Only a run status makes a row running: the finished demo chats read ACTIVE from the lifecycle like the rest.
         assertThat(loaded.allAgents.none { it.isRunning && it.runStatus?.isActive != true }).isTrue()
@@ -78,24 +78,26 @@ class AgentsViewModelTest {
         // A status filter chosen in the sidebar's menu hides the same rows on both surfaces.
         vm.toggleStatus(StatusFilter.Running)
         val noRunning = withTimeout(10_000) { vm.uiState.first { StatusFilter.Running !in it.prefs.statuses } }
-        assertThat(noRunning.rows.none { it.indicator == AgentIndicator.Running }).isTrue()
-        assertThat(noRunning.rows).hasSize(loaded.rows.size - 3)
-        assertThat(noRunning.rows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.map { it.agent.id }.toSet())
+        assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running }).isTrue()
+        assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3)
+        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.map { it.agent.id }.toSet())
 
-        // So does the sort order. Two changes in quick succession — before the first has reached the state — compose,
-        // rather than the second being computed from the stale state and undoing the first.
+        // The sort order arranges the sidebar; the recents stay newest first. Two changes in quick succession — before
+        // the first has reached the state — compose, rather than the second being computed from the stale state and
+        // undoing the first.
         vm.toggleStatus(StatusFilter.Running)
         vm.setSortOrder(SortOrder.Name)
         val byName = withTimeout(10_000) { vm.uiState.first { it.prefs.sortOrder == SortOrder.Name && StatusFilter.Running in it.prefs.statuses } }
-        assertThat(byName.rows.map { it.agent.name.lowercase() }).isInOrder()
-        assertThat(byName.rows).hasSize(loaded.rows.size)
+        byName.sections.forEach { section -> assertThat(section.rows.map { it.agent.name.lowercase() }).isInOrder() }
+        assertThat(byName.recentRows.map { it.agent.id }).isEqualTo(loaded.recentRows.map { it.agent.id })
 
-        // And the search field.
+        // The sidebar search narrows the sidebar only.
         vm.setQuery("cesium")
         val searched = withTimeout(10_000) { vm.uiState.first { it.query == "cesium" } }
-        assertThat(searched.rows).isNotEmpty()
-        assertThat(searched.rows.all { AgentListOrganizer.matchesQuery(it.agent, "cesium") }).isTrue()
-        assertThat(searched.rows.map { it.agent.id }).containsExactlyElementsIn(searched.sections.flatMap { it.rows }.map { it.agent.id })
+        val sidebar = searched.sections.flatMap { it.rows }
+        assertThat(sidebar).isNotEmpty()
+        assertThat(sidebar.all { AgentListOrganizer.matchesQuery(it.agent, "cesium") }).isTrue()
+        assertThat(searched.recentRows.map { it.agent.id }).isEqualTo(loaded.recentRows.map { it.agent.id })
     }
 
     @Test
@@ -107,8 +109,8 @@ class AgentsViewModelTest {
         now += 3 * 60_000
         val ticked = withTimeout(10_000) { vm.uiState.first { it.nowMillis == now } }
         // Nothing about the data changed, only the clock the rows format their ages against.
-        assertThat(ticked.rows.map { it.agent.id }).isEqualTo(initial.rows.map { it.agent.id })
-        assertThat(ticked.rows.map { it.agent.updatedAtMillis }).isEqualTo(initial.rows.map { it.agent.updatedAtMillis })
+        assertThat(ticked.recentRows.map { it.agent.id }).isEqualTo(initial.recentRows.map { it.agent.id })
+        assertThat(ticked.recentRows.map { it.agent.updatedAtMillis }).isEqualTo(initial.recentRows.map { it.agent.updatedAtMillis })
     }
 
     @Test

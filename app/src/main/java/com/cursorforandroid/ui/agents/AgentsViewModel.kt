@@ -36,11 +36,10 @@ data class AgentListUiState(
     /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
     val sections: List<AgentSection> = emptyList(),
     /**
-     * The same rows as [sections] as one flat list in the chosen sort order, without the groups or the pinned rows
-     * lifted out — what the New Chat pane's recent list shows, so both surfaces always agree on which chats are
-     * visible and how they are ordered.
+     * New Chat recent cards: the same Chats filters as the sidebar, never the sidebar search query, every row once and
+     * newest first — so both surfaces always agree on which chats the filters let through.
      */
-    val rows: List<AgentRow> = emptyList(),
+    val recentRows: List<AgentRow> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
     val prefs: ListPreferences = ListPreferences(),
@@ -83,10 +82,12 @@ class AgentsViewModel(
         clock,
     ) { list, prefs, local, q, now ->
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
+        // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
+        val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
         AgentListUiState(
             sections = sections,
-            rows = AgentListOrganizer.flatten(sections, prefs.sortOrder),
+            recentRows = recentRows,
             allAgents = list.agents,
             repoSlugs = list.agents.mapNotNull { it.repoSlug }.distinct().sortedBy { it.lowercase() },
             prefs = prefs,
@@ -144,7 +145,8 @@ class AgentsViewModel(
 
     fun setQuery(value: String) { query.value = value }
 
-    fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    /** Applies at once; the account hears about it now or at the next sync, so a failure needs no attention here. */
+    fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 

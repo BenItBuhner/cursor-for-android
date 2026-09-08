@@ -52,5 +52,34 @@
             android:name=".notifications.LiveNotificationService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- The "Chats" home-screen widget: recent, running or pinned chats as sidebar rows. -->
+        <receiver
+            android:name=".widget.ChatsWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_chats_info" />
+        </receiver>
+        <!--
+          Picks what a widget lists; opened by the launcher when a widget is placed or reconfigured, and by the
+          widget's own title. Its own task, so leaving it from the widget lands back on the home screen rather than
+          in the app.
+        -->
+        <activity
+            android:name=".widget.WidgetConfigureActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/widget_configure_title"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Cursor">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The "Chats" home-screen widget: the sidebar's rows on the home screen, listing recent, running or pinned chats
+  (chosen when the widget is placed; changeable from its header or the launcher's reconfigure affordance).
+  4x2 by default; resizes down to 2 cells wide and up to anything. The 30-minute update period is the floor the
+  platform allows; the app pushes updates itself whenever the list changes while it is alive.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:configure="com.cursorforandroid.widget.WidgetConfigureActivity"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_chats_loading"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="110dp"
+    android:previewImage="@drawable/widget_chats_preview"
+    android:previewLayout="@layout/widget_chats_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable" />

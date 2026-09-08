@@ -19,11 +19,11 @@ fun CursorRoot(
     graph: AppGraph,
     deepLinkAgentId: String?,
     onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
 ) {
     val session by graph.session.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) {
-        if (graph.session.state.value is SessionState.Loading) graph.session.restore()
-    }
+    LaunchedEffect(Unit) { graph.session.restoreIfNeeded() }
     Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
         when (val s = session) {
             SessionState.Loading -> Unit
@@ -34,6 +34,8 @@ fun CursorRoot(
                 isDemo = s.isDemo,
                 deepLinkAgentId = deepLinkAgentId,
                 onDeepLinkConsumed = onDeepLinkConsumed,
+                newChatRequested = newChatRequested,
+                onNewChatConsumed = onNewChatConsumed,
             )
         }
     }

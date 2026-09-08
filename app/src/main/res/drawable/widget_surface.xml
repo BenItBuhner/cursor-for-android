@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The widget's surface: the sidebar colour, drawn white here and tinted at render time (the widget follows the app's
+  theme preference, so the colour is not known to the resource system). The radius is the app's xl (12) below
+  Android 12 and the system widget radius from there on, where launchers round every widget the same way.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="@dimen/widget_corner_radius" />
+</shape>

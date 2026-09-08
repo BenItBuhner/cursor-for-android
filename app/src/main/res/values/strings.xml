@@ -34,4 +34,23 @@
     <string name="notif_action_stop">Stop</string>
     <string name="notif_action_view_pr">View PR</string>
     <string name="notif_stop_failed">Couldn\'t stop the run: %1$s</string>
+
+    <!-- Home-screen widget -->
+    <string name="widget_label">Chats</string>
+    <string name="widget_description">Recent, running or pinned chats, one tap from the home screen.</string>
+    <string name="widget_loading">Loading chats…</string>
+    <string name="widget_sign_in">Sign in to see your chats</string>
+    <string name="widget_open_app">Open Cursor to load your chats</string>
+    <string name="widget_new_chat">New chat</string>
+    <string name="widget_choose_list">Choose what the widget lists</string>
+    <string name="widget_configure_title">Widget</string>
+    <string name="widget_configure_subtitle">Choose what it shows</string>
+    <string name="widget_configure_group">Show</string>
+    <string name="widget_configure_note">Tap a chat to open it, or the + to start one. The lists follow the Chats filters in the sidebar; tap the widget\'s title to switch lists later.</string>
+    <!-- Sample rows of the widget preview in the launcher's widget picker. -->
+    <string name="widget_preview_title">Recent</string>
+    <string name="widget_preview_row_1">Cli exploration</string>
+    <string name="widget_preview_row_2">House environment overhaul</string>
+    <string name="widget_preview_row_3">Codex-Poly-Bot Scaling</string>
+    <string name="widget_preview_row_4">Market replay engine</string>
 </resources>

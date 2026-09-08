@@ -95,10 +95,9 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
-    // The sidebar's rows in the sidebar's sort order: the filters, search and sort chosen in its filter menu apply
-    // here just the same, so the two lists never disagree about what is recent. Pins and date groups are how the
-    // sidebar presents them and stay there.
-    val recent = listState.rows
+    // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
+    // lists never disagree about which chats are visible; the cards are newest first.
+    val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
         onPicked = viewModel::addAttachments,

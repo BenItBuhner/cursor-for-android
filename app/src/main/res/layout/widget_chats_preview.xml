@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Static picture of the widget for the launcher's widget picker (Android 12+ renders this layout; older launchers
+  show @drawable/widget_chats_preview, and Android 15+ asks the widget itself for a live preview). Same geometry as
+  the rendered widget: a 40dp header — cube, list title with its picker chevron, "+" — then the sidebar's 36dp rows
+  in their 16dp glyph slot / 13sp title proportions, with the demo's showcase chats as sample rows.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_surface"
+    android:backgroundTint="@color/widget_surface"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingEnd="6dp">
+
+        <ImageView
+            android:layout_width="22dp"
+            android:layout_height="22dp"
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/widget_cube"
+            android:tint="@color/widget_text_primary" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:text="@string/widget_preview_title"
+            android:textColor="@color/widget_text_tertiary"
+            android:textSize="12sp" />
+
+        <ImageView
+            android:layout_width="15dp"
+            android:layout_height="15dp"
+            android:layout_marginStart="3dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_chevron_down"
+            android:tint="@color/widget_icon_quaternary" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:contentDescription="@string/widget_new_chat"
+            android:padding="7dp"
+            android:src="@drawable/widget_plus"
+            android:tint="@color/widget_icon_secondary" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginHorizontal="8dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginBottom="1dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="10dp">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_dot"
+            android:tint="@color/widget_unread_dot" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_row_1"
+            android:textColor="@color/widget_text_primary"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginHorizontal="8dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginBottom="1dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="10dp">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_dot"
+            android:tint="@color/widget_unread_dot" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_row_2"
+            android:textColor="@color/widget_text_primary"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginHorizontal="8dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginBottom="1dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="10dp">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_working"
+            android:tint="@color/widget_icon_secondary" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_row_3"
+            android:textColor="@color/widget_text_primary"
+            android:textSize="13sp" />
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:layout_marginStart="8dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_desktop"
+            android:tint="@color/widget_icon_tertiary" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginHorizontal="8dp"
+        android:layout_marginTop="1dp"
+        android:layout_marginBottom="1dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="10dp">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:importantForAccessibility="no"
+            android:src="@drawable/widget_dot"
+            android:tint="@color/widget_error_dot" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_row_4"
+            android:textColor="@color/widget_text_primary"
+            android:textSize="13sp" />
+    </LinearLayout>
+</LinearLayout>

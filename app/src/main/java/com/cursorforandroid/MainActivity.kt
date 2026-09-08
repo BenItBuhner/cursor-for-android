@@ -26,11 +26,15 @@ class MainActivity : ComponentActivity() {
     /** Agent id from a `https://cursor.com/agents/<id>` deep link, consumed once by the nav host. */
     private var pendingAgentId by mutableStateOf<String?>(null)
 
+    /** Set by an [ACTION_NEW_CHAT] launch (the widget's "+"); the nav host pops to the New Chat pane and clears it. */
+    private var pendingNewChat by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         pendingAgentId = agentIdFrom(intent)
+        pendingNewChat = intent?.action == ACTION_NEW_CHAT
 
         val graph = appGraph
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
@@ -40,11 +44,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
-            CursorTheme(mode = themeMode) {
+            val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
+            CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 CursorRoot(
                     graph = graph,
                     deepLinkAgentId = pendingAgentId,
                     onDeepLinkConsumed = { pendingAgentId = null },
+                    newChatRequested = pendingNewChat,
+                    onNewChatConsumed = { pendingNewChat = false },
                 )
             }
         }
@@ -53,6 +60,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         agentIdFrom(intent)?.let { pendingAgentId = it }
+        if (intent.action == ACTION_NEW_CHAT) pendingNewChat = true
     }
 
     /**
@@ -85,5 +93,10 @@ class MainActivity : ComponentActivity() {
         val idx = segments.indexOf("agents")
         return segments.getOrNull(idx + 1)?.takeIf { it.startsWith("bc") }
             ?: uri.getQueryParameter("id")?.takeIf { it.startsWith("bc") }
+    }
+
+    companion object {
+        /** Opens the app on the New Chat pane, whatever it was showing: the home-screen widget's "+". */
+        const val ACTION_NEW_CHAT = "com.cursorforandroid.action.NEW_CHAT"
     }
 }

@@ -212,6 +212,23 @@ class AgentRepositoryTest {
     }
 
     @Test
+    fun `a complete refresh keeps pinned agents the listing no longer includes`() = runBlocking<Unit> {
+        cache.write(listOf(cachedAgent("bc-pinned", "Pinned, past the window"), cachedAgent("bc-unpinned", "Past the window")))
+        api.addIdleAgent("bc-stays", "Still there", "run-1")
+        prefs.setPinnedIds(setOf("bc-pinned"))
+        val repo = repository()
+        repo.restoreFromCache()
+
+        repo.refresh()
+
+        assertThat(repo.state.value.agents.map { it.id }).containsExactly("bc-pinned", "bc-stays")
+        assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+
+        repo.refresh()
+        assertThat(repo.refreshCompleted.value).isEqualTo(2L)
+    }
+
+    @Test
     fun `a quick refresh reads only the newest page of each list`() = runBlocking<Unit> {
         repeat(150) { i -> api.addIdleAgent("bc-%03d".format(i), "Agent $i", "run-$i", createdAt = "2026-04-13T%02d:%02d:00.000Z".format(i / 60, i % 60)) }
         api.pageSize = 100

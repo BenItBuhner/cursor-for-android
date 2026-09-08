@@ -65,7 +65,7 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `the flat list shows the sidebar's rows in its sort order, pins and groups aside`() {
+    fun `the recent list is the sidebar's rows newest first, pins and groups aside, however the sidebar is arranged`() {
         val agents = listOf(
             agent("today", updatedAgo = 2 * hour),
             agent("yesterday", updatedAgo = day + hour),
@@ -77,14 +77,15 @@ class AgentListOrganizerTest {
         val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
         assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday").inOrder()
         // The same rows (the archived one is filtered out on both surfaces), by recency, the pinned one in its place.
-        val recent = AgentListOrganizer.flatten(sections, SortOrder.Updated)
+        val recent = AgentListOrganizer.recentRows(sections)
         assertThat(recent.map { it.agent.id }).containsExactly("newest", "today", "yesterday", "pinned").inOrder()
-        // A sort order chosen in the filter menu carries through, whatever the grouping.
-        val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name), local, nowMillis = now, zone = zone)
-        assertThat(AgentListOrganizer.flatten(byName, SortOrder.Name).map { it.agent.id }).containsExactly("newest", "pinned", "today", "yesterday").inOrder()
-        // And so does a filter.
+        assertThat(recent).isEqualTo(AgentListOrganizer.recentRows(agents, ListPreferences(), local, nowMillis = now, zone = zone))
+        // Grouping and sort order arrange the sidebar only; the recents stay newest first.
+        val byName = ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name)
+        assertThat(AgentListOrganizer.recentRows(AgentListOrganizer.organize(agents, byName, local, nowMillis = now, zone = zone))).isEqualTo(recent)
+        // A filter narrows both surfaces alike.
         val onlyRunning = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
-        assertThat(AgentListOrganizer.flatten(onlyRunning, SortOrder.Updated)).isEmpty()
+        assertThat(AgentListOrganizer.recentRows(onlyRunning)).isEmpty()
     }
 
     @Test
@@ -178,6 +179,22 @@ class AgentListOrganizerTest {
         assertThat(AgentListOrganizer.matchesQuery(a, "acme/app")).isTrue()
         assertThat(AgentListOrganizer.matchesQuery(a, "cursor/login")).isTrue()
         assertThat(AgentListOrganizer.matchesQuery(a, "payments")).isFalse()
+    }
+
+    @Test
+    fun `recent rows ignore search and still honour Chats filters`() {
+        val agents = listOf(
+            agent("login", name = "Fix login", updatedAgo = hour),
+            agent("billing", name = "Billing pipeline"),
+            agent("gone", name = "Login leftover", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val prefs = ListPreferences()
+        val local = LocalAgentState()
+        val searched = AgentListOrganizer.organize(agents, prefs, local, query = "login", nowMillis = now, zone = zone)
+        assertThat(searched.flatMap { it.rows }.map { it.agent.id }).containsExactly("login")
+
+        val recent = AgentListOrganizer.recentRows(agents, prefs, local, nowMillis = now, zone = zone)
+        assertThat(recent.map { it.agent.id }).containsExactly("billing", "login").inOrder()
     }
 
     @Test
