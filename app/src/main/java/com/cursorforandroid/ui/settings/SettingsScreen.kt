@@ -3,8 +3,11 @@ package com.cursorforandroid.ui.settings
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,19 +20,30 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
@@ -38,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.CursorEndpoints
+import com.cursorforandroid.data.api.GitHubEndpoints
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateManager
@@ -54,6 +69,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -182,6 +198,11 @@ fun SettingsScreen(
             Group("Updates")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 UpdateRows(graph, uriHandler::openUri)
+            }
+
+            Group("GitHub")
+            CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                GitHubRows(graph)
             }
 
             Group("About")
@@ -381,6 +402,95 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheck
         Spacer(Modifier.width(12.dp))
         CursorToggle(checked = checked, onCheckedChange = onCheckedChange)
     }
+}
+
+/**
+ * The GitHub token pull request states are read with. The Cloud Agents API names a chat's pull request but never
+ * says whether it is open, a draft, merged or closed; GitHub does, and answers for a private repository only with a
+ * token that may read it. Saving one re-asks at once about every pull request GitHub refused so far.
+ */
+@Composable
+private fun GitHubRows(graph: AppGraph) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+    val hasToken by graph.pullRequests.hasToken.collectAsStateWithLifecycle()
+    var editing by remember { mutableStateOf(false) }
+    var token by remember { mutableStateOf("") }
+    var reveal by remember { mutableStateOf(false) }
+    var focused by remember { mutableStateOf(false) }
+
+    fun apply(value: String?) {
+        token = ""
+        editing = false
+        reveal = false
+        scope.launch {
+            graph.pullRequests.setToken(value)
+            graph.pullRequests.refresh(graph.agents.state.value.agents.mapNotNull { it.prUrl })
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp)) {
+        Text("Pull request states", style = type.base, color = colors.textPrimary)
+        Text(
+            "Whether a chat's pull request is open, a draft, merged or closed is read from GitHub. Public repositories need no token; " +
+                "private ones need a personal access token that can read their pull requests.",
+            style = type.small, color = colors.textTertiary,
+        )
+    }
+    HairlineDivider()
+    if (hasToken && !editing) {
+        Row(Modifier.fillMaxWidth().height(CursorDimens.listRow).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Token", style = type.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
+            Text("Saved", style = type.base, color = colors.textTertiary)
+            Spacer(Modifier.width(6.dp))
+            TextAction("Replace", colors.link) { editing = true }
+            TextAction("Remove", colors.red) { apply(null) }
+        }
+    } else {
+        val fieldBorder by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .cursorSurface(colors.elevated, fieldBorder, CursorTheme.shapes.lg)
+                .height(44.dp)
+                .padding(start = 12.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BasicTextField(
+                value = token,
+                onValueChange = { token = it.trim() },
+                singleLine = true,
+                textStyle = type.code.copy(color = colors.textPrimary, fontSize = type.base.fontSize),
+                cursorBrush = SolidColor(colors.textPrimary),
+                visualTransformation = if (reveal) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done, autoCorrectEnabled = false),
+                keyboardActions = KeyboardActions(onDone = { if (token.isNotBlank()) apply(token) }),
+                modifier = Modifier.weight(1f).onFocusChanged { focused = it.isFocused },
+                decorationBox = { inner -> Box { if (token.isEmpty()) Text("github_pat_…", style = type.code.copy(fontSize = type.base.fontSize), color = colors.textQuaternary); inner() } },
+            )
+            FlatIconButton(if (reveal) CursorIcons.EyeOff else CursorIcons.Eye, if (reveal) "Hide token" else "Show token", onClick = { reveal = !reveal }, iconSize = 17.dp)
+        }
+        Row(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CursorButton("Save token", onClick = { apply(token) }, enabled = token.isNotBlank(), primary = true)
+            if (hasToken) CursorButton("Cancel", onClick = { editing = false; token = "" })
+        }
+    }
+    HairlineDivider()
+    LinkRow("Create a token on GitHub", GitHubEndpoints.NEW_TOKEN_URL, uriHandler::openUri)
+}
+
+/** An inline text button at the end of a settings row, like the Customize sheet's "Reset". */
+@Composable
+private fun TextAction(label: String, color: Color, onClick: () -> Unit) {
+    Text(
+        label,
+        style = CursorTheme.typography.baseMedium,
+        color = color,
+        modifier = Modifier.pressable(onClick, CursorTheme.shapes.base).padding(horizontal = 10.dp, vertical = 8.dp),
+    )
 }
 
 /**

@@ -27,8 +27,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -50,12 +52,26 @@ data class AgentListUiState(
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
+    /** True while GitHub refuses to say where some of the listed pull requests stand — private repositories, read without a token. */
+    val pullRequestsUnreadable: Boolean = false,
+    val hasGitHubToken: Boolean = false,
     /**
      * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
      * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
      * saying "now" for as long as nothing else about it happens to change.
      */
     val nowMillis: Long = AppClock.now(),
+)
+
+/**
+ * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
+ * from the preferences, with the pull request states GitHub last gave folded in; alongside, the pull requests GitHub
+ * refused to answer for and whether a GitHub token is set, for the Git filter page's hint.
+ */
+private class DeviceState(
+    val local: LocalAgentState,
+    val unreadablePullRequests: Set<String>,
+    val hasGitHubToken: Boolean,
 )
 
 class AgentsViewModel(
@@ -74,13 +90,22 @@ class AgentsViewModel(
         }
     }
 
+    private val device: Flow<DeviceState> = combine(graph.prefs.localAgentState, graph.pullRequests.statuses, graph.pullRequests.hasToken) { local, statuses, hasToken ->
+        DeviceState(
+            local = local.copy(pullRequests = statuses.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap()),
+            unreadablePullRequests = statuses.filterValues { it.state == null }.keys,
+            hasGitHubToken = hasToken,
+        )
+    }
+
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
         graph.prefs.listPreferences,
-        graph.prefs.localAgentState,
+        device,
         query,
         clock,
-    ) { list, prefs, local, q, now ->
+    ) { list, prefs, device, q, now ->
+        val local = device.local
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
@@ -98,6 +123,8 @@ class AgentsViewModel(
             error = list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
+            pullRequestsUnreadable = list.agents.any { it.prUrl in device.unreadablePullRequests },
+            hasGitHubToken = device.hasGitHubToken,
             nowMillis = now,
         )
     }
@@ -111,19 +138,37 @@ class AgentsViewModel(
             // Disk first, so the list is on screen before the network is consulted; the refresh is then silent
             // when there was something to show and visible (pull-to-refresh indicator) on a truly cold start.
             graph.agents.restoreFromCache()
+            graph.pullRequests.restoreFromCache()
             graph.agents.refresh(silent = graph.agents.state.value.hasLoaded)
+            refreshPullRequests()
         }
         viewModelScope.launch {
             graph.agents.state.collect { s ->
                 graph.catalog.seedRepositories(s.agents.mapNotNull { it.repoUrl })
             }
         }
+        viewModelScope.launch {
+            // A pull request the list has not seen before — restored from disk, paged in, or opened by a run that just
+            // finished — is looked up as soon as it appears; states already known are left to their own schedule.
+            graph.agents.state.map { s -> s.agents.mapNotNullTo(LinkedHashSet()) { it.prUrl } }.distinctUntilChanged().collect { urls ->
+                graph.pullRequests.refresh(urls)
+            }
+        }
     }
 
-    fun refresh() = viewModelScope.launch { graph.agents.refresh() }
+    fun refresh() = viewModelScope.launch {
+        graph.agents.refresh()
+        refreshPullRequests(eager = true)
+    }
 
     /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
-    fun refreshIfStale() = viewModelScope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
+    fun refreshIfStale() = viewModelScope.launch {
+        graph.agents.refreshIfStale(STALE_AFTER_MS)
+        refreshPullRequests()
+    }
+
+    private suspend fun refreshPullRequests(eager: Boolean = false) =
+        graph.pullRequests.refresh(graph.agents.state.value.agents.mapNotNull { it.prUrl }, eager)
 
     /**
      * Keeps the list current while it is on screen, without anyone pulling to refresh: a run started on the web, a
