@@ -219,6 +219,25 @@ class LiveRunHubTest {
     }
 
     @Test
+    fun `a record whose status this build cannot read settles the run instead of polling forever`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Assistant("Half a reply."))
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+
+        awaitUntil { snapshot()?.finished == true }
+        assertThat(current().status).isEqualTo(RunStatus.UNKNOWN)
+        // What did arrive stands; the run is simply over as far as this build can tell.
+        assertThat((current().items.first() as AssistantMessage).markdown).isEqualTo("Half a reply.")
+        val polls = api.getRunCalls
+        delay(300)
+        assertThat(api.getRunCalls).isEqualTo(polls)
+        subscription.cancel()
+    }
+
+    @Test
     fun `a rejected resume position starts the story over without ever showing it twice`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))

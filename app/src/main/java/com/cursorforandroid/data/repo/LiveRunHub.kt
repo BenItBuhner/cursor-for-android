@@ -46,6 +46,8 @@ class LiveRunHub(
     private val agents: AgentRepository,
     private val nowProvider: () -> Long = AppClock::now,
     private val pollIntervalMs: Long = 20_000L,
+    /** How many reads of a status this build does not recognise are tolerated before the run is settled anyway. */
+    private val maxUnrecognisedPolls: Int = 3,
     private val releaseGraceMs: Long = 5_000L,
     /** First wait before reconnecting to a dropped stream; doubles per consecutive drop up to [reconnectMaxMs]. */
     private val reconnectBaseMs: Long = 1_000L,
@@ -250,7 +252,7 @@ class LiveRunHub(
                 }
                 // The connection is gone for now. Whether the run is too, the record knows; if not, come back to the
                 // stream — right away after a healthy connection, more patiently after repeated failures.
-                if (settleFromRecord(entry, self, backend)) break
+                if (settleFromRecord(entry, self, backend) == Record.Over) break
                 drops = if (pass.progressed) 1 else drops + 1
                 resumeFrom = pass.error?.resumeFrom
                 if (resumeFrom == null) restartAccumulator(entry, timed = true)
@@ -307,32 +309,54 @@ class LiveRunHub(
         return pass
     }
 
+    /** What one read of the run record said about whether there is still anything to follow. */
+    private enum class Record { Over, Running, Unreadable, Unrecognised }
+
     /**
      * Reads the run record and, when the run is over, finishes the entry from it: the final reply, duration and
      * branches the record carries stand in for the `result` event the stream never delivered.
      */
-    private suspend fun settleFromRecord(entry: Entry, self: Job?, backend: CursorBackend): Boolean {
-        val run = runCatching { backend.api.getRun(entry.agentId, entry.runId) }.getOrNull() ?: return false
-        if (!run.statusEnum().isTerminal) return false
-        if (!owns(entry, self)) return true
-        val result = RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git)
+    private suspend fun settleFromRecord(entry: Entry, self: Job?, backend: CursorBackend): Record {
+        val run = runCatching { backend.api.getRun(entry.agentId, entry.runId) }.getOrNull() ?: return Record.Unreadable
+        val status = run.statusEnum()
+        if (status.isActive) return Record.Running
+        if (!status.isTerminal) return Record.Unrecognised
+        if (!owns(entry, self)) return Record.Over
+        val result = RunStreamEvent.Result(run.id, status, run.result, run.durationMs, run.git)
         entry.live.apply(result)
         // The record says when the run ended; that, not the moment this connection happened to read it, is the finish.
         finish(entry, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
-        return true
+        return Record.Over
     }
 
     /**
      * For runs whose stream is gone for good: the record is the only source left, so it is read until the run is
      * terminal, for as long as anyone is subscribed. Giving up earlier would leave a screen saying "Working…" about
      * a run that finished an hour ago.
+     *
+     * A record that keeps reporting a status this build does not know is the exception. It is neither running nor
+     * over as far as the client can tell, so following it forever would poll for the life of the process and leave
+     * the screen working; after [maxUnrecognisedPolls] such reads the run is settled as [RunStatus.UNKNOWN].
      */
     private suspend fun pollUntilTerminal(entry: Entry, self: Job?, backend: CursorBackend) {
         entry.state.update { it.copy(reconnecting = false) }
+        var unrecognised = 0
         while (currentCoroutineContext().isActive && owns(entry, self) && !entry.live.finished) {
-            if (settleFromRecord(entry, self, backend)) return
+            when (settleFromRecord(entry, self, backend)) {
+                Record.Over -> return
+                Record.Unrecognised -> if (++unrecognised >= maxUnrecognisedPolls) return settleUnrecognised(entry, self)
+                else -> unrecognised = 0
+            }
             delay(pollIntervalMs)
         }
+    }
+
+    /** Ends a run the server keeps describing in terms this build cannot read: the trace stands, the turn is over. */
+    private fun settleUnrecognised(entry: Entry, self: Job?) {
+        if (!owns(entry, self)) return
+        val result = RunStreamEvent.Result(entry.runId, RunStatus.UNKNOWN, text = null, durationMs = null, git = null)
+        entry.live.apply(result)
+        finish(entry, result, historical = false, streamed = false)
     }
 
     /**

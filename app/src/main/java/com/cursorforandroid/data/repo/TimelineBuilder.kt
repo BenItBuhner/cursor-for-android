@@ -59,14 +59,16 @@ object TimelineBuilder {
                 return
             }
             items += replies
-            if (run != null && run.statusEnum().isTerminal) items += footer(run)
+            // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
+            // a footer says so, where none would leave the turn looking unfinished forever.
+            if (run != null && !run.statusEnum().isActive) items += footer(run)
         }
 
         fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
 
         if (messages.isEmpty()) {
             ordered.forEach { run -> closeRun(run, resultReply(run)) }
-            return items
+            return items.withUniqueIds()
         }
         var userIndex = -1
         var replies = mutableListOf<TimelineItem>()

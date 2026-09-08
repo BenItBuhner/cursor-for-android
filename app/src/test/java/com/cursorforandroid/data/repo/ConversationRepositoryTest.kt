@@ -916,6 +916,31 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `a run whose status this build cannot read does not leave the chat working`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+
+        // The record starts answering with a status this build has never heard of, and the stream is gone for good.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { !conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.runStatus?.isActive).isNotEqualTo(true)
+
+        // A reopen reads the same record and still shows the turn as over, with a footer closing it.
+        now += 60_000
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        val reopened = conversations.state("bc-1").value
+        assertThat(reopened.isStreaming).isFalse()
+        assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+    }
+
+    @Test
     fun `forgetting an agent removes its transcript from disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")

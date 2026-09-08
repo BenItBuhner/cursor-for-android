@@ -460,7 +460,9 @@ private fun RunFooterView(item: RunFooter, modifier: Modifier) {
             else -> "Worked"
         }
         val duration = TimeFormat.duration(item.durationMs)
-        if (duration != null || item.status != RunStatus.FINISHED) SummaryLine(label, duration ?: item.status.name.lowercase())
+        // A status this build cannot read says nothing worth printing; the footer's presence is the point.
+        val named = item.status != RunStatus.FINISHED && item.status != RunStatus.UNKNOWN
+        if (duration != null || named) SummaryLine(label, duration ?: item.status.name.lowercase())
         if (item.branches.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 item.branches.forEach { b ->

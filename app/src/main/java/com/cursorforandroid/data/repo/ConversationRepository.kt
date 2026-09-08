@@ -525,7 +525,7 @@ class ConversationRepository(
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
                         // longer — the transcript has the reply now, and the replay below brings the whole trace.
                         val followed = synchronized(e) { e.live?.runId }
-                        if (followed != null && merged.any { it.id == followed && it.statusEnum().isTerminal }) e.stopFollowing()
+                        if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
                     }
                     loadTraces(e, agentId, merged.filter { it.statusEnum().isTerminal })
                 }
