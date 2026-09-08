@@ -259,9 +259,10 @@ fun Avatar(user: CursorUser, size: Dp = CursorDimens.avatar) {
     val picture by produceState<ImageBitmap?>(initialValue = null, url, loader, px) {
         value = if (url == null || loader == null) null else runCatching { loader.image(MediaRef.Remote(url), px, px).asImageBitmap() }.getOrNull()
     }
-    Box(Modifier.size(size).clip(CircleShape).background(colors.fillMedium), contentAlignment = Alignment.Center) {
+    // The circle is drawn as before (pixel for pixel, for the screenshots); only the picture is clipped to it.
+    Box(Modifier.size(size).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
         Text(user.initials, style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium), color = colors.textPrimary)
-        picture?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+        picture?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(CircleShape)) }
     }
 }
 
