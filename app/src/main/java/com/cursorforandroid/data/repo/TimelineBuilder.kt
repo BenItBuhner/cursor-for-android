@@ -7,6 +7,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.DiffStats
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
@@ -127,16 +128,21 @@ object TimelineBuilder {
         branches = run.git.toBranches(),
     )
 
+    /**
+     * Everything the trace needs from a call is read here, once: its subject line and, for an edit, the lines it
+     * reported changing. The JSON itself is dropped — see [ToolCall.args].
+     */
     fun toolCall(dto: SseToolCallDto): ToolCall {
         val kind = ToolNames.kindOf(dto.name)
+        val stats = if (kind == ToolKind.Edit) DiffStats.fromToolResult(dto.result) else null
         return ToolCall(
             callId = dto.callId,
             name = dto.name,
             kind = kind,
             status = dto.status,
             summary = summarizeArgs(kind, dto.args),
-            args = dto.args,
-            result = dto.result,
+            additions = stats?.additions,
+            deletions = stats?.deletions,
         )
     }
 

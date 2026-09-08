@@ -401,6 +401,36 @@ class TimelineBuilderTest {
     }
 
     /**
+     * A tool call's JSON is whole files and whole command outputs. Everything the trace needs is read off it while
+     * the call is built; keeping the rest would hold the run's entire payload for as long as the chat is open.
+     */
+    @Test
+    fun `a tool call keeps its line counts and drops the json they came from`() {
+        val live = TimelineBuilder.LiveRun("run-1") { 0L }
+        live.apply(
+            RunStreamEvent.ToolCall(
+                SseToolCallDto(
+                    callId = "e1",
+                    name = "edit_file",
+                    status = "completed",
+                    args = buildJsonObject { put("path", JsonPrimitive("a/One.kt")) },
+                    result = buildJsonObject { put("linesAdded", JsonPrimitive(12)); put("linesRemoved", JsonPrimitive(3)) },
+                ),
+            ),
+        )
+        live.apply(tool("r1", "read_file", "completed", "path" to "b/Two.kt"))
+
+        val calls = live.snapshot().filterIsInstance<ActivityGroup>().single().calls
+        val edit = calls.single { it.callId == "e1" }
+        assertThat(edit.summary).isEqualTo("a/One.kt")
+        assertThat(edit.additions).isEqualTo(12)
+        assertThat(edit.deletions).isEqualTo(3)
+        assertThat(calls.all { it.args == null && it.result == null }).isTrue()
+        // A read is not an edit, so nothing was walked for it.
+        assertThat(calls.single { it.callId == "r1" }.additions).isNull()
+    }
+
+    /**
      * Text is only written into its item when something is about to read it, so every reader — a snapshot between
      * two deltas, a tool call closing a thought, the result — has to see everything that arrived before it.
      */

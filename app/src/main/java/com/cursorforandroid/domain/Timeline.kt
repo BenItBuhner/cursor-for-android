@@ -74,8 +74,16 @@ data class ToolCall(
     val kind: ToolKind,
     val status: String,
     val summary: String,
+    /**
+     * The call's raw JSON. Read once while the call is built — for [summary] and the line counts below — and not
+     * kept: a run's tool calls carry whole file contents and command output, which would hold the run's entire
+     * payload in memory for as long as the chat is open, and on disk for as long as its trace is.
+     */
     val args: JsonElement? = null,
     val result: JsonElement? = null,
+    /** Lines an edit reported adding and removing, taken off its result when the call was built (see [DiffStats]). */
+    val additions: Int? = null,
+    val deletions: Int? = null,
 ) : ActivityStep {
     val isRunning: Boolean get() = status == STATUS_RUNNING
 

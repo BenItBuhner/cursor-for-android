@@ -86,15 +86,15 @@ data class RunDigest(
             val calls = items.filterIsInstance<ActivityGroup>().flatMap { it.calls }
             val edits = calls.filter { it.kind == ToolKind.Edit }
             val reads = calls.filter { it.kind == ToolKind.Read || it.kind == ToolKind.List }
-            val stats = edits.mapNotNull { DiffStats.fromToolResult(it.result) }
+            val stats = edits.filter { it.additions != null || it.deletions != null }
             return RunDigest(
                 filesEdited = edits.distinctBy { it.subject() }.size,
                 filesRead = reads.distinctBy { it.subject() }.size,
                 searches = calls.count { it.kind == ToolKind.Search || it.kind == ToolKind.Web },
                 commands = calls.count { it.kind == ToolKind.Shell },
                 subagents = items.filterIsInstance<SubagentsCard>().sumOf { it.subagents.size },
-                additions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.additions },
-                deletions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.deletions },
+                additions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.additions ?: 0 },
+                deletions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.deletions ?: 0 },
                 activity = activityOf(items),
             )
         }
