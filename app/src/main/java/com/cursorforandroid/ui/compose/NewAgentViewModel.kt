@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
-import com.cursorforandroid.data.repo.LaunchCancelledException
+import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.Agent
@@ -19,8 +19,6 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,6 +42,10 @@ data class NewAgentUiState(
     val selectedVariant: ModelVariant? = null,
     val autoCreatePr: Boolean = false,
     val planMode: Boolean = false,
+    /**
+     * True from the tap on Send until the chat is on screen — the moment it takes to pack the draft, not the time the
+     * server takes to answer, which the composer no longer waits for.
+     */
     val isLaunching: Boolean = false,
     val isLoadingRepos: Boolean = false,
     val isLoadingModels: Boolean = false,
@@ -54,6 +56,8 @@ data class NewAgentUiState(
 ) {
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
     val modelLabel: String get() = selectedModel?.labelFor(selectedVariant) ?: "Default model"
+    /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
+    val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
 }
 
 class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
@@ -65,9 +69,17 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private var defaults: ComposerDefaults? = null
     private var modelSelectionResolved = false
 
-    private var launchJob: Job? = null
-    /** Rotated after each successful launch so an identical prompt sent again on purpose gets its own agent. */
+    /**
+     * Rotated once a draft has been handed over, so an identical prompt sent again on purpose gets its own agent. A
+     * draft that comes back from a failed launch brings the nonce it went out under (see [takeBack]).
+     */
     private var launchNonce: String = LaunchIdempotency.newNonce()
+
+    /**
+     * Drafts whose launch failed while something else was being written here, oldest first. Each comes back the
+     * moment the composer is free — sent, or cleared — rather than over what the user is writing.
+     */
+    private val waiting = ArrayDeque<ReturnedDraft>()
 
     /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
     private var agents: List<Agent> = emptyList()
@@ -81,6 +93,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 _state.update { it.withBranches() }
             }
         }
+        // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
+        viewModelScope.launch { graph.launcher.failures.collect { takeBack(it) } }
         viewModelScope.launch {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
@@ -149,9 +163,15 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         return copy(models = models, selectedModel = model, selectedVariant = variant, isLoadingModels = false, modelsUnavailable = false)
     }
 
-    fun setPrompt(value: String) = _state.update { it.copy(prompt = value, error = null) }
+    fun setPrompt(value: String) {
+        _state.update { it.copy(prompt = value, error = null) }
+        restoreWaitingIfFree()
+    }
     fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
-    fun removeAttachment(item: PendingAttachment) = _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
+    fun removeAttachment(item: PendingAttachment) {
+        _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
+        restoreWaitingIfFree()
+    }
     fun reportError(message: String) = _state.update { it.copy(error = message) }
     /**
      * Switching repositories keeps the branch only when the new one is known to have it; otherwise the choice
@@ -184,14 +204,18 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     /**
      * Sends the draft. The chat opens through [onOpen] as soon as its prompt is on screen — before the server has
-     * answered — so sending feels immediate; the request completes behind it. Should it fail, or be stopped from the
-     * chat, [onFailed] takes the user back here, where the draft is still intact and, for a failure, the reason shows.
+     * answered — and the composer is clear from that moment on: the request completes in the launcher
+     * ([com.cursorforandroid.data.repo.ChatLauncher]), on its own, so coming back here, or starting another chat,
+     * meets an empty composer whatever the server has yet to say. Should the launch fail, or be stopped from the chat,
+     * the draft comes back here (see [takeBack]).
      */
-    fun launch(onOpen: (agentId: String) -> Unit, onFailed: (agentId: String) -> Unit) {
+    fun launch(onOpen: (agentId: String) -> Unit) {
         val s = _state.value
         if (!s.canLaunch) return
-        launchJob = viewModelScope.launch {
-            _state.update { it.copy(isLaunching = true, error = null) }
+        val nonce = launchNonce
+        // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
+        _state.update { it.copy(isLaunching = true, error = null) }
+        viewModelScope.launch {
             val draft = LaunchRequest(
                 prompt = s.prompt.trim(),
                 images = s.attachments.map { it.image },
@@ -205,44 +229,85 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
             // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.
-            val agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, launchNonce) }
+            val agentId = withContext(Dispatchers.Default) { LaunchIdempotency.agentId(draft, nonce) }
             val request = draft.copy(agentId = agentId)
-            graph.conversations.launch(request, s.modelLabel, onStaged = { onOpen(agentId) }).fold(
-                onSuccess = {
-                    // The agent exists now: a cancel arriving this late must not strand it behind an intact draft, and
-                    // the composer only reports the launch done once the defaults it will restore next time are saved.
-                    withContext(NonCancellable) {
-                        launchNonce = LaunchIdempotency.newNonce()
-                        graph.prefs.setComposerDefaults(
-                            repoUrl = request.repoUrl,
-                            // Blank is a choice too (the repository's default branch), saved as such so it is not
-                            // mistaken for a first launch and replaced with "main" next time.
-                            ref = request.ref ?: "",
-                            modelId = request.modelId,
-                            params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
-                            autoCreatePr = request.autoCreatePr,
-                        )
-                        _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
-                    }
-                },
-                onFailure = { t ->
-                    // Stopped on purpose from the chat: nothing to explain, the draft is simply back.
-                    _state.update { it.copy(isLaunching = false, error = if (t is LaunchCancelledException) null else t.userMessage()) }
-                    onFailed(agentId)
-                },
+            graph.launcher.launch(request, s.modelLabel, nonce)
+            onOpen(agentId)
+            // The draft is on its way, whatever becomes of it: the next one gets its own id, and the choices this one
+            // was made with are what the composer restores next time. Only once they are saved does it report itself free.
+            launchNonce = LaunchIdempotency.newNonce()
+            graph.prefs.setComposerDefaults(
+                repoUrl = request.repoUrl,
+                // Blank is a choice too (the repository's default branch), saved as such so it is not mistaken for a
+                // first launch and replaced with "main" next time.
+                ref = request.ref ?: "",
+                modelId = request.modelId,
+                params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
+                autoCreatePr = request.autoCreatePr,
             )
+            _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
+            restoreWaitingIfFree()
         }
     }
 
     /**
-     * Abandons a launch that is taking too long, request included. The draft stays in the composer so it can be
-     * sent again; the chat it had opened is taken down by the repository.
+     * A launch did not go through: its draft comes back here to be sent again — with the reason, unless the chat was
+     * stopped on purpose — and, under the nonce it went out with, an unchanged retry keeps the chat's id. A composer
+     * already being written into is not overwritten: the draft waits, and comes back the moment the composer is free.
      */
-    fun cancelLaunch() {
-        launchJob?.cancel()
-        launchJob = null
-        _state.update { it.copy(isLaunching = false) }
+    private suspend fun takeBack(failed: FailedLaunch) {
+        val images = failed.request.images
+        // The strip's thumbnails are decoded off the main thread, as they were when the images were picked.
+        val attachments = if (images.isEmpty()) emptyList() else withContext(Dispatchers.IO) { images.map(PendingAttachment::of) }
+        waiting += ReturnedDraft(failed, attachments)
+        restoreWaitingIfFree()
     }
+
+    private fun restoreWaitingIfFree() {
+        if (waiting.isEmpty() || !_state.value.isFree) return
+        val draft = waiting.removeFirst()
+        launchNonce = draft.failed.nonce
+        // "Default", or a model the list has: the pick is settled, and a list arriving later re-resolves it rather
+        // than the remembered one.
+        if (_state.value.resolvesModelOf(draft.failed.request)) modelSelectionResolved = true
+        _state.update { it.restored(draft) }
+    }
+
+    /**
+     * The composer as it was when [draft] went out — its text, its images, the choices it was made with — and why it
+     * is back. A repository or model the lists no longer offer leaves the current pick; the saved defaults, recorded
+     * when the draft was sent, restore it when the list next arrives.
+     */
+    private fun NewAgentUiState.restored(draft: ReturnedDraft): NewAgentUiState {
+        val request = draft.failed.request
+        val repo = request.repoUrl?.let { url -> repositories.firstOrNull { it.url == url } }
+        val model = modelFor(request)
+        val modelResolved = resolvesModelOf(request)
+        return copy(
+            prompt = request.prompt,
+            attachments = draft.attachments,
+            error = draft.failed.reason,
+            noRepo = request.repoUrl == null,
+            selectedRepo = repo ?: selectedRepo,
+            ref = request.ref ?: "",
+            selectedModel = if (modelResolved) model else selectedModel,
+            selectedVariant = when {
+                !modelResolved -> selectedVariant
+                model == null -> null
+                else -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
+            },
+            autoCreatePr = request.autoCreatePr,
+            planMode = request.planMode,
+        ).withBranches()
+    }
+
+    private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }
+
+    /** True when [request]'s model is "Default" or one the current list has, so the composer can show it as picked. */
+    private fun NewAgentUiState.resolvesModelOf(request: LaunchRequest): Boolean = request.modelId == null || modelFor(request) != null
+
+    /** A failed launch's draft with its images ready for the strip again. */
+    private class ReturnedDraft(val failed: FailedLaunch, val attachments: List<PendingAttachment>)
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
