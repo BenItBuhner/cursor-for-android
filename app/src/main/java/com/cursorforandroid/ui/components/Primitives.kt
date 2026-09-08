@@ -188,7 +188,7 @@ fun GroupLabel(text: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Capsule pill with 12px text — "Branch", "Open", branch names. */
+/** Capsule pill with 12px text — "Branch", "Open", branch names. A label, never a control. */
 @Composable
 fun Pill(
     text: String,
@@ -196,7 +196,6 @@ fun Pill(
     icon: ImageVector? = null,
     tint: Color = CursorTheme.colors.textSecondary,
     fill: Color = CursorTheme.colors.fill,
-    onClick: (() -> Unit)? = null,
 ) {
     val shape = CursorTheme.shapes.full
     Row(
@@ -204,7 +203,6 @@ fun Pill(
             .height(CursorDimens.pillHeight)
             .clip(shape)
             .background(fill, shape)
-            .then(if (onClick != null) Modifier.pressable(onClick, shape) else Modifier)
             .padding(start = if (icon != null) 7.dp else 9.dp, end = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -235,7 +233,7 @@ fun pullRequestTint(state: PullRequestState?): Color = when (state) {
 
 /** The pill a chat's pull request is shown as: its state, or just "Pull request" while the state is not known. */
 @Composable
-fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier) {
     val tint = pullRequestTint(state)
     Pill(
         text = state?.label ?: "Pull request",
@@ -243,7 +241,6 @@ fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier, onC
         icon = CursorIcons.GitPullRequest,
         tint = tint,
         fill = if (state != null) tint.copy(alpha = 0.14f) else CursorTheme.colors.fill,
-        onClick = onClick,
     )
 }
 
