@@ -102,6 +102,20 @@ class ConversationViewModelTest {
         assertThat(picker.chipLabel).isEqualTo("Claude Fable 5.1")
     }
 
+    /** The id says which model the chat runs on; a variant the catalogue has since dropped does not unsettle that. */
+    @Test
+    fun `a chat whose recorded variant the catalogue no longer lists is still identified by its model id`() {
+        val claude = open(IDLE).picker().models.first { it.id == "claude-fable-5.1-thinking" }
+        val gone = listOf(ModelParam("context", "1m"), ModelParam("effort", "ultra"))
+        graph.agents.patch(IDLE) { it.copy(modelId = claude.id, modelParams = gone, modelDisplayName = "Claude Fable 5.1") }
+        val picker = open(IDLE).picker { it.current != null }
+        assertThat(picker.current?.model).isEqualTo(claude)
+        // The nearest variant stands in for the one that is gone: same context, the API's default effort.
+        assertThat(picker.current?.variant).isEqualTo(claude.variantWithParams(mapOf("context" to "1m", "effort" to "max")))
+        assertThat(picker.selected).isEqualTo(picker.current)
+        assertThat(picker.chipLabel).isEqualTo("Claude Fable 5.1")
+    }
+
     /** Rows saved before the id and parameters were kept only carry the label; it is enough to find the entry. */
     @Test
     fun `a chat recorded by label alone is matched to the catalogue by that label`() {

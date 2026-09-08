@@ -99,15 +99,45 @@ class ModelOptionTest {
     }
 
     @Test
-    fun `choiceFor finds the entry a request's model id and params were built from`() {
+    fun `variantNearest takes the exact variant when the catalogue still lists it`() {
+        assertThat(composer.variantNearest(listOf(ModelParam("fast", "false")))).isEqualTo(slow)
+        val thinkingOff = claude.variant("thinking" to "false", "context" to "300k")
+        assertThat(claude.variantNearest(listOf(ModelParam("context", "300k"), ModelParam("thinking", "false")))).isEqualTo(thinkingOff)
+    }
+
+    @Test
+    fun `variantNearest settles for the variant with the fewest parameters set differently`() {
+        // The chat was recorded with an effort the API no longer offers: same thinking and context, another effort.
+        val nearest = claude.variantNearest(listOf(ModelParam("thinking", "true"), ModelParam("context", "300k"), ModelParam("effort", "ultra")))
+        assertThat(nearest?.param("context")).isEqualTo("300k")
+        assertThat(nearest?.param("thinking")).isEqualTo("true")
+        // The API has since added a parameter: the variant that matches on everything the chat set wins.
+        assertThat(claude.variantNearest(listOf(ModelParam("context", "1m"), ModelParam("effort", "high"))))
+            .isEqualTo(claude.variant("thinking" to "true", "context" to "1m", "effort" to "high"))
+    }
+
+    @Test
+    fun `variantNearest prefers the API's default among equally near variants, and is null without variants`() {
+        // Nothing recorded, or a parameter the catalogue has never heard of: every variant is as far away, the default stands.
+        assertThat(composer.variantNearest(emptyList())).isEqualTo(fast)
+        assertThat(composer.variantNearest(listOf(ModelParam("speed", "fast")))).isEqualTo(fast)
+        assertThat(ModelOption(id = "auto-smart", displayName = "Auto").variantNearest(listOf(ModelParam("effort", "high")))).isNull()
+    }
+
+    /** The recorded id says which model a chat runs on; whatever has happened to the variants since, that model is found. */
+    @Test
+    fun `choiceFor identifies the model by its id and the variant by the nearest parameters`() {
         val auto = ModelOption(id = "auto-smart", displayName = "Auto")
-        val catalog = listOf(composer, auto)
+        val catalog = listOf(composer, claude, auto)
         assertThat(catalog.choiceFor("composer-2", listOf(ModelParam("fast", "false")))).isEqualTo(ModelChoice(composer, slow))
         assertThat(catalog.choiceFor("auto-smart", emptyList())).isEqualTo(ModelChoice(auto, null))
-        // A model that is gone, a variant that no longer exists, or parameters a variant-less model never had.
+        // A variant that no longer exists, or parameters a variant-less model never had, still name the model.
+        assertThat(catalog.choiceFor("composer-2", emptyList())).isEqualTo(ModelChoice(composer, fast))
+        assertThat(catalog.choiceFor("auto-smart", listOf(ModelParam("effort", "high")))).isEqualTo(ModelChoice(auto, null))
+        assertThat(catalog.choiceFor("claude-fable-5.1", listOf(ModelParam("thinking", "true"), ModelParam("context", "1m"), ModelParam("effort", "ultra"))))
+            .isEqualTo(ModelChoice(claude, claude.variant("thinking" to "true", "context" to "1m", "effort" to "max")))
+        // Only a model the catalogue no longer lists at all is unresolved.
         assertThat(catalog.choiceFor("gone", emptyList())).isNull()
-        assertThat(catalog.choiceFor("composer-2", emptyList())).isNull()
-        assertThat(catalog.choiceFor("auto-smart", listOf(ModelParam("effort", "high")))).isNull()
     }
 
     @Test

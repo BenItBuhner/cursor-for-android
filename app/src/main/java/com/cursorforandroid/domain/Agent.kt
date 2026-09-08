@@ -204,6 +204,19 @@ data class ModelOption(
         variants.firstOrNull { v -> v.params.associate { it.id to it.value } == params }
 
     /**
+     * The variant a request with `model.params` [params] stands for in this catalog: the one with exactly those
+     * parameters when the API still lists it, else the nearest — fewest parameters set differently, the API's default
+     * ahead of equally near ones — since a parameter the API has renamed, added or dropped since the request was made
+     * does not change which model the chat runs on. Null for a model without variants.
+     */
+    fun variantNearest(params: List<ModelParam>): ModelVariant? {
+        variantWithParams(params.associate { it.id to it.value })?.let { return it }
+        val wanted = params.toSet()
+        fun distance(v: ModelVariant): Int = (v.params.toSet() - wanted).size + (wanted - v.params.toSet()).size
+        return variants.minWithOrNull(compareBy<ModelVariant> { distance(it) }.thenBy { !it.isDefault })
+    }
+
+    /**
      * The legacy chip label of [variant]: the variant's name with its parameters appended when siblings shared the
      * name — what earlier versions recorded on a chat's row, and all they recorded (see [choiceLabelled]).
      */
@@ -275,13 +288,13 @@ data class ModelChoice(val model: ModelOption, val variant: ModelVariant?) {
 
 /**
  * The picker entry a request with `model.id` [id] and `model.params` [params] was built from, or null when this
- * catalog has no such entry (the model is gone, or its variants changed): a variant is matched on its exact
- * parameters, and a model without variants only when no parameters were sent.
+ * catalog no longer lists the model. The id decides: it names the model whatever has happened to its parameters
+ * since, so the variant is the nearest one to [params] (see [ModelOption.variantNearest]) rather than an exact
+ * match or nothing.
  */
 fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoice? {
     val model = firstOrNull { it.id == id } ?: return null
-    if (model.variants.isEmpty()) return ModelChoice(model, null).takeIf { params.isEmpty() }
-    return model.variantWithParams(params.associate { it.id to it.value })?.let { ModelChoice(model, it) }
+    return ModelChoice(model, model.variantNearest(params))
 }
 
 /**
