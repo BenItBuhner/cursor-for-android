@@ -46,6 +46,11 @@ class AppGraph(
     context: Context,
     /** Injectable for tests only: Robolectric has no Android Keystore, so the real one reports itself unavailable. */
     val keyStore: SecureKeyStore = SecureKeyStore(context),
+    /**
+     * Injectable for tests only: a stand-in for the demo backend, so a view model can be driven from a scripted API
+     * (a refused delete, a list endpoint that fails) without any of the account's real network.
+     */
+    demo: CursorBackend? = null,
 ) {
     val prefs = PreferencesStore(context)
     /** Disk copies of what the API last returned; the app opens on them and revalidates in the background. */
@@ -61,7 +66,7 @@ class AppGraph(
         streamer = SseRunStreamer(CursorApiFactory.sseClient(okHttp), { keyStore.apiKey() }),
         isDemo = false,
     )
-    private val demoBackend = DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
+    private val demoBackend = demo ?: DemoBackendFactory.create().let { (api, streamer) -> CursorBackend(api, streamer, isDemo = true) }
     /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
     private val accountClient = CursorApiFactory.loginClient()
     private val accountRpc = ConnectJsonClient(accountClient, CursorLoginEndpoints.API_URL)

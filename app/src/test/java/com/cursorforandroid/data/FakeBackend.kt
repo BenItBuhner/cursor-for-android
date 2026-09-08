@@ -53,6 +53,9 @@ open class FakeCursorApi : CursorApi {
     val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
     var failCreateRun = false
+    /** When set, [delete] throws it, as the real API does for a chat the account may not delete. */
+    @Volatile var failDelete: Throwable? = null
+    val deleted = CopyOnWriteArrayList<String>()
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
@@ -203,7 +206,12 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun archive(id: String) = IdResponseDto(id)
     override suspend fun unarchive(id: String) = IdResponseDto(id)
-    override suspend fun delete(id: String) = IdResponseDto(id)
+    override suspend fun delete(id: String): IdResponseDto {
+        failDelete?.let { throw it }
+        deleted += id
+        agents.remove(id)
+        return IdResponseDto(id)
+    }
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
     open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")

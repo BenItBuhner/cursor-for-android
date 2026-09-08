@@ -4,6 +4,12 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.api.dto.IdResponseDto
+import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.local.CachedConversation
+import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.SortOrder
@@ -35,13 +41,26 @@ class AgentsViewModelTest {
 
     private lateinit var graph: AppGraph
     private var now = 1_800_000_000_000L
+    /** When set, the demo's delete endpoint throws it, which the demo backend itself never does. */
+    @Volatile private var failDelete: Throwable? = null
 
     @Before
     fun setUp() = runBlocking<Unit> {
         // Real dispatch, real delays: the clock and the poller are timed against the wall, shortened per test.
         Dispatchers.setMain(Dispatchers.Default)
         AppClock.nowMillis = { now }
-        graph = AppGraph(ApplicationProvider.getApplicationContext<Context>())
+        // The demo's own data (seventeen agents, three running, three pinned) with a delete that can be refused.
+        val (demoApi, demoStreamer) = DemoBackendFactory.create()
+        val api = object : CursorApi by demoApi {
+            override suspend fun delete(id: String): IdResponseDto {
+                failDelete?.let { throw it }
+                return demoApi.delete(id)
+            }
+        }
+        graph = AppGraph(
+            ApplicationProvider.getApplicationContext<Context>(),
+            demo = CursorBackend(api, demoStreamer, isDemo = true),
+        )
         graph.session.enterDemo()
     }
 
@@ -130,5 +149,28 @@ class AgentsViewModelTest {
         } finally {
             polling.cancel()
         }
+    }
+
+    @Test
+    fun `a delete the server refuses keeps the chat and its transcript, and says so`() = runBlocking<Unit> {
+        val vm = AgentsViewModel(graph)
+        val id = vm.loaded().recentRows.first().agent.id
+        // The retained transcript is the only copy of a run whose server-side event log has expired.
+        graph.caches.conversations.write(CachedConversation(id, emptyList(), emptyList()))
+
+        failDelete = CursorApiException(503, "unavailable", "Try again later.")
+        vm.delete(id).join()
+
+        val refused = withTimeout(10_000) { vm.uiState.first { it.error != null } }
+        assertThat(refused.error).isNotEmpty()
+        assertThat(graph.agents.agent(id)).isNotNull()
+        assertThat(graph.caches.conversations.read(id)).isNotNull()
+
+        failDelete = null
+        vm.delete(id).join()
+
+        awaitUntil { graph.agents.agent(id) == null }
+        awaitUntil { graph.caches.conversations.read(id) == null }
+        assertThat(withTimeout(10_000) { vm.uiState.first { it.error == null } }.error).isNull()
     }
 }

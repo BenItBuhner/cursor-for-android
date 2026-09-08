@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
@@ -66,12 +67,14 @@ data class AgentListUiState(
 /**
  * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
  * from the preferences, with the pull request states GitHub last gave folded in; alongside, the pull requests GitHub
- * refused to answer for and whether a GitHub token is set, for the Git filter page's hint.
+ * refused to answer for and whether a GitHub token is set, for the Git filter page's hint, and the last row action
+ * the server refused, which the list shows where a failed refresh would show its own error.
  */
 private class DeviceState(
     val local: LocalAgentState,
     val unreadablePullRequests: Set<String>,
     val hasGitHubToken: Boolean,
+    val actionError: String?,
 )
 
 class AgentsViewModel(
@@ -90,11 +93,20 @@ class AgentsViewModel(
         }
     }
 
-    private val device: Flow<DeviceState> = combine(graph.prefs.localAgentState, graph.pullRequests.statuses, graph.pullRequests.hasToken) { local, statuses, hasToken ->
+    /** An archive / unarchive / delete the server refused, until the next one is attempted. */
+    private val actionError = MutableStateFlow<String?>(null)
+
+    private val device: Flow<DeviceState> = combine(
+        graph.prefs.localAgentState,
+        graph.pullRequests.statuses,
+        graph.pullRequests.hasToken,
+        actionError,
+    ) { local, statuses, hasToken, failed ->
         DeviceState(
             local = local.copy(pullRequests = statuses.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap()),
             unreadablePullRequests = statuses.filterValues { it.state == null }.keys,
             hasGitHubToken = hasToken,
+            actionError = failed,
         )
     }
 
@@ -120,7 +132,7 @@ class AgentsViewModel(
             query = q,
             isRefreshing = list.isRefreshing,
             hasLoaded = list.hasLoaded,
-            error = list.error,
+            error = list.error ?: device.actionError,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
             pullRequestsUnreadable = list.agents.any { it.prUrl in device.unreadablePullRequests },
@@ -211,11 +223,22 @@ class AgentsViewModel(
     fun setShowRuntime(v: Boolean) = updatePrefs { it.copy(showRuntime = v) }
     fun resetPrefs() = updatePrefs { ListPreferences() }
 
-    fun archive(agentId: String) = viewModelScope.launch { graph.agents.archive(agentId) }
-    fun unarchive(agentId: String) = viewModelScope.launch { graph.agents.unarchive(agentId) }
+    fun archive(agentId: String) = viewModelScope.launch { report(graph.agents.archive(agentId)) }
+    fun unarchive(agentId: String) = viewModelScope.launch { report(graph.agents.unarchive(agentId)) }
+
+    /**
+     * Deletes the chat on the server first. The transcript and the retained trace are the only copy of a run whose
+     * server-side event log has expired, so they are dropped only once the server has accepted the delete; a request
+     * that was refused or never went out leaves the chat, its transcript and its trace where they are, and says so.
+     */
     fun delete(agentId: String) = viewModelScope.launch {
-        graph.conversations.forget(agentId)
-        graph.agents.delete(agentId)
+        if (report(graph.agents.delete(agentId))) graph.conversations.forget(agentId)
+    }
+
+    /** True when the action went through; a failure is shown in the list until the next action is attempted. */
+    private fun report(result: Result<Unit>): Boolean {
+        actionError.value = result.exceptionOrNull()?.userMessage()
+        return result.isSuccess
     }
 
     fun filterLabel(kind: FilterKind): String = uiState.value.prefs.summaryFor(kind)
