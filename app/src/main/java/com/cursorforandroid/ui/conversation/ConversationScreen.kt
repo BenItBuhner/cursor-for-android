@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
@@ -73,6 +74,17 @@ import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
+
+/**
+ * Whether the working row belongs above the transcript. It is redundant while the reply itself is arriving — the
+ * text is the progress — but a dropped connection is not visible anywhere else, and the window in which one can
+ * drop while a reply is the newest item is the longest there is. So a reconnect always brings the row back, which
+ * is what stops a reply that stopped mid-sentence from looking like an agent that stopped thinking.
+ */
+internal fun ConversationState.showsWorkingRow(): Boolean {
+    val active = runStatus?.isActive == true || isStreaming
+    return active && (isReconnecting || items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming })
+}
 
 /**
  * One chat: header with the agent's name and repo · branch (and a button to its pull request once it has one), the
@@ -128,7 +140,7 @@ fun ConversationScreen(
 
     val items = conversation.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val showWorking = isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }
+    val showWorking = conversation.showsWorkingRow()
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
     val markdownMedia = remember(agentId) { MarkdownMediaContext(agentId, graph.media) }
 
@@ -185,54 +197,58 @@ fun ConversationScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
-                // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                // flat against the header or the composer.
-                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                if (showWorking) {
-                    item("working") {
-                        // A dropped connection is not the run's problem: the agent keeps working while the stream is
-                        // re-established, so the glyph keeps stepping and only the caption says what is going on.
-                        val caption = when {
-                            conversation.runStatus == RunStatus.CREATING -> "Starting…"
-                            conversation.isReconnecting -> "Reconnecting…"
-                            else -> "Working…"
-                        }
-                        Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
-                            RunningGlyph(size = 16.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(caption, style = type.base, color = colors.textTertiary)
+            // The media context is the same for every row, so it is provided once around the list rather than
+            // opening a provider scope per item.
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
+                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
+                    // flat against the header or the composer.
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (showWorking) {
+                        item("working") {
+                            // A dropped connection is not the run's problem: the agent keeps working while the stream
+                            // is re-established, so the glyph keeps stepping and only the caption says what is going on.
+                            val caption = when {
+                                conversation.runStatus == RunStatus.CREATING -> "Starting…"
+                                conversation.isReconnecting -> "Reconnecting…"
+                                else -> "Working…"
+                            }
+                            Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
+                                RunningGlyph(size = 16.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text(caption, style = type.base, color = colors.textTertiary)
+                            }
                         }
                     }
-                }
-                items(items.asReversed(), key = { it.id }) { item ->
-                    CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
+                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
+                    items(items.asReversed(), key = { it.id }, contentType = { it::class }) { item ->
                         TimelineItemView(item, paneWidth)
                     }
-                }
-                if (!conversation.isLoading && items.isEmpty()) {
-                    item("empty") {
-                        Text(
-                            if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
-                            style = type.base,
-                            color = colors.textQuaternary,
-                            modifier = Modifier.padding(top = 32.dp),
-                        )
+                    if (!conversation.isLoading && items.isEmpty()) {
+                        item("empty") {
+                            Text(
+                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
+                                style = type.base,
+                                color = colors.textQuaternary,
+                                modifier = Modifier.padding(top = 32.dp),
+                            )
+                        }
                     }
-                }
-                if (conversation.isLoading && items.isEmpty()) {
-                    item("loading") {
-                        Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing(size = 14.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Loading…", style = type.base, color = colors.textQuaternary)
+                    if (conversation.isLoading && items.isEmpty()) {
+                        item("loading") {
+                            Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                                SpinnerRing(size = 14.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Loading…", style = type.base, color = colors.textQuaternary)
+                            }
                         }
                     }
                 }
