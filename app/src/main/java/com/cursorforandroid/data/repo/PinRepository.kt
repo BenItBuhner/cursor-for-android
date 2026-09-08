@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.userMessage
@@ -39,7 +40,7 @@ data class PinSyncState(
 
 /**
  * Keeps the sidebar's pins in step with the Cursor account, the way the desktop Agents window and the iOS app share
- * them. The account's list ([PinsApi.pinnedIds]) is the source of truth; what the UI reads stays
+ * them. The account's list ([PinsApi.list]) is the source of truth; what the UI reads stays
  * [PreferencesStore.localAgentState]'s pinned set, which this repository writes.
  *
  * A pin toggled here is applied at once and sent to the server; until the server has acknowledged it, it is kept
@@ -47,6 +48,9 @@ data class PinSyncState(
  * replays it. The first sync of an account pushes the pins made on this device before syncing existed — only for
  * agents the account can see, so leftovers of another account never travel. Pinned agents the list window no longer
  * includes are fetched by id so a pin is never silently dropped.
+ *
+ * The same list read says where each agent's pull request stands; every read is handed to [onList] so that goes
+ * where it belongs ([PullRequestRepository]) without a second request, whether or not the pins are being synced.
  */
 class PinRepository(
     private val session: SessionManager,
@@ -56,6 +60,7 @@ class PinRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val now: () -> Long = AppClock::now,
     private val maxMaterialized: Int = MAX_MATERIALIZED,
+    private val onList: suspend (AccountList) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
@@ -126,22 +131,31 @@ class PinRepository(
      * server; pending changes are kept for the next round.
      */
     suspend fun sync(): Result<Unit> = syncMutex.withLock {
-        if (!eligible()) {
+        if (!sessionUsable()) {
             _state.update { it.copy(active = false, isSyncing = false) }
             return Result.success(Unit)
         }
-        _state.update { it.copy(active = true, isSyncing = true) }
+        // The account list is read either way: it also carries the pull request states (see [onList]). Only the pins
+        // themselves are subject to the setting.
+        val pinsEnabled = prefs.pinSyncEnabled.first()
+        _state.update { it.copy(active = pinsEnabled, isSyncing = pinsEnabled) }
         try {
             val known = agents.state.value.agents.mapTo(HashSet()) { it.id }
-            val migrating = !prefs.pinsMigrated.first()
-            val pending = prefs.pendingPinChanges.first().toMutableMap()
-            if (migrating) {
-                prefs.localAgentState.first().pinnedIds.filter { it in known && it !in pending }.forEach { pending[it] = true }
+            var refused: ConnectRpcException? = null
+            if (pinsEnabled) {
+                val migrating = !prefs.pinsMigrated.first()
+                val pending = prefs.pendingPinChanges.first().toMutableMap()
+                if (migrating) {
+                    prefs.localAgentState.first().pinnedIds.filter { it in known && it !in pending }.forEach { pending[it] = true }
+                }
+                refused = replay(pending)
+                if (migrating) prefs.setPinsMigrated(true)
             }
-            val refused = replay(pending)
-            if (migrating) prefs.setPinsMigrated(true)
 
-            val server = api.pinnedIds()
+            val list = api.list()
+            runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
+            if (!pinsEnabled) return Result.success(Unit)
+            val server = list.pinned
             if (server.loaded) {
                 // Changes made while this round was in flight are not in the server's answer yet; they win.
                 val late = prefs.pendingPinChanges.first()
@@ -189,7 +203,10 @@ class PinRepository(
         ids.take(maxMaterialized).forEach { id -> agents.loadDetail(id) }
     }
 
-    private suspend fun eligible(): Boolean = !session.isDemo && !halted && prefs.pinSyncEnabled.first()
+    /** The account service can be asked at all: a real backend, and no failure that retrying cannot fix. */
+    private fun sessionUsable(): Boolean = !session.isDemo && !halted
+
+    private suspend fun eligible(): Boolean = sessionUsable() && prefs.pinSyncEnabled.first()
 
     private suspend fun pendingCount(): Int = prefs.pendingPinChanges.first().size
 

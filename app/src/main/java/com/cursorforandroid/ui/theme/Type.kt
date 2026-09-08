@@ -28,8 +28,12 @@ data class CursorTypography(
     /** 13 / 18 — sidebar rows and list titles (measured: ascender-to-descender 12px at 13px SF Pro). */
     val row: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
     val rowMedium: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
-    /** 13 / 20 — composer input and placeholder. */
-    val input: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 20.sp, fontWeight = FontWeight.Normal),
+    /**
+     * 14 / 22 — composer input and placeholder, the same size as [message]: the web composer is 14/22 too, and a
+     * draft that becomes a sent message must not shrink. Set against the 13sp selector chips and the 24dp round
+     * buttons, this keeps the composer's text-to-button proportion at the web's (14px text, 24px buttons).
+     */
+    val input: TextStyle = TextStyle(fontSize = 14.sp, lineHeight = 22.sp, fontWeight = FontWeight.Normal),
     /** `--cursor-font-size-base` 13 / 18 — controls, chips, selector labels, secondary lines. */
     val base: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
     val baseMedium: TextStyle = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),

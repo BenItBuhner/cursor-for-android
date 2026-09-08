@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.PullRequestState
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -36,17 +37,33 @@ class BackgroundComposerApiTest {
     fun tearDown() = server.shutdown()
 
     @Test
-    fun `reads the account's pinned ids with the pinned state requested`() = runBlocking<Unit> {
+    fun `reads the account's pinned ids and pull request states with the status and pinned state requested`() = runBlocking<Unit> {
         server.enqueue(session("session-1"))
         server.enqueue(
             MockResponse().setBody(
-                """{"composers":[{"bcId":"bc-1","name":"x"}],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
+                """{"composers":[
+                     {"bcId":"bc-1","name":"x","prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN"},
+                     {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT"},
+                     {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED"},
+                     {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4},
+                     {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true},
+                     {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false},
+                     {"bcId":"bc-7","name":"no pr"}
+                   ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
             ),
         )
 
-        val pinned = api.pinnedIds()
+        val list = api.list()
 
-        assertThat(pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
+        assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
+        assertThat(list.pullRequests).containsExactly(
+            "https://github.com/acme/app/pull/1", PullRequestState.Open,
+            "https://github.com/acme/app/pull/2", PullRequestState.Draft,
+            "https://gitlab.com/acme/app/-/merge_requests/3", PullRequestState.Merged,
+            "https://github.com/acme/app/pull/4", PullRequestState.Closed,
+            // No status yet, but the merge flag is set: merged it is. Neither flag nor status: nothing to say.
+            "https://github.com/acme/app/pull/5", PullRequestState.Merged,
+        )
         server.takeRequest() // the exchange
         val request = server.takeRequest()
         assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ListBackgroundComposers")
@@ -56,6 +73,7 @@ class BackgroundComposerApiTest {
         assertThat(request.getHeader("Content-Type")).isEqualTo("application/json")
         val body = request.json()
         assertThat(body["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includeStatus"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo(BackgroundComposerApi.LIST_WINDOW.toString())
     }
@@ -65,7 +83,28 @@ class BackgroundComposerApiTest {
         server.enqueue(session("s"))
         server.enqueue(MockResponse().setBody("""{"composers":[],"didLoadStatus":true,"hasMore":false}"""))
 
-        assertThat(api.pinnedIds()).isEqualTo(PinnedIds(emptySet(), loaded = false))
+        assertThat(api.list()).isEqualTo(AccountList(PinnedIds(emptySet(), loaded = false), emptyMap()))
+    }
+
+    @Test
+    fun `reads one pull request's standing from its merge status`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"isMerged":true,"isClosed":true,"mergeableState":"unknown","state":"closed","isDraft":false,"title":"Add pins"}"""))
+        server.enqueue(MockResponse().setBody("""{"isMerged":false,"isClosed":true,"state":"closed"}"""))
+        server.enqueue(MockResponse().setBody("""{"isMerged":false,"isClosed":false,"state":"open","isDraft":true}"""))
+        server.enqueue(MockResponse().setBody("""{"isMerged":false,"isClosed":false,"state":"open","isDraft":false,"mergeableState":"clean"}"""))
+        server.enqueue(MockResponse().setBody("""{}"""))
+
+        assertThat(api.mergeStatus("https://github.com/acme/app/pull/3")).isEqualTo(PullRequestState.Merged)
+        assertThat(api.mergeStatus("https://github.com/acme/app/pull/4")).isEqualTo(PullRequestState.Closed)
+        assertThat(api.mergeStatus("https://github.com/acme/app/pull/2")).isEqualTo(PullRequestState.Draft)
+        assertThat(api.mergeStatus("https://github.com/acme/app/pull/1")).isEqualTo(PullRequestState.Open)
+        assertThat(api.mergeStatus("https://github.com/acme/app/pull/9")).isNull()
+
+        server.takeRequest() // the exchange
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/GetPullRequestMergeStatus")
+        assertThat(request.json()["prUrl"]?.jsonPrimitive?.content).isEqualTo("https://github.com/acme/app/pull/3")
     }
 
     @Test

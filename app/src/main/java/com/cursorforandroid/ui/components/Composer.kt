@@ -46,7 +46,8 @@ import kotlinx.coroutines.delay
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
- * model selector next to the "+".
+ * model selector next to the "+". The text is the largest thing in the box and the round buttons the smallest
+ * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
@@ -115,7 +116,8 @@ fun ComposerBox(
             maxLines = 10,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 20.dp)
+                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                .heightIn(min = 22.dp)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
@@ -126,7 +128,7 @@ fun ComposerBox(
             },
         )
         Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth().height(CursorDimens.roundButton), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
                 var menuOpen by remember { mutableStateOf(false) }
                 // The Box is the anchor: the menu drops from the "+" like the web's popover.
@@ -196,7 +198,8 @@ fun SelectorChip(
     Row(
         modifier
             .pressable(onClick, CursorTheme.shapes.base, enabled = enabled)
-            .heightIn(min = 28.dp)
+            // The composer footer's height: a fair tap height for a chip that paints nothing until pressed.
+            .heightIn(min = CursorDimens.composerFooter)
             .padding(horizontal = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),

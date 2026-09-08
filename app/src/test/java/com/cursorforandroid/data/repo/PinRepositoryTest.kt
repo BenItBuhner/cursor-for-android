@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PinnedIds
 import com.cursorforandroid.data.api.PinsApi
@@ -11,6 +12,7 @@ import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
@@ -47,11 +49,13 @@ class PinRepositoryTest {
         val pinCalls = CopyOnWriteArrayList<List<String>>()
         val unpinCalls = CopyOnWriteArrayList<List<String>>()
         @Volatile var listCalls = 0
+        /** What the list says about pull requests, by URL. */
+        val pullRequests: MutableMap<String, PullRequestState> = ConcurrentHashMap()
 
-        override suspend fun pinnedIds(): PinnedIds {
+        override suspend fun list(): AccountList {
             failing?.let { throw it }
             listCalls++
-            return PinnedIds(server.toSet(), loaded)
+            return AccountList(PinnedIds(server.toSet(), loaded), pullRequests.toMap())
         }
 
         override suspend fun pin(ids: Collection<String>) {
@@ -202,10 +206,12 @@ class PinRepositoryTest {
     @Test
     fun `the demo and the setting turned off keep pins on this device`() = runBlocking<Unit> {
         prefs.setPinSyncEnabled(false)
+        pinsApi.server += "bc-2"
         pins.toggle("bc-1")
         pins.sync()
+        // The list is still read (it carries the pull request states), but nothing about pins goes either way.
         assertThat(pinnedIds()).containsExactly("bc-1")
-        assertThat(pinsApi.listCalls).isEqualTo(0)
+        assertThat(pinsApi.listCalls).isEqualTo(1)
         assertThat(pinsApi.pinCalls).isEmpty()
         assertThat(pins.state.value.active).isFalse()
 
@@ -214,20 +220,41 @@ class PinRepositoryTest {
         pins.toggle("bc-demo-0001")
         pins.sync()
         assertThat(pinnedIds()).contains("bc-demo-0001")
-        assertThat(pinsApi.listCalls).isEqualTo(0)
+        assertThat(pinsApi.listCalls).isEqualTo(1)
         assertThat(pinsApi.pinCalls).isEmpty()
+    }
+
+    @Test
+    fun `every list read hands its pull request states on, whether or not the pins are being synced`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        pinsApi.pullRequests["https://github.com/acme/app/pull/1"] = PullRequestState.Merged
+        pinsApi.server += "bc-2"
+        val handed = mutableListOf<AccountList>()
+        val repository = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, onList = { handed += it })
+
+        assertThat(repository.sync().isSuccess).isTrue()
+        assertThat(handed.single().pullRequests).containsExactly("https://github.com/acme/app/pull/1", PullRequestState.Merged)
+        assertThat(pinnedIds()).containsExactly("bc-2")
+
+        // Pins off: the list is still read for its pull request states, but the pins stay as they are here.
+        prefs.setPinSyncEnabled(false)
+        pinsApi.server += "bc-3"
+        assertThat(repository.sync().isSuccess).isTrue()
+        assertThat(handed).hasSize(2)
+        assertThat(pinnedIds()).containsExactly("bc-2")
+        assertThat(repository.state.value.active).isFalse()
     }
 
     @Test
     fun `a failure that retrying cannot fix halts syncing until the setting is turned on again`() = runBlocking<Unit> {
         prefs.setPinsMigrated(true)
         val policy = object : PinsApi by pinsApi {
-            override suspend fun pinnedIds(): PinnedIds =
+            override suspend fun list(): AccountList =
                 throw SessionUnavailableException("Device policy.", SessionUnavailableException.SIGN_IN_POLICY_VIOLATION)
         }
         var listCalls = 0
         val counting = object : PinsApi by policy {
-            override suspend fun pinnedIds(): PinnedIds { listCalls++; return policy.pinnedIds() }
+            override suspend fun list(): AccountList { listCalls++; return policy.list() }
         }
         val repository = PinRepository(session, prefs, agents, counting, scope, now = { now })
 

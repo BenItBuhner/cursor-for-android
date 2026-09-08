@@ -28,6 +28,7 @@ import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.CursorPullRequestSource
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
@@ -75,15 +76,13 @@ class AppGraph(context: Context) {
         profile = AccountApi(accountRpc, sessionTokens),
     )
     val agents = AgentRepository(session, prefs, attachments, caches.agents)
-    /** Pins shared with the desktop Agents window and the iOS app through the account. */
-    val pins = PinRepository(
-        session = session,
-        prefs = prefs,
-        agents = agents,
-        api = BackgroundComposerApi(accountRpc, sessionTokens),
-    )
-    val catalog = CatalogRepository(session, caches.catalog)
-    /** Where the agents' pull requests stand, read from GitHub: the API names a PR but never says if it is open, merged or closed. */
+    /** The account's agent list, pins and pull request statuses: what the desktop Agents window and the iOS app show. */
+    private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
+    private val accountPullRequests = CursorPullRequestSource(accountAgents)
+    /**
+     * Where the agents' pull requests stand: the account's word first (the public API names a PR but never says if it
+     * is open, merged or closed), GitHub when the account has none.
+     */
     val pullRequests = PullRequestRepository(
         gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
         demo = DemoPullRequests,
@@ -91,7 +90,17 @@ class AppGraph(context: Context) {
         readToken = { keyStore.gitHubToken() },
         writeToken = { keyStore.setGitHubToken(it) },
         cache = caches.pullRequests,
+        account = accountPullRequests,
     )
+    /** Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the PR states. */
+    val pins = PinRepository(
+        session = session,
+        prefs = prefs,
+        agents = agents,
+        api = accountAgents,
+        onList = { list -> pullRequests.seed(list.pullRequests) },
+    )
+    val catalog = CatalogRepository(session, caches.catalog)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
     val conversations = ConversationRepository(
@@ -135,6 +144,7 @@ class AppGraph(context: Context) {
             liveRuns.resetAll()
             conversations.resetAll()
             pins.reset()
+            accountPullRequests.reset()
             sessionTokens.clear()
             // Signing out of one real account and into another keeps the same backend, so the list must be
             // reset explicitly or the previous account's agents would show.
