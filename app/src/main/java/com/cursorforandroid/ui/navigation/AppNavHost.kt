@@ -80,13 +80,15 @@ fun AppNavHost(
         if (drawerState.isOpen) scope.launch { drawerState.close() }
     }
 
+    // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
+    // at composition. A screen can hold on to an older callback: `HomeScreen` is composed underneath a chat while a
+    // back gesture reveals it, and when the pop lands its parameters compare equal (a `::localFunction` reference is
+    // equal to any other reference to the same function, whatever it captured), so it is skipped and keeps the ones
+    // it has. A callback that trusted its captured "a chat is on top" then swapped the New Chat root out for the new
+    // chat, cleared its view models — and with them the launch in flight — and left the chat with nothing under it.
     fun openAgent(id: String) {
         closeDrawer()
-        when {
-            selectedAgentId == id -> Unit
-            topScreen is Screen.Agent -> stack.replaceTop(Screen.Agent(id))
-            else -> stack.push(Screen.Agent(id))
-        }
+        stack.openAgent(id)
     }
 
     fun navigateTop(screen: Screen) {
@@ -136,7 +138,7 @@ fun AppNavHost(
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onDelete = { row ->
             agentsViewModel.delete(row.agent.id)
-            if (selectedAgentId == row.agent.id) navigateTop(Screen.Home)
+            if ((stack.top.screen as? Screen.Agent)?.id == row.agent.id) navigateTop(Screen.Home)
         },
     )
     val destination = when (topScreen) {

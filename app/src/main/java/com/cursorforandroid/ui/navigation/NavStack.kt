@@ -67,9 +67,31 @@ class NavStack private constructor(initial: List<NavEntry>) {
         list += NavEntry(newId(), screen)
     }
 
-    /** Swaps the top entry for [screen] without growing the stack (opening one chat from another). */
+    /**
+     * Swaps the top entry for [screen] without growing the stack (opening one chat from another). The root is never
+     * swapped out: with nothing above it, [screen] is pushed instead, so there is always a home to go back to.
+     */
     fun replaceTop(screen: Screen) {
+        if (!canPop) {
+            push(screen)
+            return
+        }
         list[list.lastIndex] = NavEntry(newId(), screen)
+    }
+
+    /**
+     * Opens a chat: over anything that is not a chat, or in place of the chat on top, so chats never pile up when one
+     * is opened from another; nothing happens when it is already on top. Decided from the stack as it is *now*, not
+     * from what a caller saw when it was composed — a callback created while a chat was on top may well be invoked
+     * after that chat has been popped.
+     */
+    fun openAgent(id: String) {
+        val current = top.screen
+        when {
+            current is Screen.Agent && current.id == id -> Unit
+            current is Screen.Agent -> replaceTop(Screen.Agent(id))
+            else -> push(Screen.Agent(id))
+        }
     }
 
     fun pop(): Boolean {
