@@ -236,7 +236,8 @@ fun ConversationScreen(
             ) {
                 Box(
                     Modifier
-                        .size(34.dp)
+                        // The flat icon-button box: one step up from the composer's round buttons it floats above.
+                        .size(CursorDimens.iconButton)
                         .cursorSurface(colors.elevated, colors.strokeStrong, CircleShape)
                         .pressable({ scope.launch { listState.animateScrollToItem(0) } }, CircleShape),
                     contentAlignment = Alignment.Center,
