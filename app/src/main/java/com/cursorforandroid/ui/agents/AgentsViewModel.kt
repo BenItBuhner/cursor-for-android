@@ -91,7 +91,8 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setQuery(value: String) { query.value = value }
 
-    fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    /** Applies at once; the account hears about it now or at the next sync, so a failure needs no attention here. */
+    fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 
