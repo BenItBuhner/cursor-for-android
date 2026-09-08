@@ -42,17 +42,50 @@ class ModelOptionTest {
         assertThat(model.qualifier(ModelVariant("M", emptyList(), isDefault = true))).isNull()
     }
 
-    @Test
-    fun `labelFor appends the qualifier only when sibling variants share the name`() {
-        assertThat(composer.labelFor(fast)).isEqualTo("Composer 2 · Fast")
-        assertThat(composer.labelFor(slow)).isEqualTo("Composer 2 · Fast off")
-        assertThat(composer.labelFor(null)).isEqualTo("Composer 2")
+    /** The live catalogue's Claude: a `thinking` switch, a context window and an effort, every variant named after the model. */
+    private val claude = ModelOption(
+        id = "claude-fable-5.1",
+        displayName = "Claude Fable 5.1",
+        parameters = listOf(
+            ModelParameter("thinking", "Thinking", listOf(ModelParameterValue("false"), ModelParameterValue("true", "Thinking"))),
+            ModelParameter("context", "Context", listOf(ModelParameterValue("300k", "300K"), ModelParameterValue("1m", "1M"))),
+            ModelParameter("effort", "Effort", listOf(ModelParameterValue("high", "High"), ModelParameterValue("max", "Max"))),
+        ),
+        variants = listOf("300k", "1m").flatMap { context ->
+            listOf("high", "max").map { effort ->
+                ModelVariant(
+                    "Claude Fable 5.1",
+                    listOf(ModelParam("thinking", "true"), ModelParam("context", context), ModelParam("effort", effort)),
+                    isDefault = context == "1m" && effort == "max",
+                )
+            }
+        } + ModelVariant("Claude Fable 5.1", listOf(ModelParam("thinking", "false"), ModelParam("context", "300k")), isDefault = false),
+    )
 
-        val max = ModelVariant("Claude 1M Max", listOf(ModelParam("context", "1m")), isDefault = true)
-        val plain = ModelVariant("Claude", listOf(ModelParam("effort", "high")), isDefault = false)
-        val claude = ModelOption(id = "claude", displayName = "Claude", variants = listOf(max, plain))
-        assertThat(claude.labelFor(max)).isEqualTo("Claude 1M Max")
-        assertThat(claude.labelFor(plain)).isEqualTo("Claude")
+    private fun ModelOption.variant(vararg params: Pair<String, String>): ModelVariant = variantWithParams(params.toMap())!!
+
+    /**
+     * The chip reads the model's name and nothing else. The variant's own name is not it either: the catalogue
+     * spells parameters into it ("Claude Fable 5.1 1M Max", "GPT-5.6 High") as often as it repeats the model's name.
+     */
+    @Test
+    fun `a choice is labelled with the model's name alone, whatever its variant`() {
+        assertThat(ModelChoice(composer, fast).label).isEqualTo("Composer 2")
+        assertThat(ModelChoice(composer, slow).label).isEqualTo("Composer 2")
+        assertThat(ModelChoice(composer, null).label).isEqualTo("Composer 2")
+        assertThat(ModelChoice(claude, claude.variant("thinking" to "true", "context" to "1m", "effort" to "max")).label).isEqualTo("Claude Fable 5.1")
+
+        val gpt = ModelOption(id = "gpt-5.6", displayName = "GPT-5.6", variants = listOf(ModelVariant("GPT-5.6 High", listOf(ModelParam("effort", "high")), isDefault = true)))
+        assertThat(ModelChoice(gpt, gpt.defaultVariant).label).isEqualTo("GPT-5.6")
+
+        val auto = ModelOption(id = "auto-smart", displayName = "Auto")
+        assertThat(ModelChoice(auto, null).label).isEqualTo("Auto")
+    }
+
+    @Test
+    fun `a choice carries the parameters of the variant it stands for`() {
+        assertThat(ModelChoice(composer, slow).params).containsExactly(ModelParam("fast", "false"))
+        assertThat(ModelChoice(ModelOption(id = "auto-smart", displayName = "Auto"), null).params).isEmpty()
     }
 
     @Test
@@ -78,22 +111,35 @@ class ModelOptionTest {
     }
 
     @Test
-    fun `choiceLabelled finds the entry a chip label was built from`() {
+    fun `choiceLabelled finds the entry a chip label was built from, in today's and in earlier versions' spelling`() {
         val auto = ModelOption(id = "auto-smart", displayName = "Auto")
-        val catalog = listOf(composer, auto)
-        assertThat(catalog.choiceLabelled("Composer 2 · Fast off")).isEqualTo(ModelChoice(composer, slow))
+        val gpt = ModelOption(id = "gpt-5.6", displayName = "GPT-5.6", variants = listOf(ModelVariant("GPT-5.6 High", listOf(ModelParam("effort", "high")), isDefault = true)))
+        val catalog = listOf(composer, claude, gpt, auto)
+        // The model's name, as recorded now: the default variant, the parameters being unknown.
+        assertThat(catalog.choiceLabelled("Composer 2")).isEqualTo(ModelChoice(composer, fast))
+        assertThat(catalog.choiceLabelled("Claude Fable 5.1")).isEqualTo(ModelChoice(claude, claude.defaultVariant))
+        assertThat(catalog.choiceLabelled("GPT-5.6")).isEqualTo(ModelChoice(gpt, gpt.defaultVariant))
         assertThat(catalog.choiceLabelled("Auto")).isEqualTo(ModelChoice(auto, null))
+        // Earlier versions recorded the variant's name, with its parameters appended when siblings shared it.
+        assertThat(catalog.choiceLabelled("Composer 2 · Fast off")).isEqualTo(ModelChoice(composer, slow))
+        assertThat(catalog.choiceLabelled("GPT-5.6 High")).isEqualTo(ModelChoice(gpt, gpt.defaultVariant))
+        assertThat(catalog.choiceLabelled("Claude Fable 5.1 · Thinking · 300K context · High effort"))
+            .isEqualTo(ModelChoice(claude, claude.variant("thinking" to "true", "context" to "300k", "effort" to "high")))
         // "Default model" is what a launch without a model was recorded as; it is nobody's name.
         assertThat(catalog.choiceLabelled("Default model")).isNull()
     }
 
     @Test
-    fun `a choice is labelled and parameterised like the variant it stands for`() {
-        assertThat(ModelChoice(composer, slow).label).isEqualTo("Composer 2 · Fast off")
-        assertThat(ModelChoice(composer, slow).params).containsExactly(ModelParam("fast", "false"))
-        val bare = ModelOption(id = "auto-smart", displayName = "Auto")
-        assertThat(ModelChoice(bare, null).label).isEqualTo("Auto")
-        assertThat(ModelChoice(bare, null).params).isEmpty()
+    fun `a row's model name is its recorded label less the parameters earlier versions appended`() {
+        fun row(label: String?) = Agent(
+            id = "bc-1", name = "Chat", lifecycle = AgentLifecycle.IDLE, runStatus = null, envType = EnvType.CLOUD, envName = null,
+            url = "", createdAtMillis = 0L, updatedAtMillis = 0L, latestRunId = null, repoUrl = null, startingRef = null, modelDisplayName = label,
+        )
+        assertThat(row("Claude Fable 5.1").modelName).isEqualTo("Claude Fable 5.1")
+        assertThat(row("Claude Fable 5.1 · Thinking · 1M context · Max effort").modelName).isEqualTo("Claude Fable 5.1")
+        assertThat(row("Composer 2 · Fast off").modelName).isEqualTo("Composer 2")
+        assertThat(row("Default model").modelName).isEqualTo("Default model")
+        assertThat(row(null).modelName).isNull()
     }
 
     @Test

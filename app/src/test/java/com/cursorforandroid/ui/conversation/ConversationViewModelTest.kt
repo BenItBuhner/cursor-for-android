@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.ModelChoice
+import com.cursorforandroid.domain.ModelParam
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -74,18 +75,31 @@ class ConversationViewModelTest {
         assertThat(picker.models.map { it.id }).containsAtLeast("claude-fable-5.1-thinking", "composer-2.5", "gemini-3.8-flash")
     }
 
+    /** The chip names the model — "Composer 2.5" — and not the variant it was launched with; the picker shows that. */
     @Test
-    fun `a chat launched here opens on the variant it was launched with`() = runBlocking {
+    fun `a chat launched here opens on the variant it was launched with, the chip naming the model alone`() = runBlocking {
         val composer = graph.catalog.loadModels().getOrThrow().first { it.id == "composer-2.5" }
         val slow = composer.variants.first { !it.isDefault }
         val request = LaunchRequest(prompt = "Do the thing", repoUrl = null, ref = null, modelId = composer.id, modelParams = slow.params, autoCreatePr = false, planMode = false)
-        val agent = graph.agents.launch(request, "Composer 2.5 · Fast off").getOrThrow().agent
+        val agent = graph.agents.launch(request, "Composer 2.5").getOrThrow().agent
 
         val picker = open(agent.id).picker { it.current != null }
         assertThat(picker.current).isEqualTo(ModelChoice(composer, slow))
         assertThat(picker.selected).isEqualTo(picker.current)
         assertThat(picker.override).isNull()
-        assertThat(picker.chipLabel).isEqualTo("Composer 2.5 · Fast off")
+        assertThat(picker.chipLabel).isEqualTo("Composer 2.5")
+    }
+
+    /** Earlier versions recorded the variant's parameters in the label; the catalogue's name for the model replaces it. */
+    @Test
+    fun `a chat recorded with a parameter-laden label reads as the model's name`() {
+        val claude = open(IDLE).picker().models.first { it.id == "claude-fable-5.1-thinking" }
+        val low = claude.variants.first { it.param("effort") == "low" && it.param("context") == "300k" }
+        graph.agents.patch(IDLE) { it.copy(modelId = claude.id, modelParams = low.params, modelDisplayName = "Claude Fable 5.1 · 300K context · Low effort") }
+        val picker = open(IDLE).picker { it.current != null }
+        assertThat(picker.current).isEqualTo(ModelChoice(claude, low))
+        assertThat(picker.currentLabel).isEqualTo("Claude Fable 5.1")
+        assertThat(picker.chipLabel).isEqualTo("Claude Fable 5.1")
     }
 
     /** Rows saved before the id and parameters were kept only carry the label; it is enough to find the entry. */
@@ -94,7 +108,7 @@ class ConversationViewModelTest {
         graph.agents.patch(IDLE) { it.copy(modelDisplayName = "GPT-5.6 High") }
         val picker = open(IDLE).picker { it.current != null }
         assertThat(picker.current?.model?.id).isEqualTo("gpt-5.6")
-        assertThat(picker.chipLabel).isEqualTo("GPT-5.6 High")
+        assertThat(picker.chipLabel).isEqualTo("GPT-5.6")
     }
 
     @Test
@@ -106,6 +120,15 @@ class ConversationViewModelTest {
         assertThat(picker.chipLabel).isEqualTo("Default model")
     }
 
+    /** A model the catalogue has dropped: its recorded name still shows, less any parameters an earlier version appended. */
+    @Test
+    fun `a model the catalogue no longer lists keeps its recorded name on the chip`() {
+        graph.agents.patch(IDLE) { it.copy(modelId = "claude-legacy-3", modelParams = listOf(ModelParam("fast", "true")), modelDisplayName = "Claude Legacy 3 · Fast") }
+        val picker = open(IDLE).picker { it.currentLabel != null }
+        assertThat(picker.current).isNull()
+        assertThat(picker.chipLabel).isEqualTo("Claude Legacy 3")
+    }
+
     @Test
     fun `a pick labels the chip and becomes the chat's model once the follow-up is accepted`() {
         val vm = open(IDLE)
@@ -114,18 +137,19 @@ class ConversationViewModelTest {
         val picked = vm.picker { it.override != null }
         assertThat(picked.override).isEqualTo(ModelChoice(composer, composer.defaultVariant))
         assertThat(picked.selected).isEqualTo(picked.override)
-        assertThat(picked.chipLabel).isEqualTo("Composer 2.5 · Fast")
+        assertThat(picked.chipLabel).isEqualTo("Composer 2.5")
 
         vm.sendAndWait("Try it with Composer")
 
         assertThat(vm.toastMessage.value).isNull()
         val after = vm.picker { it.override == null && it.current != null }
         assertThat(after.current).isEqualTo(ModelChoice(composer, composer.defaultVariant))
-        assertThat(after.currentLabel).isEqualTo("Composer 2.5 · Fast")
-        assertThat(after.chipLabel).isEqualTo("Composer 2.5 · Fast")
+        assertThat(after.currentLabel).isEqualTo("Composer 2.5")
+        assertThat(after.chipLabel).isEqualTo("Composer 2.5")
         val row = graph.agents.agent(IDLE)!!
         assertThat(row.modelId).isEqualTo("composer-2.5")
         assertThat(row.modelParams).isEqualTo(composer.defaultVariant!!.params)
+        assertThat(row.modelDisplayName).isEqualTo("Composer 2.5")
     }
 
     @Test
