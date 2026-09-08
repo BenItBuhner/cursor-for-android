@@ -47,6 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -555,13 +556,21 @@ class ConversationRepository(
 
     /** Shows the transcript and traces saved by an earlier visit, if any, while the network answers. */
     private suspend fun restoreFromCache(e: Entry, agentId: String) {
+        // An entry that already has its inputs and its traces has nothing to restore, and reading the files to find
+        // that out is the biggest single I/O on the path that opens a chat the prefetch had warmed.
+        if (synchronized(e) { e.tracesRestored && (e.hasInputs || e.fetched) }) return
         val cached = readCache(agentId)
         val savedTraces = if (e.tracesRestored) emptyMap() else readTraces(agentId)
         if (cached == null && savedTraces.isEmpty()) {
             e.publish(mutate = { tracesRestored = true })
             return
         }
-        if (e.hasInputs || e.fetched) return
+        // The inputs arrived while the files were being read. Traces are additive and the memory copy wins, so what
+        // was read still counts — and marks the file read, which spares [loadTraces] a second parse of it.
+        if (e.hasInputs || e.fetched) {
+            e.publish(mutate = { foldSavedTraces(savedTraces) })
+            return
+        }
         val latest = cached?.let { it.runs + it.local.map { saved -> saved.run } }?.maxByOrNull { parseIsoMillis(it.createdAt) }
         // A run that was still active when the cache was written has very likely finished since; the live state
         // ("Working…", Stop) waits for the network unless a fetched agent row confirms the run is still going.
@@ -615,9 +624,18 @@ class ConversationRepository(
         diskIndex[snapshot.agentId] = snapshot.agentUpdatedAtMillis
     }
 
-    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>) {
+    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>) =
+        writeTraces(agentId, listOf(CachedTrace(runId, createdAtMillis, items)))
+
+    /**
+     * One read-merge-write of the agent's trace file. Written in batches: the file holds every trace of the agent,
+     * so writing it per run turns opening a long chat into fifty parse-and-serialise cycles of a file growing
+     * toward its full size, all through the same per-agent lock.
+     */
+    private suspend fun writeTraces(agentId: String, traces: List<CachedTrace>) {
+        if (traces.isEmpty()) return
         val store = traceCache?.takeIf { !session.isDemo } ?: return
-        runCatching { store.put(agentId, listOf(CachedTrace(runId, createdAtMillis, items))) }.onFailure { if (it is CancellationException) throw it }
+        runCatching { store.put(agentId, traces) }.onFailure { if (it is CancellationException) throw it }
     }
 
     /**
@@ -641,27 +659,35 @@ class ConversationRepository(
             val knownExpired = pending.filter { hub.current(agentId, it.id)?.expired == true }.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: Long.MIN_VALUE
             val next = AtomicInteger(0)
             val newestExpired = AtomicLong(knownExpired)
-            repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
-                launch {
-                    while (true) {
-                        val run = pending.getOrNull(next.getAndIncrement()) ?: return@launch
-                        val createdAt = parseIsoMillis(run.createdAt)
-                        if (createdAt < newestExpired.get()) continue
-                        val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
-                        when {
-                            snapshot.hasTrace -> settleTrace(e, run, snapshot.items)
-                            snapshot.expired -> newestExpired.updateAndGet { maxOf(it, createdAt) }
+            val settled = ConcurrentLinkedQueue<CachedTrace>()
+            try {
+                coroutineScope {
+                    repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
+                        launch {
+                            while (true) {
+                                val run = pending.getOrNull(next.getAndIncrement()) ?: return@launch
+                                val createdAt = parseIsoMillis(run.createdAt)
+                                if (createdAt < newestExpired.get()) continue
+                                val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
+                                when {
+                                    snapshot.hasTrace -> settled += settleTrace(e, run, snapshot.items)
+                                    snapshot.expired -> newestExpired.updateAndGet { maxOf(it, createdAt) }
+                                }
+                            }
                         }
                     }
                 }
+            } finally {
+                // Whatever this pass found is kept, including when a screen left half-way through it.
+                withContext(NonCancellable) { writeTraces(agentId, settled.toList()) }
             }
         }
     }
 
-    /** Files a run's complete trace and keeps it on disk. */
-    private suspend fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>) {
+    /** Shows a run's complete trace and hands it to the caller for the file. */
+    private fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>): CachedTrace {
         e.publish(mutate = { traces = traces + (run.id to items) })
-        writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt), items)
+        return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 
     private fun startStreaming(e: Entry, agentId: String, run: RunDto) {

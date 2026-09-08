@@ -47,6 +47,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Opening a chat: what renders before each network answer, what is written back, and what is warmed in advance. And
@@ -71,6 +72,7 @@ class ConversationRepositoryTest {
     private lateinit var hub: LiveRunHub
     private lateinit var cache: ConversationCache
     private lateinit var traces: TraceCache
+    private val traceWrites = AtomicInteger()
 
     @Before
     fun setUp() {
@@ -83,7 +85,9 @@ class ConversationRepositoryTest {
         agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         cache = ConversationCache(disk.child("conversations"))
-        traces = TraceCache(disk.child("traces"))
+        // The cache stamps each write with the clock, so counting the stamps counts the writes to the trace file.
+        traceWrites.set(0)
+        traces = TraceCache(JsonDiskCache(folder.newFolder("traces"), nowProvider = { traceWrites.incrementAndGet(); now }, dispatcher = Dispatchers.Unconfined))
         AppClock.nowMillis = { now }
     }
 
@@ -849,6 +853,34 @@ class ConversationRepositoryTest {
         assertThat(replyIds).hasSize(1)
         assertThat((state(conversations).items.last() as AssistantMessage).markdown)
             .isEqualTo("Reply" + (0..15).joinToString("") { " $it" })
+    }
+
+    /**
+     * The traces of one agent share a file, and writing it is a read-merge-write of everything already in it. A
+     * chat with fifty finished runs must not turn its opening into fifty of those.
+     */
+    @Test
+    fun `opening a chat writes the traces it replayed in one pass over the file`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+            Triple("run-3", "Prompt 3", "Reply 3"),
+        )
+        agents.refresh()
+        listOf("run-1", "run-2", "run-3").forEach { runId ->
+            streamer.emit(runId, RunStreamEvent.Thinking("Looking at $runId."))
+            streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply", 1_000, null))
+            streamer.emit(runId, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { traces.read("bc-1").size == 3 }
+        delay(150)
+
+        assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
+        assertThat(traceWrites.get()).isEqualTo(1)
     }
 
     @Test
