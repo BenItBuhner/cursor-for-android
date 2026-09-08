@@ -62,7 +62,38 @@ class PreferencesStore(context: Context) {
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
+        val pinSync = booleanPreferencesKey("pin_sync")
+        val pinsMigrated = booleanPreferencesKey("pins_migrated")
+        val pendingPins = stringPreferencesKey("pending_pin_changes")
     }
+
+    /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */
+    val pinSyncEnabled: Flow<Boolean> = store.data.map { it[Keys.pinSync] ?: true }
+
+    suspend fun setPinSyncEnabled(enabled: Boolean) = store.edit { it[Keys.pinSync] = enabled }
+
+    /** True once this account's first sync has pushed the pins that were made on this device before syncing existed. */
+    val pinsMigrated: Flow<Boolean> = store.data.map { it[Keys.pinsMigrated] ?: false }
+
+    suspend fun setPinsMigrated(migrated: Boolean) = store.edit { it[Keys.pinsMigrated] = migrated }
+
+    /** agentId -> pinned, for pin changes made here that the server has not acknowledged yet (offline, or a failed call). */
+    val pendingPinChanges: Flow<Map<String, Boolean>> = store.data.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
+
+    /** Records [pinned] as awaiting the server, or forgets the entry when [pinned] is null. */
+    suspend fun setPendingPinChange(agentId: String, pinned: Boolean?) = store.edit { p ->
+        val current = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
+        val next = if (pinned == null) current - agentId else current + (agentId to pinned)
+        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
+    }
+
+    suspend fun clearPendingPinChanges(agentIds: Collection<String>) = store.edit { p ->
+        val next = (p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()) - agentIds
+        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
+    }
+
+    /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
+    suspend fun setPinnedIds(agentIds: Set<String>) = store.edit { it[Keys.pinned] = agentIds }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
     val recentSkills: Flow<List<String>> = store.data.map { p ->
@@ -203,6 +234,9 @@ class PreferencesStore(context: Context) {
         p.remove(Keys.cachedUser)
         p.remove(Keys.signInMethod)
         p.remove(Keys.apiKeyExpiresAt)
+        // The next account starts its own migration and owes the server nothing of this one's pending changes.
+        p.remove(Keys.pinsMigrated)
+        p.remove(Keys.pendingPins)
     }
 
     private fun decodeMarkers(raw: String): Map<String, Long> =
@@ -210,6 +244,12 @@ class PreferencesStore(context: Context) {
 
     private fun encodeMarkers(map: Map<String, Long>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), Long.serializer()), map)
+
+    private fun decodePendingPins(raw: String): Map<String, Boolean> =
+        runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), Boolean.serializer()), raw) }.getOrDefault(emptyMap())
+
+    private fun encodePendingPins(map: Map<String, Boolean>): String =
+        CursorJson.encodeToString(MapSerializer(String.serializer(), Boolean.serializer()), map)
 
     private fun decodeStringMap(raw: String): Map<String, String> =
         runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), String.serializer()), raw) }.getOrDefault(emptyMap())

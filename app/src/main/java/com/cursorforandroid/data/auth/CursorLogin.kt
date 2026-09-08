@@ -1,20 +1,16 @@
 package com.cursorforandroid.data.auth
 
+import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.CursorJson
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -145,13 +141,7 @@ class CursorLogin(
             // proto3's JSON mapping writes int64 as a decimal string.
             CreateUserApiKeyRequestDto(name = name, expiresAt = expiresAtMs?.toString()),
         )
-        val request = Request.Builder()
-            .url("${apiUrl.trimEnd('/')}/aiserver.v1.DashboardService/CreateUserApiKey")
-            .header("Authorization", "Bearer $accessToken")
-            .header("Accept", "application/json")
-            .header("Connect-Protocol-Version", "1")
-            .post(body.jsonBody())
-            .build()
+        val request = ConnectRpc.request(apiUrl, "aiserver.v1.DashboardService", "CreateUserApiKey", accessToken, body)
         val response = try {
             client.newCall(request).execute()
         } catch (e: IOException) {
@@ -160,7 +150,7 @@ class CursorLogin(
         response.use { r ->
             val text = r.body?.string().orEmpty()
             if (!r.isSuccessful) {
-                val reason = connectErrorReason(text) ?: "HTTP ${r.code}"
+                val reason = ConnectRpc.errorReason(text) ?: "HTTP ${r.code}"
                 throw CursorLoginException(
                     "Signed in, but Cursor wouldn't create an API key for this app ($reason). " +
                         "Your team's settings may restrict user API keys; paste a key from the dashboard instead.",
@@ -179,12 +169,9 @@ class CursorLogin(
             builder.url("$base?uuid=${handshake.uuid}&verifier=${handshake.verifier}").get().build()
         } else {
             val json = CursorJson.encodeToString(PollRequestDto.serializer(), PollRequestDto(handshake.uuid, handshake.verifier))
-            builder.url(base).post(json.jsonBody()).build()
+            builder.url(base).post(ConnectRpc.jsonBody(json)).build()
         }
     }
-
-    /** A bare `application/json` body; the String overload would append a charset parameter. */
-    private fun String.jsonBody(): RequestBody = toByteArray(Charsets.UTF_8).toRequestBody(JSON)
 
     /** Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text. */
     private fun isRouteNotFound(body: String): Boolean {
@@ -193,21 +180,6 @@ class CursorLogin(
             ?: return false
         return Regex("""^Route \w+:""").containsMatchIn(message) && message.contains("not found")
     }
-
-    /**
-     * A Connect error is `{ code, message, details[] }`; Cursor's `message` is often just "Error", and the readable
-     * explanation sits in `details[].debug.details.detail`.
-     */
-    private fun connectErrorReason(body: String): String? {
-        val root = runCatching { CursorJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
-        val debugDetails = (root["details"] as? JsonArray)
-            ?.firstNotNullOfOrNull { ((it as? JsonObject)?.get("debug") as? JsonObject)?.get("details") as? JsonObject }
-        val detail = debugDetails?.string("detail") ?: debugDetails?.string("title")
-        val message = root.string("message")?.takeIf { it.isNotBlank() && !it.equals("Error", ignoreCase = true) }
-        return detail ?: message ?: root.string("code")
-    }
-
-    private fun JsonObject.string(key: String): String? = this[key]?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
 
     private fun ByteArray.base64Url(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(this)
 
@@ -227,7 +199,6 @@ class CursorLogin(
     )
 
     companion object {
-        private val JSON = "application/json".toMediaType()
         private const val PENDING_BODY = "Not found"
         const val POLL_MAX_ATTEMPTS = 150
         const val POLL_BASE_DELAY_MS = 1_000L

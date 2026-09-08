@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -138,6 +139,10 @@ class AgentRepository(
     @Volatile var lastRefreshedAt: Long = 0L
         private set
 
+    private val _refreshCompleted = MutableStateFlow(0L)
+    /** Completed fetches for the current backend, counted: the cue for work that follows each one (the account's pins, for one). */
+    val refreshCompleted: StateFlow<Long> = _refreshCompleted.asStateFlow()
+
     init {
         scope.launch {
             // Only actual backend switches clear the list; reacting to the initial value could race a refresh that
@@ -170,6 +175,7 @@ class AgentRepository(
     private fun clear() {
         owner = null
         lastRefreshedAt = 0L
+        _refreshCompleted.value = 0L
         _state.value = AgentListState()
     }
 
@@ -277,11 +283,17 @@ class AgentRepository(
                 truncated = cursor != null
                 legacy.await().takeIf { it.isNotEmpty() }?.let { v0 -> publish { it.withLegacy(v0) } }
             }
+            // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
+            // ones the window never returned, and this keeps the next complete listing from dropping them again.
+            val pinned = prefs.localAgentState.first().pinnedIds
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
-                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
-            if (landed) lastRefreshedAt = AppClock.now()
+            if (landed) {
+                lastRefreshedAt = AppClock.now()
+                _refreshCompleted.update { it + 1 }
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->
@@ -325,11 +337,12 @@ class AgentRepository(
 
     /**
      * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
-     * not known when the fetch started (launched here while the pages were in flight) and, as the listing can lag a
-     * creation by a moment, agents created shortly before it started.
+     * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
+     * it started (the listing can lag a creation by a moment), and [pinned] agents, which the listing window may
+     * simply have left behind.
      */
-    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long): AgentListState =
-        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis > startedAt - RECENT_WINDOW_MS })
+    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long, pinned: Set<String>): AgentListState =
+        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
 
     private suspend fun persist() {
         val backend = session.current
