@@ -33,6 +33,10 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.update.GitHubReleasesClient
+import com.cursorforandroid.data.update.UpdateCache
+import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
@@ -106,6 +110,19 @@ class AppGraph(context: Context) {
         agents = agents,
         hub = liveRuns,
         runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
+    )
+    /**
+     * In-app updates from the GitHub releases of [BuildConfig.GITHUB_REPO]. Device-level, not account-level: its
+     * cache and downloads sit next to (not inside) [caches], so signing out leaves them alone.
+     */
+    val updates = UpdateManager(
+        client = GitHubReleasesClient(CursorApiFactory.updateClient(), BuildConfig.GITHUB_REPO, apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL),
+        prefs = prefs,
+        cache = UpdateCache(JsonDiskCache(File(context.applicationContext.cacheDir, "update-check"))),
+        platform = AndroidUpdatePlatform(context),
+        downloadDir = File(context.applicationContext.cacheDir, "updates"),
+        // The background service streaming a run is the one thing a silent self-update would cut off.
+        agentsRunning = { runMonitor.isRunning },
     )
 
     init {

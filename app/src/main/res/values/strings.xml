@@ -35,6 +35,13 @@
     <string name="notif_action_view_pr">View PR</string>
     <string name="notif_stop_failed">Couldn\'t stop the run: %1$s</string>
 
+    <!-- App updates -->
+    <string name="channel_updates_name">App updates</string>
+    <string name="channel_updates_description">A new version of Cursor has been downloaded and is ready to install.</string>
+    <string name="notif_update_ready_title">Cursor %1$s is ready to install</string>
+    <string name="notif_update_ready_text">Tap to install the update.</string>
+    <string name="notif_action_install">Install</string>
+
     <!-- Home-screen widget -->
     <string name="widget_label">Chats</string>
     <string name="widget_description">Recent, running or pinned chats, one tap from the home screen.</string>

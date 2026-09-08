@@ -1,5 +1,8 @@
 package com.cursorforandroid.ui.settings
 
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -43,6 +46,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
@@ -50,8 +54,12 @@ import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.api.GitHubEndpoints
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.data.update.GitHubReleasesClient
+import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.SignInMethod
+import com.cursorforandroid.domain.UpdatePhase
+import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.agents.Avatar
 import com.cursorforandroid.ui.components.CursorButton
@@ -69,6 +77,7 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /** Settings in the desktop settings-page idiom: 12sp group labels, bordered cards of 38dp rows. */
 @Composable
@@ -186,6 +195,11 @@ fun SettingsScreen(
                 NotificationRows(graph)
             }
 
+            Group("Updates")
+            CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                UpdateRows(graph, uriHandler::openUri)
+            }
+
             Group("GitHub")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 GitHubRows(graph)
@@ -193,11 +207,11 @@ fun SettingsScreen(
 
             Group("About")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                InfoRow("Version", BuildConfig.VERSION_NAME)
-                HairlineDivider()
                 InfoRow("API", "Cloud Agents v1 · v0 transcript")
                 HairlineDivider()
                 LinkRow("API documentation", "https://cursor.com/docs/cloud-agent/api/endpoints", uriHandler::openUri)
+                HairlineDivider()
+                LinkRow("Source code and releases", GitHubReleasesClient.releasesPageUrl(BuildConfig.GITHUB_REPO), uriHandler::openUri)
             }
             Text(
                 "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License; icons are derived from Lucide (ISC).",
@@ -258,6 +272,135 @@ private fun NotificationRows(graph: AppGraph) {
             subtitle = "Adds the status-bar chip and the lock-screen card on Android 16.",
             onClick = { runCatching { context.startActivity(liveUpdatesIntent) } },
         )
+    }
+}
+
+/**
+ * The in-app updater: the installed version with what the last check found and the one action that follows from it
+ * (check, download, install, retry), the release page, the two preferences, and — until the user has allowed it —
+ * the system page where installing from this app is permitted. The permission is re-read when the screen resumes.
+ */
+@Composable
+private fun UpdateRows(graph: AppGraph, open: (String) -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val updates = graph.updates
+    val state by updates.state.collectAsStateWithLifecycle()
+    val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = true)
+    val includePreReleases by updates.includePreReleases.collectAsStateWithLifecycle(initialValue = false)
+    var resumeCount by remember { mutableIntStateOf(0) }
+    LifecycleResumeEffect(Unit) {
+        resumeCount++
+        onPauseOrDispose { }
+    }
+    val canInstall = remember(resumeCount) { context.packageManager.canRequestPackageInstalls() }
+    val allowInstalls = {
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri()))
+        }
+    }
+
+    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Version ${BuildConfig.VERSION_NAME}", style = type.base, color = colors.textPrimary)
+            Text(
+                updateStatusLine(state),
+                style = type.small,
+                color = if (state is UpdateState.Failed) colors.red else colors.textTertiary,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        when (val s = state) {
+            UpdateState.Idle, is UpdateState.UpToDate, is UpdateState.Installed ->
+                CursorButton("Check for updates", onClick = updates::checkNow, height = 30.dp)
+            UpdateState.Checking -> CursorButton("Checking…", onClick = {}, enabled = false, height = 30.dp)
+            is UpdateState.Available ->
+                if (s.signatureMismatch) {
+                    CursorButton("Open release", onClick = { open(s.release.htmlUrl) }, height = 30.dp)
+                } else {
+                    CursorButton("Download", onClick = updates::downloadNow, primary = true, height = 30.dp)
+                }
+            is UpdateState.Downloading -> CursorButton("Cancel", onClick = updates::cancelDownload, height = 30.dp)
+            is UpdateState.Downloaded ->
+                CursorButton("Install", onClick = { if (canInstall) updates.installNow() else allowInstalls() }, primary = true, height = 30.dp)
+            is UpdateState.Installing ->
+                if (s.awaitingConfirmation) {
+                    CursorButton("Confirm", onClick = updates::resumePendingInstall, primary = true, height = 30.dp)
+                } else {
+                    CursorButton("Installing…", onClick = {}, enabled = false, height = 30.dp)
+                }
+            is UpdateState.Failed ->
+                CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = 30.dp)
+        }
+    }
+    state.release?.takeIf { it.htmlUrl.isNotBlank() }?.let { release ->
+        HairlineDivider()
+        LinkRow("What's new in ${release.versionName}", release.htmlUrl, open)
+    }
+    HairlineDivider()
+    ToggleRow(
+        title = "Automatic updates",
+        subtitle = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
+            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and installs them while the app isn't in use."
+        } else {
+            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and lets you know when one is ready to install."
+        },
+        checked = autoUpdate,
+        onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
+    )
+    HairlineDivider()
+    ToggleRow(
+        title = "Include pre-releases",
+        subtitle = "Also offer release candidates and betas (the vX.Y.Z-rc.N tags).",
+        checked = includePreReleases,
+        onCheckedChange = { scope.launch { updates.setIncludePreReleases(it) } },
+    )
+    if (!canInstall) {
+        HairlineDivider()
+        HintRow(
+            title = "Allow installing updates",
+            subtitle = "Android asks for your permission before Cursor may install the updates it downloads.",
+            onClick = { allowInstalls() },
+        )
+    }
+}
+
+private fun updateStatusLine(state: UpdateState): String = when (state) {
+    UpdateState.Idle -> "Not checked yet"
+    UpdateState.Checking -> "Checking GitHub for a newer release…"
+    is UpdateState.UpToDate -> "Up to date · ${checkedLabel(state.checkedAtMs)}"
+    is UpdateState.Available ->
+        if (state.signatureMismatch) "${state.release.versionName} is out, but signed with a different key" else "${state.release.versionName} is available"
+    is UpdateState.Downloading -> state.fraction?.let { "Downloading ${state.release.versionName}… ${(it * 100).toInt()}%" }
+        ?: "Downloading ${state.release.versionName}… ${"%.1f".format(Locale.US, state.bytesRead / 1_048_576.0)} MB"
+    is UpdateState.Downloaded -> "${state.release.versionName} is ready · the app closes while it installs"
+    is UpdateState.Installing -> if (state.awaitingConfirmation) "Waiting for you to confirm the installation" else "Installing ${state.release.versionName}…"
+    is UpdateState.Failed -> state.message
+    is UpdateState.Installed -> "Updated to ${state.versionName}"
+}
+
+/** "checked just now", "checked 4m ago", "checked Sep 4". */
+private fun checkedLabel(checkedAtMs: Long): String = when (val age = TimeFormat.relativeShort(checkedAtMs)) {
+    "now" -> "checked just now"
+    else -> if (age.last().isLetter() && age.length <= 4) "checked $age ago" else "checked $age"
+}
+
+@Composable
+private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(
+        Modifier.fillMaxWidth().pressable({ onCheckedChange(!checked) }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = type.base, color = colors.textPrimary)
+            Text(subtitle, style = type.small, color = colors.textTertiary)
+        }
+        Spacer(Modifier.width(12.dp))
+        CursorToggle(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
