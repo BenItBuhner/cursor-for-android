@@ -1,6 +1,8 @@
 package com.cursorforandroid.ui.navigation
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -48,6 +50,13 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
+/** The hosting activity through any number of wrappers (a themed context, a display context); null outside one. */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 /**
  * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent column on wide screens and
  * an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered by [CursorNavHost].
@@ -63,8 +72,10 @@ fun AppNavHost(
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
 ) {
-    val activity = LocalContext.current as Activity
-    val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
+    // The window size class is measured from the activity; without one (a wrapped context) the phone layout stands in
+    // rather than the cast bringing the app down.
+    val activity = LocalContext.current.findActivity()
+    val wide = if (activity == null) false else calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()

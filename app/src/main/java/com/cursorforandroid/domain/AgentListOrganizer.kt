@@ -88,13 +88,21 @@ object AgentListOrganizer {
         }
         if (!gitOk) return false
 
-        val envOk = when (agent.envType) {
-            EnvType.CLOUD, EnvType.UNKNOWN -> SourceFilter.Cloud in prefs.sources
-            EnvType.POOL -> SourceFilter.Pool in prefs.sources
-            EnvType.MACHINE -> SourceFilter.Machine in prefs.sources
+        // One bucket per chat, the way the Source page's checkboxes read: a chat started on this phone is "This
+        // device" whatever it runs on, and every other chat goes by its environment. As additional requirements the
+        // buckets could not be picked apart — "This device" alone matched nothing at all.
+        return sourceOf(row) in prefs.sources
+    }
+
+    /** Which Source bucket a chat belongs to; exactly one, so the buckets can be picked apart. */
+    fun sourceOf(row: AgentRow): SourceFilter = if (row.launchedFromThisDevice) {
+        SourceFilter.ThisDevice
+    } else {
+        when (row.agent.envType) {
+            EnvType.CLOUD, EnvType.UNKNOWN -> SourceFilter.Cloud
+            EnvType.POOL -> SourceFilter.Pool
+            EnvType.MACHINE -> SourceFilter.Machine
         }
-        val deviceOk = !row.launchedFromThisDevice || SourceFilter.ThisDevice in prefs.sources
-        return envOk && deviceOk
     }
 
     fun matchesQuery(agent: Agent, query: String): Boolean {

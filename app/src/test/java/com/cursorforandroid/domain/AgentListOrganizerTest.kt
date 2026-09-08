@@ -223,13 +223,21 @@ class AgentListOrganizerTest {
         val agents = listOf(
             agent("cloud"),
             agent("machine", env = EnvType.MACHINE),
+            agent("pool", env = EnvType.POOL),
             agent("mine"),
+            agent("mine-on-machine", env = EnvType.MACHINE),
         )
-        val local = LocalAgentState(launchedHereIds = setOf("mine"))
+        val local = LocalAgentState(launchedHereIds = setOf("mine", "mine-on-machine"))
         fun ids(prefs: ListPreferences) = AgentListOrganizer.organize(agents, prefs, local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
         assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Machine)))).containsExactly("machine")
+        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Pool)))).containsExactly("pool")
         assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Cloud)))).containsExactly("cloud")
-        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Cloud, SourceFilter.ThisDevice)))).containsExactly("cloud", "mine")
+        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Cloud, SourceFilter.ThisDevice)))).containsExactly("cloud", "mine", "mine-on-machine")
+        // The buckets are exclusive: "This device" on its own selects the chats started here, whatever they run on,
+        // and every other bucket is then only about the chats started elsewhere.
+        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.ThisDevice)))).containsExactly("mine", "mine-on-machine")
+        assertThat(ids(ListPreferences(sources = SourceFilter.entries.toSet()))).hasSize(5)
+        assertThat(ids(ListPreferences(sources = emptySet()))).isEmpty()
     }
 
     @Test
