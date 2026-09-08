@@ -457,6 +457,26 @@ class TimelineBuilderTest {
         assertThat(live.snapshot()).isEqualTo(items)
     }
 
+    /**
+     * A reader pays for the text once per change, not once per read: the reply is only written into its item when
+     * a delta has actually arrived since the last time anyone looked.
+     */
+    @Test
+    fun `reading the same trace twice does not build its text again`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        repeat(200) { live.apply(RunStreamEvent.Assistant("token $it ")) }
+        val first = live.snapshot()
+        val second = live.snapshot()
+        first.indices.forEach { i -> assertThat(second[i]).isSameInstanceAs(first[i]) }
+
+        // One more delta rewrites that item and nothing else.
+        live.apply(RunStreamEvent.Thinking("Hmm."))
+        live.apply(RunStreamEvent.Assistant("and more."))
+        val third = live.snapshot()
+        assertThat(third.first()).isSameInstanceAs(first.first())
+        assertThat(third.filterIsInstance<AssistantMessage>().last().markdown).isEqualTo("and more.")
+    }
+
     /** The live notification times a run whose outcome carries no duration; the footer used to say nothing at all. */
     @Test
     fun `a finished run without a reported duration still says how long it worked`() {
