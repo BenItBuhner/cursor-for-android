@@ -157,9 +157,9 @@ fun ConversationScreen(
                 }
             },
             trailing = {
-                // The pull request gets its own button beside the menu, the same green glyph the list rows and the run
-                // footer's pill use for it: it is the one thing a reader most often leaves the chat for, and the footer
-                // pill sits under the transcript where a long run puts it out of reach.
+                // The pull request lives here and nowhere else in the chat: its own button beside the menu, in the same
+                // green glyph the list rows use for it. It is the one thing a reader most often leaves the chat for, and
+                // the header stays in reach however long the transcript gets; the run footers only name the branch.
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
                 }

@@ -44,7 +44,6 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -381,8 +380,6 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 
 @Composable
 private fun RunFooterView(item: RunFooter, modifier: Modifier) {
-    val colors = CursorTheme.colors
-    val uriHandler = LocalUriHandler.current
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val label = when (item.status) {
             RunStatus.ERROR -> "Failed after"
@@ -392,21 +389,11 @@ private fun RunFooterView(item: RunFooter, modifier: Modifier) {
         }
         val duration = TimeFormat.duration(item.durationMs)
         if (duration != null || item.status != RunStatus.FINISHED) SummaryLine(label, duration ?: item.status.name.lowercase())
-        if (item.branches.isNotEmpty()) {
+        // Only the branches: the pull request is the header button's job, so the footer never repeats it.
+        val pushed = item.branches.mapNotNull { it.branch }
+        if (pushed.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                item.branches.forEach { b ->
-                    if (b.prUrl != null) {
-                        Pill(
-                            text = b.prUrl.substringAfter("github.com/").replace("/pull/", "#").ifBlank { "Pull request" },
-                            icon = CursorIcons.GitPullRequest,
-                            tint = colors.gitAdded,
-                            fill = colors.gitAdded.copy(alpha = 0.14f),
-                            onClick = { uriHandler.openUri(b.prUrl) },
-                        )
-                    } else if (b.branch != null) {
-                        Pill(text = b.branch, icon = CursorIcons.GitBranch)
-                    }
-                }
+                pushed.forEach { branch -> Pill(text = branch, icon = CursorIcons.GitBranch) }
             }
         }
     }
