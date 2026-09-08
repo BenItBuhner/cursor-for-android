@@ -165,7 +165,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** The screen is back in the foreground: catch up on whatever the run did while the app was away. */
     fun revalidate() = graph.conversations.revalidate(agentId)
 
-    fun togglePinned() = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    fun togglePinned() = viewModelScope.launch {
+        // The pin is applied either way; the toast only says when the account has not been told yet.
+        graph.pins.toggle(agentId).onFailure { toast.value = "Saved on this device; it syncs with your Cursor account when it's reachable." }
+    }
 
     fun archive(onDone: () -> Unit) = viewModelScope.launch {
         graph.agents.archive(agentId).onSuccess { toast.value = "Agent archived"; onDone() }.onFailure { toast.value = it.userMessage() }

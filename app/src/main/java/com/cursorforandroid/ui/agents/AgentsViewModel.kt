@@ -7,6 +7,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
+import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
@@ -27,6 +28,8 @@ import kotlinx.coroutines.launch
 
 data class AgentListUiState(
     val sections: List<AgentSection> = emptyList(),
+    /** New Chat recent cards: same Chats filters as the sidebar, never the sidebar search query. */
+    val recentRows: List<AgentRow> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
     val prefs: ListPreferences = ListPreferences(),
@@ -50,9 +53,15 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
         query,
     ) { list, prefs, local, q ->
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q)
+        val recentRows = if (q.isBlank()) {
+            sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
+        } else {
+            AgentListOrganizer.recentRows(list.agents, prefs, local)
+        }
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
         AgentListUiState(
             sections = sections,
+            recentRows = recentRows,
             allAgents = list.agents,
             repoSlugs = list.agents.mapNotNull { it.repoSlug }.distinct().sortedBy { it.lowercase() },
             prefs = prefs,
@@ -91,7 +100,8 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setQuery(value: String) { query.value = value }
 
-    fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    /** Applies at once; the account hears about it now or at the next sync, so a failure needs no attention here. */
+    fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 

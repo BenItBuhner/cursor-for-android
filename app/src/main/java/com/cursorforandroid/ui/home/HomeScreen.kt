@@ -95,7 +95,7 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
-    val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
+    val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
         onPicked = viewModel::addAttachments,
