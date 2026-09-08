@@ -400,6 +400,33 @@ class TimelineBuilderTest {
         assertThat(live.finished).isTrue()
     }
 
+    /**
+     * Text is only written into its item when something is about to read it, so every reader — a snapshot between
+     * two deltas, a tool call closing a thought, the result — has to see everything that arrived before it.
+     */
+    @Test
+    fun `a snapshot between deltas shows the text so far and loses nothing appended after it`() {
+        val live = TimelineBuilder.LiveRun("run-7") { 1_000L }
+        live.apply(RunStreamEvent.Thinking("Look"))
+        assertThat(live.snapshot().filterIsInstance<ActivityGroup>().single().thoughts.single().text).isEqualTo("Look")
+        live.apply(RunStreamEvent.Thinking("ing around."))
+        live.apply(RunStreamEvent.Assistant("Half "))
+        assertThat(live.snapshot().filterIsInstance<ActivityGroup>().single().thoughts.single().text).isEqualTo("Looking around.")
+        assertThat(live.snapshot().filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Half ")
+        live.apply(RunStreamEvent.Assistant("way."))
+        live.apply(RunStreamEvent.Thinking("More"))
+        live.apply(RunStreamEvent.Thinking(" thought."))
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(RunStreamEvent.Assistant("Done."))
+
+        val items = live.snapshot()
+        assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Half way.", "Done.").inOrder()
+        assertThat(items.filterIsInstance<ActivityGroup>().flatMap { it.thoughts }.map { it.text })
+            .containsExactly("Looking around.", "More thought.").inOrder()
+        // Taking it twice with nothing in between says exactly the same thing.
+        assertThat(live.snapshot()).isEqualTo(items)
+    }
+
     @Test
     fun `result text is used when no assistant deltas arrived`() {
         val live = TimelineBuilder.LiveRun("run-1")

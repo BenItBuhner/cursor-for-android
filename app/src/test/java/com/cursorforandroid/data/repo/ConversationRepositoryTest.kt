@@ -808,6 +808,49 @@ class ConversationRepositoryTest {
         assertThat(cache.read("bc-1")!!.value.messages.map { it.text }).containsExactly("Prompt 1", "Reply 1").inOrder()
     }
 
+    /**
+     * A streamed event may only cost what the live run itself costs. The turns that have settled keep the very
+     * items they had — so the derivation stays proportional to the run rather than to the whole chat, the list can
+     * reuse the rows, and the reply keeps one id while it grows, which is what a markdown parse cache keys on.
+     */
+    @Test
+    fun `a streamed event keeps the settled turns' items identical instead of rebuilding the timeline`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"), Triple("run-2", "Prompt 2", "Reply 2"))
+        agents.refresh()
+        expireStream("run-1")
+        expireStream("run-2")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 2 }
+
+        val runId = "run-followup-1"
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 3").isSuccess).isTrue()
+        awaitUntil { state(conversations).isStreaming }
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, RunStreamEvent.Assistant("Reply"))
+        awaitUntil { state(conversations).items.lastOrNull() is AssistantMessage }
+
+        val opening = state(conversations).items
+        val settled = opening.subList(0, opening.size - 1).toList()
+        assertThat(settled.map { it::class.simpleName }).containsExactly(
+            "UserMessage", "AssistantMessage", "RunFooter", "UserMessage", "AssistantMessage", "RunFooter", "UserMessage",
+        ).inOrder()
+        val replyIds = mutableSetOf((opening.last() as AssistantMessage).id)
+
+        repeat(16) { n ->
+            streamer.emit(runId, RunStreamEvent.Assistant(" $n"))
+            awaitUntil { (state(conversations).items.lastOrNull() as? AssistantMessage)?.markdown?.endsWith(" $n") == true }
+            val grown = state(conversations).items
+            assertThat(grown).hasSize(settled.size + 1)
+            settled.forEachIndexed { i, item -> assertThat(grown[i]).isSameInstanceAs(item) }
+            replyIds += (grown.last() as AssistantMessage).id
+        }
+
+        assertThat(replyIds).hasSize(1)
+        assertThat((state(conversations).items.last() as AssistantMessage).markdown)
+            .isEqualTo("Reply" + (0..15).joinToString("") { " $it" })
+    }
+
     @Test
     fun `forgetting an agent removes its transcript from disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")

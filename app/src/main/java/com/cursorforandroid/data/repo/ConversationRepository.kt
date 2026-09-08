@@ -117,6 +117,24 @@ class ConversationRepository(
     private data class LiveTrace(val runId: String, val items: List<TimelineItem>)
 
     /**
+     * A built timeline with nothing yet from the run being followed, and the inputs it was built from. Every
+     * mutation replaces the collection it changes, so identity is all it takes to tell whether the build still
+     * stands — which it does for the whole of a run, however many events it streams.
+     */
+    private class Prefix(entry: Entry, private val liveRunId: String, val items: List<TimelineItem>) {
+        private val messages = entry.messages
+        private val runs = entry.runs
+        private val local = entry.local
+        private val traces = entry.traces
+        private val promptImages = entry.promptImages
+        val ids: Set<String> = items.mapTo(HashSet(items.size)) { it.id }
+
+        fun matches(entry: Entry, runId: String): Boolean = liveRunId == runId &&
+            messages === entry.messages && runs === entry.runs && local === entry.local &&
+            traces === entry.traces && promptImages === entry.promptImages
+    }
+
+    /**
      * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
      * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
      */
@@ -163,6 +181,10 @@ class ConversationRepository(
         @Volatile var launching = false
         var attached = 0
         var lastUsedAt = AppClock.now()
+        private var builtPrefix: Prefix? = null
+        private var orderedFromRuns: List<RunDto>? = null
+        private var orderedFromLocal: List<LocalPrompt>? = null
+        private var orderedRuns: List<RunDto> = emptyList()
 
         val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty()
         val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && !launching
@@ -183,15 +205,32 @@ class ConversationRepository(
          * the list that renders these.
          */
         fun items(): List<TimelineItem> {
-            val shown = shownTraces()
+            val current = live
             val ordered = allRuns()
             val covered = coveredCount()
+            // A followed run is always the newest one there is, so it sorts last and everything the transcript
+            // renders before it is untouched by an event. That part is built once and kept until an input actually
+            // changes; a streamed event only re-appends the run's own items.
+            val tail = current?.takeIf { ordered.size > covered && ordered.lastOrNull()?.id == it.runId && it.runId !in traces }
+                ?: return build(shownTraces(), ordered, covered)
+            val prefix = builtPrefix?.takeIf { it.matches(this, tail.runId) } ?: buildPrefix(tail.runId, ordered, covered)
+            return prefix.items + tail.items.withUniqueIds(prefix.ids)
+        }
+
+        /** The timeline with [shown] standing in for the runs that have a trace. */
+        private fun build(shown: Map<String, List<TimelineItem>>, ordered: List<RunDto>, covered: Int): List<TimelineItem> {
             val items = TimelineBuilder.fromHistory(messages, ordered.take(covered), shown, promptImages).toMutableList()
             ordered.drop(covered).forEach { run ->
                 val prompt = local.firstOrNull { it.run.id == run.id }
                 items += TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages)
             }
             return items.withUniqueIds()
+        }
+
+        /** Everything but the followed run's own items: an empty trace makes the builder contribute nothing for it. */
+        private fun buildPrefix(liveRunId: String, ordered: List<RunDto>, covered: Int): Prefix {
+            val items = build(traces + (liveRunId to emptyList()), ordered, covered)
+            return Prefix(this, liveRunId, items).also { builtPrefix = it }
         }
 
         /** The complete traces, plus the story so far of the followed run unless it already has a complete one. */
@@ -202,8 +241,12 @@ class ConversationRepository(
 
         /** Every run known, oldest first: the server's, then the runs of prompts sent from here that its list lacks — placeholders included. */
         fun allRuns(): List<RunDto> {
+            if (orderedFromRuns === runs && orderedFromLocal === local) return orderedRuns
             val listed = runs.mapTo(HashSet()) { it.id }
-            return (runs + local.map { it.run }.filter { it.id !in listed }).sortedBy { parseIsoMillis(it.createdAt) }
+            orderedRuns = (runs + local.map { it.run }.filter { it.id !in listed }).sortedBy { parseIsoMillis(it.createdAt) }
+            orderedFromRuns = runs
+            orderedFromLocal = local
+            return orderedRuns
         }
 
         /** How many runs, oldest first, the server's transcript has a prompt for. */
