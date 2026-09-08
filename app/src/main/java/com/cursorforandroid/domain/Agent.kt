@@ -125,6 +125,8 @@ data class CursorUser(
     val firstName: String?,
     val lastName: String?,
     val userId: Long?,
+    /** The account's picture, from the account service; the public API's `/v1/me` has none. Null shows the initials. */
+    val profilePictureUrl: String? = null,
 ) {
     val displayName: String
         get() = listOfNotNull(firstName, lastName).joinToString(" ").ifBlank { email ?: apiKeyName }

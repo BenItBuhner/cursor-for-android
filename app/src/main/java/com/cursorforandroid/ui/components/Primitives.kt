@@ -46,6 +46,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -254,7 +257,9 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
         modifier
             .size(width = 36.dp, height = 20.dp)
             .background(track, CircleShape)
-            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch),
+            .pressable({ onCheckedChange(!checked) }, CircleShape, role = Role.Switch)
+            // On / off for TalkBack (and for tests that wait for the switch itself, not the preference behind it).
+            .semantics { toggleableState = ToggleableState(checked) },
     ) {
         Box(
             Modifier

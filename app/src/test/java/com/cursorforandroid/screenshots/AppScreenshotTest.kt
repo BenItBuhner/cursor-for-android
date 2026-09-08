@@ -9,9 +9,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -251,10 +253,16 @@ class AppScreenshotTest {
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
-        waitForText("OLED black")
+        // The preference is one thing, the screen having recomposed from it another: wait for the copy that only the
+        // dark theme shows, or a slow runner captures "Match system" still checked.
+        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
         capture("20_settings_dark")
         compose.onNodeWithText("OLED black").performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.oledBlack.first() } }
+        // The switch in the OLED row (its row merges the label into its semantics) reads on once the screen has caught up.
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(isOn() and hasAnyAncestor(hasText("OLED black", substring = true))).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
         capture("21_settings_oled")
         compose.onNodeWithContentDescription("Back").performClick()

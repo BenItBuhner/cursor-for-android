@@ -6,6 +6,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -38,22 +39,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
@@ -262,7 +272,20 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
 @Composable
 fun Avatar(user: CursorUser, size: Dp = CursorDimens.avatar) {
     val colors = CursorTheme.colors
+    val loader = LocalMediaLoader.current
+    val url = user.profilePictureUrl
+    val px = with(LocalDensity.current) { size.roundToPx() }
+    // The picture, once it has been fetched (cached by URL, so a second sidebar or screen shows it at once); the
+    // initials underneath stand in until then, and stay when there is no picture or it cannot be loaded.
+    val picture by produceState<ImageBitmap?>(initialValue = null, url, loader, px) {
+        value = if (url == null || loader == null) null else runCatching { loader.image(MediaRef.Remote(url), px, px).asImageBitmap() }.getOrNull()
+    }
+    // The circle is drawn as before (pixel for pixel, for the screenshots); only the picture is clipped to it.
     Box(Modifier.size(size).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
         Text(user.initials, style = CursorTheme.typography.small.copy(fontWeight = FontWeight.Medium), color = colors.textPrimary)
+        picture?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(CircleShape)) }
     }
 }
+
+/** How [Avatar] fetches profile pictures; null (the default, and the screenshot tests' case) leaves the initials. */
+val LocalMediaLoader = staticCompositionLocalOf<MediaLoader?> { null }

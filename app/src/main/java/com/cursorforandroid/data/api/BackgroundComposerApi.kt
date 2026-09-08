@@ -19,7 +19,7 @@ interface PinsApi {
  * apps ("background composer" is what a cloud agent is called there; its `bc_id` is the agent id the public API
  * uses). Only the pin surface is used: `ListBackgroundComposers` with `includePinnedState` returns the user's
  * `pinnedBcIds`, and `Pin` / `UnpinBackgroundComposers` change them. Calls carry the session token from
- * [SessionTokenProvider]; one `401` is answered by starting a new session and trying once more.
+ * [SessionTokenProvider] (see [unaryWithSession]).
  */
 class BackgroundComposerApi(
     private val rpc: ConnectJsonClient,
@@ -46,17 +46,8 @@ class BackgroundComposerApi(
         call("UnpinBackgroundComposers", BcIdsDto(ids.toList()), BcIdsDto.serializer(), EmptyResponseDto.serializer())
     }
 
-    private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O {
-        val token = tokens.accessToken()
-        return try {
-            rpc.unary(SERVICE, method, token, body, requestSerializer, responseSerializer)
-        } catch (e: ConnectRpcException) {
-            if (!e.isUnauthenticated) throw e
-            // The session lapsed or was revoked underneath us; a fresh one from the key settles which.
-            tokens.invalidate()
-            rpc.unary(SERVICE, method, tokens.accessToken(), body, requestSerializer, responseSerializer)
-        }
-    }
+    private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
+        rpc.unaryWithSession(SERVICE, method, tokens, body, requestSerializer, responseSerializer)
 
     // Request fields carry no defaults on purpose: CursorJson does not encode defaults, and every flag must be sent.
 

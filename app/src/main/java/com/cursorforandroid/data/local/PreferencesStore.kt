@@ -35,6 +35,7 @@ private data class CachedUser(
     val firstName: String?,
     val lastName: String?,
     val userId: Long?,
+    val profilePictureUrl: String? = null,
 )
 
 /** Everything that is device-local: theme, list customization, pins, read markers and composer defaults. */
@@ -177,7 +178,7 @@ class PreferencesStore(context: Context) {
 
     val cachedUser: Flow<CursorUser?> = store.data.map { p ->
         p[Keys.cachedUser]?.let { runCatching { CursorJson.decodeFromString(CachedUser.serializer(), it) }.getOrNull() }
-            ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId) }
+            ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId, it.profilePictureUrl) }
     }
 
     /** How the stored key was obtained and when it lapses. A key stored before this was recorded counts as pasted. */
@@ -251,7 +252,7 @@ class PreferencesStore(context: Context) {
         } else {
             p[Keys.cachedUser] = CursorJson.encodeToString(
                 CachedUser.serializer(),
-                CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId),
+                CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId, user.profilePictureUrl),
             )
         }
     }
