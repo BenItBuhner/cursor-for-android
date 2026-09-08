@@ -916,6 +916,35 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `a paused chat stops following and picks the run up again on resume`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        streamer.emit("run-1", RunStreamEvent.Assistant("Working"))
+        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+
+        // The screen stopped: nothing publishes into it, and the fragment the stream had gone with the follow.
+        conversations.pause("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        streamer.emit("run-1", RunStreamEvent.Assistant(" on it."))
+        delay(100)
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+
+        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch.
+        val fetches = api.conversationCalls
+        conversations.resume("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown)
+            .isEqualTo("Working on it.")
+    }
+
+    @Test
     fun `a run whose status this build cannot read does not leave the chat working`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         api.transcripts["bc-1"] = transcript("user_message" to "Ship it")

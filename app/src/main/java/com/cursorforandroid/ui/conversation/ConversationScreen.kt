@@ -132,10 +132,11 @@ fun ConversationScreen(
         }
     }
     // Coming back to the foreground: the network may have taken the stream down while the app was away, or the run
-    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op.
+    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op. Stopping
+    // lets the run go for the notification service to watch, rather than streaming into a screen nobody can see.
     LifecycleStartEffect(agentId) {
-        viewModel.revalidate()
-        onStopOrDispose { }
+        viewModel.resume()
+        onStopOrDispose { viewModel.pause() }
     }
 
     val items = conversation.items

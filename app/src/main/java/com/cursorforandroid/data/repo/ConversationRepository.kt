@@ -411,6 +411,38 @@ class ConversationRepository(
         )
     }
 
+    /**
+     * The screen stopped without its ViewModel going with it — the app was backgrounded, or a destination that keeps
+     * it alive came up. Nothing can see the chat, so the stream and the replays stop; the reference count is
+     * untouched, so this is not a [detach] and the entry stays warm for [resume].
+     *
+     * The run itself carries on: the hub keeps the shared stream alive for the live-notification monitor and for its
+     * release grace, so a quick app switch tears nothing down, and a longer absence is caught up by [resume].
+     */
+    fun pause(agentId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        synchronized(e) {
+            if (e.attached == 0) return
+            e.traceJob?.cancel()
+            e.traceJob = null
+            e.stopFollowing()
+        }
+    }
+
+    /**
+     * The screen is back. A run still going is followed again straight away rather than waiting on [revalidate],
+     * which skips the fetch when the history was read moments ago — after a short absence that would otherwise
+     * leave the chat paused with a run streaming behind it.
+     */
+    fun resume(agentId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        val run = synchronized(e) {
+            if (e.attached == 0 || e.streamJob != null || e.launching) null else e.latestRun()?.takeIf { it.statusEnum().isActive }
+        }
+        if (run != null) startStreaming(e, e.agentId, run)
+        revalidate(agentId)
+    }
+
     fun reload(agentId: String) {
         val e = entry(agentId)
         e.stopFollowing()

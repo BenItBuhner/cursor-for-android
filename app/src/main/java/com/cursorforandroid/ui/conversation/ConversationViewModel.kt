@@ -162,8 +162,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun reload() = graph.conversations.reload(agentId)
 
-    /** The screen is back in the foreground: catch up on whatever the run did while the app was away. */
-    fun revalidate() = graph.conversations.revalidate(agentId)
+    /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
+    fun resume() = graph.conversations.resume(agentId)
+
+    /** The screen stopped. The run keeps going — the notification service is what watches it now. */
+    fun pause() = graph.conversations.pause(agentId)
 
     fun togglePinned() = viewModelScope.launch {
         // The pin is applied either way; the toast only says when the account has not been told yet.
