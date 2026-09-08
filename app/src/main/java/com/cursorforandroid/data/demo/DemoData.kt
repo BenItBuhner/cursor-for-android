@@ -11,6 +11,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.domain.ArtifactPaths
+import com.cursorforandroid.domain.PullRequestState
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
@@ -59,6 +60,8 @@ internal object DemoData {
         val lifecycle: String = "IDLE",
         val branch: String? = null,
         val prUrl: String? = null,
+        /** Where GitHub would say [prUrl] stands; the demo stands in for GitHub as well as for Cursor. */
+        val prState: PullRequestState? = null,
         val summary: String? = null,
         val env: String = "cloud",
         val envName: String? = null,
@@ -99,7 +102,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0002", name = "Revenue Scaling Pipeline Research", repo = REPO_CESIUM, ageMillis = 2 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/revenue-pipeline-3f2a", prUrl = "https://github.com/techlitnow/cesium/pull/214",
+            runStatus = "FINISHED", branch = "cursor/revenue-pipeline-3f2a", prUrl = "https://github.com/techlitnow/cesium/pull/214", prState = PullRequestState.Open,
             summary = "Mapped the revenue pipeline surfaces and opened a PR with the metering scaffold.", durationMs = 41 * MIN,
             prompt = "Research how a metering + billing pipeline would attach to the current Convex/Clerk cloud layer and scaffold the entry points.",
             replies = listOf(
@@ -135,7 +138,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0005", name = "House environment overhaul", repo = REPO_VISUAL, ageMillis = 30 * MIN,
-            runStatus = "FINISHED", branch = "cursor/house-environment-7b3e", prUrl = "https://github.com/bennett/visual-engine/pull/67",
+            runStatus = "FINISHED", branch = "cursor/house-environment-7b3e", prUrl = "https://github.com/bennett/visual-engine/pull/67", prState = PullRequestState.Draft,
             summary = "Rebuilt the house environment with modular rooms and baked lighting.", durationMs = 58 * MIN,
             prompt = "Overhaul the house environment: modular rooms, baked lighting, and a day/night cycle. Open a PR when done.",
             replies = listOf("Rebuilt the environment into 9 modular room prefabs with a shared material atlas, added baked lighting for both day and night states and wired the cycle to the existing `WorldClock`. PR is open with 67 files changed."),
@@ -162,7 +165,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0007", name = "Latest release process", repo = REPO_ANDROID, ageMillis = 3 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/release-process-1a2b", prUrl = "https://github.com/bennett/cursor-for-android/pull/3", durationMs = 22 * MIN,
+            runStatus = "FINISHED", branch = "cursor/release-process-1a2b", prUrl = "https://github.com/bennett/cursor-for-android/pull/3", prState = PullRequestState.Merged, durationMs = 22 * MIN,
             prompt = "Document the release process and add a GitHub Action that builds a signed release APK on tags.",
             replies = listOf("Added `.github/workflows/release.yml` that assembles a release build on `v*` tags and uploads the APK as a release asset. Signing uses the `ANDROID_KEYSTORE_B64` secret."),
             trace = listOf(
@@ -186,7 +189,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0009", name = "Projector product demo", repo = REPO_VISUAL, ageMillis = 5 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/projector-demo-8f9a", prUrl = "https://github.com/bennett/visual-engine/pull/71", durationMs = 33 * MIN,
+            runStatus = "FINISHED", branch = "cursor/projector-demo-8f9a", prUrl = "https://github.com/bennett/visual-engine/pull/71", prState = PullRequestState.Open, durationMs = 33 * MIN,
             prompt = "Create a product demo scene for the projector with a looping showcase animation.",
             replies = listOf("Added the showcase loop with three camera beats and a captioned overlay. PR open."),
             trace = listOf(
@@ -203,7 +206,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0011", name = "Fruit fly brain environment", repo = REPO_MARKET, ageMillis = 8 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/fly-brain-2c3d", prUrl = "https://github.com/bennett/market-replay/pull/12", durationMs = 47 * MIN,
+            runStatus = "FINISHED", branch = "cursor/fly-brain-2c3d", prUrl = "https://github.com/bennett/market-replay/pull/12", prState = PullRequestState.Closed, durationMs = 47 * MIN,
             prompt = "Set up a simulation environment for the fruit fly connectome dataset with a Gymnasium-compatible interface.",
             replies = listOf("Environment wraps the connectome graph with a `FlyBrainEnv` Gymnasium class, includes a smoke test and a notebook. PR is open."),
             trace = listOf(
@@ -247,7 +250,7 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0014", name = "Onboarding copy pass", repo = REPO_CESIUM, ageMillis = DAY + 6 * HOUR,
-            runStatus = "FINISHED", branch = "cursor/onboarding-copy-9b8c", prUrl = "https://github.com/techlitnow/cesium/pull/209", durationMs = 15 * MIN,
+            runStatus = "FINISHED", branch = "cursor/onboarding-copy-9b8c", prUrl = "https://github.com/techlitnow/cesium/pull/209", prState = PullRequestState.Merged, durationMs = 15 * MIN,
             prompt = "Tighten the onboarding copy and remove the marketing tone from error states.",
             replies = listOf("Rewrote 23 strings; error states now say what happened and what to do next. PR open."),
             trace = listOf(
@@ -277,11 +280,15 @@ internal object DemoData {
         ),
         Seed(
             id = "bc-demo-0017", name = "Weekly dependency bump", repo = REPO_ANDROID, ageMillis = 16 * DAY,
-            runStatus = "FINISHED", branch = "cursor/deps-bump-2f3a", prUrl = "https://github.com/bennett/cursor-for-android/pull/1", durationMs = 6 * MIN,
+            runStatus = "FINISHED", branch = "cursor/deps-bump-2f3a", prUrl = "https://github.com/bennett/cursor-for-android/pull/1", prState = PullRequestState.Merged, durationMs = 6 * MIN,
             prompt = "Bump Gradle plugins and Compose to the latest stable versions.",
             replies = listOf("Bumped AGP, Kotlin and the Compose BOM; build and tests green."),
         ),
     )
+
+    /** The seeds' pull requests as GitHub would report them, by URL. */
+    val pullRequestStates: Map<String, PullRequestState> =
+        seeds.mapNotNull { seed -> seed.prUrl?.let { url -> seed.prState?.let { url to it } } }.toMap()
 
     fun agentDto(seed: Seed, now: Long, latestRunId: String): AgentDto = AgentDto(
         id = seed.id,

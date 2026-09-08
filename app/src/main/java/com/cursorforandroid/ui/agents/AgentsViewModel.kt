@@ -21,7 +21,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -37,18 +39,25 @@ data class AgentListUiState(
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
+    /** True while GitHub refuses to say where some of the listed pull requests stand — private repositories, read without a token. */
+    val pullRequestsUnreadable: Boolean = false,
+    val hasGitHubToken: Boolean = false,
 )
 
 class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     private val query = MutableStateFlow("")
 
+    private val pullRequests = combine(graph.pullRequests.statuses, graph.pullRequests.hasToken) { statuses, hasToken -> statuses to hasToken }
+
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
         graph.prefs.listPreferences,
         graph.prefs.localAgentState,
+        pullRequests,
         query,
-    ) { list, prefs, local, q ->
+    ) { list, prefs, device, (statuses, hasToken), q ->
+        val local = device.copy(pullRequests = statuses.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap())
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
         AgentListUiState(
@@ -63,6 +72,8 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             error = list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
+            pullRequestsUnreadable = list.agents.any { a -> a.prUrl?.let { statuses[it] }?.let { it.state == null } == true },
+            hasGitHubToken = hasToken,
         )
     }
         // Grouping, filtering and sorting a few hundred rows is cheap, but not free on every keystroke of the search
@@ -75,19 +86,37 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             // Disk first, so the list is on screen before the network is consulted; the refresh is then silent
             // when there was something to show and visible (pull-to-refresh indicator) on a truly cold start.
             graph.agents.restoreFromCache()
+            graph.pullRequests.restoreFromCache()
             graph.agents.refresh(silent = graph.agents.state.value.hasLoaded)
+            refreshPullRequests()
         }
         viewModelScope.launch {
             graph.agents.state.collect { s ->
                 graph.catalog.seedRepositories(s.agents.mapNotNull { it.repoUrl })
             }
         }
+        viewModelScope.launch {
+            // A pull request the list has not seen before — restored from disk, paged in, or opened by a run that just
+            // finished — is looked up as soon as it appears; states already known are left to their own schedule.
+            graph.agents.state.map { s -> s.agents.mapNotNullTo(LinkedHashSet()) { it.prUrl } }.distinctUntilChanged().collect { urls ->
+                graph.pullRequests.refresh(urls)
+            }
+        }
     }
 
-    fun refresh() = viewModelScope.launch { graph.agents.refresh() }
+    fun refresh() = viewModelScope.launch {
+        graph.agents.refresh()
+        refreshPullRequests(eager = true)
+    }
 
     /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
-    fun refreshIfStale() = viewModelScope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
+    fun refreshIfStale() = viewModelScope.launch {
+        graph.agents.refreshIfStale(STALE_AFTER_MS)
+        refreshPullRequests()
+    }
+
+    private suspend fun refreshPullRequests(eager: Boolean = false) =
+        graph.pullRequests.refresh(graph.agents.state.value.agents.mapNotNull { it.prUrl }, eager)
 
     fun setQuery(value: String) { query.value = value }
 

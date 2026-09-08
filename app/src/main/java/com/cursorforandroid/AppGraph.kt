@@ -5,9 +5,11 @@ import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.GitHubApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -20,7 +22,9 @@ import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.parseIsoMillis
@@ -56,6 +60,15 @@ class AppGraph(context: Context) {
     )
     val agents = AgentRepository(session, prefs, attachments, caches.agents)
     val catalog = CatalogRepository(session, caches.catalog)
+    /** Where the agents' pull requests stand, read from GitHub: the API names a PR but never says if it is open, merged or closed. */
+    val pullRequests = PullRequestRepository(
+        gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
+        demo = DemoPullRequests,
+        isDemo = { session.isDemo },
+        readToken = { keyStore.gitHubToken() },
+        writeToken = { keyStore.setGitHubToken(it) },
+        cache = caches.pullRequests,
+    )
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
     val conversations = ConversationRepository(
@@ -87,6 +100,7 @@ class AppGraph(context: Context) {
             // reset explicitly or the previous account's agents would show.
             agents.reset()
             catalog.reset()
+            pullRequests.reset()
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
