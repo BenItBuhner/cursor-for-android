@@ -18,7 +18,7 @@ import androidx.compose.ui.graphics.Color
  *  strokes    20 / 12 /  8 /  4 %      (`--cursor-stroke-primary…quaternary`), focus 15 %
  *
  * Accent hues are the theme's `button.background`, `textLink`, `badge`, `gitDecoration.*`, `charts.*` values. The
- * unread dot (#6D9BF0) and the branch glyph (#8B82D8) were sampled from the official web app's sidebar.
+ * unread dot (#6D9BF0) was sampled from the official web app's sidebar.
  */
 @Immutable
 data class CursorColors(
@@ -76,8 +76,6 @@ data class CursorColors(
     val cyan: Color,
     /** Sidebar unread marker. */
     val unreadDot: Color,
-    /** Sidebar glyph for a read agent that has pushed a branch. */
-    val branchGlyph: Color,
     val codeString: Color,
     val codeFunction: Color,
     val codeNumber: Color,
@@ -127,7 +125,6 @@ val CursorDarkColors = CursorColors(
     purple = Color(0xFFB48EAD),
     cyan = Color(0xFF88C0D0),
     unreadDot = Color(0xFF6D9BF0),
-    branchGlyph = Color(0xFF8B82D8),
     codeString = Color(0xFFA8CC7C),
     codeFunction = Color(0xFFEBC88D),
     codeNumber = Color(0xFFF8C762),
@@ -174,7 +171,6 @@ val CursorLightColors = CursorColors(
     purple = Color(0xFF7565CC),
     cyan = Color(0xFF176C74),
     unreadDot = Color(0xFF2778C1),
-    branchGlyph = Color(0xFF7565CC),
     codeString = Color(0xFF007041),
     codeFunction = Color(0xFFA46700),
     codeNumber = Color(0xFFCD4500),
