@@ -45,7 +45,7 @@ object WidgetList {
     ): List<AgentRow> = when (mode) {
         // The New Chat pane's recent list: every row the Chats filters let through, newest first. Sidebar search
         // is a find-in-rail, not a second filter on this list.
-        WidgetMode.Recent -> AgentListOrganizer.recentRows(agents, prefs, local)
+        WidgetMode.Recent -> AgentListOrganizer.recentRows(agents, prefs, local, nowMillis = nowMillis, zone = zone)
         // The sidebar's "Pinned" group, in the sidebar's order.
         WidgetMode.Pinned -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
             .firstOrNull { it.key == "pinned" }?.rows.orEmpty()

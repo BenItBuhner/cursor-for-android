@@ -45,8 +45,9 @@ data class FollowUpModelState(
     val isLoading: Boolean = false,
     /** `GET /v1/models` failed and nothing is cached; the picker offers a retry. */
     val unavailable: Boolean = false,
+    /** The name of the chat's model — the catalog's when [current] is resolved, the recorded one otherwise. */
     val currentLabel: String? = null,
-    /** [currentLabel]'s entry in [models]; null when the chat's model is unknown or the catalog no longer lists it. */
+    /** The chat's model's entry in [models]; null when the chat's model is unknown or the catalog no longer lists it. */
     val current: ModelChoice? = null,
     val override: ModelChoice? = null,
     /** null keeps the conversation's mode; true / false asks the next run for plan / agent mode explicitly. */
@@ -54,6 +55,7 @@ data class FollowUpModelState(
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
+    /** The model's name alone — never its parameters — with the plan-mode flag when it is asked for. */
     val chipLabel: String get() = (override?.label ?: currentLabel ?: "Model") + if (planMode == true) " · Plan" else ""
 }
 
@@ -90,13 +92,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     /**
-     * Finds the chat's model in the catalog: by the id and parameters recorded with it, else by its label for rows
-     * recorded before those were kept. Unresolved, the picker shows the label on its "Current model" row instead.
+     * Finds the chat's model in the catalog: by the id recorded with it (its parameters only decide which variant
+     * shows selected), else by its label for rows recorded before the id was kept. The chip then carries the catalog's
+     * name for it; unresolved — the catalog not loaded yet, or the model gone from it — the recorded name stands in,
+     * and the picker shows it on its "Current model" row instead.
      */
     private fun pickerState(agent: Agent?, models: List<ModelOption>, local: FollowUpModelState): FollowUpModelState {
-        val label = agent?.modelDisplayName
-        val current = agent?.modelId?.let { models.choiceFor(it, agent.modelParams) } ?: label?.let(models::choiceLabelled)
-        return local.copy(models = models, currentLabel = label, current = current)
+        val current = agent?.modelId?.let { models.choiceFor(it, agent.modelParams) } ?: agent?.modelDisplayName?.let(models::choiceLabelled)
+        return local.copy(models = models, currentLabel = current?.label ?: agent?.modelName, current = current)
     }
 
     /** The catalog is shared with the home composer and fetched once per session; a saved copy shows meanwhile. */
@@ -162,7 +165,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** The screen is back in the foreground: catch up on whatever the run did while the app was away. */
     fun revalidate() = graph.conversations.revalidate(agentId)
 
-    fun togglePinned() = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
+    fun togglePinned() = viewModelScope.launch {
+        // The pin is applied either way; the toast only says when the account has not been told yet.
+        graph.pins.toggle(agentId).onFailure { toast.value = "Saved on this device; it syncs with your Cursor account when it's reachable." }
+    }
 
     fun archive(onDone: () -> Unit) = viewModelScope.launch {
         graph.agents.archive(agentId).onSuccess { toast.value = "Agent archived"; onDone() }.onFailure { toast.value = it.userMessage() }
