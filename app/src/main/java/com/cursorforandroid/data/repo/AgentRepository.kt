@@ -30,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,7 +105,10 @@ data class Launched(val agent: Agent, val run: RunDto?)
 /**
  * The agent list. Restored from disk before the first fetch so the app opens on the last known state, then kept
  * fresh with stale-while-revalidate refreshes: every v1 page is published the moment it arrives, the legacy v0
- * enrichment (repo / branch / PR / summary) lands independently, and a failure never wipes what is already shown.
+ * enrichment (repo / branch / PR / summary / execution status) lands independently, the runs whose state is still in
+ * question are then read from their records (see [verifyRunStatuses]), and a failure never wipes what is already
+ * shown. The server's `updatedAt` is the row's activity time; a stamp made here survives a refresh only while the
+ * server is about to confirm it (see `reconcileUpdatedAt`).
  */
 class AgentRepository(
     private val session: SessionManager,
@@ -183,13 +187,14 @@ class AgentRepository(
     }
 
     /**
-     * For returning to the foreground: refreshes silently unless one is already in flight or the current backend's
-     * list was fetched less than [maxAgeMs] ago. A list from another backend, or none, is always stale.
+     * For returning to the foreground and for polling while the list is on screen: refreshes silently unless one is
+     * already in flight or the current backend's list was fetched less than [maxAgeMs] ago. A list from another
+     * backend, or none, is always stale.
      */
-    suspend fun refreshIfStale(maxAgeMs: Long) {
+    suspend fun refreshIfStale(maxAgeMs: Long, depth: RefreshDepth = RefreshDepth.Full) {
         if (synchronized(this) { inFlight?.job?.isActive == true }) return
         if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return
-        refresh(silent = true)
+        refresh(silent = true, depth = depth)
     }
 
     /**
@@ -248,9 +253,11 @@ class AgentRepository(
         val startedAt = AppClock.now()
         dropForeignList(backend)
         val startedIn = generation.get()
-        // Rows that appear while the pages are in flight and are not in the server's answer were launched here
-        // meanwhile; the complete-listing cleanup below must not make a chat the user just started vanish.
-        val knownBefore = _state.value.agents.mapTo(HashSet()) { it.id }
+        // The rows as they were when the fetch started. Rows that appear while the pages are in flight and are not in
+        // the server's answer were launched here meanwhile; the complete-listing cleanup below must not make a chat
+        // the user just started vanish. And a row whose latest run is not the one it had is a new turn to verify.
+        val before = _state.value.agents.associateBy { it.id }
+        val knownBefore = before.keys
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState): Boolean {
@@ -277,6 +284,7 @@ class AgentRepository(
                 truncated = cursor != null
                 legacy.await().takeIf { it.isNotEmpty() }?.let { v0 -> publish { it.withLegacy(v0) } }
             }
+            verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) }
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
                 (if (complete) s.withoutUnseen(seen, knownBefore, startedAt) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
@@ -306,6 +314,46 @@ class AgentRepository(
     }.getOrDefault(emptyMap())
 
     private fun maxPages(depth: RefreshDepth) = if (depth == RefreshDepth.Quick) 1 else MAX_PAGES
+
+    /**
+     * Settles the execution state the lists could not. The v1 list has no run state at all (its `status` is a
+     * lifecycle that reads `ACTIVE` for finished agents too), the legacy list is one status per agent and best effort,
+     * so once both have landed the runs still in question are read from their records — the one source that is
+     * neither stale nor ambiguous about them — and folded into their rows. In question are, at most [MAX_VERIFIED_RUNS]
+     * per refresh and in this order of urgency, newest activity first:
+     *  - rows whose latest run is not the one they had when the fetch started, with recent activity: a turn started
+     *    elsewhere, whose spinner should not wait for the legacy list to catch up with it;
+     *  - rows that say a run is active: the list may lag its finish, or the row may be a cache from days ago. This is
+     *    the polling the API documents for run state, and it is what stops a stale spinner without opening a stream
+     *    (streaming a finished run's log as if it were live is what stamped old chats "updated just now");
+     *  - rows that say a run is over but were active within the last few minutes: a turn that just ended, or one that
+     *    is going while the legacy list still describes the previous one — the record tells which;
+     *  - rows with no run-level status at all, with recent activity: the legacy list failed or does not know them.
+     * A quiet row with no status is left at rest: `updatedAt` going quiet is what a finished run looks like, and
+     * reading hundreds of old records would gain nothing. A record that cannot be read leaves its row as it is.
+     */
+    private suspend fun verifyRunStatuses(api: CursorApi, before: Map<String, Agent>, startedAt: Long, publish: ((AgentListState) -> AgentListState) -> Boolean) {
+        // A fetch that can no longer publish (backend switch, sign-out) has no rows of its own to settle.
+        if (!publish { it }) return
+        fun recent(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_RECENT_WINDOW_MS
+        fun justActive(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_JUST_ACTIVE_WINDOW_MS
+        fun newTurn(agent: Agent) = before[agent.id]?.latestRunId.let { it != null && it != agent.latestRunId }
+        val candidates = _state.value.agents.asSequence()
+            .filter { it.latestRunId != null && !it.isArchived && it.id !in pendingLaunches }
+            .filter { (newTurn(it) && recent(it)) || it.isRunning || justActive(it) || (it.runStatusUnknown && recent(it)) }
+            .sortedWith(compareByDescending<Agent> { newTurn(it) }.thenByDescending { it.isRunning }.thenByDescending { it.updatedAtMillis })
+            .take(MAX_VERIFIED_RUNS)
+            .toList()
+        if (candidates.isEmpty()) return
+        coroutineScope {
+            candidates.map { agent ->
+                async {
+                    val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@async
+                    publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(run) else it }) }
+                }
+            }.awaitAll()
+        }
+    }
 
     /**
      * Merges one v1 page: known rows are refreshed in place (keeping what richer sources knew), new ones appended.
@@ -539,6 +587,12 @@ class AgentRepository(
         const val MAX_PAGES = 5
         const val PERSIST_DELAY_MS = 1_500L
         const val RECENT_WINDOW_MS = 5 * 60 * 1000L
+        /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */
+        const val MAX_VERIFIED_RUNS = 12
+        /** A row without a run-level status is only worth a record read while its activity is this recent. */
+        const val VERIFY_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000L
+        /** A row that reads finished but was active this recently may still be going; its record settles it. */
+        const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
         const val AGENT_ID_CONFLICT = "agent_id_conflict"
     }
 }

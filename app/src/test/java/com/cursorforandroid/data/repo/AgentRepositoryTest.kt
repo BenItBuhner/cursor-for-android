@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
 import com.cursorforandroid.data.local.AgentListCache
@@ -35,6 +36,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
+import java.time.Instant
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -77,6 +79,8 @@ class AgentRepositoryTest {
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
     }
+
+    private fun iso(millis: Long): String = Instant.ofEpochMilli(millis).toString()
 
     private fun cachedAgent(id: String, name: String, runStatus: RunStatus? = RunStatus.FINISHED, lifecycle: AgentLifecycle = AgentLifecycle.IDLE, runId: String? = "run-$id") = Agent(
         id = id,
@@ -237,7 +241,7 @@ class AgentRepositoryTest {
     }
 
     @Test
-    fun `a row cached as running stops spinning once v1 reports the agent idle`() = runBlocking<Unit> {
+    fun `a row cached as running stops spinning once v1 reports the agent idle, and a new run is settled by its record`() = runBlocking<Unit> {
         cache.write(listOf(cachedAgent("bc-1", "Was running", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE, runId = "run-1")))
         api.addIdleAgent("bc-1", "Was running", "run-1")
         api.failListAgentsV0 = IOException("legacy down")
@@ -250,35 +254,126 @@ class AgentRepositoryTest {
         assertThat(row.lifecycle).isEqualTo(AgentLifecycle.IDLE)
         assertThat(row.runStatus).isNull()
         assertThat(row.isRunning).isFalse()
+        // A quiet row without a status is not worth a record read.
+        assertThat(api.getRunCalls).isEqualTo(0)
 
-        // Conversely a new run started elsewhere shows as running through the lifecycle alone.
-        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2")
+        // A new run started elsewhere: the lifecycle says nothing about running (it reads ACTIVE for finished agents
+        // too) and the legacy list is down, so the new run's record is read — and it says running.
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = iso(now - 60_000))
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = iso(now - 60_000), updatedAt = iso(now - 60_000))
         repo.refresh()
+        assertThat(api.getRunCalls).isEqualTo(1)
         assertThat(repo.state.value.agents.single().isRunning).isTrue()
         assertThat(repo.state.value.agents.single().latestRunId).isEqualTo("run-2")
     }
 
     @Test
-    fun `a running agent keeps running whatever the legacy list says, from a cold start and from a stale cache`() = runBlocking<Unit> {
-        // The legacy list is one status per agent and can lag or describe an earlier run; here it says the agent is
-        // done while v1 reports it active.
-        api.addRunningAgent("bc-1", "Follow-up in progress", "run-1")
+    fun `a finished agent the server still calls active is shown at rest and left where the server has it`() = runBlocking<Unit> {
+        // The everyday shape of a finished agent on v1: lifecycle ACTIVE, an updatedAt that went quiet weeks ago, a
+        // latest run that is over. This is the row that used to spin, get streamed, and end up "updated just now".
+        api.addIdleAgent("bc-old", "Weeks ago", "run-old", createdAt = "2026-04-13T18:30:00.000Z")
+        api.agents["bc-old"] = api.agents.getValue("bc-old").copy(status = "ACTIVE")
+        val streamer = FakeRunStreamer()
+        session = SessionManager(SecureKeyStore(ApplicationProvider.getApplicationContext()), prefs, CursorBackend(api, streamer, isDemo = false), CursorBackend(api, streamer, isDemo = true))
+        val repo = repository()
+        val hub = LiveRunHub(session, repo, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
+        val monitor = RunMonitor(repo, hub, runRecord = { a, r -> api.getRun(a, r) }, refreshIntervalMs = 600_000, nowProvider = { now })
+
+        repo.refresh()
+        val row = repo.state.value.agents.single()
+        assertThat(row.lifecycle).isEqualTo(AgentLifecycle.ACTIVE)
+        assertThat(row.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.updatedAtMillis).isEqualTo(parseIsoMillis("2026-04-13T18:30:00.000Z"))
+        assertThat(api.getRunCalls).isEqualTo(0)
+
+        monitor.start()
+        delay(200)
+        assertThat(monitor.state.value.running).isEmpty()
+        assertThat(streamer.connections).isEmpty()
+        assertThat(repo.state.value.agents.single()).isEqualTo(row)
+        monitor.stop()
+
+        // Even without the legacy list — no run status at all — an ACTIVE lifecycle is not taken for running, and a
+        // row quiet for that long is not polled for it either.
+        cache.clear()
+        api.failListAgentsV0 = IOException("legacy down")
+        val bare = repository()
+        bare.refresh()
+        val unknown = bare.state.value.agents.single()
+        assertThat(unknown.runStatus).isNull()
+        assertThat(unknown.isRunning).isFalse()
+        assertThat(unknown.updatedAtMillis).isEqualTo(row.updatedAtMillis)
+        assertThat(api.getRunCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun `a row cached as running for a run that is long over is settled from its record without a stream`() = runBlocking<Unit> {
+        cache.write(listOf(cachedAgent("bc-1", "Stale", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE, runId = "run-1")))
+        api.addIdleAgent("bc-1", "Stale", "run-1", createdAt = "2026-04-13T18:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE")
+        api.failListAgentsV0 = IOException("legacy down")
+        val repo = repository()
+        repo.restoreFromCache()
+        assertThat(repo.state.value.agents.single().isRunning).isTrue()
+
+        // The lifecycle cannot end the remembered status (it reads ACTIVE) and the legacy list is down: the row says
+        // running, so its record is read, and the record says the run finished long ago.
+        repo.refresh()
+        val row = repo.state.value.agents.single()
+        assertThat(api.getRunCalls).isEqualTo(1)
+        assertThat(row.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.summary).isEqualTo("Done.")
+        // The server's updatedAt is the row's activity time: the cache's value is superseded, and nothing says "now".
+        assertThat(row.updatedAtMillis).isEqualTo(parseIsoMillis("2026-04-13T18:30:00.000Z"))
+    }
+
+    @Test
+    fun `a running agent the legacy list still calls finished is settled by its run record`() = runBlocking<Unit> {
+        // The legacy list is one status per agent and may lag a follow-up: here it says the agent is done while its
+        // latest run — active a minute ago by the agent's updatedAt — is still going.
+        api.addRunningAgent("bc-1", "Follow-up in progress", "run-1", createdAt = iso(now - 60_000))
         api.v0["bc-1"] = V0AgentDto(id = "bc-1", name = "Follow-up in progress", status = "FINISHED", target = V0TargetDto(branchName = "cursor/x"))
         val repo = repository()
         repo.refresh()
         val cold = repo.state.value.agents.single()
+        assertThat(api.getRunCalls).isEqualTo(1)
         assertThat(cold.isRunning).isTrue()
-        assertThat(cold.runStatus).isNull()
+        assertThat(cold.runStatus).isEqualTo(RunStatus.RUNNING)
         assertThat(cold.branchName).isEqualTo("cursor/x")
 
-        // The disk remembers the same run as finished (an earlier legacy answer); the server has moved on since.
+        // The disk remembers the previous run as finished; the server has moved on to a new one since, and the legacy
+        // list still has not: the new run's record decides.
         awaitUntil { cache.read()?.value?.single()?.isRunning == true }
-        cache.write(listOf(cachedAgent("bc-1", "Follow-up in progress", runStatus = RunStatus.FINISHED, lifecycle = AgentLifecycle.IDLE, runId = "run-1")))
+        cache.write(listOf(cachedAgent("bc-1", "Follow-up in progress", runStatus = RunStatus.FINISHED, lifecycle = AgentLifecycle.IDLE, runId = "run-0")))
         val next = repository()
         next.restoreFromCache()
         assertThat(next.state.value.agents.single().isRunning).isFalse()
         next.refresh()
         assertThat(next.state.value.agents.single().isRunning).isTrue()
+        assertThat(next.state.value.agents.single().latestRunId).isEqualTo("run-1")
+    }
+
+    @Test
+    fun `an activity time stamped here long after the server's is put back on the next refresh`() = runBlocking<Unit> {
+        // A row the old build had marked "updated just now" for a run that finished weeks earlier, persisted as such.
+        cache.write(listOf(cachedAgent("bc-1", "Inflated", runId = "run-1").copy(updatedAtMillis = now)))
+        api.addIdleAgent("bc-1", "Inflated", "run-1", createdAt = "2026-04-13T18:30:00.000Z")
+        val repo = repository()
+        repo.restoreFromCache()
+        assertThat(repo.state.value.agents.single().updatedAtMillis).isEqualTo(now)
+
+        repo.refresh()
+        assertThat(repo.state.value.agents.single().updatedAtMillis).isEqualTo(parseIsoMillis("2026-04-13T18:30:00.000Z"))
+
+        // Whereas a follow-up sent here moments ago keeps its place while the list catches up with it.
+        val sent = repo.followUp("bc-1", "Again")
+        assertThat(sent.isSuccess).isTrue()
+        assertThat(repo.state.value.agents.single().updatedAtMillis).isEqualTo(now)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(updatedAt = iso(now - 30_000))
+        repo.refresh()
+        assertThat(repo.state.value.agents.single().updatedAtMillis).isEqualTo(now)
     }
 
     @Test
@@ -331,7 +426,7 @@ class AgentRepositoryTest {
         session = SessionManager(SecureKeyStore(ApplicationProvider.getApplicationContext()), prefs, CursorBackend(api, streamer, isDemo = false), CursorBackend(api, streamer, isDemo = true))
         val repo = repository()
         val hub = LiveRunHub(session, repo, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, scope = scope)
-        val monitor = RunMonitor(repo, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
+        val monitor = RunMonitor(repo, hub, runRecord = { a, r -> api.getRun(a, r) }, refreshIntervalMs = 600_000, nowProvider = { now })
 
         repo.restoreFromCache()
         assertThat(repo.state.value.agents.count { it.isRunning }).isEqualTo(2)

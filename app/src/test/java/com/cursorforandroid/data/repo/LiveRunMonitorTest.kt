@@ -72,7 +72,7 @@ class LiveRunMonitorTest {
         attachments = AttachmentStore(context)
         agents = AgentRepository(session, prefs, attachments)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
-        monitor = RunMonitor(agents, hub, runStartedAt = { _, _ -> 1_000L }, refreshIntervalMs = 600_000, nowProvider = { now })
+        monitor = RunMonitor(agents, hub, runRecord = { agentId, runId -> api.getRun(agentId, runId) }, refreshIntervalMs = 600_000, nowProvider = { now })
         finishedJob = scope.launch { monitor.finished.collect { finished += it } }
     }
 
@@ -313,6 +313,10 @@ class LiveRunMonitorTest {
         assertThat(polled.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat((polled.items[1] as AssistantMessage).markdown).isEqualTo("Restyled the pills.")
         assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.FINISHED)
+        // The record says when the run ended; the row is stamped with that, not with the moment the record was read.
+        val recordedFinish = parseIsoMillis(api.runs.getValue("run-1").updatedAt)
+        assertThat(polled.finishedAtMillis).isEqualTo(recordedFinish)
+        assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(recordedFinish)
         watcher.cancel()
         val rowAfterFinish = agents.agent("bc-1")!!
 
@@ -374,6 +378,29 @@ class LiveRunMonitorTest {
     }
 
     @Test
+    fun `a run the list still calls running but the record says is over is folded into the row, not streamed`() = runBlocking {
+        // A row cached as running for a run that finished long ago (or a list answer that lagged the finish).
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Add a README", "Added it."))
+        agents.refresh()
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        val rowBefore = agents.agent("bc-1")!!
+        assertThat(rowBefore.isRunning).isTrue()
+
+        monitor.start()
+        awaitUntil { agents.agent("bc-1")?.isRunning == false }
+        delay(150)
+        val row = agents.agent("bc-1")!!
+        assertThat(row.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(row.summary).isEqualTo("Added it.")
+        // No stream was opened for it, nothing was announced, and the row keeps the activity time it had — the finish
+        // happened long ago, not now.
+        assertThat(streamer.connections).isEmpty()
+        assertThat(running()).isEmpty()
+        assertThat(finished).isEmpty()
+        assertThat(row.updatedAtMillis).isEqualTo(rowBefore.updatedAtMillis)
+    }
+
+    @Test
     fun `a replay through an entry once followed live reads history too and leaves the agent row alone`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
@@ -389,6 +416,7 @@ class LiveRunMonitorTest {
         // The run finishes unobserved; its retained log is complete. The row is whatever the last list fetch said.
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Done.", durationMs = 42_000)
         val rowBefore = agents.agent("bc-1")!!
+        val recordReadsBefore = api.getRunCalls
         streamer.emit("run-1", RunStreamEvent.Assistant("Done."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 42_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
@@ -398,7 +426,7 @@ class LiveRunMonitorTest {
         assertThat(snapshot.items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(streamer.connections).containsExactly("run-1", "run-1").inOrder()
         // Reading history is not news about the agent: no poll, no patch, no "updated just now".
-        assertThat(api.getRunCalls).isEqualTo(0)
+        assertThat(api.getRunCalls).isEqualTo(recordReadsBefore)
         assertThat(agents.agent("bc-1")).isEqualTo(rowBefore)
     }
 
