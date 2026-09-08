@@ -178,9 +178,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.agents.unarchive(agentId).onSuccess { toast.value = "Agent unarchived" }.onFailure { toast.value = it.userMessage() }
     }
 
+    // Only once the server has confirmed it: forgetting first leaves a failed delete on a chat whose local copy and
+    // traces are already gone, and whose Refresh can do nothing about it.
     fun delete(onDone: () -> Unit) = viewModelScope.launch {
-        graph.conversations.forget(agentId)
-        graph.agents.delete(agentId).onSuccess { onDone() }.onFailure { toast.value = it.userMessage() }
+        graph.agents.delete(agentId)
+            .onSuccess { graph.conversations.forget(agentId); onDone() }
+            .onFailure { toast.value = it.userMessage() }
     }
 
     fun clearToast() { toast.value = null }

@@ -820,4 +820,24 @@ class ConversationRepositoryTest {
         conversations.forget("bc-1")
         awaitUntil { cache.read("bc-1") == null }
     }
+
+    @Test
+    fun `forgetting a chat a screen still shows empties it in place and leaves its flow alive`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        val conversations = repository()
+        // The screen captures the flow once, at construction, exactly as the ViewModel does.
+        val screen = conversations.state("bc-1")
+        conversations.attach("bc-1")
+        awaitUntil { screen.value.items.isNotEmpty() }
+
+        conversations.forget("bc-1")
+        awaitUntil { screen.value.items.isEmpty() }
+        assertThat(screen.value.isLoading).isFalse()
+        awaitUntil { cache.read("bc-1") == null }
+
+        // Refresh still reaches the flow the screen is collecting rather than a replacement nobody watches.
+        conversations.reload("bc-1")
+        awaitUntil { screen.value.items.filterIsInstance<UserMessage>().map { it.text } == listOf("Prompt 1") }
+    }
 }

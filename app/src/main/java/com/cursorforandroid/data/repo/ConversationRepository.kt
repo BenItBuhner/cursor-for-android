@@ -318,14 +318,51 @@ class ConversationRepository(
         }
     }
 
-    /** Drops everything known about an agent, on disk too; used when it is deleted. */
+    /**
+     * Drops everything known about an agent, on disk too; used when it is deleted. A screen still showing it keeps
+     * its entry, emptied in place: it captured that state flow once, so dropping the entry would leave it collecting
+     * a flow nothing can ever publish to again — and a reload would silently build a second one.
+     */
     fun forget(agentId: String) {
-        synchronized(entries) { entries.remove(agentId) }?.scope?.cancel()
+        val attached = synchronized(entries) {
+            val e = entries[agentId] ?: return@synchronized null
+            if (e.attached > 0) return@synchronized e
+            entries.remove(agentId)
+            e.scope.cancel()
+            null
+        }
+        attached?.emptyInPlace()
         diskIndex[agentId] = ABSENT
         scope.launch {
             cache?.remove(agentId)
             traceCache?.remove(agentId)
         }
+    }
+
+    private fun Entry.emptyInPlace() {
+        streamJob?.cancel()
+        traceJob?.cancel()
+        loadJob?.cancel()
+        publish(
+            mutate = {
+                messages = emptyList()
+                runs = emptyList()
+                local = emptyList()
+                traces = emptyMap()
+                promptImages = emptyMap()
+                live = null
+                streamJob = null
+                traceJob = null
+                loadJob = null
+                recordedFinishes.clear()
+                tracesRestored = false
+                transcriptUnavailable = false
+                fetched = false
+                fetchedAt = 0L
+                inputsUpdatedAt = 0L
+            },
+            transform = { ConversationState(agentId, isLoading = false) },
+        )
     }
 
     fun reload(agentId: String) {
