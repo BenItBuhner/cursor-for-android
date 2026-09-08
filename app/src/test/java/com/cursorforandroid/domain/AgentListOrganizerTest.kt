@@ -155,6 +155,22 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `recent rows ignore search and still honour Chats filters`() {
+        val agents = listOf(
+            agent("login", name = "Fix login", updatedAgo = hour),
+            agent("billing", name = "Billing pipeline"),
+            agent("gone", name = "Login leftover", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val prefs = ListPreferences()
+        val local = LocalAgentState()
+        val searched = AgentListOrganizer.organize(agents, prefs, local, query = "login", nowMillis = now, zone = zone)
+        assertThat(searched.flatMap { it.rows }.map { it.agent.id }).containsExactly("login")
+
+        val recent = AgentListOrganizer.recentRows(agents, prefs, local, nowMillis = now, zone = zone)
+        assertThat(recent.map { it.agent.id }).containsExactly("billing", "login").inOrder()
+    }
+
+    @Test
     fun `sorting by name and by created`() {
         val agents = listOf(agent("b", name = "Beta", updatedAgo = 0), agent("a", name = "alpha", updatedAgo = hour))
         val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.None, sortOrder = SortOrder.Name), LocalAgentState(), nowMillis = now, zone = zone)
