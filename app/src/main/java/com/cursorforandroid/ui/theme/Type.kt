@@ -13,7 +13,8 @@ import com.cursorforandroid.R
  * Cursor's type scale from the desktop build: `--cursor-font-size-xs/sm/base/lg` = 11 / 12 / 13 / 14 px with
  * line heights 14 / 16 / 18 / 22. The UI font is the platform system font (the desktop stack is
  * `SF Pro, -apple-system, BlinkMacSystemFont, sans-serif`), so Android's system sans is the correct analogue.
- * JetBrains Mono is the only font Cursor bundles; it is bundled here for code, paths and branch names.
+ * JetBrains Mono is the only font Cursor bundles; it is bundled here for code and paths only — branch names, PR
+ * refs and every other label stay in the UI font.
  */
 val JetBrainsMono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),

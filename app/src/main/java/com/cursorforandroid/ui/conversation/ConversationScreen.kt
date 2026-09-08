@@ -74,7 +74,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 /**
- * One chat: header with the agent's name and repo · branch, the transcript, and the follow-up composer.
+ * One chat: header with the agent's name and repo · branch (and a button to its pull request once it has one), the
+ * transcript, and the follow-up composer.
  *
  * The transcript is a bottom-anchored (`reverseLayout`) list, which is what keeps it stable while a run streams: the
  * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
@@ -156,6 +157,12 @@ fun ConversationScreen(
                 }
             },
             trailing = {
+                // The pull request gets its own button beside the menu, the same green glyph the list rows and the run
+                // footer's pill use for it: it is the one thing a reader most often leaves the chat for, and the footer
+                // pill sits under the transcript where a long run puts it out of reach.
+                agent?.prUrl?.let { prUrl ->
+                    FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
+                }
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {

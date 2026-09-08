@@ -48,8 +48,21 @@ class AgentListCache(private val cache: JsonDiskCache) {
 }
 
 /**
- * The raw inputs of a transcript rather than the rendered timeline: date headers are relative ("Today at 2:00 PM")
- * and are rebuilt against the current clock on every load.
+ * A prompt sent from this device that the server had not reported in full when the transcript was written: its
+ * message, the run the server created for it, and the reply when the run finished while it was being watched.
+ */
+@Serializable
+data class CachedLocalPrompt(
+    val message: V0ConversationMessageDto,
+    val run: RunDto,
+    val reply: V0ConversationMessageDto? = null,
+)
+
+/**
+ * The raw inputs of a transcript rather than the rendered timeline, which is rebuilt from these on every load together
+ * with the run traces and the prompt images kept on this device. The server's transcript and run list are kept as
+ * they were reported, apart from the prompts sent from here, so the next start can go on standing them in for
+ * whatever the server has still not caught up with.
  */
 @Serializable
 data class CachedConversation(
@@ -59,6 +72,7 @@ data class CachedConversation(
     val transcriptUnavailable: Boolean = false,
     /** The agent row's `updatedAt` when this was fetched; a newer row means the transcript has moved on. */
     val agentUpdatedAtMillis: Long = 0L,
+    val local: List<CachedLocalPrompt> = emptyList(),
 )
 
 class ConversationCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
@@ -81,8 +95,8 @@ class ConversationCache(private val cache: JsonDiskCache, private val maxEntries
 
 /**
  * The trace of one finished run — the thinking, tool and subagent items its stream produced, its final reply and
- * its footer — exactly as the conversation renders it. Unlike the transcript's inputs there is nothing relative in
- * here to rebuild against the clock, so the rendered items are what is kept.
+ * its footer — exactly as the conversation renders it. Unlike the transcript, whose items are derived from its inputs
+ * on every load, a trace is complete in itself, so the rendered items are what is kept.
  */
 @Serializable
 data class CachedTrace(

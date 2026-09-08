@@ -1,8 +1,14 @@
 package com.cursorforandroid.ui.conversation
 
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,25 +22,39 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
+import androidx.compose.ui.unit.round
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.DateHeader
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
@@ -47,6 +67,7 @@ import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.Dot
@@ -62,9 +83,8 @@ import com.cursorforandroid.util.TimeFormat
 @Composable
 fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
     when (item) {
-        is DateHeader -> DateHeaderView(item, modifier)
         is UserMessage -> HumanMessage(item, modifier)
-        is AssistantMessage -> MarkdownText(item.markdown, modifier.fillMaxWidth(), streaming = item.isStreaming)
+        is AssistantMessage -> AssistantMessageView(item, modifier)
         is SummaryRow -> SummaryLine(item.label, item.value, modifier)
         is ActivityGroup -> ActivityGroupView(item, modifier)
         is SubagentsCard -> SubagentsView(item, modifier)
@@ -73,39 +93,110 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
     }
 }
 
-/** Timestamp above a prompt: 11sp at 36 %, aligned with the message. */
-@Composable
-private fun DateHeaderView(item: DateHeader, modifier: Modifier) {
-    Box(modifier.fillMaxWidth().padding(top = 6.dp), contentAlignment = Alignment.CenterEnd) {
-        Text(item.label, style = CursorTheme.typography.tiny, color = CursorTheme.colors.textQuaternary)
-    }
-}
-
 /**
  * `.composer-human-message` from the desktop build: `align-self: flex-end`, `width: fit-content`,
  * `min-width: 150px`, `background: input.background` (4 %), `border: 1px solid stroke-secondary` (12 %),
  * radius xl, padding 8px 10px, inset 32px from the opposite edge, 14/22 text. Attached images sit above the text,
- * as they do on the web.
+ * as they do on the web. Press and hold the bubble for its actions; an image-only prompt has no text to copy.
  */
 @Composable
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
+    val hasText = item.text.isNotBlank()
     Box(modifier.fillMaxWidth().padding(start = 32.dp), contentAlignment = Alignment.CenterEnd) {
-        Column(
-            Modifier
-                .widthIn(min = 150.dp, max = 640.dp)
-                .cursorSurface(colors.fillFaint, colors.stroke, CursorTheme.shapes.xl)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+        MessageActions(
+            text = item.text,
+            enabled = hasText,
+            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint, colors.stroke, CursorTheme.shapes.xl),
         ) {
-            val hasText = item.text.isNotBlank()
-            if (item.attachments.isNotEmpty()) {
-                MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp))
-            }
-            if (hasText || item.attachments.isEmpty()) {
-                MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                if (item.attachments.isNotEmpty()) {
+                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp))
+                }
+                if (hasText || item.attachments.isEmpty()) {
+                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+                }
             }
         }
     }
+}
+
+/**
+ * A reply has no surface of its own, so its press highlight is a soft `lg` card reaching a few dp past the text on
+ * every side. The margin is a [bleed] paired with an equal padding, which leaves the text laid out exactly as wide as
+ * it is without the highlight.
+ */
+@Composable
+private fun AssistantMessageView(item: AssistantMessage, modifier: Modifier) {
+    MessageActions(
+        text = item.markdown,
+        modifier = modifier.fillMaxWidth().bleed(horizontal = 6.dp, vertical = 4.dp).clip(CursorTheme.shapes.lg),
+    ) {
+        MarkdownText(item.markdown, Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), streaming = item.isStreaming)
+    }
+}
+
+/**
+ * Press and hold on a message: a haptic tick, then a context menu at the finger with "Copy message" (the raw text or
+ * markdown, so it pastes back into a prompt or an editor as written). A plain tap does nothing beyond the press
+ * highlight, and links, images and code blocks inside keep their own gestures. The caller clips [modifier] to the
+ * shape the highlight should take.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageActions(
+    text: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    val colors = CursorTheme.colors
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    var menuOpen by remember { mutableStateOf(false) }
+    var pressedAt by remember { mutableStateOf(IntOffset.Zero) }
+    LaunchedEffect(interaction) {
+        interaction.interactions.collect { if (it is PressInteraction.Press) pressedAt = it.pressPosition.round() }
+    }
+    Box(
+        modifier.combinedClickable(
+            interactionSource = interaction,
+            indication = ripple(color = colors.base),
+            enabled = enabled,
+            onLongClickLabel = "Message actions",
+            onLongClick = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                menuOpen = true
+            },
+            onClick = {},
+        ),
+    ) {
+        content()
+        // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
+        Box(Modifier.offset { pressedAt }) {
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
+                MenuItem("Copy message", CursorIcons.Copy) {
+                    menuOpen = false
+                    clipboard.setText(AnnotatedString(text))
+                    // Android 13+ confirms clipboard writes with its own overlay; earlier versions show nothing.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A negative margin: the node is laid out [horizontal] / [vertical] smaller than its content on each side, so what is
+ * inside can be drawn (and pressed) a little past the bounds the parent allotted without being laid out any narrower.
+ */
+private fun Modifier.bleed(horizontal: Dp, vertical: Dp): Modifier = layout { measurable, constraints ->
+    val dx = horizontal.roundToPx()
+    val dy = vertical.roundToPx()
+    val placeable = measurable.measure(constraints.offset(horizontal = 2 * dx, vertical = 2 * dy))
+    layout(placeable.width - 2 * dx, placeable.height - 2 * dy) { placeable.place(-dx, -dy) }
 }
 
 /** "Worked 3m 5s" — label at 60 %, value at 36 %. */
@@ -310,11 +401,10 @@ private fun RunFooterView(item: RunFooter, modifier: Modifier) {
                             icon = CursorIcons.GitPullRequest,
                             tint = colors.gitAdded,
                             fill = colors.gitAdded.copy(alpha = 0.14f),
-                            mono = true,
                             onClick = { uriHandler.openUri(b.prUrl) },
                         )
                     } else if (b.branch != null) {
-                        Pill(text = b.branch, icon = CursorIcons.GitBranch, mono = true)
+                        Pill(text = b.branch, icon = CursorIcons.GitBranch)
                     }
                 }
             }

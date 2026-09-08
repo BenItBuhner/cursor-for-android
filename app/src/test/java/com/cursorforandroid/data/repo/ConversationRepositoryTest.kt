@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.ModelParamDto
 import com.cursorforandroid.data.api.dto.ModelRefDto
@@ -31,6 +32,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -46,7 +48,11 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** Opening a chat: what renders before each network answer, what is written back, and what is warmed in advance. */
+/**
+ * Opening a chat: what renders before each network answer, what is written back, and what is warmed in advance. And
+ * starting one: the prompt is on screen before the server has answered and stays there while the server's transcript
+ * and run list catch up with it at their own pace.
+ */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class ConversationRepositoryTest {
@@ -98,6 +104,163 @@ class ConversationRepositoryTest {
     }
 
     private fun transcript(vararg turns: Pair<String, String>) = turns.mapIndexed { i, (type, text) -> V0ConversationMessageDto("msg-$i", type, text) }
+
+    private fun prompts(conversations: ConversationRepository, agentId: String) = conversations.state(agentId).value.items.filterIsInstance<UserMessage>()
+
+    /** A draft as the composer sends it, with the id it mints for the chat. */
+    private val launchRequest = LaunchRequest(
+        prompt = "Do the thing",
+        repoUrl = "https://github.com/acme/app",
+        ref = "main",
+        modelId = "auto-smart",
+        modelParams = emptyList(),
+        autoCreatePr = false,
+        planMode = false,
+    ).let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce")) }
+
+    @Test
+    fun `a new chat opens on its prompt before the server answers and keeps it while the transcript lags behind`() = runBlocking<Unit> {
+        val conversations = repository()
+        val id = launchRequest.agentId!!
+        api.createGate = CompletableDeferred()
+        var opened = false
+
+        val launch = async { conversations.launch(launchRequest, "Auto", onStaged = { opened = true }) }
+        awaitUntil { prompts(conversations, id).isNotEmpty() }
+
+        // On screen before the request has been answered: the prompt, "Starting…", and the row in the list.
+        assertThat(opened).isTrue()
+        val shown = conversations.state(id).value
+        assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
+        assertThat(shown.runStatus).isEqualTo(RunStatus.CREATING)
+        assertThat(shown.isLoading).isFalse()
+        assertThat(shown.error).isNull()
+        assertThat(agents.agent(id)?.name).isEqualTo("Do the thing")
+        assertThat(agents.agent(id)?.isRunning).isTrue()
+        assertThat(api.createGate!!.isCompleted).isFalse()
+        // The screen attaches to it without asking a server that has nothing yet.
+        conversations.attach(id)
+        delay(100)
+        assertThat(api.conversationCalls).isEqualTo(0)
+        assertThat(api.listRunsCalls).isEqualTo(0)
+
+        api.createGate!!.complete(Unit)
+        val launched = launch.await().getOrThrow()
+        val runId = launched.run!!.id
+        awaitUntil { conversations.state(id).value.isStreaming }
+        val live = conversations.state(id).value
+        assertThat(live.activeRunId).isEqualTo(runId)
+        assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
+        // Connected, but the run has not said anything yet: still starting, not working.
+        assertThat(live.runStatus).isEqualTo(RunStatus.CREATING)
+        awaitUntil { runId in streamer.connections }
+        assertThat(conversations.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
+        assertThat(agents.agent(id)?.latestRunId).isEqualTo(runId)
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        awaitUntil { conversations.state(id).value.runStatus == RunStatus.RUNNING }
+        assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
+
+        // Reopened: the server lists the run but its transcript is still empty — the prompt must not vanish.
+        conversations.detach(id)
+        conversations.attach(id)
+        awaitUntil { api.conversationCalls == 1 && !conversations.state(id).value.isLoading }
+        assertThat(prompts(conversations, id).map { it.text }).containsExactly("Do the thing")
+        assertThat(conversations.state(id).value.error).isNull()
+        assertThat(conversations.state(id).value.activeRunId).isEqualTo(runId)
+
+        // Once the transcript has caught up, the server's copy takes over without a duplicate.
+        api.transcripts[id] = transcript("user_message" to "Do the thing")
+        conversations.reload(id)
+        awaitUntil { api.conversationCalls == 2 && prompts(conversations, id).singleOrNull()?.id == "msg-0" }
+        assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
+    }
+
+    @Test
+    fun `a chat launched just before the app was killed keeps its prompt through a lagging transcript on the next start`() = runBlocking<Unit> {
+        val id = launchRequest.agentId!!
+        val launched = repository().launch(launchRequest, "Auto").getOrThrow()
+        awaitUntil { cache.read(id)?.value?.local?.map { it.message.text } == listOf("Do the thing") }
+        // Written as what it is — a prompt the server has not reported yet, with the run it answered with — not as
+        // the server's transcript, which is still empty.
+        val saved = cache.read(id)!!.value
+        assertThat(saved.messages).isEmpty()
+        assertThat(saved.runs).isEmpty()
+        assertThat(saved.local.single().run.id).isEqualTo(launched.run!!.id)
+
+        // A new process: the disk copy renders first, then the server answers with the run and an empty transcript.
+        api.conversationGate = CompletableDeferred()
+        val fresh = repository()
+        fresh.attach(id)
+        awaitUntil { prompts(fresh, id).isNotEmpty() }
+        assertThat(fresh.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
+        api.conversationGate!!.complete(Unit)
+        // The stream starts after the answer has been published and written back; wait for that, the last step.
+        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming }
+        assertThat(fresh.state(id).value.isLoading).isFalse()
+        assertThat(prompts(fresh, id).map { it.text }).containsExactly("Do the thing")
+        assertThat(fresh.state(id).value.error).isNull()
+    }
+
+    @Test
+    fun `a launch the server rejects leaves neither a bubble nor a row behind`() = runBlocking<Unit> {
+        val conversations = repository()
+        val id = launchRequest.agentId!!
+        api.failNextCreate = CursorApiException(429, "rate_limited", "Slow down.")
+
+        val result = conversations.launch(launchRequest, "Auto")
+
+        assertThat((result.exceptionOrNull() as CursorApiException).code).isEqualTo("rate_limited")
+        assertThat(conversations.state(id).value.items).isEmpty()
+        assertThat(agents.agent(id)).isNull()
+        assertThat(api.agents).doesNotContainKey(id)
+        // The same draft can be sent again: the retry goes through cleanly.
+        assertThat(conversations.launch(launchRequest, "Auto").isSuccess).isTrue()
+        assertThat(prompts(conversations, id).single().text).isEqualTo("Do the thing")
+    }
+
+    @Test
+    fun `stopping a chat before the server has answered gives the launch up`() = runBlocking<Unit> {
+        val conversations = repository()
+        val id = launchRequest.agentId!!
+        api.createGate = CompletableDeferred()
+
+        val launch = async { conversations.launch(launchRequest, "Auto") }
+        awaitUntil { prompts(conversations, id).isNotEmpty() }
+        conversations.attach(id)
+        assertThat(conversations.cancelActiveRun(id).isSuccess).isTrue()
+
+        val result = launch.await()
+        assertThat(result.exceptionOrNull()).isInstanceOf(LaunchCancelledException::class.java)
+        assertThat(conversations.state(id).value.items).isEmpty()
+        assertThat(agents.agent(id)).isNull()
+        assertThat(api.agents).doesNotContainKey(id)
+        // Nothing left in flight to stop.
+        assertThat(conversations.cancelLaunch(id)).isFalse()
+        api.createGate!!.complete(Unit)
+    }
+
+    @Test
+    fun `a follow-up's prompt stays on screen while the run list leads the transcript`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Add a README", "Done."))
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && prompts(conversations, "bc-1").size == 1 }
+        val before = api.transcripts.getValue("bc-1")
+
+        conversations.sendFollowUp("bc-1", "Add troubleshooting").getOrThrow()
+        // The server lists the new run, but its transcript has not caught up with the prompt.
+        api.transcripts["bc-1"] = before
+        conversations.reload("bc-1")
+        awaitUntil { api.conversationCalls == 2 && !conversations.state("bc-1").value.isLoading }
+        assertThat(prompts(conversations, "bc-1").map { it.text }).containsExactly("Add a README", "Add troubleshooting").inOrder()
+
+        // Then it does, and the server's copy takes over.
+        api.transcripts["bc-1"] = before + V0ConversationMessageDto("srv-u2", "user_message", "Add troubleshooting")
+        conversations.reload("bc-1")
+        awaitUntil { api.conversationCalls == 3 && prompts(conversations, "bc-1").lastOrNull()?.id == "srv-u2" }
+        assertThat(prompts(conversations, "bc-1").map { it.text }).containsExactly("Add a README", "Add troubleshooting").inOrder()
+    }
 
     private fun tool(id: String, name: String, status: String, path: String) = RunStreamEvent.ToolCall(
         SseToolCallDto(callId = id, name = name, status = status, args = buildJsonObject { put("path", JsonPrimitive(path)) }),
@@ -243,7 +406,7 @@ class ConversationRepositoryTest {
         conversations.attach("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
         val reopened = conversations.state("bc-1").value
-        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
         assertThat(reopened.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(reopened.isStreaming).isFalse()
         assertThat(reopened.runStatus).isEqualTo(RunStatus.FINISHED)
@@ -256,7 +419,7 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Done)
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         val traced = conversations.state("bc-1").value
-        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(traced.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
@@ -290,7 +453,7 @@ class ConversationRepositoryTest {
         assertThat(state.isStreaming).isFalse()
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
         // Not the two items the screen left with: the edit that followed, the final reply and the footer are all there.
-        assertThat(state.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(state.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(state.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(state.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat((state.items.last() as RunFooter).durationMs).isEqualTo(30_000L)
@@ -333,7 +496,7 @@ class ConversationRepositoryTest {
         next.attach("bc-1")
         awaitUntil { next.state("bc-1").value.items.lastOrNull() is RunFooter }
         val fromDisk = next.state("bc-1").value
-        assertThat(fromDisk.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(fromDisk.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(fromDisk.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(fromDisk.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(fromDisk.runStatus).isEqualTo(RunStatus.FINISHED)
@@ -368,7 +531,7 @@ class ConversationRepositoryTest {
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.
-        assertThat(polled.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(polled.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(polled.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
         assertThat(polled.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         // Not the whole story, so not kept as one.
@@ -478,7 +641,7 @@ class ConversationRepositoryTest {
         assertThat(waiting.activeRunId).isEqualTo(runId)
         assertThat(waiting.runStatus?.isActive).isTrue()
         // The prompt is there and nothing has been said about the connection inside the transcript.
-        assertThat(waiting.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(waiting.items.last()).isInstanceOf(UserMessage::class.java)
         assertThat((waiting.items.last() as UserMessage).text).isEqualTo("Prompt 2")
         assertThat(waiting.items.none { it is NoticeCard }).isTrue()
 
@@ -495,7 +658,7 @@ class ConversationRepositoryTest {
         val done = state(conversations)
         assertThat(done.isReconnecting).isFalse()
         assertThat(done.items.none { it is NoticeCard }).isTrue()
-        assertThat(done.items.map { it::class.simpleName }.takeLast(4)).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(done.items.map { it::class.simpleName }.takeLast(3)).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
         assertThat((done.items.last() as RunFooter).runId).isEqualTo(runId)
     }
 
@@ -521,9 +684,9 @@ class ConversationRepositoryTest {
         // The previous run did not become the active one again; the follow-up is still what the screen follows.
         assertThat(reloaded.activeRunId).isEqualTo(runId)
         assertThat(reloaded.runStatus?.isActive).isTrue()
-        // The prompt shows once, with its timestamp, although both the transcript and the local copy have it.
+        // The prompt shows once, although both the transcript and the local copy have it.
         assertThat(reloaded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
-        assertThat(reloaded.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(reloaded.items.last()).isInstanceOf(UserMessage::class.java)
         assertThat(reloaded.items.map { it.id }).containsNoDuplicates()
 
         // The run's events still land after the reload.
@@ -534,8 +697,8 @@ class ConversationRepositoryTest {
         awaitUntil { state(conversations).items.lastOrNull() is RunFooter && !state(conversations).isStreaming }
         val finished = state(conversations)
         assertThat(finished.items.map { it::class.simpleName }).containsExactly(
-            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
         ).inOrder()
 
         // The list catches up: the server's copy of the turn takes over, and the picture does not change.
