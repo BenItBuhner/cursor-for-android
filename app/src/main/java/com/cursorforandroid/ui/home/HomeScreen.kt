@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -64,6 +65,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -75,8 +77,9 @@ import com.cursorforandroid.util.TimeFormat
  * The "New Chat" pane — the home of the official app: context selectors, the composer, then the recent chats
  * list with preview cards (cursor.com/agents). On phones a 44dp header carries the sidebar toggle.
  *
- * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered; [onLaunchFailed]
- * is how a launch that did not go through (or was stopped from the chat) asks to come back to this pane.
+ * Sending opens the new chat through [onLaunchOpen] right away, before the server has answered, and leaves the
+ * composer empty behind it: the launch is on its own from there (see [NewAgentViewModel.launch]), so this pane is
+ * ready for the next chat whatever the last one is still waiting on.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,7 +89,6 @@ fun HomeScreen(
     onOpenSidebar: (() -> Unit)?,
     onOpenAgent: (AgentRow) -> Unit,
     onLaunchOpen: (agentId: String) -> Unit,
-    onLaunchFailed: (agentId: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
@@ -97,6 +99,8 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
+    // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
+    // lists never disagree about which chats are visible; the cards are newest first.
     val recent = listState.recentRows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
@@ -111,8 +115,11 @@ fun HomeScreen(
         }
         // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
         val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // The fade sits inside the IME padding so it tracks the visible viewport when the keyboard is up.
+        val recentState = rememberLazyListState()
         LazyColumn(
-            Modifier.fillMaxSize().imePadding(),
+            Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState),
+            state = recentState,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -137,10 +144,9 @@ fun HomeScreen(
                         value = state.prompt,
                         onValueChange = viewModel::setPrompt,
                         placeholder = "Ask Cursor to build, fix bugs, explore",
-                        onSend = { viewModel.launch(onOpen = onLaunchOpen, onFailed = onLaunchFailed) },
+                        onSend = { viewModel.launch(onOpen = onLaunchOpen) },
                         canSend = state.canLaunch,
                         isSending = state.isLaunching,
-                        onCancelSend = viewModel::cancelLaunch,
                         minLines = 3,
                         plusMenu = plusMenu,
                         attachments = state.attachments,
@@ -171,7 +177,7 @@ fun HomeScreen(
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth())
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
             }
         }
     }
@@ -252,7 +258,7 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
                     row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
                     else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                 }
-                agent.modelDisplayName?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                agent.modelName?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
                 workspace?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
                 Text(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis), style = type.small, color = colors.textQuaternary)

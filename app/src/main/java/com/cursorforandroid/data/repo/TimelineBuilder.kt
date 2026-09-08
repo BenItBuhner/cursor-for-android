@@ -15,6 +15,8 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.Subagent
 import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
+import com.cursorforandroid.domain.SystemNotification
+import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
@@ -74,7 +76,11 @@ object TimelineBuilder {
                     replies = mutableListOf()
                     userIndex++
                     val run = ordered.getOrNull(userIndex)
-                    items += UserMessage(msg.id, msg.text, run?.let { parseIsoMillis(it.createdAt) }, attachments = run?.let { attachments[it.id] } ?: emptyList())
+                    val startedAt = run?.let { parseIsoMillis(it.createdAt) }
+                    // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
+                    // but is shown as the notification it is rather than as something the user said.
+                    items += SystemNotifications.parse(msg.id, msg.text, startedAt)?.items
+                        ?: listOf(UserMessage(msg.id, msg.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList()))
                 }
                 else -> replies += AssistantMessage(msg.id, msg.text)
             }
@@ -106,6 +112,7 @@ object TimelineBuilder {
         is ActivityGroup -> copy(id = id)
         is SubagentsCard -> copy(id = id)
         is NoticeCard -> copy(id = id)
+        is SystemNotification -> copy(id = id)
         is RunFooter -> copy(id = id)
     }
 

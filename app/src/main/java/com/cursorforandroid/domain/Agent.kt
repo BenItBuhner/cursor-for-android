@@ -2,8 +2,16 @@ package com.cursorforandroid.domain
 
 import kotlinx.serialization.Serializable
 
-/** Durable agent lifecycle as reported by `GET /v1/agents`. */
+/**
+ * Durable agent lifecycle as reported by `GET /v1/agents`. In practice the server reports `ACTIVE` for every agent
+ * that is not archived, whether or not a turn is running — the value never changes when a run finishes, and
+ * execution state lives on the runs (`GET /v1/agents/{id}/runs/{runId}`). So `ACTIVE` says nothing about running;
+ * `IDLE` (when reported) and `ARCHIVED` do say a turn is not.
+ */
 enum class AgentLifecycle { ACTIVE, IDLE, ARCHIVED, UNKNOWN;
+    /** True when the lifecycle rules out a running turn; false when it is silent on the matter. */
+    val excludesRunning: Boolean get() = this == IDLE || this == ARCHIVED
+
     companion object {
         fun parse(raw: String?): AgentLifecycle = entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: UNKNOWN
     }
@@ -59,14 +67,21 @@ data class Agent(
     /**
      * The model the chat runs on, as far as this device knows. The API never reports an agent's model, so these are
      * what was last sent from here — at launch, or with a follow-up that switched it — and stay null for chats
-     * started elsewhere. [modelDisplayName] is the label it was shown under; [modelId] and [modelParams] are the
-     * request's `model.id` and `model.params`, so the picker can find the same entry again.
+     * started elsewhere. [modelDisplayName] is the model's name as the catalog gave it (read it through [modelName]);
+     * [modelId] and [modelParams] are the request's `model.id` and `model.params`, so the picker can find the same
+     * entry again.
      */
     val modelDisplayName: String? = null,
     val modelId: String? = null,
     val modelParams: List<ModelParam> = emptyList(),
     val durationMs: Long? = null,
 ) {
+    /**
+     * The name of the chat's model, for the composer chip and the list row. Rows recorded by earlier versions carry
+     * the variant's parameters after the name ("Composer 2 · Fast", "Claude 5 · 1M context · Max effort"); only the
+     * name is wanted, so anything from the first separator on is dropped.
+     */
+    val modelName: String? get() = modelDisplayName?.substringBefore(LEGACY_LABEL_SEPARATOR)?.trim()?.takeIf { it.isNotEmpty() }
     /** `owner/name` derived from the GitHub URL, or null for no-repo agents. */
     val repoSlug: String? get() = repoUrl?.let(::repoSlugOf)
     val repoShortName: String? get() = repoSlug?.substringAfterLast('/')
@@ -76,14 +91,20 @@ data class Agent(
     val hasPullRequest: Boolean get() = prUrl != null
     val isArchived: Boolean get() = lifecycle == AgentLifecycle.ARCHIVED
     /**
-     * A known run status decides; without one — or with one this build does not recognise — the lifecycle does, as
-     * `ACTIVE` means a turn is running, about to start, or waiting on background work.
+     * Only the latest run's status can say a turn is going. The lifecycle cannot: the server reports `ACTIVE` for
+     * every unarchived agent, finished or not (see [AgentLifecycle]), so a row whose run status is unknown is shown
+     * at rest until a run-level source — the legacy list, the run record, its stream — reports otherwise. Guessing
+     * "running" from the lifecycle is what put spinners on, and then "updated just now" under, chats from weeks ago.
      */
-    val isRunning: Boolean
-        get() = !isArchived && (runStatus?.isActive == true || ((runStatus == null || runStatus == RunStatus.UNKNOWN) && lifecycle == AgentLifecycle.ACTIVE))
+    val isRunning: Boolean get() = !isArchived && runStatus?.isActive == true
     val isError: Boolean get() = runStatus == RunStatus.ERROR || runStatus == RunStatus.EXPIRED
+    /** The row has no run-level word on its latest turn yet: nothing remembered, or nothing this build recognises. */
+    val runStatusUnknown: Boolean get() = runStatus == null || runStatus == RunStatus.UNKNOWN
 
     companion object {
+        /** What earlier versions put between a model's name and its parameters in the label they recorded. */
+        const val LEGACY_LABEL_SEPARATOR = " · "
+
         fun repoSlugOf(url: String): String? {
             val cleaned = url.trim().removeSuffix("/").removeSuffix(".git")
             val marker = "github.com/"
@@ -186,24 +207,35 @@ data class ModelOption(
             .minWithOrNull(compareBy<ModelVariant> { distance(it.others(), kept) }.thenBy { distance(it.others(), preferred) })
     }
 
-    /**
-     * What the composer chip and the picker call [variant]. `GET /v1/models` reuses the model's name for every
-     * variant of a model ("Composer 2" with `fast` on and off), so the parameters are appended whenever the name
-     * alone does not single the variant out among its siblings.
-     */
-    fun labelFor(variant: ModelVariant?): String {
-        if (variant == null) return displayName
-        val ambiguous = variants.count { it.displayName == variant.displayName } > 1
-        val qualifier = qualifier(variant)
-        return if (ambiguous && qualifier != null) "${variant.displayName} · $qualifier" else variant.displayName
-    }
-
     /** The variant a fresh selection of this model starts with: the API's default, else the first one. */
     val defaultVariant: ModelVariant? get() = variants.firstOrNull { it.isDefault } ?: variants.firstOrNull()
 
     /** The variant whose parameters are exactly [params] (an empty map matches a parameter-less variant). */
     fun variantWithParams(params: Map<String, String>): ModelVariant? =
         variants.firstOrNull { v -> v.params.associate { it.id to it.value } == params }
+
+    /**
+     * The variant a request with `model.params` [params] stands for in this catalog: the one with exactly those
+     * parameters when the API still lists it, else the nearest — fewest parameters set differently, the API's default
+     * ahead of equally near ones — since a parameter the API has renamed, added or dropped since the request was made
+     * does not change which model the chat runs on. Null for a model without variants.
+     */
+    fun variantNearest(params: List<ModelParam>): ModelVariant? {
+        variantWithParams(params.associate { it.id to it.value })?.let { return it }
+        val wanted = params.toSet()
+        fun distance(v: ModelVariant): Int = (v.params.toSet() - wanted).size + (wanted - v.params.toSet()).size
+        return variants.minWithOrNull(compareBy<ModelVariant> { distance(it) }.thenBy { !it.isDefault })
+    }
+
+    /**
+     * The legacy chip label of [variant]: the variant's name with its parameters appended when siblings shared the
+     * name — what earlier versions recorded on a chat's row, and all they recorded (see [choiceLabelled]).
+     */
+    internal fun legacyLabelFor(variant: ModelVariant): String {
+        val ambiguous = variants.count { it.displayName == variant.displayName } > 1
+        val qualifier = qualifier(variant)
+        return if (ambiguous && qualifier != null) "${variant.displayName}${Agent.LEGACY_LABEL_SEPARATOR}$qualifier" else variant.displayName
+    }
 
     companion object {
         private fun humanize(raw: String): String = raw.replace('_', ' ').replace('-', ' ').trim().replaceFirstChar { it.uppercaseChar() }
@@ -257,25 +289,35 @@ data class ModelParam(val id: String, val value: String)
 
 /** One entry of the model picker: a model and, when it has variants, the variant — what a request's `model` is built from. */
 data class ModelChoice(val model: ModelOption, val variant: ModelVariant?) {
-    val label: String get() = model.labelFor(variant)
+    /**
+     * What the composer chip calls the choice: the model's name, nothing else. Its parameters — effort, speed,
+     * context window, thinking — are the picker's business, where they show under the model as its pickers.
+     */
+    val label: String get() = model.displayName
     val params: List<ModelParam> get() = variant?.params.orEmpty()
 }
 
 /**
  * The picker entry a request with `model.id` [id] and `model.params` [params] was built from, or null when this
- * catalog has no such entry (the model is gone, or its variants changed): a variant is matched on its exact
- * parameters, and a model without variants only when no parameters were sent.
+ * catalog no longer lists the model. The id decides: it names the model whatever has happened to its parameters
+ * since, so the variant is the nearest one to [params] (see [ModelOption.variantNearest]) rather than an exact
+ * match or nothing.
  */
 fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoice? {
     val model = firstOrNull { it.id == id } ?: return null
-    if (model.variants.isEmpty()) return ModelChoice(model, null).takeIf { params.isEmpty() }
-    return model.variantWithParams(params.associate { it.id to it.value })?.let { ModelChoice(model, it) }
+    return ModelChoice(model, model.variantNearest(params))
 }
 
-/** The picker entry shown as [label], for chats recorded before the id and parameters were kept alongside it. */
-fun List<ModelOption>.choiceLabelled(label: String): ModelChoice? = firstNotNullOfOrNull { model ->
-    if (model.variants.isEmpty()) ModelChoice(model, null).takeIf { model.displayName == label }
-    else model.variants.firstOrNull { model.labelFor(it) == label }?.let { ModelChoice(model, it) }
+/**
+ * The picker entry recorded as [label] on a chat's row before the id and parameters were kept alongside it. The
+ * label is the model's name, or — from versions before that — the variant's name with its parameters appended
+ * when siblings shared it; a bare model name lands on the model's default variant.
+ */
+fun List<ModelOption>.choiceLabelled(label: String): ModelChoice? {
+    firstOrNull { it.displayName == label }?.let { return ModelChoice(it, it.defaultVariant) }
+    return firstNotNullOfOrNull { model ->
+        model.variants.firstOrNull { model.legacyLabelFor(it) == label }?.let { ModelChoice(model, it) }
+    }
 }
 
 @Serializable

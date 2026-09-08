@@ -177,6 +177,34 @@ data class NoticeCard(
 
 enum class NoticeTone { Neutral, Success, Warning, Error }
 
+/**
+ * A turn Cursor injected on the user's behalf — a goal picked up again, a subagent's finished report — which the
+ * transcript carries as a `user_message` full of the `<system_notification>` markup written for the model. It is
+ * not something the user said, so it is shown as one compact row ("Subagent completed · Contacts and clipping") that
+ * opens onto the part worth reading, rather than as a prompt bubble of markup. See [SystemNotifications].
+ */
+@Serializable
+@SerialName("system_notification")
+data class SystemNotification(
+    override val id: String,
+    val kind: Kind,
+    /** The row's label: "Goal continued", "Subagent completed", "Subagent failed". */
+    val title: String,
+    /** What follows the label, one line of it: the subagent's title, the objective's first line. */
+    val summary: String? = null,
+    /**
+     * The content itself, as markdown: the subagent's report, the goal's objective. The row opens onto it when it
+     * has more than the [summary] shows; null when the notification had nothing beyond its label.
+     */
+    val body: String? = null,
+    val tone: NoticeTone = NoticeTone.Neutral,
+    /** The notification as injected, markup included, for "Copy message". */
+    val raw: String,
+    val timestampMillis: Long? = null,
+) : TimelineItem {
+    enum class Kind { Goal, Subagent, Task, Other }
+}
+
 /** Terminal marker for a run: status, duration and pushed branches. */
 @Serializable
 @SerialName("footer")
