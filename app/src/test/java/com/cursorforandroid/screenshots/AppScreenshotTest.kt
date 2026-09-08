@@ -63,7 +63,7 @@ class AppScreenshotTest {
 
     private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
 
-    // The demo data is generated relative to "now" and the UI renders "Today at 2:00 PM"-style stamps, so the clock,
+    // The demo data is generated relative to "now" and the lists render "4m" / "3h"-style ages from it, so the clock,
     // zone and locale are pinned to keep every pixel reproducible across machines and times of day.
     @Before
     fun pinClock() {

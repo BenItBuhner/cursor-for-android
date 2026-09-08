@@ -103,11 +103,11 @@ jobs:
 
       - uses: ./.github/actions/android-toolchain
 
-      # Renders the demo walkthrough through Robolectric and compares it pixel-for-pixel with screenshots/. When the UI
-      # changes on purpose, run the "Update screenshots" workflow (or `./gradlew :app:recordRoborazziDebug`) and
-      # commit the result.
+      # Renders the demo walkthrough and the home-screen widget through Robolectric and compares them pixel-for-pixel
+      # with screenshots/. When the UI changes on purpose, run the "Update screenshots" workflow (or
+      # `./gradlew :app:recordRoborazziDebug`) and commit the result.
       - name: Verify screenshots against screenshots/
-        run: ./gradlew :app:verifyRoborazziDebug --tests '*AppScreenshotTest*'
+        run: ./gradlew :app:verifyRoborazziDebug --tests '*ScreenshotTest*'
 
       - name: Upload screenshot diffs
         if: failure()

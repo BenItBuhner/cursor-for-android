@@ -406,7 +406,7 @@ class ConversationRepositoryTest {
         conversations.attach("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
         val reopened = conversations.state("bc-1").value
-        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
         assertThat(reopened.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(reopened.isStreaming).isFalse()
         assertThat(reopened.runStatus).isEqualTo(RunStatus.FINISHED)
@@ -419,7 +419,7 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Done)
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         val traced = conversations.state("bc-1").value
-        assertThat(traced.items.map { it::class.simpleName }).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(traced.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
@@ -453,7 +453,7 @@ class ConversationRepositoryTest {
         assertThat(state.isStreaming).isFalse()
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
         // Not the two items the screen left with: the edit that followed, the final reply and the footer are all there.
-        assertThat(state.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(state.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(state.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(state.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat((state.items.last() as RunFooter).durationMs).isEqualTo(30_000L)
@@ -496,7 +496,7 @@ class ConversationRepositoryTest {
         next.attach("bc-1")
         awaitUntil { next.state("bc-1").value.items.lastOrNull() is RunFooter }
         val fromDisk = next.state("bc-1").value
-        assertThat(fromDisk.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(fromDisk.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(fromDisk.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(fromDisk.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(fromDisk.runStatus).isEqualTo(RunStatus.FINISHED)
@@ -531,7 +531,7 @@ class ConversationRepositoryTest {
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.
-        assertThat(polled.types()).containsExactly("DateHeader", "UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(polled.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(polled.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
         assertThat(polled.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         // Not the whole story, so not kept as one.
@@ -641,7 +641,7 @@ class ConversationRepositoryTest {
         assertThat(waiting.activeRunId).isEqualTo(runId)
         assertThat(waiting.runStatus?.isActive).isTrue()
         // The prompt is there and nothing has been said about the connection inside the transcript.
-        assertThat(waiting.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(waiting.items.last()).isInstanceOf(UserMessage::class.java)
         assertThat((waiting.items.last() as UserMessage).text).isEqualTo("Prompt 2")
         assertThat(waiting.items.none { it is NoticeCard }).isTrue()
 
@@ -658,7 +658,7 @@ class ConversationRepositoryTest {
         val done = state(conversations)
         assertThat(done.isReconnecting).isFalse()
         assertThat(done.items.none { it is NoticeCard }).isTrue()
-        assertThat(done.items.map { it::class.simpleName }.takeLast(4)).containsExactly("DateHeader", "UserMessage", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(done.items.map { it::class.simpleName }.takeLast(3)).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
         assertThat((done.items.last() as RunFooter).runId).isEqualTo(runId)
     }
 
@@ -684,9 +684,9 @@ class ConversationRepositoryTest {
         // The previous run did not become the active one again; the follow-up is still what the screen follows.
         assertThat(reloaded.activeRunId).isEqualTo(runId)
         assertThat(reloaded.runStatus?.isActive).isTrue()
-        // The prompt shows once, with its timestamp, although both the transcript and the local copy have it.
+        // The prompt shows once, although both the transcript and the local copy have it.
         assertThat(reloaded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
-        assertThat(reloaded.items.map { it::class.simpleName }.takeLast(2)).containsExactly("DateHeader", "UserMessage").inOrder()
+        assertThat(reloaded.items.last()).isInstanceOf(UserMessage::class.java)
         assertThat(reloaded.items.map { it.id }).containsNoDuplicates()
 
         // The run's events still land after the reload.
@@ -697,8 +697,8 @@ class ConversationRepositoryTest {
         awaitUntil { state(conversations).items.lastOrNull() is RunFooter && !state(conversations).isStreaming }
         val finished = state(conversations)
         assertThat(finished.items.map { it::class.simpleName }).containsExactly(
-            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
-            "DateHeader", "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
         ).inOrder()
 
         // The list catches up: the server's copy of the turn takes over, and the picture does not change.

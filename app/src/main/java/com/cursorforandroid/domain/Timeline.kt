@@ -14,10 +14,6 @@ sealed interface TimelineItem {
 }
 
 @Serializable
-@SerialName("header")
-data class DateHeader(override val id: String, val label: String) : TimelineItem
-
-@Serializable
 @SerialName("user")
 data class UserMessage(
     override val id: String,
