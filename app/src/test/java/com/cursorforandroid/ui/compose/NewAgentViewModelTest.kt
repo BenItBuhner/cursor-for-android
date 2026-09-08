@@ -192,12 +192,13 @@ class NewAgentViewModelTest {
         assertThat(vm.state.value.error).isNull()
     }
 
+    /** The chip names the model; the variant's parameters (here 1M context, max effort) are the picker's to show. */
     @Test
     fun `a fresh install starts on the first recommended model and its default variant`() {
         val vm = loaded()
         assertThat(vm.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
         assertThat(vm.state.value.selectedVariant?.displayName).isEqualTo("Claude Fable 5.1 1M Max")
-        assertThat(vm.state.value.modelLabel).isEqualTo("Claude Fable 5.1 1M Max")
+        assertThat(vm.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
     }
 
     @Test
@@ -223,7 +224,7 @@ class NewAgentViewModelTest {
         val second = loaded()
         assertThat(second.state.value.selectedModel?.id).isEqualTo("composer-2.5")
         assertThat(second.state.value.selectedVariant).isEqualTo(slow)
-        assertThat(second.state.value.modelLabel).isEqualTo("Composer 2.5 · Fast off")
+        assertThat(second.state.value.modelLabel).isEqualTo("Composer 2.5")
     }
 
     @Test
@@ -241,13 +242,16 @@ class NewAgentViewModelTest {
         assertThat(second.state.value.modelLabel).isEqualTo("Gemini 3.8 Flash")
     }
 
+    /** Same-named siblings ("Composer 2.5" fast and slow) are told apart in the picker, never on the chip. */
     @Test
-    fun `selecting a model without a variant picks its default variant and labels same-named siblings apart`() {
+    fun `selecting a model without a variant picks its default variant and the chip names the model alone`() {
         val vm = loaded()
         val composer = vm.state.value.models.first { it.id == "composer-2.5" }
         vm.selectModel(composer, null)
         assertThat(vm.state.value.selectedVariant?.isDefault).isTrue()
-        assertThat(vm.state.value.modelLabel).isEqualTo("Composer 2.5 · Fast")
+        assertThat(vm.state.value.modelLabel).isEqualTo("Composer 2.5")
+        vm.selectModel(composer, composer.variants.first { !it.isDefault })
+        assertThat(vm.state.value.modelLabel).isEqualTo("Composer 2.5")
     }
 
     @Test
