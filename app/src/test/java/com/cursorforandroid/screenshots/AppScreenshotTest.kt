@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
@@ -258,8 +259,10 @@ class AppScreenshotTest {
         capture("20_settings_dark")
         compose.onNodeWithText("OLED black").performClick()
         compose.waitUntil(10_000) { runBlocking { graph.prefs.oledBlack.first() } }
-        // Live notifications is on already; the OLED switch turning on makes two.
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn()).fetchSemanticsNodes().size == 2 }
+        // The switch in the OLED row (its row merges the label into its semantics) reads on once the screen has caught up.
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(isOn() and hasAnyAncestor(hasText("OLED black", substring = true))).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
         capture("21_settings_oled")
         compose.onNodeWithContentDescription("Back").performClick()
