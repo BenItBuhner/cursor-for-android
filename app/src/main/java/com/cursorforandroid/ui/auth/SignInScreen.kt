@@ -188,20 +188,27 @@ private fun ApiKeySection(graph: AppGraph) {
     val uriHandler = LocalUriHandler.current
     val login by graph.session.loginProgress.collectAsStateWithLifecycle()
     var expanded by rememberSaveable { mutableStateOf(false) }
-    var key by rememberSaveable { mutableStateOf("") }
-    var reveal by rememberSaveable { mutableStateOf(false) }
+    // Deliberately not saveable: saved instance state is an unencrypted Bundle that outlives the activity and is
+    // marshalled for process restoration, so the key would sit in plaintext outside the key store. A recreation
+    // clears the field instead, and re-reveals nothing.
+    var key by remember { mutableStateOf("") }
+    var reveal by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var focused by remember { mutableStateOf(false) }
     val browserBusy = login is LoginProgress.WaitingForBrowser || login is LoginProgress.Finishing
 
     fun submit() {
-        if (busy || key.isBlank()) return
+        val pasted = key
+        if (busy || pasted.isBlank()) return
         busy = true
         error = null
+        // The key store has it from here on; it does not stay on screen (or in a screenshot) while Cursor checks it.
+        key = ""
+        reveal = false
         scope.launch {
             graph.session.cancelCursorLogin()
-            graph.session.signIn(key).onFailure { error = it.message ?: "Couldn't sign in." }
+            graph.session.signIn(pasted).onFailure { error = it.message ?: "Couldn't sign in." }
             busy = false
         }
     }
