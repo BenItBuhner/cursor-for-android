@@ -77,7 +77,7 @@ class PullRequestRepositoryTest {
         .setHeader("X-RateLimit-Reset", ((now / 1000) + resetInSeconds).toString())
         .setBody("""{"message":"API rate limit exceeded"}""")
 
-    private fun repository(withCache: Boolean = true) = PullRequestRepository(
+    private fun repository(withCache: Boolean = true, account: PullRequestSource? = null) = PullRequestRepository(
         gitHub = gitHub,
         demo = demoSource,
         isDemo = { demo },
@@ -85,6 +85,7 @@ class PullRequestRepositoryTest {
         writeToken = { token = it },
         cache = if (withCache) cache else null,
         scope = CoroutineScope(Dispatchers.Unconfined),
+        account = account,
     )
 
     private fun requestsFor(url: String) = synchronized(requests) { requests.count { it.path == "/repos/${url.removePrefix("https://github.com/").replace("/pull/", "/pulls/")}" } }
@@ -114,6 +115,76 @@ class PullRequestRepositoryTest {
 
         repo.refresh(listOf(open, draft, merged, closed, secret))
         assertThat(synchronized(requests) { requests.size }).isEqualTo(5)
+    }
+
+    @Test
+    fun `the account's answer comes first, GitHub only where the account has none`() = runBlocking<Unit> {
+        val gitlab = "https://gitlab.com/acme/app/-/merge_requests/7"
+        val asked = mutableListOf<String>()
+        val account = PullRequestSource { url, _ ->
+            asked += url
+            when (url) {
+                // GitHub says open; the account, which the first-party apps show, says merged.
+                open -> PullRequestLookup.Found(PullRequestState.Merged)
+                gitlab -> PullRequestLookup.Found(PullRequestState.Open)
+                secret -> PullRequestLookup.Unreadable
+                else -> PullRequestLookup.Failed
+            }
+        }
+        val repo = repository(account = account)
+
+        repo.refresh(listOf(open, draft, gitlab, secret))
+
+        assertThat(repo.known()).containsExactly(
+            open, PullRequestState.Merged,
+            draft, PullRequestState.Draft,
+            gitlab, PullRequestState.Open,
+        )
+        assertThat(asked).containsExactly(open, draft, gitlab, secret).inOrder()
+        // GitHub was asked only for what the account did not answer; a GitLab merge request is never GitHub's to answer.
+        assertThat(requestsFor(open)).isEqualTo(0)
+        assertThat(requestsFor(draft)).isEqualTo(1)
+        assertThat(requestsFor(secret)).isEqualTo(1)
+        assertThat(synchronized(requests) { requests.size }).isEqualTo(2)
+        assertThat(repo.statuses.value.getValue(secret).state).isNull()
+    }
+
+    @Test
+    fun `without the account, pull requests on other SCMs are left alone`() = runBlocking<Unit> {
+        val repo = repository()
+
+        repo.refresh(listOf("https://gitlab.com/acme/app/-/merge_requests/7", open))
+
+        assertThat(repo.known()).containsExactly(open, PullRequestState.Open)
+        assertThat(repo.statuses.value).doesNotContainKey("https://gitlab.com/acme/app/-/merge_requests/7")
+    }
+
+    @Test
+    fun `states seeded from the account's list replace GitHub's, never undo a merge, and reach the disk`() = runBlocking<Unit> {
+        val repo = repository()
+        repo.refresh(listOf(open, merged))
+        assertThat(repo.known()).containsExactly(open, PullRequestState.Open, merged, PullRequestState.Merged)
+        val fresh = "https://github.com/acme/app/pull/8"
+        now += 1_000
+
+        repo.seed(mapOf(open to PullRequestState.Closed, merged to PullRequestState.Open, fresh to PullRequestState.Draft))
+
+        assertThat(repo.known()).containsExactly(
+            open, PullRequestState.Closed,
+            merged, PullRequestState.Merged,
+            fresh, PullRequestState.Draft,
+        )
+        assertThat(repo.statuses.value.getValue(open).checkedAtMillis).isEqualTo(now)
+        assertThat(cache.read()!!.getValue(fresh).state).isEqualTo(PullRequestState.Draft)
+        // Seeded states are fresh: the next pass has nothing to ask GitHub for.
+        repo.refresh(listOf(open, merged, fresh))
+        assertThat(requestsFor(fresh)).isEqualTo(0)
+        assertThat(requestsFor(open)).isEqualTo(1)
+
+        // The demo never seeds.
+        demo = true
+        repo.seed(mapOf("https://github.com/acme/app/pull/9" to PullRequestState.Open))
+        assertThat(repo.statuses.value).doesNotContainKey("https://github.com/acme/app/pull/9")
     }
 
     @Test
