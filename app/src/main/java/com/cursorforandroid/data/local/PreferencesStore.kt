@@ -89,10 +89,10 @@ class PreferencesStore(context: Context) {
         p[Keys.theme]?.let { raw -> ThemeMode.entries.firstOrNull { it.name == raw } } ?: ThemeMode.System
     }
 
-    val listPreferences: Flow<ListPreferences> = store.data.map { p ->
-        p[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() }
-            ?: ListPreferences()
-    }
+    val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
+
+    private fun Preferences.listPreferences(): ListPreferences =
+        this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
 
     val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
         LocalAgentState(
@@ -140,8 +140,13 @@ class PreferencesStore(context: Context) {
 
     suspend fun setThemeMode(mode: ThemeMode) = store.edit { it[Keys.theme] = mode.name }
 
-    suspend fun setListPreferences(prefs: ListPreferences) = store.edit {
-        it[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), prefs)
+    /**
+     * Changes the list preferences in one transaction against what is stored, not against a snapshot a screen holds:
+     * two quick taps in the filter menu compose, instead of the second being computed from the state before the first
+     * had landed and undoing it.
+     */
+    suspend fun updateListPreferences(transform: (ListPreferences) -> ListPreferences) = store.edit { p ->
+        p[Keys.listPrefs] = CursorJson.encodeToString(ListPreferences.serializer(), transform(p.listPreferences()))
     }
 
     suspend fun pinIfNonePinned(agentIds: Collection<String>) = store.edit { p ->

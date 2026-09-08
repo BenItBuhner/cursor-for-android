@@ -95,7 +95,10 @@ fun HomeScreen(
     var branchSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
-    val recent = remember(listState.sections) { listState.sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis } }
+    // The sidebar's rows in the sidebar's sort order: the filters, search and sort chosen in its filter menu apply
+    // here just the same, so the two lists never disagree about what is recent. Pins and date groups are how the
+    // sidebar presents them and stay there.
+    val recent = listState.rows
     val pickImages = rememberImagePicker(
         currentCount = state.attachments.size,
         onPicked = viewModel::addAttachments,
@@ -169,7 +172,7 @@ fun HomeScreen(
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth())
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
             }
         }
     }

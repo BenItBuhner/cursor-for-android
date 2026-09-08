@@ -136,6 +136,14 @@ object AgentListOrganizer {
         return sections
     }
 
+    /**
+     * The rows [organize] produced as one flat list in the chosen sort order: the same filters and query, without the
+     * groups and without the pinned rows lifted out — for the New Chat pane's recent list, which has no headers. Built
+     * from the sections rather than the agents again so the two surfaces can never disagree about what is visible.
+     */
+    fun flatten(sections: List<AgentSection>, order: SortOrder): List<AgentRow> =
+        sort(sections.flatMap { it.rows }.distinctBy { it.agent.id }, order)
+
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"
         AgentIndicator.Unread -> "Unread"

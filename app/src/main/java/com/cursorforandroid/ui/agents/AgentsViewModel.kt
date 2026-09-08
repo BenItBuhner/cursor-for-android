@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
+import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
@@ -16,17 +18,29 @@ import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 data class AgentListUiState(
+    /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
     val sections: List<AgentSection> = emptyList(),
+    /**
+     * The same rows as [sections] as one flat list in the chosen sort order, without the groups or the pinned rows
+     * lifted out — what the New Chat pane's recent list shows, so both surfaces always agree on which chats are
+     * visible and how they are ordered.
+     */
+    val rows: List<AgentRow> = emptyList(),
     val allAgents: List<Agent> = emptyList(),
     val repoSlugs: List<String> = emptyList(),
     val prefs: ListPreferences = ListPreferences(),
@@ -37,22 +51,42 @@ data class AgentListUiState(
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
+    /**
+     * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
+     * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
+     * saying "now" for as long as nothing else about it happens to change.
+     */
+    val nowMillis: Long = AppClock.now(),
 )
 
-class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
+class AgentsViewModel(
+    private val graph: AppGraph,
+    private val pollIntervalMs: Long = POLL_INTERVAL_MS,
+    private val clockTickMs: Long = CLOCK_TICK_MS,
+) : ViewModel() {
 
     private val query = MutableStateFlow("")
+
+    /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
+    private val clock: Flow<Long> = flow {
+        while (true) {
+            emit(AppClock.now())
+            delay(clockTickMs)
+        }
+    }
 
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
         graph.prefs.listPreferences,
         graph.prefs.localAgentState,
         query,
-    ) { list, prefs, local, q ->
-        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q)
+        clock,
+    ) { list, prefs, local, q, now ->
+        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
         AgentListUiState(
             sections = sections,
+            rows = AgentListOrganizer.flatten(sections, prefs.sortOrder),
             allAgents = list.agents,
             repoSlugs = list.agents.mapNotNull { it.repoSlug }.distinct().sortedBy { it.lowercase() },
             prefs = prefs,
@@ -63,6 +97,7 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
             error = list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
+            nowMillis = now,
         )
     }
         // Grouping, filtering and sorting a few hundred rows is cheap, but not free on every keystroke of the search
@@ -89,14 +124,33 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
     /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
     fun refreshIfStale() = viewModelScope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
 
+    /**
+     * Keeps the list current while it is on screen, without anyone pulling to refresh: a run started on the web, a
+     * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
+     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), the whole
+     * list every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent, and
+     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Runs until the
+     * returned job is cancelled; the caller ties it to the list being visible.
+     */
+    fun pollWhileVisible(): Job = viewModelScope.launch {
+        var tick = 0
+        while (true) {
+            delay(pollIntervalMs)
+            tick++
+            val depth = if (tick % FULL_POLL_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick
+            graph.agents.refreshIfStale(pollIntervalMs / 2, depth)
+        }
+    }
+
     fun setQuery(value: String) { query.value = value }
 
     fun togglePinned(agentId: String) = viewModelScope.launch { graph.prefs.togglePinned(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 
+    /** Against the stored preferences, in one transaction, so quick successive changes compose (see the store). */
     fun updatePrefs(transform: (ListPreferences) -> ListPreferences) = viewModelScope.launch {
-        graph.prefs.setListPreferences(transform(uiState.value.prefs))
+        graph.prefs.updateListPreferences(transform)
     }
 
     fun setGroupBy(groupBy: GroupBy) = updatePrefs { it.copy(groupBy = groupBy) }
@@ -123,6 +177,9 @@ class AgentsViewModel(private val graph: AppGraph) : ViewModel() {
 
     private companion object {
         const val STALE_AFTER_MS = 30_000L
+        const val POLL_INTERVAL_MS = 30_000L
+        const val FULL_POLL_EVERY = 5
+        const val CLOCK_TICK_MS = 60_000L
     }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {

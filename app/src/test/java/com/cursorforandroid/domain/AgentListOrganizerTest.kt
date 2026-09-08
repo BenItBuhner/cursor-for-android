@@ -56,9 +56,35 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `active lifecycle without run status counts as running`() {
+    fun `active lifecycle without run status is at rest, not running`() {
+        // The server reports ACTIVE for every unarchived agent, finished or not; only a run status can say "running".
         val a = agent("x", lifecycle = AgentLifecycle.ACTIVE, runStatus = null)
-        assertThat(a.isRunning).isTrue()
+        assertThat(a.isRunning).isFalse()
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState())).isEqualTo(AgentIndicator.Unread)
+        assertThat(AgentListOrganizer.indicatorFor(a, LocalAgentState(readMarkers = mapOf("x" to now)))).isEqualTo(AgentIndicator.Read)
+    }
+
+    @Test
+    fun `the flat list shows the sidebar's rows in its sort order, pins and groups aside`() {
+        val agents = listOf(
+            agent("today", updatedAgo = 2 * hour),
+            agent("yesterday", updatedAgo = day + hour),
+            agent("pinned", updatedAgo = 3 * day),
+            agent("newest", updatedAgo = 0),
+            agent("arch", lifecycle = AgentLifecycle.ARCHIVED),
+        )
+        val local = LocalAgentState(pinnedIds = setOf("pinned"))
+        val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
+        assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday").inOrder()
+        // The same rows (the archived one is filtered out on both surfaces), by recency, the pinned one in its place.
+        val recent = AgentListOrganizer.flatten(sections, SortOrder.Updated)
+        assertThat(recent.map { it.agent.id }).containsExactly("newest", "today", "yesterday", "pinned").inOrder()
+        // A sort order chosen in the filter menu carries through, whatever the grouping.
+        val byName = AgentListOrganizer.organize(agents, ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name), local, nowMillis = now, zone = zone)
+        assertThat(AgentListOrganizer.flatten(byName, SortOrder.Name).map { it.agent.id }).containsExactly("newest", "pinned", "today", "yesterday").inOrder()
+        // And so does a filter.
+        val onlyRunning = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
+        assertThat(AgentListOrganizer.flatten(onlyRunning, SortOrder.Updated)).isEmpty()
     }
 
     @Test
