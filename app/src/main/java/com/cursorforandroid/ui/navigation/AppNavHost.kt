@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
@@ -122,6 +123,13 @@ fun AppNavHost(
         Screen.Settings -> SidebarDestination.Settings
         is Screen.Agent -> null
     }
+    val updateState by graph.updates.state.collectAsStateWithLifecycle()
+    val updateHint = when (val s = updateState) {
+        is UpdateState.Available -> if (s.signatureMismatch) null else "Update available · ${s.release.versionName}"
+        is UpdateState.Downloaded -> "Update ready to install · ${s.release.versionName}"
+        is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
+        else -> null
+    }
 
     @Composable
     fun sidebar(inDrawer: Boolean, modifier: Modifier = Modifier) {
@@ -131,6 +139,7 @@ fun AppNavHost(
             isDemo = isDemo,
             selectedAgentId = selectedAgentId,
             selectedDestination = destination,
+            updateHint = updateHint,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
                 onNewChat = { navigateTop(Screen.Home) },
