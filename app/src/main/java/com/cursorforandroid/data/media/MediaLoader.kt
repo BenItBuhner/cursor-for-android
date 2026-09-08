@@ -20,7 +20,9 @@ import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.domain.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import java.io.IOException
 
@@ -105,30 +107,39 @@ class MediaLoader(
 
     private fun Throwable.isStaleUrl(): Boolean = (this as? HttpException)?.response?.code in STALE_URL_CODES
 
-    private suspend fun probe(url: String, maxPx: Int): VideoPoster? = withContext(Dispatchers.IO) {
-        val retriever = MediaMetadataRetriever()
-        try {
-            when {
-                url.startsWith(ASSET_PREFIX) -> context.assets.openFd(url.removePrefix(ASSET_PREFIX)).use { fd ->
-                    retriever.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+    /**
+     * For an `http(s)` URL the retriever opens its own connection inside the platform media stack — outside every
+     * timeout [com.cursorforandroid.data.api.CursorApiFactory] sets — and answers no cancellation of its own, so
+     * without a deadline a stalled host pins this thread for good and leaves a permanent spinner in the reply. The
+     * timeout arrives as a thread interrupt, which the platform's socket reads can at least see, and a probe that
+     * runs out of it is remembered as "no poster" like any other failure rather than retried on every recomposition.
+     */
+    private suspend fun probe(url: String, maxPx: Int): VideoPoster? = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
+        runInterruptible(Dispatchers.IO) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                when {
+                    url.startsWith(ASSET_PREFIX) -> context.assets.openFd(url.removePrefix(ASSET_PREFIX)).use { fd ->
+                        retriever.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length)
+                    }
+                    url.startsWith("file://") -> retriever.setDataSource(url.toUri().path)
+                    else -> retriever.setDataSource(url, emptyMap())
                 }
-                url.startsWith("file://") -> retriever.setDataSource(url.toUri().path)
-                else -> retriever.setDataSource(url, emptyMap())
+                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                // A frame a moment in, not the black or blank first frame recordings tend to start on.
+                val timeUs = (durationMs?.let { minOf(it / 3, POSTER_AT_MS) } ?: 0L) * 1_000
+                val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, maxPx, maxPx)
+                } else {
+                    retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                }
+                if (frame == null && durationMs == null) null else VideoPoster(frame, durationMs)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                null
+            } finally {
+                runCatching { retriever.release() }
             }
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-            // A frame a moment in, not the black or blank first frame recordings tend to start on.
-            val timeUs = (durationMs?.let { minOf(it / 3, POSTER_AT_MS) } ?: 0L) * 1_000
-            val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, maxPx, maxPx)
-            } else {
-                retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
-            }
-            if (frame == null && durationMs == null) null else VideoPoster(frame, durationMs)
-        } catch (t: Throwable) {
-            if (t is CancellationException) throw t
-            null
-        } finally {
-            runCatching { retriever.release() }
         }
     }
 
@@ -136,6 +147,8 @@ class MediaLoader(
         /** Coil's and ExoPlayer's spelling for APK assets; the demo backend serves its sample media this way. */
         const val ASSET_PREFIX = "file:///android_asset/"
         private const val POSTER_AT_MS = 1_500L
+        /** A header and one frame's worth of range requests; anything slower than this is a network that has gone. */
+        private const val PROBE_TIMEOUT_MS = 15_000L
         private val STALE_URL_CODES = setOf(400, 401, 403, 404)
     }
 }
