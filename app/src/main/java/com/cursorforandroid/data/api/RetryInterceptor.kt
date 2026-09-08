@@ -5,6 +5,8 @@ import okhttp3.Response
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.UnknownHostException
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ThreadLocalRandom
 
 /**
@@ -18,7 +20,8 @@ class RetryInterceptor(
     private val maxAttempts: Int = 3,
     private val baseDelayMs: Long = 400L,
     private val maxDelayMs: Long = 4_000L,
-    private val sleeper: (Long) -> Unit = Thread::sleep,
+    private val now: () -> Long = System::currentTimeMillis,
+    private val sleeper: (Long, () -> Boolean) -> Unit = ::sleepInSlices,
     private val random: () -> Double = { ThreadLocalRandom.current().nextDouble() },
 ) : Interceptor {
 
@@ -31,17 +34,19 @@ class RetryInterceptor(
                 chain.proceed(request)
             } catch (e: IOException) {
                 if (attempt >= maxAttempts || !e.isTransient() || chain.call().isCanceled()) throw e
-                sleeper(backoff(attempt, retryAfterMs = null))
+                wait(chain, backoff(attempt, retryAfterMs = null))
                 attempt++
                 continue
             }
             if (attempt >= maxAttempts || !response.isTransientFailure() || chain.call().isCanceled()) return response
             val retryAfter = response.retryAfterMs()
             response.close()
-            sleeper(backoff(attempt, retryAfter))
+            wait(chain, backoff(attempt, retryAfter))
             attempt++
         }
     }
+
+    private fun wait(chain: Interceptor.Chain, delayMs: Long) = sleeper(delayMs) { chain.call().isCanceled() }
 
     private fun backoff(attempt: Int, retryAfterMs: Long?): Long {
         val exponential = (baseDelayMs shl (attempt - 1)).coerceAtMost(maxDelayMs)
@@ -57,9 +62,36 @@ class RetryInterceptor(
     private fun IOException.isTransient() = this !is UnknownHostException &&
         !(this is InterruptedIOException && message == "Canceled")
 
-    private fun Response.retryAfterMs(): Long? = header("Retry-After")?.trim()?.toLongOrNull()?.let { it * 1000 }
+    /**
+     * `Retry-After` in either form RFC 9110 allows. Read as delta-seconds only, an HTTP-date came back as null and
+     * the client fell back to its own few hundred milliseconds — retrying almost at once against a rate limit that
+     * had named a time, and spending two more requests of the budget doing it.
+     */
+    private fun Response.retryAfterMs(): Long? {
+        val header = header("Retry-After")?.trim()?.ifEmpty { null } ?: return null
+        header.toLongOrNull()?.let { return (it * 1000).coerceAtLeast(0L) }
+        val at = runCatching {
+            ZonedDateTime.parse(header, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+        }.getOrNull() ?: return null
+        return (at - now()).coerceAtLeast(0L)
+    }
 
     private companion object {
         const val MAX_RETRY_AFTER_MS = 10_000L
     }
 }
+
+/**
+ * Taken in slices, because `Thread.sleep` inside an application interceptor is not interruptible: a cancelled call
+ * gives its OkHttp dispatcher thread back within a slice instead of holding it for the whole backoff.
+ */
+private fun sleepInSlices(totalMs: Long, isCancelled: () -> Boolean) {
+    var remaining = totalMs
+    while (remaining > 0 && !isCancelled()) {
+        val slice = remaining.coerceAtMost(SLEEP_SLICE_MS)
+        Thread.sleep(slice)
+        remaining -= slice
+    }
+}
+
+private const val SLEEP_SLICE_MS = 250L
