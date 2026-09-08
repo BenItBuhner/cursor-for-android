@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -62,6 +63,7 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -109,8 +111,11 @@ fun HomeScreen(
         }
         // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
         val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        // The fade sits inside the IME padding so it tracks the visible viewport when the keyboard is up.
+        val recentState = rememberLazyListState()
         LazyColumn(
-            Modifier.fillMaxSize().imePadding(),
+            Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState),
+            state = recentState,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
