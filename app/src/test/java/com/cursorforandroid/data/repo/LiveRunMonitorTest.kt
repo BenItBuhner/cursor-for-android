@@ -226,7 +226,10 @@ class LiveRunMonitorTest {
         repeat(10) { api.addRunningAgent("bc-$it", "Agent $it", "run-$it") }
         agents.refresh()
         monitor.start()
-        awaitUntil { monitor.state.value.hasReconciled && running().size == 8 }
+        // A run is listed as tracked the moment its tracker starts; the hub opens its stream a beat later, on its own
+        // scope, so the connections are waited for in their own right rather than assumed to keep pace with the state.
+        awaitUntil { monitor.state.value.hasReconciled && running().size == 8 && streamer.connections.distinct().size == 8 }
+        // Left to settle: the cap must hold, so nothing beyond the eight may follow.
         delay(100)
         assertThat(running()).hasSize(8)
         assertThat(streamer.connections.distinct()).hasSize(8)
@@ -244,6 +247,9 @@ class LiveRunMonitorTest {
         streamer.emit(finishedRun, RunStreamEvent.Done)
         awaitUntil { monitor.state.value.runningCount == 9 && running().size == 8 && running().none { it.agentId == finishedId } }
         assertThat(monitor.state.value.untrackedCount).isEqualTo(1)
+        // The slot's new occupant is tracked before its stream is open; wait for the connection it is about to be
+        // counted by.
+        awaitUntil { streamer.connections.distinct().size == 9 }
         assertThat(streamer.connections.distinct()).hasSize(9)
     }
 
