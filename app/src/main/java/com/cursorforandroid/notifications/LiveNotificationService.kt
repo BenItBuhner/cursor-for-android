@@ -1,16 +1,14 @@
 package com.cursorforandroid.notifications
 
-import android.Manifest
 import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import android.widget.Toast
-import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -28,6 +26,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
@@ -35,6 +36,12 @@ import kotlinx.coroutines.launch
  * Foreground service (`dataSync`) that keeps the run streams alive while the app is in the background and owns
  * the live notification. It starts whenever at least one agent is running and stops itself once the last one
  * finishes, when live notifications are switched off, or when the platform's data-sync time budget runs out.
+ *
+ * Whether it is up is published on [active], because the platform can take it down at any moment — a refused
+ * start, a process killed under memory pressure, Android 15 ending a `dataSync` service six hours after the app was
+ * last in front — and none of that ends the runs. [LiveNotificationCoordinator] watches [active] to bring the
+ * service back whenever the app is in front, and [FinishWatchdogJobService] is armed for as long as it is up so the
+ * finished cards still arrive when it is gone and the app is not around to restart it.
  */
 class LiveNotificationService : Service() {
 
@@ -73,12 +80,19 @@ class LiveNotificationService : Service() {
         try {
             val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
             ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type)
-        } catch (_: Exception) {
-            // ForegroundServiceStartNotAllowedException (background start) or a missing permission: give up quietly.
+        } catch (e: Exception) {
+            // ForegroundServiceStartNotAllowedException (a background start, or Android 15's dataSync budget spent
+            // before the app was in front again) or a missing permission. Not fatal: [active] stays false, and the
+            // coordinator tries again from the foreground. Logged, because a refused start is exactly what "the
+            // notification never showed up" looks like from the outside.
+            Log.w(TAG, "Foreground start refused", e)
             stopSelf()
             return false
         }
         inForeground = true
+        _active.value = true
+        // The safety net for the finished cards, in case this process does not live to post them.
+        FinishWatchdogJobService.arm(this, FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
         scope.launch { monitor.finished.collect { onRunFinished(it) } }
         monitor.start()
@@ -86,7 +100,7 @@ class LiveNotificationService : Service() {
             combine(monitor.state, graph.prefs.liveNotifications) { state, enabled -> state to enabled }
                 .collect { (state, enabled) ->
                     when {
-                        !enabled -> shutdown()
+                        !enabled -> shutdown(keepWatching = false)
                         state.running.isEmpty() -> scheduleIdleShutdown(state)
                         else -> {
                             idleJob?.cancel()
@@ -104,7 +118,10 @@ class LiveNotificationService : Service() {
         idleJob?.cancel()
         idleJob = scope.launch {
             delay(if (state.hasReconciled) IDLE_GRACE_MS else FIRST_RECONCILE_TIMEOUT_MS)
-            shutdown()
+            // Nothing is being followed. When the list agrees nothing is running the watchdog is stood down; when it
+            // still says otherwise (or was never reconciled) the watchdog keeps reading the records instead.
+            val current = graph.runMonitor.state.value
+            shutdown(keepWatching = !current.hasReconciled || current.totalRunning > 0)
         }
     }
 
@@ -128,51 +145,67 @@ class LiveNotificationService : Service() {
         }
     }
 
-    private fun post(id: Int, notification: Notification) {
-        // Checked inline (not via LiveNotifications.hasPermission) so lint's MissingPermission analysis can see it.
-        // POST_NOTIFICATIONS only exists from API 33; earlier releases report it as denied, hence the version guard.
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
-        try {
-            NotificationManagerCompat.from(this).notify(id, notification)
-        } catch (_: SecurityException) {
-            // Permission revoked between the check and the call; the next state change tries again.
-        }
-    }
+    private fun post(id: Int, notification: Notification) = LiveNotifications.post(this, id, notification)
 
-    private fun shutdown() {
+    /**
+     * Stops following the runs and takes the live notification down. With [keepWatching] the runs are believed to be
+     * still going, so the watchdog is armed to announce their finishes; without it there is nothing left to watch.
+     */
+    private fun shutdown(keepWatching: Boolean) {
         idleJob?.cancel()
         idleJob = null
         graph.runMonitor.stop()
+        if (keepWatching) {
+            FinishWatchdogJobService.arm(this, FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
+        } else {
+            FinishWatchdogJobService.disarm(this)
+        }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    /** Android 15+ ends `dataSync` services after their daily budget; the run keeps going in the cloud. */
+    /**
+     * Android 15+ ends `dataSync` services six hours after the app was last in front; the runs keep going in the
+     * cloud. An app in the background may not start another foreground service, so from here the watchdog announces
+     * the finishes, and the coordinator brings the live notification back the next time the app is in front.
+     */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        shutdown()
+        Log.w(TAG, "dataSync time budget spent; handing the running agents to the watchdog")
+        shutdown(keepWatching = true)
     }
 
     override fun onDestroy() {
         scope.cancel()
         graph.runMonitor.stop()
         inForeground = false
+        _active.value = false
         super.onDestroy()
     }
 
     companion object {
+        private const val TAG = "LiveNotifications"
         const val ACTION_STOP_RUN = "com.cursorforandroid.action.STOP_RUN"
         private const val EXTRA_AGENT_ID = "agent_id"
         private const val EXTRA_RUN_ID = "run_id"
         private const val IDLE_GRACE_MS = 2_500L
         private const val FIRST_RECONCILE_TIMEOUT_MS = 20_000L
 
-        /** Idempotent: a running service just receives another start command. Must be called from the foreground. */
-        fun start(context: Context) {
-            runCatching { ContextCompat.startForegroundService(context, Intent(context, LiveNotificationService::class.java)) }
+        private val _active = MutableStateFlow(false)
+
+        /** True from a successful `startForeground` until the service is destroyed: whether the live notification is being kept. */
+        val active: StateFlow<Boolean> = _active.asStateFlow()
+
+        /**
+         * Idempotent: a running service just receives another start command. Must be called from the foreground.
+         * Returns false when the platform refused the start outright (an app in the background, on Android 12+); a
+         * start that is accepted can still fail in `startForeground`, which [active] reports.
+         */
+        fun start(context: Context): Boolean = try {
+            ContextCompat.startForegroundService(context, Intent(context, LiveNotificationService::class.java))
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Start refused", e)
+            false
         }
 
         fun stop(context: Context) {

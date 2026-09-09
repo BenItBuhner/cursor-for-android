@@ -125,9 +125,11 @@ class RunMonitor(
         // tracker is dropped so an intermediate state never reports fewer agents than it lists.
         _state.update { st -> st.copy(runningCount = running.size) }
         val wanted = running.filter { it.latestRunId != null }.take(maxTracked).associateBy { it.id }
-        // Agents without a known run id come from a summary-only list: load the detail record once to learn it.
+        // Agents without a known run id come from a summary-only list: load the detail record to learn it. One request
+        // per agent at a time; a failed one (offline, a launch the server has not finished creating) is asked for again
+        // at the next reconcile rather than never, or the agent would go unfollowed for as long as the monitor runs.
         running.filter { it.latestRunId == null && detailRequested.add(it.id) }.forEach { agent ->
-            scope.launch { agents.loadDetail(agent.id) }
+            scope.launch { agents.loadDetail(agent.id).onFailure { detailRequested.remove(agent.id) } }
         }
         trackers.entries.toList().forEach { (agentId, tracker) ->
             val stillWanted = wanted[agentId]?.latestRunId == tracker.runId

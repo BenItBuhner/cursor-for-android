@@ -91,6 +91,8 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationGate: CompletableDeferred<Unit>? = null
     /** When set, the agent detail endpoint waits for it before answering. */
     @Volatile var getAgentGate: CompletableDeferred<Unit>? = null
+    /** When set, [getAgent] throws it, like a server that is down. */
+    @Volatile var failGetAgent: Throwable? = null
     var modelItems: List<ModelListItemDto> = emptyList()
     var repositoryUrls: List<String> = emptyList()
     private val ids = AtomicInteger()
@@ -173,6 +175,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun getAgent(id: String): AgentDto {
         getAgentCalls++
+        failGetAgent?.let { throw it }
         getAgentGate?.await()
         return agents[id] ?: throw notFound()
     }
