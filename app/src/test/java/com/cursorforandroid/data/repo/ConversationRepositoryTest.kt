@@ -762,6 +762,22 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `the first screen to open a chat is reported once, and again after the last one leaves`() {
+        val opened = mutableListOf<String>()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, onOpened = { opened += it }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        )
+        conversations.attach("bc-1")
+        conversations.attach("bc-1")
+        assertThat(opened).containsExactly("bc-1")
+        conversations.detach("bc-1")
+        conversations.detach("bc-1")
+        conversations.attach("bc-1")
+        assertThat(opened).containsExactly("bc-1", "bc-1")
+    }
+
+    @Test
     fun `forgetting an agent removes its transcript from disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         api.transcripts["bc-1"] = transcript("user_message" to "Hi", "assistant_message" to "Done.")

@@ -64,6 +64,15 @@ object LiveNotifications {
         }
     }
 
+    /**
+     * Drops the finished card for [agentId], if one is up. Opening that chat from inside the app is why: the
+     * transcript already shows the reply, so the shade has nothing left to announce. Tapping the card itself is
+     * handled by `setAutoCancel`; this is the same dismissal when the user gets there from the list instead.
+     */
+    fun cancelFinished(context: Context, agentId: String) {
+        runCatching { NotificationManagerCompat.from(context).cancel(LiveNotificationRenderer.finishedId(agentId)) }
+    }
+
     /** Android 16 introduced Live Updates (promoted ongoing notifications). */
     val supportsLiveUpdates: Boolean get() = Build.VERSION.SDK_INT >= 36
 
