@@ -38,13 +38,15 @@ fun interface PullRequestSource {
 
 /**
  * Where the agents' pull requests stand. The Cloud Agents API only names them, so the states come from the Cursor
- * account, which keeps a status per agent in step with the SCM (the view the desktop and iOS apps show, private
- * repositories and non-GitHub SCMs included) — in bulk with every read of the account's agent list ([seed]) and one
- * at a time through [account]. States are remembered on disk and restored before the network is asked, then
- * revalidated on every list refresh according to how likely they are to have moved: an open or draft PR every few
- * minutes, a closed one a few times a day, a merged one never. What the account would not answer is remembered too,
- * so the same refused request is not repeated at every refresh. The demo answers from its seeds and never touches
- * the disk.
+ * account (the view the desktop and iOS apps show, private repositories and non-GitHub SCMs included), two ways:
+ * in bulk with every read of the account's agent list ([seed]), whose stored status per agent is quick to show but
+ * can lag the SCM, and one at a time through [account], which reads the SCM for that PR when asked. The live answer
+ * is the one to trust for as long as it is fresh: a list read that agrees with it changes nothing, one that disagrees
+ * is ignored until the PR is due to be re-read, so a stale record never overrides or flip-flops with what the SCM
+ * said. States are remembered on disk and restored before the network is asked, then revalidated on every list
+ * refresh according to how likely they are to have moved: an open or draft PR every couple of minutes, a closed one
+ * a few times a day, a merged one never. What the account would not answer is remembered too, so the same refused
+ * request is not repeated at every refresh. The demo answers from its seeds and never touches the disk.
  */
 class PullRequestRepository(
     private val account: PullRequestSource,
@@ -115,21 +117,32 @@ class PullRequestRepository(
             .sortedBy { url -> known[url]?.checkedAtMillis ?: 0L }
             .take(maxPerRefresh)
         val source = if (demo) this.demo else account
-        for (url in due) {
-            when (val result = source.lookup(url)) {
-                is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo)
-                PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo)
-                // Offline, or the account service is down: the rest of the pass would end the same way.
-                PullRequestLookup.Failed -> return
+        var dirty = false
+        try {
+            for (url in due) {
+                val state = when (val result = source.lookup(url)) {
+                    is PullRequestLookup.Found -> result.state
+                    PullRequestLookup.Unreadable -> null
+                    // Offline, or the account service is down: the rest of the pass would end the same way.
+                    PullRequestLookup.Failed -> return
+                }
+                // Each answer shows as it lands; the disk gets them together, once, below.
+                _statuses.update { it + (url to PullRequestStatus(state, AppClock.now(), live = true)) }
+                dirty = true
             }
+            if (!demo && forgetStale(now)) dirty = true
+        } finally {
+            if (dirty && !demo) cache?.write(_statuses.value)
         }
-        if (!demo) forgetStale(now)
     }
 
     /**
      * States the account service reported alongside its agent list (every read, whether or not the pins are being
-     * synced). They are what the first-party apps show, so they replace whatever was remembered — except that a merge
-     * is final, so a stale report never undoes one.
+     * synced). They are what the first-party apps show first, so they fill in whatever is unknown and follow the SCM
+     * where nothing fresher is known — except that a merge is final, so a stale report never undoes one, and a state
+     * the SCM was asked about within [LIVE_TRUST_MS] outranks a record that disagrees with it. A report that agrees
+     * with what is known changes nothing, the time it was last read included, so the list's word never postpones a
+     * live read that is due.
      */
     suspend fun seed(states: Map<String, PullRequestState>) {
         if (states.isEmpty() || isDemo()) return
@@ -141,12 +154,23 @@ class PullRequestRepository(
         demoMode = false
         restoreFromCache()
         val at = AppClock.now()
+        var changed = false
         val next = _statuses.updateAndGet { all ->
-            all + states.mapNotNull { (url, state) ->
-                if (all[url]?.state == PullRequestState.Merged && state != PullRequestState.Merged) null else url to PullRequestStatus(state, at)
+            val adopted = states.mapNotNull { (url, state) ->
+                val known = all[url]
+                when {
+                    known == null -> url to PullRequestStatus(state, at)
+                    known.state == state -> null
+                    known.state == PullRequestState.Merged -> null
+                    state == PullRequestState.Merged -> url to PullRequestStatus(state, at)
+                    known.live && known.state != null && at - known.checkedAtMillis < LIVE_TRUST_MS -> null
+                    else -> url to PullRequestStatus(state, at)
+                }
             }
+            changed = adopted.isNotEmpty()
+            if (changed) all + adopted else all
         }
-        cache?.write(next)
+        if (changed) cache?.write(next)
     }
 
     private fun PullRequestStatus?.isDue(now: Long, eager: Boolean): Boolean {
@@ -162,23 +186,19 @@ class PullRequestRepository(
         return now - checkedAtMillis >= effective
     }
 
-    private suspend fun remember(url: String, status: PullRequestStatus, persist: Boolean) {
-        val next = _statuses.updateAndGet { it + (url to status) }
-        if (persist) cache?.write(next)
-    }
-
     /**
      * Keeps the record bounded: a pull request not looked at for a month belongs to an agent that is long gone from
      * the list (a merged one is never re-read, so it is asked about once more should its agent still be around).
+     * Returns whether anything was dropped; the caller writes the disk.
      */
-    private suspend fun forgetStale(now: Long) {
+    private fun forgetStale(now: Long): Boolean {
         var dropped = false
-        val next = _statuses.updateAndGet { all ->
+        _statuses.update { all ->
             val kept = all.filterValues { now - it.checkedAtMillis < MAX_AGE_MS }
             dropped = kept.size != all.size
-            kept
+            if (dropped) kept else all
         }
-        if (dropped) cache?.write(next)
+        return dropped
     }
 
     /** Forgets everything on sign-out; the disk copy goes with the other caches. */
@@ -190,10 +210,14 @@ class PullRequestRepository(
 
     private companion object {
         const val MAX_PER_REFRESH = 50
-        const val OPEN_INTERVAL_MS = 10 * 60_000L
+        /** A PR that can still move is read from the SCM this often while the list is on screen; one request per PR. */
+        const val OPEN_INTERVAL_MS = 2 * 60_000L
         const val CLOSED_INTERVAL_MS = 6 * 60 * 60_000L
         const val UNREADABLE_INTERVAL_MS = 60 * 60_000L
-        const val EAGER_INTERVAL_MS = 60_000L
+        /** A pull or a return to the foreground re-reads what can move, unless it was read this recently. */
+        const val EAGER_INTERVAL_MS = 30_000L
+        /** How long a live answer outranks the list's stored status: until the PR would be re-read anyway. */
+        const val LIVE_TRUST_MS = OPEN_INTERVAL_MS
         const val MAX_AGE_MS = 30L * 24 * 60 * 60_000L
     }
 }

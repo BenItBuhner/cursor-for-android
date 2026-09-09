@@ -96,31 +96,78 @@ class PullRequestRepositoryTest {
     }
 
     @Test
-    fun `states seeded from the account's list replace the remembered ones, never undo a merge, and reach the disk`() = runBlocking<Unit> {
+    fun `states seeded from the account's list fill in the unknown, never undo a merge, and reach the disk`() = runBlocking<Unit> {
         val repo = repository()
-        repo.refresh(listOf(open, merged))
-        assertThat(repo.known()).containsExactly(open, PullRequestState.Open, merged, PullRequestState.Merged)
+        repo.refresh(listOf(merged, unknown))
+        assertThat(repo.known()).containsExactly(merged, PullRequestState.Merged)
         val fresh = "https://github.com/acme/app/pull/8"
         now += 1_000
 
-        repo.seed(mapOf(open to PullRequestState.Closed, merged to PullRequestState.Open, fresh to PullRequestState.Draft))
+        repo.seed(mapOf(merged to PullRequestState.Open, fresh to PullRequestState.Draft, unknown to PullRequestState.Open))
 
+        // The list has a state for what the live read had none for, and for a PR never asked about; a merge stays.
         assertThat(repo.known()).containsExactly(
-            open, PullRequestState.Closed,
             merged, PullRequestState.Merged,
             fresh, PullRequestState.Draft,
+            unknown, PullRequestState.Open,
         )
-        assertThat(repo.statuses.value.getValue(open).checkedAtMillis).isEqualTo(now)
+        assertThat(repo.statuses.value.getValue(fresh).checkedAtMillis).isEqualTo(now)
+        assertThat(repo.statuses.value.getValue(fresh).live).isFalse()
         assertThat(cache.read()!!.getValue(fresh).state).isEqualTo(PullRequestState.Draft)
         // Seeded states are fresh: the next pass has nothing to ask for.
-        repo.refresh(listOf(open, merged, fresh))
+        repo.refresh(listOf(merged, fresh, unknown))
         assertThat(askedFor(fresh)).isEqualTo(0)
-        assertThat(askedFor(open)).isEqualTo(1)
+        assertThat(askedFor(unknown)).isEqualTo(1)
 
         // The demo never seeds.
         demo = true
         repo.seed(mapOf("https://github.com/acme/app/pull/9" to PullRequestState.Open))
         assertThat(repo.statuses.value).doesNotContainKey("https://github.com/acme/app/pull/9")
+    }
+
+    @Test
+    fun `a list read that agrees changes nothing and never postpones the live read that is due`() = runBlocking<Unit> {
+        val repo = repository()
+        repo.refresh(listOf(open))
+        val readAt = repo.statuses.value.getValue(open).checkedAtMillis
+
+        // The list is read every half minute while the app is open; each read agrees with what the SCM said.
+        repeat(5) {
+            now += 30_000
+            repo.seed(mapOf(open to PullRequestState.Open))
+            assertThat(repo.statuses.value.getValue(open).checkedAtMillis).isEqualTo(readAt)
+            assertThat(repo.statuses.value.getValue(open).live).isTrue()
+        }
+        // Two and a half minutes on, the PR is due: the SCM is asked, the list's agreement notwithstanding.
+        repo.refresh(listOf(open))
+        assertThat(askedFor(open)).isEqualTo(2)
+        assertThat(repo.statuses.value.getValue(open).checkedAtMillis).isEqualTo(now)
+    }
+
+    @Test
+    fun `a list read that disagrees with a fresh live answer waits its turn, and a merge never does`() = runBlocking<Unit> {
+        val repo = repository()
+        repo.refresh(listOf(open, draft))
+        assertThat(repo.known()).containsExactly(open, PullRequestState.Open, draft, PullRequestState.Draft)
+
+        // Half a minute on, the list's stored record says draft: the SCM was just asked, and it said open.
+        now += 30_000
+        repo.seed(mapOf(open to PullRequestState.Draft, draft to PullRequestState.Merged))
+        assertThat(repo.known()[open]).isEqualTo(PullRequestState.Open)
+        assertThat(repo.known()[draft]).isEqualTo(PullRequestState.Merged)
+        assertThat(repo.statuses.value.getValue(open).checkedAtMillis).isEqualTo(now - 30_000)
+
+        // Once the live answer is as old as the PR's own re-read interval, the list's word is taken up...
+        now += 2 * 60_000
+        repo.seed(mapOf(open to PullRequestState.Draft))
+        assertThat(repo.known()[open]).isEqualTo(PullRequestState.Draft)
+        assertThat(repo.statuses.value.getValue(open).live).isFalse()
+        // ...and the SCM confirms or corrects it at its next turn, which a state lifted off the list does not postpone.
+        answers[open] = { PullRequestLookup.Found(PullRequestState.Open) }
+        now += 2 * 60_000
+        repo.refresh(listOf(open))
+        assertThat(repo.known()[open]).isEqualTo(PullRequestState.Open)
+        assertThat(repo.statuses.value.getValue(open).live).isTrue()
     }
 
     @Test
@@ -130,8 +177,8 @@ class PullRequestRepositoryTest {
         repo.refresh(urls)
         assertThat(askedCount()).isEqualTo(4)
 
-        // A minute later nothing is due, unless the user asked: then what can move is re-read, what was refused is not.
-        now += 61_000
+        // Half a minute later nothing is due, unless the user asked: then what can move is re-read, what was refused is not.
+        now += 31_000
         repo.refresh(urls)
         assertThat(askedCount()).isEqualTo(4)
         repo.refresh(urls, eager = true)
@@ -140,8 +187,8 @@ class PullRequestRepositoryTest {
         assertThat(askedFor(merged)).isEqualTo(1)
         assertThat(askedFor(unknown)).isEqualTo(1)
 
-        // Ten minutes: open again; six hours: closed again; an hour: the refused one is tried once more.
-        now += 10 * 60_000
+        // Two minutes: open again; six hours: closed again; an hour: the refused one is tried once more.
+        now += 2 * 60_000
         repo.refresh(urls)
         assertThat(askedFor(open)).isEqualTo(3)
         assertThat(askedFor(closed)).isEqualTo(2)
@@ -157,7 +204,7 @@ class PullRequestRepositoryTest {
 
         // A state that moved replaces the remembered one.
         answers[open] = { PullRequestLookup.Found(PullRequestState.Merged) }
-        now += 10 * 60_000
+        now += 2 * 60_000
         repo.refresh(urls)
         assertThat(repo.known()[open]).isEqualTo(PullRequestState.Merged)
     }

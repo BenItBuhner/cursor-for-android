@@ -144,10 +144,14 @@ class AgentsViewModel(
         refreshPullRequests(eager = true)
     }
 
-    /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
+    /**
+     * For returning to the foreground: agents that changed while the app was away, without a spinner — and the pull
+     * requests that could have moved meanwhile, re-read the way a pull does, since coming back is the moment a
+     * merge made elsewhere is looked for.
+     */
     fun refreshIfStale() = viewModelScope.launch {
         graph.agents.refreshIfStale(STALE_AFTER_MS)
-        refreshPullRequests()
+        refreshPullRequests(eager = true)
     }
 
     private suspend fun refreshPullRequests(eager: Boolean = false) =
@@ -158,7 +162,9 @@ class AgentsViewModel(
      * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
      * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), the whole
      * list every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent, and
-     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Runs until the
+     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Each tick also gives
+     * the pull request states their turn: the account's list, read after each fetch, says where they stand at once,
+     * and the pass re-reads from the SCM whichever are due on their own schedule (cheap when none is). Runs until the
      * returned job is cancelled; the caller ties it to the list being visible.
      */
     fun pollWhileVisible(): Job = viewModelScope.launch {
@@ -168,6 +174,7 @@ class AgentsViewModel(
             tick++
             val depth = if (tick % FULL_POLL_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick
             graph.agents.refreshIfStale(pollIntervalMs / 2, depth)
+            refreshPullRequests()
         }
     }
 

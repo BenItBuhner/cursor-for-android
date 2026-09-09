@@ -92,7 +92,7 @@ Debug builds (`com.cursorforandroid.debug`) check and download like release buil
 | Launch / follow up / cancel | `POST /v1/agents`, `POST /v1/agents/{id}/runs` (both with `prompt.images`, `model`, `mode` and inline `mcpServers`), `POST …/cancel` |
 | Lifecycle | `POST …/archive`, `POST …/unarchive`, `DELETE /v1/agents/{id}` |
 | Pickers | `GET /v1/models`, `GET /v1/repositories` |
-| Pull request state (open / draft / merged / closed) for the Git filter and the list's PR pills | The Cursor account, the view the desktop and iOS apps show: every read of `aiserver.v1.BackgroundComposerService/ListBackgroundComposers` (made for the pins) carries each agent's `prUrl` and `prStatus` (`PR_STATUS_OPEN` / `DRAFT` / `MERGED` / `CLOSED`), and `…/GetPullRequestMergeStatus` `{prUrl}` answers for one — private repositories and non-GitHub SCMs included, no SCM token. States are cached on disk and re-read on a per-state schedule (open / draft every 10 minutes, closed a few times a day, merged never) |
+| Pull request state (open / draft / merged / closed) for the Git filter and the list's PR pills | The Cursor account, the view the desktop and iOS apps show: every read of `aiserver.v1.BackgroundComposerService/ListBackgroundComposers` (made for the pins) carries each agent's `prUrl` and `prStatus` (`PR_STATUS_OPEN` / `DRAFT` / `MERGED` / `CLOSED`), and `…/GetPullRequestMergeStatus` `{prUrl}` answers for one — private repositories and non-GitHub SCMs included, no SCM token. States are cached on disk and re-read from the SCM on a per-state schedule (open / draft every two minutes while the app is open, closed a few times a day, merged never); a fresh per-PR answer outranks the list's stored status until the next read |
 
 ## Design tokens and geometry
 
