@@ -8,7 +8,9 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.CharConversionException
 import java.io.File
+import java.io.IOException
 import java.security.GeneralSecurityException
 
 /**
@@ -75,6 +77,44 @@ class SecureKeyStoreTest {
         assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Reset)
         assertThat(store.setApiKey("key_after_reset")).isTrue()
         assertThat(store.apiKey()).isEqualTo("key_after_reset")
+    }
+
+    @Test
+    fun `a keyset that is no longer hex is recreated at once rather than retried for three launches`() {
+        // What Tink raises when the keyset it kept in the same file as the values reads back as something other
+        // than hex, which is what a corrupted store looks like on a device: an IO failure that will never clear.
+        var attempts = 0
+        val store = SecureKeyStore(context) {
+            attempts++
+            if (attempts == 1) {
+                throw CharConversionException(
+                    "can't read keyset; the pref value __androidx_security_crypto_encrypted_prefs_key_keyset__ " +
+                        "is not a valid hex string",
+                )
+            }
+            FailingPrefs(backing("recreated-hex"))
+        }
+
+        assertThat(store.apiKey()).isNull()
+        // Straight to the recreation: not asked a second time, and no launch counted towards MAX_OPEN_FAILURES.
+        assertThat(attempts).isEqualTo(2)
+        assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Reset)
+        assertThat(backing("cursor_secure_health").getInt("open_failures", 0)).isEqualTo(0)
+    }
+
+    @Test
+    fun `an IO failure that is not about the keyset is still treated as transient`() {
+        // The distinction is the kind of IO failure, not IO trouble in general: a busy disk must not cost the
+        // only copy of the credentials.
+        var attempts = 0
+        val store = SecureKeyStore(context, openRetryDelayMs = 0) {
+            attempts++
+            throw IOException("failed to read the store")
+        }
+
+        assertThat(store.apiKey()).isNull()
+        assertThat(attempts).isEqualTo(2)
+        assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
     }
 
     @Test

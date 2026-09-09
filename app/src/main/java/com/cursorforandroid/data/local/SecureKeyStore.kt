@@ -9,6 +9,7 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.CharConversionException
 import java.io.File
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -155,6 +156,11 @@ class SecureKeyStore(
             if (cause is AEADBadTagException) return true
             // Tink shades its protobuf, so the keyset parse failure is matched by name rather than by type.
             if (cause.javaClass.name.endsWith("InvalidProtocolBufferException")) return true
+            // The one IO failure that is not transient: Tink stores the keyset as hex in the same file as the
+            // values, and raises this when what it reads back is not hex at all. Nothing about that improves by
+            // asking again, and treating it as transient costs [MAX_OPEN_FAILURES] launches of a device that
+            // silently cannot keep a sign-in before the store is started over.
+            if (cause is CharConversionException) return true
             if (cause is GeneralSecurityException) {
                 val message = cause.message?.lowercase().orEmpty()
                 if (KEYSET_FAILURES.any { it in message }) return true
