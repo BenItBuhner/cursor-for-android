@@ -67,6 +67,15 @@ data class AgentListState(
  */
 enum class RefreshDepth { Quick, Full }
 
+/** What [AgentRepository.refreshIfStale] did, so a poller can tell "nothing to do" from "could not be done". */
+enum class RefreshOutcome {
+    /** The list was fetched recently enough, or a fetch is already in flight. */
+    Skipped,
+    Refreshed,
+    /** The server could not be reached or would not answer; what was shown stands. */
+    Failed,
+}
+
 data class LaunchRequest(
     val prompt: String,
     val images: List<PromptImage> = emptyList(),
@@ -197,10 +206,14 @@ class AgentRepository(
      * already in flight or the current backend's list was fetched less than [maxAgeMs] ago. A list from another
      * backend, or none, is always stale.
      */
-    suspend fun refreshIfStale(maxAgeMs: Long, depth: RefreshDepth = RefreshDepth.Full) {
-        if (synchronized(this) { inFlight?.job?.isActive == true }) return
-        if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return
+    suspend fun refreshIfStale(maxAgeMs: Long, depth: RefreshDepth = RefreshDepth.Full): RefreshOutcome {
+        if (synchronized(this) { inFlight?.job?.isActive == true }) return RefreshOutcome.Skipped
+        if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return RefreshOutcome.Skipped
+        val before = _refreshCompleted.value
         refresh(silent = true, depth = depth)
+        // A silent refresh keeps its failure to itself while there is something to show, so the completed count —
+        // not the error — is what says whether the fetch got through.
+        return if (_refreshCompleted.value != before) RefreshOutcome.Refreshed else RefreshOutcome.Failed
     }
 
     /**

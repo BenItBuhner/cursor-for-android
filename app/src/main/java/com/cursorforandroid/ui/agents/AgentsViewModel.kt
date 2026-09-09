@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.RefreshDepth
+import com.cursorforandroid.data.repo.RefreshOutcome
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 data class AgentListUiState(
     /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
@@ -96,6 +98,9 @@ class AgentsViewModel(
 
     /** An archive / unarchive / delete the server refused, until the next one is attempted. */
     private val actionError = MutableStateFlow<String?>(null)
+
+    /** Consecutive polls whose fetch could not reach the server; a success or a refresh by hand clears it. */
+    @Volatile private var pollFailures = 0
 
     private val device: Flow<DeviceState> = combine(
         graph.prefs.localAgentState,
@@ -177,13 +182,15 @@ class AgentsViewModel(
     }
 
     fun refresh() = viewModelScope.launch {
+        // Asking again by hand is also how a user gets out of a backed-off cadence after an outage.
+        pollFailures = 0
         graph.agents.refresh()
         refreshPullRequests(eager = true)
     }
 
     /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
     fun refreshIfStale() = viewModelScope.launch {
-        graph.agents.refreshIfStale(STALE_AFTER_MS)
+        if (graph.agents.refreshIfStale(STALE_AFTER_MS) == RefreshOutcome.Refreshed) pollFailures = 0
         refreshPullRequests()
     }
 
@@ -193,19 +200,38 @@ class AgentsViewModel(
     /**
      * Keeps the list current while it is on screen, without anyone pulling to refresh: a run started on the web, a
      * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
-     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), the whole
-     * list every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent, and
-     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Runs until the
-     * returned job is cancelled; the caller ties it to the list being visible.
+     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), a deeper
+     * pass every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent,
+     * and skipped when something else (the live-notification monitor, a pull) refreshed moments ago. While the
+     * server cannot be reached the interval backs off (see [pollDelayMs]) instead of knocking every half minute for
+     * as long as the screen is up. Runs until the returned job is cancelled; the caller ties it to a list surface
+     * actually being on screen.
      */
     fun pollWhileVisible(): Job = viewModelScope.launch {
         var tick = 0
         while (true) {
-            delay(pollIntervalMs)
+            delay(pollDelayMs())
             tick++
             val depth = if (tick % FULL_POLL_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick
-            graph.agents.refreshIfStale(pollIntervalMs / 2, depth)
+            when (graph.agents.refreshIfStale(pollIntervalMs / 2, depth)) {
+                RefreshOutcome.Refreshed -> pollFailures = 0
+                RefreshOutcome.Failed -> pollFailures++
+                RefreshOutcome.Skipped -> Unit
+            }
         }
+    }
+
+    /**
+     * The wait before the next poll: the plain interval while the server answers, doubled per consecutive failure up
+     * to [MAX_POLL_BACKOFF_FACTOR] times it, plus a little jitter so an outage does not leave every client that
+     * weathered it knocking in step afterwards.
+     */
+    private fun pollDelayMs(): Long {
+        val failures = pollFailures
+        if (failures <= 0) return pollIntervalMs
+        val backed = pollIntervalMs * (1L shl minOf(failures, MAX_POLL_BACKOFF_SHIFT))
+        val capped = minOf(backed, pollIntervalMs * MAX_POLL_BACKOFF_FACTOR)
+        return capped + Random.nextLong(capped / 4 + 1)
     }
 
     fun setQuery(value: String) { query.value = value }
@@ -258,6 +284,10 @@ class AgentsViewModel(
         const val POLL_INTERVAL_MS = 30_000L
         const val FULL_POLL_EVERY = 5
         const val CLOCK_TICK_MS = 60_000L
+        /** Doublings of the polling interval a run of failures can reach. */
+        const val MAX_POLL_BACKOFF_SHIFT = 5
+        /** The most the interval can grow to, in multiples of itself: half a minute becomes eight. */
+        const val MAX_POLL_BACKOFF_FACTOR = 16L
     }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {

@@ -134,12 +134,21 @@ fun AppNavHost(
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
-    // session, whose list sign-out cleared. While on screen the list then keeps itself current, so chats started or
-    // finished elsewhere show up without a pull.
+    // session, whose list sign-out cleared.
     LifecycleStartEffect(Unit) {
         agentsViewModel.refreshIfStale()
-        val polling = agentsViewModel.pollWhileVisible()
-        onStopOrDispose { polling.cancel() }
+        onStopOrDispose { }
+    }
+    // A list surface is actually on screen: the New Chat pane's recent cards, the drawer pulled open, or the
+    // permanent sidebar of a wide window. Polling runs while one of them is, and not merely while the app is —
+    // a chat or Settings with the drawer shut has nothing the list would keep current.
+    val listOnScreen = topScreen == Screen.Home ||
+        drawerState.isOpen ||
+        drawerState.targetValue == DrawerValue.Open ||
+        (wide && !sidebarCollapsed)
+    LifecycleStartEffect(listOnScreen) {
+        val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
+        onStopOrDispose { polling?.cancel() }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 

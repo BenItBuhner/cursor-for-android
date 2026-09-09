@@ -7,6 +7,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.IdResponseDto
+import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.repo.CursorBackend
@@ -29,6 +30,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.IOException
 
 /**
  * The list state both the sidebar and the New Chat pane render from, against the demo backend (seventeen agents, three
@@ -43,6 +45,9 @@ class AgentsViewModelTest {
     private var now = 1_800_000_000_000L
     /** When set, the demo's delete endpoint throws it, which the demo backend itself never does. */
     @Volatile private var failDelete: Throwable? = null
+    /** When set, the demo's v1 list endpoint throws it, for the polling cadence under a server that will not answer. */
+    @Volatile private var failList: Throwable? = null
+    @Volatile private var listCalls = 0
 
     @Before
     fun setUp() = runBlocking<Unit> {
@@ -55,6 +60,12 @@ class AgentsViewModelTest {
             override suspend fun delete(id: String): IdResponseDto {
                 failDelete?.let { throw it }
                 return demoApi.delete(id)
+            }
+
+            override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
+                listCalls++
+                failList?.let { throw it }
+                return demoApi.listAgents(limit, cursor, includeArchived)
             }
         }
         graph = AppGraph(
@@ -146,6 +157,34 @@ class AgentsViewModelTest {
             now += 60_000
             awaitUntil { graph.agents.lastRefreshedAt == now }
             assertThat(vm.uiState.value.isRefreshing).isFalse()
+        } finally {
+            polling.cancel()
+        }
+    }
+
+    @Test
+    fun `polling backs off while the list cannot be fetched and picks its cadence up once it can`() = runBlocking<Unit> {
+        val vm = AgentsViewModel(graph, pollIntervalMs = 100)
+        vm.loaded()
+        now += 60_000
+        failList = IOException("offline")
+        val polling = vm.pollWhileVisible()
+        try {
+            // Four refusals in a row: the interval, then twice, four and eight times it.
+            awaitUntil { listCalls >= 4 }
+            val backedOff = listCalls
+            // The fifth attempt is at least sixteen intervals away, so this quiet is the backoff, not the cadence.
+            delay(800)
+            assertThat(listCalls).isEqualTo(backedOff)
+
+            // One answer clears the run of failures, and the plain interval is back.
+            failList = null
+            now += 60_000
+            awaitUntil { graph.agents.lastRefreshedAt == now }
+            failList = IOException("offline")
+            now += 60_000
+            val resumed = listCalls
+            awaitUntil(timeoutMs = 3_000) { listCalls >= resumed + 2 }
         } finally {
             polling.cancel()
         }
