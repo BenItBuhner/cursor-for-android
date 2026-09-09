@@ -1,12 +1,14 @@
 package com.cursorforandroid.widget
 
 import android.app.Application
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.appGraph
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -31,14 +33,18 @@ class WidgetRefreshTest {
     private val offline = WidgetRefreshBudget(connected = false, batteryLow = false)
     private val lowBattery = WidgetRefreshBudget(connected = true, batteryLow = true)
 
+    private lateinit var realPlacedWidgets: suspend (Context) -> Boolean
+
     @Before
     fun setUp() {
         AppClock.nowMillis = { now }
+        realPlacedWidgets = WidgetSync.placedWidgets
     }
 
     @After
     fun tearDown() {
         AppClock.nowMillis = System::currentTimeMillis
+        WidgetSync.placedWidgets = realPlacedWidgets
         WidgetSync.stop()
     }
 
@@ -137,5 +143,58 @@ class WidgetRefreshTest {
 
         WidgetSync.stop()
         assertThat(WidgetSync.isFollowing()).isFalse()
+    }
+
+    private suspend fun awaitFollowing(): Boolean =
+        withTimeoutOrNull(5_000) {
+            while (!WidgetSync.isFollowing()) delay(10)
+            true
+        } == true
+
+    /**
+     * Start-up asks the launcher for the placed widgets, which suspends. A last-widget removal landing while that
+     * question is open used to be overtaken by its own stale answer, and the collector it installed then had
+     * nothing left to take it down for the rest of the process.
+     */
+    @Test
+    fun `a removal while the start-up check is in flight leaves the app unfollowed`() = runBlocking {
+        val graph = loadedGraph()
+        val asked = CompletableDeferred<Unit>()
+        val answer = CompletableDeferred<Boolean>()
+        WidgetSync.placedWidgets = {
+            asked.complete(Unit)
+            answer.await()
+        }
+
+        WidgetSync.start(app, graph)
+        asked.await()
+        ChatsWidgetReceiver().onDisabled(app)
+        answer.complete(true)
+
+        // Nothing to wait for, so start-up is given every chance to follow on that answer before it is read.
+        delay(300)
+        assertThat(WidgetSync.isFollowing()).isFalse()
+    }
+
+    @Test
+    fun `a start-up check that finds a widget follows the list`() = runBlocking {
+        val graph = loadedGraph()
+        WidgetSync.placedWidgets = { true }
+
+        WidgetSync.start(app, graph)
+
+        assertThat(awaitFollowing()).isTrue()
+    }
+
+    /** The token says which widget set an answer describes, not that following is over: a new widget still counts. */
+    @Test
+    fun `a widget placed after the last one was removed is followed again`() = runBlocking {
+        val graph = loadedGraph()
+        WidgetSync.placedWidgets = { true }
+        ChatsWidgetReceiver().onDisabled(app)
+
+        WidgetSync.start(app, graph)
+
+        assertThat(awaitFollowing()).isTrue()
     }
 }
