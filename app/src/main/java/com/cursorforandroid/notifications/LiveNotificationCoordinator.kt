@@ -17,11 +17,11 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.SessionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
