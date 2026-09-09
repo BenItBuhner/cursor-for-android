@@ -59,7 +59,7 @@ class SessionManagerProfileTest {
             prefs,
             CursorBackend(api, FakeRunStreamer(), isDemo = false),
             CursorBackend(api, FakeRunStreamer(), isDemo = true),
-            profile = profile,
+            profile = lazyOf(profile),
         )
     }
 

@@ -51,8 +51,19 @@ sealed interface LoginProgress {
     data class Failed(val message: String) : LoginProgress
 }
 
-/** Pairs an API implementation with the streamer that goes with it (real HTTP or the in-memory demo). */
-class CursorBackend(val api: CursorApi, val streamer: RunStreamer, val isDemo: Boolean)
+/**
+ * Pairs an API implementation with the streamer that goes with it (real HTTP or the in-memory demo).
+ *
+ * The pair is built on first use. Both halves are expensive to make — an OkHttp client and a Retrofit service for
+ * the real one, the whole seeded dataset for the demo — and a launch needs neither until something calls the API,
+ * while the identity of the backend (which is what a backend switch is observed through) is needed immediately.
+ */
+class CursorBackend(val isDemo: Boolean, private val parts: Lazy<Pair<CursorApi, RunStreamer>>) {
+    constructor(api: CursorApi, streamer: RunStreamer, isDemo: Boolean) : this(isDemo, lazyOf(api to streamer))
+
+    val api: CursorApi get() = parts.value.first
+    val streamer: RunStreamer get() = parts.value.second
+}
 
 class SessionManager(
     private val keyStore: SecureKeyStore,
@@ -62,13 +73,13 @@ class SessionManager(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     /** How long a cold start with no cached account waits for `/v1/me` before showing a degraded signed-in state. */
     private val restoreTimeoutMs: Long = RESTORE_TIMEOUT_MS,
-    /** The browser sign-in; absent in tests that only exercise pasted keys. */
-    private val browserLogin: CursorLogin? = null,
+    /** The browser sign-in; absent in tests that only exercise pasted keys. Deferred: it owns an HTTP client. */
+    private val browserLogin: Lazy<CursorLogin?> = lazyOf(null),
     /** Name of the key a browser sign-in mints, as listed on cursor.com/dashboard/api. */
     private val mintedKeyName: String = "Cursor for Android",
     private val mintedKeyTtlMs: Long = CursorLogin.API_KEY_TTL_MS,
     /** The account service's view of the user (the profile picture, above all); absent in tests that stop at `/v1/me`. */
-    private val profile: ProfileApi? = null,
+    private val profile: Lazy<ProfileApi?> = lazyOf(null),
 ) {
     private val _state = MutableStateFlow<SessionState>(SessionState.Loading)
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -216,7 +227,7 @@ class SessionManager(
      * described it, and an answer that arrives after a sign-out or a backend switch is dropped.
      */
     private suspend fun enrichProfile(user: CursorUser, credential: CredentialInfo) {
-        val api = profile ?: return
+        val api = profile.value ?: return
         val fetched = runCatching { api.profile() }.getOrNull() ?: return
         val enriched = user.copy(
             profilePictureUrl = fetched.profilePictureUrl,
@@ -238,7 +249,7 @@ class SessionManager(
      * Progress is published on [loginProgress]; the end state is [SessionState.SignedIn] or [LoginProgress.Failed].
      */
     fun startCursorLogin(): String {
-        val login = checkNotNull(browserLogin) { "Browser sign-in is not configured" }
+        val login = checkNotNull(browserLogin.value) { "Browser sign-in is not configured" }
         cancelCursorLogin()
         val handshake = login.startHandshake()
         _loginProgress.value = LoginProgress.WaitingForBrowser(handshake.loginUrl)

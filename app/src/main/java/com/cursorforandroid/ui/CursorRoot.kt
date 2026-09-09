@@ -28,12 +28,14 @@ fun CursorRoot(
     // The session settles itself to signed-out when a store cannot be read; this only keeps a future throw from
     // taking the composition (and the process) with it.
     LaunchedEffect(Unit) { runCatching { graph.session.restoreIfNeeded() } }
-    CompositionLocalProvider(LocalMediaLoader provides graph.media) {
-        Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
-            when (val s = session) {
-                SessionState.Loading -> Unit
-                SessionState.SignedOut -> SignInScreen(graph = graph)
-                is SessionState.SignedIn -> AppNavHost(
+    Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
+        when (val s = session) {
+            SessionState.Loading -> Unit
+            SessionState.SignedOut -> SignInScreen(graph = graph)
+            // The loader is provided here rather than around the whole tree because building it is what first
+            // pulls Coil and its HTTP client in, and nothing before this point draws an image.
+            is SessionState.SignedIn -> CompositionLocalProvider(LocalMediaLoader provides graph.media) {
+                AppNavHost(
                     graph = graph,
                     user = s.user,
                     isDemo = s.isDemo,
