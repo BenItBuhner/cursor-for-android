@@ -24,9 +24,13 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** The Android-side plumbing around the update manager, on Robolectric's shadows of the platform services. */
 @RunWith(AndroidJUnit4::class)
@@ -62,6 +66,23 @@ class UpdateGlueTest {
 
         UpdateJobService.cancel(app)
         assertThat(UpdateJobService.isScheduled(app)).isFalse()
+    }
+
+    @Test
+    fun `the scheduled run happens off the main thread the scheduler starts the job on`() {
+        runBlocking { app.appGraph.prefs.setAutoUpdate(false) }
+        val service = Robolectric.buildService(UpdateJobService::class.java).create().get()
+        val finishedOn = AtomicReference<Thread>()
+        val finished = CountDownLatch(1)
+
+        service.startRun {
+            finishedOn.set(Thread.currentThread())
+            finished.countDown()
+        }
+
+        // The main looper is never pumped: a run that needed it would be a run the scheduler is still waiting for.
+        assertThat(finished.await(10, TimeUnit.SECONDS)).isTrue()
+        assertThat(finishedOn.get()).isNotSameInstanceAs(Looper.getMainLooper().thread)
     }
 
     @Test

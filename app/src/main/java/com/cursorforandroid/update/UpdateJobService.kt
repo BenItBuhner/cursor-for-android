@@ -6,6 +6,7 @@ import android.app.job.JobScheduler
 import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import com.cursorforandroid.appGraph
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -23,21 +24,28 @@ import java.util.concurrent.TimeUnit
  */
 class UpdateJobService : JobService() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /**
+     * Never a main-thread dispatcher: the scheduler calls [onStartJob] on the main thread and holds the process to a
+     * deadline for returning from it, so no part of the run may happen on the way out of it.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
 
     override fun onStartJob(params: JobParameters): Boolean {
-        job = scope.launch {
-            try {
-                appGraph.updates.runScheduled()
-            } catch (e: CancellationException) {
-                throw e // onStopJob already told the scheduler; jobFinished must not follow.
-            } catch (_: Throwable) {
-                // A failed run is recorded in the update state; the next period tries again.
-            }
-            jobFinished(params, false)
-        }
+        job = startRun { jobFinished(params, false) }
         return true
+    }
+
+    @VisibleForTesting
+    internal fun startRun(onFinished: () -> Unit): Job = scope.launch {
+        try {
+            appGraph.updates.runScheduled()
+        } catch (e: CancellationException) {
+            throw e // onStopJob already told the scheduler; jobFinished must not follow.
+        } catch (_: Throwable) {
+            // A failed run is recorded in the update state; the next period tries again.
+        }
+        onFinished()
     }
 
     /** The system wants the slot back (constraints lost, or the run took too long): stop and let it reschedule. */
