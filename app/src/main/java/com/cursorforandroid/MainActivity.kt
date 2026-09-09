@@ -17,6 +17,7 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.notifications.LiveNotificationCoordinator
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.CursorRoot
+import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.update.UpdateCoordinator
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
         UpdateCoordinator.bind(this, graph)
         readRequests(intent)
         returnFromBrowserWhenLoginEnds(graph)
+        followThemePreference(graph)
 
         setContent {
             val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
@@ -88,6 +90,17 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != UpdateNotifications.ACTION_INSTALL_UPDATE) return
         DeepLinks.clearAction(intent, UpdateNotifications.ACTION_INSTALL_UPDATE)
         appGraph.updates.resumePendingInstall()
+    }
+
+    /**
+     * Keeps the platform's per-application night mode on the theme the user chose. Collected rather than read once:
+     * the preference is on disk, and it changes while the app is open. `uiMode` is in this activity's `configChanges`,
+     * so the configuration change it causes is absorbed rather than recreating anything.
+     */
+    private fun followThemePreference(graph: AppGraph) {
+        lifecycleScope.launch {
+            graph.prefs.themeMode.collect { AppNightMode.apply(this@MainActivity, it) }
+        }
     }
 
     /**
