@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,19 +70,33 @@ fun rememberImagePicker(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(1)
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2))) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            val result = withContext(Dispatchers.IO) { uris.take(remaining).map { loadAttachment(context, it) } }
-            val ok = result.mapNotNull { it.getOrNull() }
-            result.firstOrNull { it.isFailure }?.exceptionOrNull()?.message?.let(onError)
-            if (uris.size > remaining) onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
-            if (ok.isNotEmpty()) onPicked(ok)
+    // Remembered: the contract has no equals, and rememberLauncherForActivityResult keys its DisposableEffect on it,
+    // so a fresh one unregisters and re-registers the launcher on every recomposition — which is every SSE delta on
+    // the conversation screen.
+    val contract = remember(remaining) { ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2)) }
+    val singleContract = remember { ActivityResultContracts.PickVisualMedia() }
+    val deliver: (List<Uri>) -> Unit = { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { uris.take(remaining).map { loadAttachment(context, it) } }
+                val ok = result.mapNotNull { it.getOrNull() }
+                result.firstOrNull { it.isFailure }?.exceptionOrNull()?.message?.let(onError)
+                if (uris.size > remaining) onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
+                if (ok.isNotEmpty()) onPicked(ok)
+            }
         }
     }
+    val launcher = rememberLauncherForActivityResult(contract) { uris -> deliver(uris) }
+    // PickMultipleVisualMedia insists on a limit above one, so with a single slot left it would let the user choose
+    // two and then discard one of them after the fact. The single-item picker asks for exactly what will fit.
+    val single = rememberLauncherForActivityResult(singleContract) { uri -> deliver(listOfNotNull(uri)) }
     return {
-        if (currentCount >= PromptImage.MAX_COUNT) onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
-        else launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        when {
+            currentCount >= PromptImage.MAX_COUNT -> onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
+            remaining == 1 -> single.launch(request)
+            else -> launcher.launch(request)
+        }
     }
 }
 
