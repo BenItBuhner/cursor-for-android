@@ -37,6 +37,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -427,6 +428,59 @@ class AgentRepositoryTest {
         repo.refresh()
         assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
         assertThat(repo.state.value.isRefreshing).isFalse()
+    }
+
+    @Test
+    fun `a detail load that outlives a reset does not put its row back`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Previous account", "run-1")
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.state.value.agents).hasSize(1)
+
+        api.getAgentGate = CompletableDeferred()
+        val detail = scope.async { repo.loadDetail("bc-1") }
+        awaitUntil { api.getAgentCalls == 1 }
+        repo.reset()
+        api.getAgentGate!!.complete(Unit)
+        detail.await()
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+    }
+
+    @Test
+    fun `a reset that arrives while a row is being rewritten still empties the list`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Previous account", "run-1")
+        val repo = repository()
+        repo.refresh()
+
+        // The reset is released while the patch is between reading the row and writing it back: whichever order the
+        // two settle in, the row must not be in the list the next account starts from.
+        val inTransform = CountDownLatch(1)
+        val resetting = CountDownLatch(1)
+        val resetter = Thread {
+            inTransform.await()
+            resetting.countDown()
+            repo.reset()
+        }
+        resetter.start()
+        repo.patch("bc-1") { agent ->
+            inTransform.countDown()
+            resetting.await()
+            agent.copy(name = "Renamed")
+        }
+        resetter.join(5_000)
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+    }
+
+    @Test
+    fun `a row a caller collected before a reset is refused afterwards`() = runBlocking<Unit> {
+        val repo = repository()
+        val startedIn = repo.token()
+        repo.reset()
+        repo.upsert(cachedAgent("bc-1", "Previous account"), startedIn)
+        assertThat(repo.state.value.agents).isEmpty()
+
+        repo.upsert(cachedAgent("bc-2", "This account"))
+        assertThat(repo.state.value.agents.map { it.id }).containsExactly("bc-2")
     }
 
     @Test
