@@ -62,10 +62,12 @@ data class AgentListState(
 
 /**
  * How much of the list a refresh fetches. [Quick] reads the newest page of each endpoint, which is where agents
- * started elsewhere appear (the API lists newest first); [Full] pages through everything so deletions and
- * follow-ups on old agents are picked up too.
+ * started elsewhere appear (the API lists newest first); [Full] reads the newest few hundred, which is what a poll
+ * every few minutes can afford; [Deep] pages to the end of both endpoints, which is the only pass that can tell
+ * that an old agent was deleted elsewhere. A [Full] pass is promoted to a [Deep] one when the last complete
+ * listing was over an hour ago.
  */
-enum class RefreshDepth { Quick, Full }
+enum class RefreshDepth { Quick, Full, Deep }
 
 /** What [AgentRepository.refreshIfStale] did, so a poller can tell "nothing to do" from "could not be done". */
 enum class RefreshOutcome {
@@ -152,6 +154,9 @@ class AgentRepository(
     @Volatile var lastRefreshedAt: Long = 0L
         private set
 
+    /** Epoch millis of the last pass that reached the end of the list — the only one that can reconcile deletions. */
+    @Volatile private var lastCompleteListingAt: Long = 0L
+
     private val _refreshCompleted = MutableStateFlow(0L)
     /** Completed fetches for the current backend, counted: the cue for work that follows each one (the account's pins, for one). */
     val refreshCompleted: StateFlow<Long> = _refreshCompleted.asStateFlow()
@@ -188,6 +193,7 @@ class AgentRepository(
     private fun clear() {
         owner = null
         lastRefreshedAt = 0L
+        lastCompleteListingAt = 0L
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
     }
@@ -245,10 +251,18 @@ class AgentRepository(
      */
     suspend fun refresh(silent: Boolean = false, depth: RefreshDepth = RefreshDepth.Full) {
         restoreFromCache()
-        val (job, joined) = startOrJoin(silent, depth)
+        val (job, joined) = startOrJoin(silent, deepIfDue(depth))
         if (joined && !silent) _state.update { it.copy(isRefreshing = true) }
         job.join()
     }
+
+    /**
+     * Promotes a [RefreshDepth.Full] pass to a complete listing when the last one was over
+     * [COMPLETE_LISTING_EVERY_MS] ago. The windowed pass is what a poll every few minutes can afford; reconciling
+     * deletions and old activity beyond the window needs the whole list, which is worth an hourly pass.
+     */
+    private fun deepIfDue(depth: RefreshDepth): RefreshDepth =
+        if (depth == RefreshDepth.Full && AppClock.now() - lastCompleteListingAt >= COMPLETE_LISTING_EVERY_MS) RefreshDepth.Deep else depth
 
     /**
      * Fetches run in the repository's own scope so a caller that goes away (a ViewModel being cleared) never
@@ -307,12 +321,15 @@ class AgentRepository(
             // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
             // ones the window never returned, and this keeps the next complete listing from dropping them again.
             val pinned = prefs.localAgentState.first().pinnedIds
+            // Only a pass that reached the end of the list knows that a row the server did not return is gone
+            // rather than merely beyond where the pass stopped.
+            val complete = depth != RefreshDepth.Quick && !truncated
             val landed = publish { s ->
-                val complete = depth == RefreshDepth.Full && !truncated
                 (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             if (landed) {
                 lastRefreshedAt = AppClock.now()
+                if (complete) lastCompleteListingAt = lastRefreshedAt
                 _refreshCompleted.update { it + 1 }
             }
         } catch (t: Throwable) {
@@ -338,7 +355,11 @@ class AgentRepository(
         }
     }.getOrDefault(emptyMap())
 
-    private fun maxPages(depth: RefreshDepth) = if (depth == RefreshDepth.Quick) 1 else MAX_PAGES
+    private fun maxPages(depth: RefreshDepth) = when (depth) {
+        RefreshDepth.Quick -> 1
+        RefreshDepth.Full -> MAX_PAGES
+        RefreshDepth.Deep -> MAX_DEEP_PAGES
+    }
 
     /**
      * Settles the execution state the lists could not. The v1 list has no run state at all (its `status` is a
@@ -609,8 +630,11 @@ class AgentRepository(
 
     private companion object {
         const val PAGE_SIZE = 100
-        /** 500 agents per full refresh; the newest come first, and older ones stay in the cache beyond that. */
+        /** 500 agents per windowed refresh; the newest come first, and older ones wait for a complete listing. */
         const val MAX_PAGES = 5
+        /** The safety bound on a complete listing: 3000 agents, past which the app stops asking for more. */
+        const val MAX_DEEP_PAGES = 30
+        const val COMPLETE_LISTING_EVERY_MS = 60 * 60 * 1000L
         const val PERSIST_DELAY_MS = 1_500L
         const val RECENT_WINDOW_MS = 5 * 60 * 1000L
         /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */

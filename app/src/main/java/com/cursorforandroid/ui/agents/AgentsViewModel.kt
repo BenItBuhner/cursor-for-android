@@ -182,9 +182,10 @@ class AgentsViewModel(
     }
 
     fun refresh() = viewModelScope.launch {
-        // Asking again by hand is also how a user gets out of a backed-off cadence after an outage.
+        // Asking again by hand is also how a user gets out of a backed-off cadence after an outage, and the one
+        // refresh that always pages to the end of the list rather than to the end of its window.
         pollFailures = 0
-        graph.agents.refresh()
+        graph.agents.refresh(depth = RefreshDepth.Deep)
         refreshPullRequests(eager = true)
     }
 

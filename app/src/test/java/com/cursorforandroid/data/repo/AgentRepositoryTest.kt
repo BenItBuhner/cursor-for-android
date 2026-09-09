@@ -502,6 +502,45 @@ class AgentRepositoryTest {
     }
 
     @Test
+    fun `a windowed refresh stops at its window, and a complete listing reconciles what lies beyond it`() = runBlocking<Unit> {
+        val agents = repository()
+        // Twelve agents, two per page: the windowed pass reads its five pages, a complete listing reads all six.
+        api.pageSize = 2
+        val start = now
+        repeat(12) { i -> api.addIdleAgent("bc-%02d".format(i), "Agent $i", "run-$i", createdAt = iso(start - i * 60_000L)) }
+
+        // Nothing has ever been listed to the end, so the first pass does that rather than stopping at the window.
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.state.value.agents).hasSize(12)
+        assertThat(api.listAgentsCalls).isEqualTo(6)
+
+        // Deleted and renamed beyond the window. A windowed pass neither sees nor reconciles them: a row the pass
+        // never reached is not a row the server no longer has.
+        api.agents.remove("bc-11")
+        api.v0.remove("bc-11")
+        api.addIdleAgent("bc-10", "Renamed elsewhere", "run-10", createdAt = iso(start - 10 * 60_000L))
+        now += 60_000
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(api.listAgentsCalls).isEqualTo(11)
+        assertThat(agents.agent("bc-11")).isNotNull()
+        assertThat(agents.agent("bc-10")?.name).isEqualTo("Agent 10")
+
+        // An hour on, the windowed pass is promoted to a complete listing and both land.
+        now += 61 * 60_000
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.agent("bc-11")).isNull()
+        assertThat(agents.agent("bc-10")?.name).isEqualTo("Renamed elsewhere")
+
+        // And a refresh asked for by hand pages to the end whenever it is asked, hour or no hour.
+        api.agents.remove("bc-10")
+        api.v0.remove("bc-10")
+        now += 60_000
+        agents.refresh(depth = RefreshDepth.Deep)
+        assertThat(agents.agent("bc-10")).isNull()
+        assertThat(agents.state.value.agents).hasSize(10)
+    }
+
+    @Test
     fun `refreshIfStale skips a list fetched recently and fetches again after a reset`() = runBlocking<Unit> {
         val agents = demoSession()
         agents.refresh()
