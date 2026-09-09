@@ -27,6 +27,7 @@ enum class RunStatus { CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED, U
 }
 
 /** Where the agent's VM lives: Cursor-hosted cloud, a self-hosted team pool, or one of the user's machines. */
+@Serializable
 enum class EnvType { CLOUD, POOL, MACHINE, UNKNOWN;
     companion object {
         fun parse(raw: String?): EnvType = when (raw?.lowercase()) {
@@ -34,6 +35,70 @@ enum class EnvType { CLOUD, POOL, MACHINE, UNKNOWN;
             "pool" -> POOL
             "machine" -> MACHINE
             else -> UNKNOWN
+        }
+    }
+}
+
+/**
+ * Where a chat was started: `aiserver.v1.BackgroundComposerSource`, the field the account service keeps on every
+ * agent and the one behind the Source filter of cursor.com/agents and the desktop Agents window. The public API does
+ * not report it (its `env` says where the agent runs, not what launched it), so it is read from the account's list
+ * alongside the pins. Every value the proto names is here, by its number; [UNKNOWN] is one this build has not heard
+ * of, and null on a row is one the account has not been asked about yet.
+ */
+enum class AgentSource(val number: Int) {
+    UNSPECIFIED(0),
+    EDITOR(1),
+    SLACK(2),
+    WEBSITE(3),
+    LINEAR(4),
+    IOS_APP(5),
+    API(6),
+    GITHUB(7),
+    CLI(8),
+    GITHUB_CI_AUTOFIX(9),
+    GITLAB(10),
+    ENVIRONMENT_SETUP_WEB(11),
+    GRIND_WEB(12),
+    BUGBOT_AUTOFIX(13),
+    AUTOMATIONS(14),
+    GRAPHITE_CHAT_WEB(15),
+    GLASS(16),
+    GRAPHITE_FULL_SELF_DRIVING(17),
+    TEAMS(18),
+    LOCAL(19),
+    JIRA(20),
+    SDK(21),
+    FULL_SELF_DRIVING(22),
+    QABOT_FRONTEND(23),
+    AS_SUBAGENT_FROM_LOCAL(24),
+    ENVIRONMENT_SETUP_GLASS(25),
+    SAND_CODING_SUBAGENT(26),
+    BITBUCKET(27),
+    CLOUD_META_AGENT(28),
+    AS_SUBAGENT_FROM_CLOUD(29),
+    ENVIRONMENT_SETUP_ONBOARDING_AUTO(30),
+    ORIGIN(31),
+    AS_SIDE_CHAT_FROM_CLOUD(32),
+    GROK_BOT(33),
+    UNKNOWN(-1);
+
+    /** The enum's name on the wire (proto3 JSON spells enums by their full name). */
+    val wireName: String get() = "$WIRE_PREFIX$name"
+
+    companion object {
+        const val WIRE_PREFIX = "BACKGROUND_COMPOSER_SOURCE_"
+
+        /**
+         * Reads the value as Connect JSON delivers it: the proto name (`BACKGROUND_COMPOSER_SOURCE_SLACK`), the bare
+         * name (`SLACK`), or the number when a server encodes enums that way. Null for nothing at all; [UNKNOWN] for
+         * a value this build does not know, which is still an answer (the account did say where the chat came from).
+         */
+        fun parse(raw: String?): AgentSource? {
+            val token = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            token.toIntOrNull()?.let { number -> return entries.firstOrNull { it.number == number } ?: UNKNOWN }
+            val name = token.uppercase().removePrefix(WIRE_PREFIX)
+            return entries.firstOrNull { it.name == name && it != UNKNOWN } ?: UNKNOWN
         }
     }
 }
@@ -75,6 +140,11 @@ data class Agent(
     val modelId: String? = null,
     val modelParams: List<ModelParam> = emptyList(),
     val durationMs: Long? = null,
+    /**
+     * Where the chat was started, as the account service has it (see [AgentSource]); null until the account's list
+     * has said. Kept across refreshes like the model: the public list never carries it.
+     */
+    val source: AgentSource? = null,
 ) {
     /**
      * The name of the chat's model, for the composer chip and the list row. Rows recorded by earlier versions carry
@@ -320,6 +390,22 @@ fun List<ModelOption>.choiceLabelled(label: String): ModelChoice? {
     return firstNotNullOfOrNull { model ->
         model.variants.firstOrNull { model.legacyLabelFor(it) == label }?.let { ModelChoice(model, it) }
     }
+}
+
+/**
+ * The picker's order: the selected model first so tapping one lifts it to the top with its options, then any other
+ * pinned models (most recently pinned first), then the rest of the catalog in the API's order.
+ */
+fun List<ModelOption>.arrangedForPicker(pinnedIds: List<String>, selectedId: String?): List<ModelOption> {
+    if (isEmpty()) return this
+    val index = associateBy { it.id }
+    val selected = selectedId?.let { index[it] }
+    val pinned = pinnedIds.mapNotNull { index[it] }.filter { it.id != selected?.id }
+    val seen = buildSet {
+        selected?.id?.let(::add)
+        pinned.forEach { add(it.id) }
+    }
+    return listOfNotNull(selected) + pinned + filter { it.id !in seen }
 }
 
 @Serializable

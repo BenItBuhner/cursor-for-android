@@ -142,11 +142,13 @@ class RunMonitor(
         // tracker is dropped so an intermediate state never reports fewer agents than it lists.
         _state.update { st -> st.copy(runningCount = running.size) }
         val wanted = running.filter { it.latestRunId != null }.take(maxTracked).associateBy { it.id }
-        // Agents without a known run id come from a summary-only list: load the detail record once to learn it. The
-        // note is dropped once an agent stops running, so the set tracks the list rather than everything ever seen.
+        // Agents without a known run id come from a summary-only list: load the detail record to learn it. One request
+        // per agent at a time; a failed one (offline, a launch the server has not finished creating) is asked for again
+        // at the next reconcile rather than never, or the agent would go unfollowed for as long as the monitor runs.
+        // The note is dropped once an agent stops running, so the set tracks the list rather than everything ever seen.
         detailRequested.retainAll(running.mapTo(HashSet()) { it.id })
         running.filter { it.latestRunId == null && detailRequested.add(it.id) }.forEach { agent ->
-            scope.launch { agents.loadDetail(agent.id) }
+            scope.launch { agents.loadDetail(agent.id).onFailure { detailRequested.remove(agent.id) } }
         }
         trackers.entries.toList().forEach { (agentId, tracker) ->
             val stillWanted = wanted[agentId]?.latestRunId == tracker.runId
@@ -170,11 +172,13 @@ class RunMonitor(
             st.copy(
                 running = published,
                 // This pass only *starts* the trackers it wants; each publishes its run once it has read the run
-                // record, which is a network round trip away. So a list that says agents are running while nothing
-                // has been published yet has not been caught up with — it is settling, not idle — and saying
-                // otherwise here is what let the live notification's short idle grace expire before the first run
-                // arrived, taking the foreground service down with it and leaving no notification at all.
-                hasReconciled = st.hasReconciled || published.isNotEmpty() || (running.isEmpty() && trackers.isEmpty()),
+                // record, which is a network round trip away. So a list with a tracker still to report has not been
+                // caught up with — it is settling, not idle — and saying otherwise here is what let the live
+                // notification's short idle grace expire before the first run arrived, taking the foreground service
+                // down with it and leaving no notification at all. An agent nothing is being waited for — no run id,
+                // and the detail read that would learn it failed — is not a tracker in flight: the pass is as caught
+                // up as it can be, and that agent is asked about again at the next one.
+                hasReconciled = st.hasReconciled || published.isNotEmpty() || trackers.isEmpty(),
             )
         }
     }

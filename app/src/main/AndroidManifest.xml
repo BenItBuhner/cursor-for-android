@@ -63,6 +63,22 @@
                 <data android:host="www.cursor.com" />
                 <data android:pathPrefix="/agents/" />
             </intent-filter>
+            <!-- Appear in the system share sheet. Separate filters per type: some OEMs drop a SEND filter that lists both. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
 
         <!--
@@ -85,6 +101,13 @@
             android:name=".notifications.LiveNotificationService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- The live notification's safety net: while the service is gone (killed, timed out, or the phone rebooted),
+             a persisted job reads the running agents' run records and posts the "Finished" cards. -->
+        <service
+            android:name=".notifications.FinishWatchdogJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <!-- PackageInstaller reports the outcome of an update session here. -->
         <receiver

@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.PullRequestState
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -16,7 +17,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
-/** The pin RPCs of `aiserver.v1.BackgroundComposerService` over Connect JSON, against a fake api2 that also plays the token exchange. */
+/** The pin, archive and rename RPCs of `aiserver.v1.BackgroundComposerService` over Connect JSON, against a fake api2 that also plays the token exchange. */
 class BackgroundComposerApiTest {
 
     private val server = MockWebServer()
@@ -37,18 +38,18 @@ class BackgroundComposerApiTest {
     fun tearDown() = server.shutdown()
 
     @Test
-    fun `reads the account's pinned ids and pull request states with the status and pinned state requested`() = runBlocking<Unit> {
+    fun `reads the account's pinned ids, pull request states and sources with the status, pinned state and hidden sources requested`() = runBlocking<Unit> {
         server.enqueue(session("session-1"))
         server.enqueue(
             MockResponse().setBody(
                 """{"composers":[
-                     {"bcId":"bc-1","name":"x","prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN"},
-                     {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT"},
-                     {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED"},
-                     {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4},
-                     {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true},
-                     {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false},
-                     {"bcId":"bc-7","name":"no pr"}
+                     {"bcId":"bc-1","name":"x","isArchived":false,"prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN","source":"BACKGROUND_COMPOSER_SOURCE_WEBSITE"},
+                     {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT","source":"BACKGROUND_COMPOSER_SOURCE_SLACK"},
+                     {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED","source":"BACKGROUND_COMPOSER_SOURCE_GITLAB"},
+                     {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4,"source":21},
+                     {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true,"source":"BACKGROUND_COMPOSER_SOURCE_GROK_BOT"},
+                     {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false,"source":"BACKGROUND_COMPOSER_SOURCE_TELEPATHY"},
+                     {"bcId":"bc-7","name":"no pr","isArchived":true}
                    ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
             ),
         )
@@ -56,6 +57,10 @@ class BackgroundComposerApiTest {
         val list = api.list()
 
         assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
+        assertThat(list.composers).containsAtLeast(
+            ComposerSnapshot("bc-1", name = "x", archived = false),
+            ComposerSnapshot("bc-7", name = "no pr", archived = true),
+        )
         assertThat(list.pullRequests).containsExactly(
             "https://github.com/acme/app/pull/1", PullRequestState.Open,
             "https://github.com/acme/app/pull/2", PullRequestState.Draft,
@@ -63,6 +68,16 @@ class BackgroundComposerApiTest {
             "https://github.com/acme/app/pull/4", PullRequestState.Closed,
             // No status yet, but the merge flag is set: merged it is. Neither flag nor status: nothing to say.
             "https://github.com/acme/app/pull/5", PullRequestState.Merged,
+        )
+        // By name or by number; a source this build does not know is still one; a record without one (the proto's
+        // zero value is left out of the JSON) says nothing.
+        assertThat(list.sources).containsExactly(
+            "bc-1", AgentSource.WEBSITE,
+            "bc-2", AgentSource.SLACK,
+            "bc-3", AgentSource.GITLAB,
+            "bc-4", AgentSource.SDK,
+            "bc-5", AgentSource.GROK_BOT,
+            "bc-6", AgentSource.UNKNOWN,
         )
         server.takeRequest() // the exchange
         val request = server.takeRequest()
@@ -76,6 +91,8 @@ class BackgroundComposerApiTest {
         assertThat(body["includeStatus"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo(BackgroundComposerApi.LIST_WINDOW.toString())
+        // SDK agents are left out of the list unless asked for, as cursor.com/agents leaves them out until its Source filter says SDK.
+        assertThat(body["includeHiddenSources"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("BACKGROUND_COMPOSER_SOURCE_SDK")
     }
 
     @Test
@@ -123,6 +140,41 @@ class BackgroundComposerApiTest {
         val unpin = server.takeRequest()
         assertThat(unpin.path).isEqualTo("/aiserver.v1.BackgroundComposerService/UnpinBackgroundComposers")
         assertThat(unpin.json()["bcIds"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("bc-3")
+    }
+
+    @Test
+    fun `archive and unarchive use ArchiveBackgroundComposer with the unarchive flag`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        api.archive("bc-1")
+        api.unarchive("bc-1")
+
+        server.takeRequest()
+        val archive = server.takeRequest()
+        assertThat(archive.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ArchiveBackgroundComposer")
+        val archived = archive.json()
+        assertThat(archived["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-1")
+        assertThat(archived["unarchive"]?.jsonPrimitive?.content).isEqualTo("false")
+        val unarchive = server.takeRequest()
+        assertThat(unarchive.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ArchiveBackgroundComposer")
+        assertThat(unarchive.json()["unarchive"]?.jsonPrimitive?.content).isEqualTo("true")
+    }
+
+    @Test
+    fun `rename sends bcId and newName`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        api.rename("bc-1", "Billing fix")
+
+        server.takeRequest()
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/RenameBackgroundComposer")
+        val body = request.json()
+        assertThat(body["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-1")
+        assertThat(body["newName"]?.jsonPrimitive?.content).isEqualTo("Billing fix")
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.cursorforandroid.ui.components
 
+import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ContentResolver
 import android.content.Context
 import android.content.res.AssetFileDescriptor
@@ -50,12 +52,20 @@ class PendingAttachment(
          * The strip's entry for an image that went out with a draft the composer takes back: the same bytes, a
          * thumbnail decoded from them again. Decodes a bitmap, so not for the main thread.
          */
-        fun of(image: PromptImage): PendingAttachment =
-            PendingAttachment(id = "returned@" + UUID.randomUUID(), image = image, thumbnail = thumbnailOf(image))
+        fun of(image: PromptImage): PendingAttachment = of(image, id = "returned@" + UUID.randomUUID())
+
+        /**
+         * The strip's entry for an image kept under an id from before — a draft restored from disk, a queued
+         * follow-up taken back for editing — with [thumbnail] when one is already decoded. Decodes one otherwise,
+         * so not for the main thread then.
+         */
+        fun of(image: PromptImage, id: String, thumbnail: ImageBitmap? = null): PendingAttachment =
+            PendingAttachment(id = id, image = image, thumbnail = thumbnail ?: thumbnailOf(image))
     }
 }
 
-private fun thumbnailOf(image: PromptImage): ImageBitmap? {
+/** A small (≈160px) bitmap of [image] for a strip or a card. Decodes, so not for the main thread. */
+fun thumbnailOf(image: PromptImage): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, bounds)
     val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 160)
@@ -83,11 +93,9 @@ fun rememberImagePicker(
     val deliver: (List<Uri>) -> Unit = { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val result = withContext(Dispatchers.IO) { uris.take(remaining).map { loadAttachment(context, it) } }
-                val ok = result.mapNotNull { it.getOrNull() }
-                result.firstOrNull { it.isFailure }?.exceptionOrNull()?.message?.let(onError)
-                if (uris.size > remaining) onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
-                if (ok.isNotEmpty()) onPicked(ok)
+                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, currentCount) }
+                if (imported.attachments.isNotEmpty()) onPicked(imported.attachments)
+                imported.error?.let(onError)
             }
         }
     }
@@ -98,7 +106,7 @@ fun rememberImagePicker(
     return {
         val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
         when {
-            currentCount >= PromptImage.MAX_COUNT -> onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
+            currentCount >= PromptImage.MAX_COUNT -> onError(attachmentLimitMessage())
             remaining == 1 -> single.launch(request)
             else -> launcher.launch(request)
         }
@@ -107,14 +115,124 @@ fun rememberImagePicker(
 
 private const val TooLargeMessage = "Images must be 15 MB or smaller."
 
-private fun loadAttachment(context: Context, uri: Uri): Result<PendingAttachment> = runCatching {
-    val resolver = context.contentResolver
-    val mime = resolver.getType(uri)?.lowercase() ?: "image/jpeg"
-    if (!PromptImage.isSupported(mime)) error("Unsupported image type ($mime). Use PNG, JPEG, GIF or WebP.")
-    val bytes = readBoundedBytes(declaredSize(resolver, uri)) { resolver.openInputStream(uri) }
+/** Bytes read from a picker or the clipboard, still identified by the URI they came from. */
+internal class ImagePayload(
+    val id: String,
+    val bytes: ByteArray,
+    val declaredMime: String?,
+)
+
+/** What [importAttachments] / [importPayloads] made of a batch: the ones that loaded, and the first reason the rest did not. */
+internal class AttachmentImport(
+    val attachments: List<PendingAttachment>,
+    val error: String? = null,
+)
+
+internal fun attachmentLimitMessage(): String = "Only ${PromptImage.MAX_COUNT} images can be attached to a prompt."
+
+/**
+ * Clipboard and IME image pastes often arrive as a wildcard image type or with no type at all. Magic bytes decide
+ * when the declared type is missing or too vague, so a screenshot from the Android clipboard still becomes a prompt
+ * image.
+ */
+internal fun sniffImageMime(bytes: ByteArray): String? {
+    if (bytes.size >= 8 &&
+        bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
+        bytes[2] == 0x4E.toByte() && bytes[3] == 0x47.toByte()
+    ) {
+        return "image/png"
+    }
+    if (bytes.size >= 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()) {
+        return "image/jpeg"
+    }
+    if (bytes.size >= 6 &&
+        bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() &&
+        bytes[2] == 0x46.toByte() && bytes[3] == 0x38.toByte()
+    ) {
+        return "image/gif"
+    }
+    if (bytes.size >= 12 &&
+        bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
+        bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte() &&
+        bytes[8] == 'W'.code.toByte() && bytes[9] == 'E'.code.toByte() &&
+        bytes[10] == 'B'.code.toByte() && bytes[11] == 'P'.code.toByte()
+    ) {
+        return "image/webp"
+    }
+    return null
+}
+
+internal fun resolveImageMime(declared: String?, bytes: ByteArray): String? {
+    val mime = declared?.substringBefore(';')?.trim()?.lowercase()
+    if (PromptImage.isSupported(mime)) return mime
+    val sniffed = sniffImageMime(bytes)
+    return sniffed.takeIf { PromptImage.isSupported(it) }
+}
+
+internal fun clipLooksLikeImage(description: ClipDescription): Boolean {
+    for (i in 0 until description.mimeTypeCount) {
+        if (description.getMimeType(i).lowercase().startsWith("image/")) return true
+    }
+    return false
+}
+
+internal fun isImageUri(resolver: ContentResolver, uri: Uri, clipIsImage: Boolean): Boolean {
+    if (clipIsImage) return true
+    val mime = resolver.getType(uri)?.substringBefore(';')?.trim()?.lowercase() ?: return false
+    return PromptImage.isSupported(mime) || mime == "image/*" || mime.startsWith("image/")
+}
+
+internal fun imageUrisFromClip(resolver: ContentResolver, clip: ClipData): List<Uri> {
+    val clipIsImage = clipLooksLikeImage(clip.description)
+    return buildList {
+        for (i in 0 until clip.itemCount) {
+            val uri = clip.getItemAt(i).uri ?: continue
+            if (isImageUri(resolver, uri, clipIsImage)) add(uri)
+        }
+    }
+}
+
+internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String): Result<PendingAttachment> = runCatching {
+    if (bytes.size > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    val mime = resolveImageMime(declaredMime, bytes)
+        ?: error("Unsupported image type (${declaredMime ?: "unknown"}). Use PNG, JPEG, GIF or WebP.")
     // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
     val image = AttachmentImages.prepare(bytes, mime)
-    PendingAttachment(id = uri.toString() + "@" + System.nanoTime(), image = image, thumbnail = thumbnailOf(image))
+    PendingAttachment(id = id, image = image, thumbnail = thumbnailOf(image))
+}
+
+/**
+ * Reads one image URI the way the photo picker, the clipboard, and the system share sheet deliver them.
+ * [fallbackMime] is the share intent's type when the resolver has none (a `file://` screenshot, typically).
+ */
+fun loadAttachment(context: Context, uri: Uri, fallbackMime: String? = null): Result<PendingAttachment> {
+    val resolver = context.contentResolver
+    val bytes = runCatching { readBoundedBytes(declaredSize(resolver, uri)) { resolver.openInputStream(uri) } }
+        .getOrElse { return Result.failure(IllegalStateException(it.message ?: "Couldn't read the image.")) }
+    return loadAttachment(bytes, resolver.getType(uri) ?: fallbackMime, uri.toString() + "@" + System.nanoTime())
+}
+
+internal fun importAttachments(context: Context, uris: List<Uri>, currentCount: Int): AttachmentImport {
+    if (uris.isEmpty()) return AttachmentImport(emptyList())
+    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(0)
+    if (remaining == 0) return AttachmentImport(emptyList(), attachmentLimitMessage())
+    val overflow = uris.size > remaining
+    return attachmentImport(uris.take(remaining).map { loadAttachment(context, it) }, overflow)
+}
+
+internal fun importPayloads(payloads: List<ImagePayload>, currentCount: Int): AttachmentImport {
+    if (payloads.isEmpty()) return AttachmentImport(emptyList())
+    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(0)
+    if (remaining == 0) return AttachmentImport(emptyList(), attachmentLimitMessage())
+    val overflow = payloads.size > remaining
+    return attachmentImport(payloads.take(remaining).map { loadAttachment(it.bytes, it.declaredMime, it.id) }, overflow)
+}
+
+private fun attachmentImport(results: List<Result<PendingAttachment>>, overflow: Boolean): AttachmentImport {
+    val ok = results.mapNotNull { it.getOrNull() }
+    val error = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
+        ?: if (overflow) attachmentLimitMessage() else null
+    return AttachmentImport(ok, error)
 }
 
 /** What the provider says the selection weighs, or -1 when it will not say — which a picker is free to do. */

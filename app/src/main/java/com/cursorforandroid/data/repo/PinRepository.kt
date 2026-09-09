@@ -56,8 +56,11 @@ data class PinSyncState(
  * agents the account can see, so leftovers of another account never travel. Pinned agents the list window no longer
  * includes are fetched by id so a pin is never silently dropped.
  *
- * The same list read says where each agent's pull request stands; every read is handed to [onList] so that goes
- * where it belongs ([PullRequestRepository]) without a second request, whether or not the pins are being synced.
+ * The same list read says where each agent's pull request stands, where each was started from, and what the
+ * official apps call it / whether they have archived it; names and archive flags are folded into [agents] here,
+ * and every read is handed to [onList] so the pull request states and sources go where they belong
+ * ([PullRequestRepository], [AgentRepository.applySources]) without a second request, whether or not the pins are
+ * being synced.
  */
 class PinRepository(
     private val session: SessionManager,
@@ -207,8 +210,8 @@ class PinRepository(
             return Result.success(Unit)
         }
         val startedIn = generation.get()
-        // The account list is read either way: it also carries the pull request states (see [onList]). Only the pins
-        // themselves are subject to the setting.
+        // The account list is read either way: it also carries the pull request states and the sources (see [onList]).
+        // Only the pins themselves are subject to the setting.
         val pinsEnabled = prefs.pinSyncEnabled.first()
         _state.update { it.copy(active = pinsEnabled, isSyncing = pinsEnabled) }
         try {
@@ -225,8 +228,10 @@ class PinRepository(
                 if (migrating) prefs.setPinsMigrated(true)
             }
 
+            val agentsToken = agents.token()
             val list = api.list()
             if (generation.get() != startedIn) return Result.success(Unit)
+            agents.applyAccountSnapshots(list.composers, agentsToken)
             runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned

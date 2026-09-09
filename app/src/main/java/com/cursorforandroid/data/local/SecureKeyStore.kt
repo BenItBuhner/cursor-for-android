@@ -23,8 +23,8 @@ private const val ENCRYPTED_FILE = "cursor_secure_prefs"
 private const val HEALTH_FILE = "cursor_secure_health"
 
 /**
- * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key, the GitHub token that reads
- * pull request states, and the MCP server definitions (their headers and environment variables hold credentials).
+ * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key and the MCP server definitions
+ * (their headers and environment variables hold credentials).
  *
  * The encrypted store is the only place any of it is ever written. It can genuinely fail to open or to decrypt, and
  * the two reasons are worlds apart. Stored bytes that will never decrypt again — a master key invalidated by an OS
@@ -41,7 +41,9 @@ private const val HEALTH_FILE = "cursor_secure_health"
  *
  * Neither writes anything in the clear. An older build did fall back to plaintext `cursor_prefs_fallback`, which
  * this one migrates into the encrypted store the first time it opens it — including a store it had to recreate,
- * which may be the only copy left — and deletes only once the values have committed.
+ * which may be the only copy left — and deletes only once the values have committed. A GitHub token either store
+ * still holds is dropped rather than carried: pull request states are read from the account, and a credential
+ * nothing reads has no business staying on the device.
  */
 class SecureKeyStore(
     private val context: Context,
@@ -124,6 +126,7 @@ class SecureKeyStore(
     private fun opened(prefs: SharedPreferences, availability: Availability): SharedPreferences {
         clearOpenFailures()
         migrateLegacyFallback(prefs)
+        dropLegacyGitHubToken(prefs)
         _availability.value = availability
         return prefs
     }
@@ -284,21 +287,6 @@ class SecureKeyStore(
 
     fun setMcpServersJson(json: String?): Boolean = write(KEY_MCP_SERVERS, json)
 
-    @Volatile
-    private var cachedGitHubToken: String? = null
-
-    /**
-     * The GitHub token pull request states are read with; null without one (public repositories still answer). Like
-     * the MCP definitions it belongs to the device rather than the Cursor account, so signing out leaves it alone.
-     */
-    fun gitHubToken(): String? = cachedGitHubToken ?: read(KEY_GITHUB_TOKEN)?.also { cachedGitHubToken = it }
-
-    fun setGitHubToken(token: String?): Boolean {
-        val trimmed = token?.trim()?.takeIf { it.isNotEmpty() }
-        cachedGitHubToken = trimmed
-        return write(KEY_GITHUB_TOKEN, trimmed)
-    }
-
     private fun read(key: String): String? {
         val prefs = prefs() ?: return memory[key]
         runCatching { prefs.getString(key, null) }
@@ -376,11 +364,21 @@ class SecureKeyStore(
     private fun legacyFallbackFile(): File =
         File(File(context.applicationContext.applicationInfo.dataDir, "shared_prefs"), "$LEGACY_FALLBACK_FILE.xml")
 
+    /**
+     * A GitHub token saved by an earlier version, back when pull request states had a GitHub fallback: nothing reads
+     * it any more. Best effort — a store that will not take the removal is left as it is rather than reset for it.
+     */
+    private fun dropLegacyGitHubToken(prefs: SharedPreferences) {
+        runCatching {
+            if (prefs.contains(LEGACY_KEY_GITHUB_TOKEN)) prefs.edit().remove(LEGACY_KEY_GITHUB_TOKEN).apply()
+        }
+    }
+
     private companion object {
         const val TAG = "SecureKeyStore"
         const val KEY_API_KEY = "api_key"
         const val KEY_MCP_SERVERS = "mcp_servers"
-        const val KEY_GITHUB_TOKEN = "github_token"
+        const val LEGACY_KEY_GITHUB_TOKEN = "github_token"
         const val LEGACY_FALLBACK_FILE = "cursor_prefs_fallback"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         /** Launches in a row that may fail to open the store before it is started over. */
@@ -389,7 +387,7 @@ class SecureKeyStore(
         const val OPEN_RETRY_DELAY_MS = 150L
         const val KEY_OPEN_FAILURES = "open_failures"
         const val KEY_SIGNED_OUT = "signed_out"
-        val MIGRATED_KEYS = listOf(KEY_API_KEY, KEY_MCP_SERVERS, KEY_GITHUB_TOKEN)
+        val MIGRATED_KEYS = listOf(KEY_API_KEY, KEY_MCP_SERVERS)
         /** What a `GeneralSecurityException` about a keyset that will never decrypt again says about itself. */
         val KEYSET_FAILURES = listOf("keyset", "decryption failed")
     }

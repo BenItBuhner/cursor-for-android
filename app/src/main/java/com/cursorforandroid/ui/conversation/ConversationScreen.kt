@@ -24,14 +24,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -54,8 +52,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
+import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
@@ -63,12 +63,12 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
-import com.cursorforandroid.ui.components.RunningGlyph
+import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
@@ -101,7 +101,6 @@ fun ConversationScreen(
     graph: AppGraph,
     agentId: String,
     onBack: (() -> Unit)?,
-    onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
 ) {
@@ -115,15 +114,26 @@ fun ConversationScreen(
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val queue by viewModel.queue.collectAsStateWithLifecycle()
+    val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
+    val commands by viewModel.commands.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val incoming = share ?: return@LaunchedEffect
+        val target = incoming.target as? ShareTarget.Chat ?: return@LaunchedEffect
+        if (target.agentId != agentId) return@LaunchedEffect
+        viewModel.applyShare(incoming.text, incoming.attachments, incoming.warning)
+        graph.share.consume(incoming.generation)
+    }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -174,9 +184,9 @@ fun ConversationScreen(
                 }
             },
             trailing = {
-                // The pull request gets its own button beside the menu, the same green glyph the list rows and the run
-                // footer's pill use for it: it is the one thing a reader most often leaves the chat for, and the footer
-                // pill sits under the transcript where a long run puts it out of reach.
+                // The pull request lives here and nowhere else in the chat: its own button beside the menu, in the same
+                // green glyph the list rows use for it. It is the one thing a reader most often leaves the chat for, and
+                // the header stays in reach however long the transcript gets. The subtitle already names the branch.
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
                 }
@@ -184,6 +194,7 @@ fun ConversationScreen(
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                         MenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                        MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
@@ -193,7 +204,6 @@ fun ConversationScreen(
                         } else {
                             MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; viewModel.archive(onDone = { onBack?.invoke() }) }
                         }
-                        MenuItem("Delete", CursorIcons.Trash, tint = colors.red) { menuOpen = false; confirmDelete = true }
                     }
                 }
             },
@@ -218,16 +228,15 @@ fun ConversationScreen(
                     if (showWorking) {
                         item("working") {
                             // A dropped connection is not the run's problem: the agent keeps working while the stream
-                            // is re-established, so the glyph keeps stepping and only the caption says what is going on.
+                            // is re-established, so the caption keeps shimmering and only its wording says what is
+                            // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
                             val caption = when {
                                 conversation.runStatus == RunStatus.CREATING -> "Starting…"
                                 conversation.isReconnecting -> "Reconnecting…"
                                 else -> "Working…"
                             }
-                            Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
-                                RunningGlyph(size = 16.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text(caption, style = type.base, color = colors.textTertiary)
+                            Box(paneWidth) {
+                                ShimmerText(caption, style = type.base)
                             }
                         }
                     }
@@ -292,19 +301,42 @@ fun ConversationScreen(
         }
 
         val archived = agent?.isArchived == true
-        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(), contentAlignment = Alignment.Center) {
+        val willQueue = isActive || queue.isNotEmpty()
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // What is waiting to go out sits right above the box it came from, oldest first, one line each.
+            if (queue.isNotEmpty()) {
+                QueuedFollowUps(
+                    queue = queue,
+                    thumbnails = thumbnails,
+                    onEdit = { viewModel.editQueued(it.id) },
+                    onSteer = { viewModel.steerQueued(it.id) },
+                    onRemove = { viewModel.removeQueued(it.id) },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                )
+            }
             ComposerBox(
                 value = draft,
                 onValueChange = viewModel::setDraft,
-                placeholder = if (archived) "Unarchive to follow up" else "Follow up…",
+                placeholder = when {
+                    archived -> "Unarchive to follow up"
+                    // A send now joins the queue rather than interrupting; the placeholder says so before the tap.
+                    willQueue -> "Follow up (sends when the turn ends)…"
+                    else -> "Follow up…"
+                },
                 onSend = viewModel::send,
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && !archived,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
                 plusMenu = plusMenu,
+                commands = commands,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
+                onAddAttachments = viewModel::addAttachments,
+                onAttachmentError = viewModel::showMessage,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
@@ -332,23 +364,19 @@ fun ConversationScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = picker.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
             // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
             // (started elsewhere), or no longer offered. It reads as the label when there is one.
             noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),
         )
     }
 
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            containerColor = colors.elevated,
-            titleContentColor = colors.textPrimary,
-            textContentColor = colors.textSecondary,
-            shape = CursorTheme.shapes.xl,
-            title = { Text("Delete chat?", style = type.sectionTitle) },
-            text = { Text("This permanently deletes the agent and its transcript. Archive it instead if you might need it later.", style = type.base) },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; viewModel.delete(onDone = onDeleted) }) { Text("Delete", style = type.baseMedium, color = colors.red) } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
+    if (renameOpen) {
+        RenameChatDialog(
+            initialName = agent?.name.orEmpty(),
+            onConfirm = { name -> renameOpen = false; viewModel.rename(name) },
+            onDismiss = { renameOpen = false },
         )
     }
 }

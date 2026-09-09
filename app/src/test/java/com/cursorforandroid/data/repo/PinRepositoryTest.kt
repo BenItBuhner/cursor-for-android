@@ -9,6 +9,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.AccountList
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PinnedIds
 import com.cursorforandroid.data.api.PinsApi
@@ -16,6 +17,7 @@ import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -64,11 +66,12 @@ class PinRepositoryTest {
         @Volatile var listCalls = 0
         /** What the list says about pull requests, by URL. */
         val pullRequests: MutableMap<String, PullRequestState> = ConcurrentHashMap()
+        val composers = CopyOnWriteArrayList<ComposerSnapshot>()
 
         override suspend fun list(): AccountList {
             failing?.let { throw it }
             listCalls++
-            return AccountList(PinnedIds(server.toSet(), loaded), pullRequests.toMap())
+            return AccountList(PinnedIds(server.toSet(), loaded), pullRequests.toMap(), composers = composers.toList())
         }
 
         override suspend fun pin(ids: Collection<String>) {
@@ -144,6 +147,13 @@ class PinRepositoryTest {
     }
 
     private suspend fun pinnedIds() = prefs.localAgentState.first().pinnedIds
+
+    @Test
+    fun `a list read overlays the account's name and archive flag`() = runBlocking<Unit> {
+        pinsApi.composers += ComposerSnapshot("bc-1", name = "Renamed on iOS", archived = true)
+        agents.refresh()
+        awaitUntil { agents.state.value.agents.any { it.id == "bc-1" && it.name == "Renamed on iOS" && it.lifecycle == AgentLifecycle.ARCHIVED } }
+    }
 
     @Test
     fun `the first sync pushes the pins made here for agents the account can see, then adopts the server's list`() = runBlocking<Unit> {

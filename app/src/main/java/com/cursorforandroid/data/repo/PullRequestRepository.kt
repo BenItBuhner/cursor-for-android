@@ -1,8 +1,6 @@
 package com.cursorforandroid.data.repo
 
-import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.local.PullRequestCache
-import com.cursorforandroid.domain.PullRequestRef
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.util.AppClock
@@ -25,127 +23,61 @@ import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import retrofit2.Response
 import java.util.concurrent.atomic.AtomicInteger
 
 /** How reading one pull request ended. */
 sealed interface PullRequestLookup {
     data class Found(val state: PullRequestState) : PullRequestLookup
 
-    /** GitHub would not say: a private repository without a (sufficient) token, or a PR that no longer exists. */
+    /** The source would not say: a PR the account has not classified, or one that no longer exists. */
     data object Unreadable : PullRequestLookup
-
-    /** GitHub's rate limit is spent until [untilMillis]; nothing more is asked of it before then. */
-    data class RateLimited(val untilMillis: Long) : PullRequestLookup
 
     /** A transient failure — offline, a `5xx` — that the next refresh may not run into. */
     data object Failed : PullRequestLookup
 }
 
-/**
- * Reads where one pull request stands: the account service or GitHub for a real account, the seeds for the demo.
- * [ref] is the URL parsed as a GitHub pull request, or null for one on another SCM, which only the account can answer.
- */
+/** Reads where one pull request stands, by the `prUrl` the Cloud Agents API names it with: the account service for a real account, the seeds for the demo. */
 fun interface PullRequestSource {
-    suspend fun lookup(url: String, ref: PullRequestRef?): PullRequestLookup
+    suspend fun lookup(url: String): PullRequestLookup
 }
 
 /**
- * [PullRequestSource] over GitHub's REST API. A repository the request may not see answers `404` exactly like a PR
- * that was deleted, so both are [PullRequestLookup.Unreadable]. The primary rate limit — `403` or `429` with no
- * requests remaining — is reported with the reset time GitHub sends, a secondary one with its `Retry-After`.
- */
-class GitHubPullRequestSource(private val api: GitHubApi, private val now: () -> Long = AppClock::now) : PullRequestSource {
-
-    override suspend fun lookup(url: String, ref: PullRequestRef?): PullRequestLookup {
-        if (ref == null) return PullRequestLookup.Unreadable
-        val response = try {
-            api.pullRequest(ref.owner, ref.repo, ref.number)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // Offline, a timeout, or an answer that is not the record asked for: nothing to remember.
-            return PullRequestLookup.Failed
-        }
-        if (response.isSuccessful) {
-            val body = response.body() ?: return PullRequestLookup.Failed
-            val state = PullRequestState.of(body.state, body.draft, body.merged || body.mergedAt != null)
-            return state?.let { PullRequestLookup.Found(it) } ?: PullRequestLookup.Unreadable
-        }
-        val remaining = response.headers()["X-RateLimit-Remaining"]?.trim()?.toLongOrNull()
-        return when (val code = response.code()) {
-            429 -> PullRequestLookup.RateLimited(resetAt(response))
-            // A secondary (abuse) limit answers 403 with `Retry-After` while the primary budget still has requests
-            // left in it; without either, a 403 is an authorization failure.
-            403 -> if (remaining == 0L || retryAfterSeconds(response) != null) PullRequestLookup.RateLimited(resetAt(response)) else PullRequestLookup.Unreadable
-            401, 404, 410, 451 -> PullRequestLookup.Unreadable
-            else -> if (code in 400..499) PullRequestLookup.Unreadable else PullRequestLookup.Failed
-        }
-    }
-
-    private fun retryAfterSeconds(response: Response<*>): Long? =
-        response.headers()["Retry-After"]?.trim()?.toLongOrNull()?.takeIf { it > 0 }
-
-    /** When to ask again: `Retry-After` (seconds from now) first, else `X-RateLimit-Reset` (epoch seconds), bounded either way. */
-    private fun resetAt(response: Response<*>): Long {
-        val at = now()
-        val retryAfter = retryAfterSeconds(response)?.let { at + it * 1000 }
-        val reset = response.headers()["X-RateLimit-Reset"]?.trim()?.toLongOrNull()?.let { it * 1000 }
-        return (retryAfter ?: reset ?: (at + DEFAULT_BACKOFF_MS)).coerceIn(at + MIN_BACKOFF_MS, at + MAX_BACKOFF_MS)
-    }
-
-    private companion object {
-        const val MIN_BACKOFF_MS = 30_000L
-        const val DEFAULT_BACKOFF_MS = 5 * 60_000L
-        const val MAX_BACKOFF_MS = 65 * 60_000L
-    }
-}
-
-/**
- * Where the agents' pull requests stand. The Cloud Agents API only names them, so the states come from two places:
- * the Cursor account, which keeps a status per agent in step with the SCM (the view the desktop and iOS apps show,
- * private repositories and non-GitHub SCMs included) — in bulk with every read of the account's agent list
- * ([seed]) and one at a time through [account] — and GitHub as the fallback for whatever the account does not
- * answer. States are remembered on disk and restored before the network is asked, then revalidated on every list
- * refresh according to how likely they are to have moved: an open or draft PR every few minutes, a closed one a few
- * times a day, a merged one never. What neither source would answer — a private repository without a token — is
- * remembered too, so the same refused request is not repeated at every refresh; a token added later asks again at
- * once. A spent GitHub rate limit stops the pass and nothing is asked of GitHub until it says the budget is back.
- * The demo answers from its seeds and never touches the disk.
+ * Where the agents' pull requests stand. The Cloud Agents API only names them, so the states come from the Cursor
+ * account (the view the desktop and iOS apps show, private repositories and non-GitHub SCMs included), two ways:
+ * in bulk with every read of the account's agent list ([seed]), whose stored status per agent is quick to show but
+ * can lag the SCM, and one at a time through [account], which reads the SCM for that PR when asked. The live answer
+ * is the one to trust for as long as it is fresh: a list read that agrees with it changes nothing, one that disagrees
+ * is ignored until the PR is due to be re-read, so a stale record never overrides or flip-flops with what the SCM
+ * said. States are remembered on disk and restored before the network is asked, then revalidated on every list
+ * refresh according to how likely they are to have moved: an open or draft PR every couple of minutes, a closed one
+ * a few times a day, a merged one never. What the account would not answer is remembered too, so the same refused
+ * request is not repeated at every refresh. The demo answers from its seeds and never touches the disk.
+ *
+ * Everything learned is written under the generation and the cache token the work started with, so an answer that
+ * comes back after a sign-out is neither shown nor saved for the account that has taken its place.
  */
 class PullRequestRepository(
-    private val gitHub: PullRequestSource,
+    private val account: PullRequestSource,
     private val demo: PullRequestSource,
     private val isDemo: () -> Boolean,
-    private val readToken: () -> String?,
-    private val writeToken: (String?) -> Unit,
     private val cache: PullRequestCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val maxPerRefresh: Int = MAX_PER_REFRESH,
-    /** The account service, asked before GitHub; absent in tests that only exercise GitHub. */
-    private val account: PullRequestSource? = null,
 ) {
     private val _statuses = MutableStateFlow<Map<String, PullRequestStatus>>(emptyMap())
 
-    /** Everything remembered, by `prUrl`, the pull requests GitHub would not answer for included. */
+    /** Everything remembered, by `prUrl`, the pull requests the account would not answer for included. */
     val statuses: StateFlow<Map<String, PullRequestStatus>> = _statuses.asStateFlow()
 
     /** The known states by `prUrl`: what the list's filter and pills go by. */
     val states: Flow<Map<String, PullRequestState>> =
         _statuses.map { all -> all.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap() }.distinctUntilChanged()
 
-    private val _hasToken = MutableStateFlow(false)
-
-    /** Whether a GitHub token is set; without one only public repositories answer. */
-    val hasToken: StateFlow<Boolean> = _hasToken.asStateFlow()
-
     private val passMutex = Mutex()
     private val restoreMutex = Mutex()
     @Volatile private var restored = false
     /** The mode of the last pass; states learned for the demo never mix with a real account's. */
     @Volatile private var demoMode: Boolean? = null
-    @Volatile private var rateLimitedUntil = 0L
 
     /** Bumped by [reset]; a lookup that started for the previous account may not write what it learned afterwards. */
     private val generation = AtomicInteger()
@@ -155,11 +87,6 @@ class PullRequestRepository(
 
     private fun workScope(): CoroutineScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-
-    init {
-        // The encrypted store opens the Android Keystore on first use, so the token is not read where this is built.
-        scope.launch { _hasToken.value = !readToken().isNullOrBlank() }
-    }
 
     /** Shows what was saved by the previous session. Idempotent, and a no-op for the demo. */
     suspend fun restoreFromCache() {
@@ -211,49 +138,41 @@ class PullRequestRepository(
         }
         if (!demo) restoreFromCache()
         val now = AppClock.now()
-        if (!demo && now < rateLimitedUntil) return
         val known = _statuses.value
-        val account = if (demo) null else this.account
         val due = urls.distinct()
-            .map { url -> url to PullRequestRef.parse(url) }
-            // Without the account only GitHub can be asked, so only GitHub pull requests are worth asking about.
-            .filter { (_, ref) -> ref != null || account != null }
-            .filter { (url, _) -> known[url].isDue(now, eager) }
-            .sortedBy { (url, _) -> known[url]?.checkedAtMillis ?: 0L }
+            .filter { url -> known[url].isDue(now, eager) }
+            .sortedBy { url -> known[url]?.checkedAtMillis ?: 0L }
             .take(maxPerRefresh)
-        val fallback = if (demo) this.demo else gitHub
-        for ((url, ref) in due) {
-            // The account's answer is the one the first-party apps show; GitHub is asked when the account has none.
-            val first = account?.lookup(url, ref)
-            val result = when {
-                first is PullRequestLookup.Found -> first
-                // A pull request that is not GitHub's (GitLab, Bitbucket, an enterprise host) is only the account's
-                // to answer: GitHub would call every one of them unreadable, which would remember a passing account
-                // failure as a private repository and stop asking for an hour.
-                ref == null && first != null -> first
-                else -> fallback.lookup(url, ref)
-            }
-            // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
-            // account this repository no longer speaks for.
-            if (generation.get() != startedIn) return
-            when (result) {
-                is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo, token = token)
-                PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo, token = token)
-                is PullRequestLookup.RateLimited -> {
-                    rateLimitedUntil = result.untilMillis
-                    return
+        val source = if (demo) this.demo else account
+        var dirty = false
+        try {
+            for (url in due) {
+                val state = when (val result = source.lookup(url)) {
+                    is PullRequestLookup.Found -> result.state
+                    PullRequestLookup.Unreadable -> null
+                    // Offline, or the account service is down: the rest of the pass would end the same way.
+                    PullRequestLookup.Failed -> return
                 }
-                // Offline, or GitHub is down: the rest of the pass would end the same way.
-                PullRequestLookup.Failed -> return
+                // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
+                // account this repository no longer speaks for.
+                if (generation.get() != startedIn) return
+                // Each answer shows as it lands; the disk gets them together, once, below.
+                _statuses.update { it + (url to PullRequestStatus(state, AppClock.now(), live = true)) }
+                dirty = true
             }
+            if (!demo && forgetStale(now)) dirty = true
+        } finally {
+            if (dirty && !demo && generation.get() == startedIn) cache?.write(_statuses.value, token)
         }
-        if (!demo && generation.get() == startedIn) forgetStale(now, token)
     }
 
     /**
      * States the account service reported alongside its agent list (every read, whether or not the pins are being
-     * synced). They are what the first-party apps show, so they replace whatever GitHub said — except that a merge
-     * is final, so a stale report never undoes one.
+     * synced). They are what the first-party apps show first, so they fill in whatever is unknown and follow the SCM
+     * where nothing fresher is known — except that a merge is final, so a stale report never undoes one, and a state
+     * the SCM was asked about within [LIVE_TRUST_MS] outranks a record that disagrees with it. A report that agrees
+     * with what is known changes nothing, the time it was last read included, so the list's word never postpones a
+     * live read that is due.
      */
     suspend fun seed(states: Map<String, PullRequestState>) {
         if (states.isEmpty() || isDemo()) return
@@ -268,12 +187,23 @@ class PullRequestRepository(
         restoreFromCache()
         if (generation.get() != startedIn) return
         val at = AppClock.now()
+        var changed = false
         val next = _statuses.updateAndGet { all ->
-            all + states.mapNotNull { (url, state) ->
-                if (all[url]?.state == PullRequestState.Merged && state != PullRequestState.Merged) null else url to PullRequestStatus(state, at)
+            val adopted = states.mapNotNull { (url, state) ->
+                val known = all[url]
+                when {
+                    known == null -> url to PullRequestStatus(state, at)
+                    known.state == state -> null
+                    known.state == PullRequestState.Merged -> null
+                    state == PullRequestState.Merged -> url to PullRequestStatus(state, at)
+                    known.live && known.state != null && at - known.checkedAtMillis < LIVE_TRUST_MS -> null
+                    else -> url to PullRequestStatus(state, at)
+                }
             }
+            changed = adopted.isNotEmpty()
+            if (changed) all + adopted else all
         }
-        cache?.write(next, token)
+        if (changed && generation.get() == startedIn) cache?.write(next, token)
     }
 
     private fun PullRequestStatus?.isDue(now: Long, eager: Boolean): Boolean {
@@ -284,45 +214,24 @@ class PullRequestRepository(
             PullRequestState.Closed -> CLOSED_INTERVAL_MS
             PullRequestState.Open, PullRequestState.Draft -> OPEN_INTERVAL_MS
         }
-        // Eagerness does not extend to what GitHub refused: without a token, private repositories answer 404 every time.
+        // Eagerness does not extend to what the account refused: a PR it has no record of answers the same every time.
         val effective = if (eager && state != null) minOf(interval, EAGER_INTERVAL_MS) else interval
         return now - checkedAtMillis >= effective
-    }
-
-    private suspend fun remember(url: String, status: PullRequestStatus, persist: Boolean, token: Int) {
-        val next = _statuses.updateAndGet { it + (url to status) }
-        if (persist) cache?.write(next, token)
     }
 
     /**
      * Keeps the record bounded: a pull request not looked at for a month belongs to an agent that is long gone from
      * the list (a merged one is never re-read, so it is asked about once more should its agent still be around).
+     * Returns whether anything was dropped; the caller writes the disk.
      */
-    private suspend fun forgetStale(now: Long, token: Int) {
+    private fun forgetStale(now: Long): Boolean {
         var dropped = false
-        val next = _statuses.updateAndGet { all ->
+        _statuses.update { all ->
             val kept = all.filterValues { now - it.checkedAtMillis < MAX_AGE_MS }
             dropped = kept.size != all.size
-            kept
+            if (dropped) kept else all
         }
-        if (dropped) cache?.write(next, token)
-    }
-
-    /**
-     * Stores the GitHub token (blank or null removes it) and forgets what GitHub refused to say, so the next refresh
-     * asks again — with the token, private repositories answer; without it, they are marked unreadable once more.
-     */
-    suspend fun setToken(token: String?) {
-        val startedIn = generation.get()
-        val cacheToken = cache?.token() ?: 0
-        val trimmed = token?.trim()?.takeIf { it.isNotEmpty() }
-        withContext(Dispatchers.IO) { writeToken(trimmed) }
-        if (generation.get() != startedIn) return
-        _hasToken.value = trimmed != null
-        // A token has a budget of its own; a limit spent anonymously says nothing about it.
-        rateLimitedUntil = 0L
-        val next = _statuses.updateAndGet { all -> all.filterValues { it.state != null } }
-        if (!isDemo()) cache?.write(next, cacheToken)
+        return dropped
     }
 
     /**
@@ -337,15 +246,18 @@ class PullRequestRepository(
         _statuses.value = emptyMap()
         restored = false
         demoMode = null
-        rateLimitedUntil = 0L
     }
 
     private companion object {
         const val MAX_PER_REFRESH = 50
-        const val OPEN_INTERVAL_MS = 10 * 60_000L
+        /** A PR that can still move is read from the SCM this often while the list is on screen; one request per PR. */
+        const val OPEN_INTERVAL_MS = 2 * 60_000L
         const val CLOSED_INTERVAL_MS = 6 * 60 * 60_000L
         const val UNREADABLE_INTERVAL_MS = 60 * 60_000L
-        const val EAGER_INTERVAL_MS = 60_000L
+        /** A pull or a return to the foreground re-reads what can move, unless it was read this recently. */
+        const val EAGER_INTERVAL_MS = 30_000L
+        /** How long a live answer outranks the list's stored status: until the PR would be re-read anyway. */
+        const val LIVE_TRUST_MS = OPEN_INTERVAL_MS
         const val MAX_AGE_MS = 30L * 24 * 60 * 60_000L
     }
 }

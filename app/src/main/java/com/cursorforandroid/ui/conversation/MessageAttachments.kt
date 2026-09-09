@@ -50,18 +50,18 @@ import kotlinx.coroutines.withContext
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier) {
+fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
     var viewing by remember { mutableStateOf<MessageAttachment?>(null) }
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         attachments.forEach { attachment ->
-            AttachmentThumbnail(attachment, onClick = { viewing = attachment })
+            AttachmentThumbnail(attachment, alpha = alpha, onClick = { viewing = attachment })
         }
     }
     viewing?.let { AttachmentViewer(it, onDismiss = { viewing = null }) }
 }
 
 @Composable
-private fun AttachmentThumbnail(attachment: MessageAttachment, onClick: () -> Unit) {
+private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
     val width = (THUMB_HEIGHT * attachment.aspectRatio).coerceIn(THUMB_MIN_WIDTH, THUMB_MAX_WIDTH)
@@ -71,13 +71,13 @@ private fun AttachmentThumbnail(attachment: MessageAttachment, onClick: () -> Un
     Box(
         Modifier
             .size(width, THUMB_HEIGHT)
-            .cursorSurface(colors.fill, colors.stroke, shape)
+            .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
             .pressable(onClick, shape),
         contentAlignment = Alignment.Center,
     ) {
         when (image) {
-            is LoadedImage.Ready -> Image(image.bitmap, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            LoadedImage.Missing -> Icon(CursorIcons.File, "Attached image unavailable", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            is LoadedImage.Ready -> Image(image.bitmap, contentDescription = "Attached image", contentScale = ContentScale.Crop, alpha = alpha, modifier = Modifier.fillMaxSize())
+            LoadedImage.Missing -> Icon(CursorIcons.File, "Attached image unavailable", tint = colors.iconTertiary.faded(alpha), modifier = Modifier.size(16.dp))
             LoadedImage.Loading -> Unit
         }
     }

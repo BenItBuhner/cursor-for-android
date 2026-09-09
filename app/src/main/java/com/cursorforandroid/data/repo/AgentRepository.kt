@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ComposerLifecycleApi
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
@@ -17,6 +19,8 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
@@ -92,6 +96,8 @@ data class LaunchRequest(
     val agentId: String? = null,
     /** Sent inline as `mcpServers[]`; only the enabled ones go out. */
     val mcpServers: List<McpServer> = emptyList(),
+    /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
+    val env: DeviceTarget = DeviceTarget.Cloud,
 ) {
     /**
      * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
@@ -108,6 +114,20 @@ data class LaunchRequest(
 
     private companion object {
         const val PROVISIONAL_NAME_LENGTH = 60
+    }
+}
+
+/**
+ * `env` on Create An Agent. Default cloud with a repository omits the field (the repo is the target); no-repo
+ * cloud still sends `{ type: cloud }` so the VM is empty rather than local. Pool and machine always go out.
+ */
+fun DeviceTarget.toEnvDto(hasRepo: Boolean): AgentEnvDto? = when (type) {
+    EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
+    EnvType.MACHINE -> AgentEnvDto(type = "machine", name = apiName)
+    EnvType.CLOUD, EnvType.UNKNOWN -> when {
+        apiName != null -> AgentEnvDto(type = "cloud", name = apiName)
+        hasRepo -> null
+        else -> AgentEnvDto(type = "cloud")
     }
 }
 
@@ -129,6 +149,13 @@ class AgentRepository(
     private val cache: AgentListCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val persistDelayMs: Long = PERSIST_DELAY_MS,
+    /**
+     * The account-level archive / rename the first-party apps use. Optional so unit tests that only exercise the
+     * public list can omit it; a real session always has one.
+     */
+    private val account: ComposerLifecycleApi? = null,
+    /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
+    private val demoSources: Map<String, AgentSource> = emptyMap(),
 ) {
     private val restoreMutex = Mutex()
 
@@ -354,7 +381,9 @@ class AgentRepository(
             // rather than merely beyond where the pass stopped.
             val complete = depth != RefreshDepth.Quick && !truncated
             val landed = publish { s ->
-                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
+                    .let { if (backend.isDemo) it.withSources(demoSources) else it }
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
             // on, and the previous account's must not give it.
@@ -450,6 +479,28 @@ class AgentRepository(
     private fun AgentListState.withLegacy(legacy: Map<String, V0AgentDto>): AgentListState =
         copy(agents = agents.map { a -> legacy[a.id]?.let(a::withLegacy) ?: a })
 
+    /** Rows whose source [sources] names take it; the others keep what they had (a row is never made to forget its source). */
+    private fun AgentListState.withSources(sources: Map<String, AgentSource>): AgentListState {
+        if (sources.isEmpty()) return this
+        var changed = false
+        val next = agents.map { a ->
+            val source = sources[a.id]
+            if (source == null || source == a.source) a else a.copy(source = source).also { changed = true }
+        }
+        return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * Folds in where each agent was started from, as the account's list reports it (see [AgentSource]). The public
+     * list this repository draws its rows from never says, so this is the one way a row learns its source; once
+     * learned it is kept across refreshes and on disk with the row, like the model. The account list is read after
+     * every completed fetch (by the pin sync), so a new row's source lands a moment after the row itself.
+     */
+    fun applySources(sources: Map<String, AgentSource>) {
+        if (sources.isEmpty()) return
+        _state.update { it.withSources(sources) }
+    }
+
     /**
      * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
      * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
@@ -504,8 +555,8 @@ class AgentRepository(
             name = request.provisionalName,
             lifecycle = AgentLifecycle.ACTIVE,
             runStatus = RunStatus.CREATING,
-            envType = EnvType.CLOUD,
-            envName = null,
+            envType = request.env.type.takeIf { it != EnvType.UNKNOWN } ?: EnvType.CLOUD,
+            envName = request.env.name,
             url = "https://cursor.com/agents/$id",
             createdAtMillis = now,
             updatedAtMillis = now,
@@ -516,6 +567,8 @@ class AgentRepository(
             modelDisplayName = modelDisplayName,
             modelId = request.modelId,
             modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+            // What the account will record for a chat started with an API key, this app's included.
+            source = AgentSource.API,
         )
         // A retry of a launch whose reply was lost finds the row from the first attempt: it stays as it is.
         if (agent(id) == null) {
@@ -551,7 +604,7 @@ class AgentRepository(
                         agentId = request.agentId,
                         model = modelRef(request.modelId, request.modelParams),
                         name = request.name,
-                        env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
+                        env = request.env.toEnvDto(hasRepo = request.repoUrl != null),
                         repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
                         autoCreatePR = request.autoCreatePr.takeIf { it },
                         mcpServers = request.mcpServers.toInlineServers(),
@@ -571,6 +624,7 @@ class AgentRepository(
                 modelDisplayName = modelDisplayName,
                 modelId = request.modelId,
                 modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+                source = AgentSource.API,
             )
             pendingLaunches -= agent.id
             upsert(agent, startedIn)
@@ -642,16 +696,78 @@ class AgentRepository(
         patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
     }
 
-    suspend fun archive(agentId: String): Result<Unit> = runCatching {
+    suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
+
+    suspend fun unarchive(agentId: String): Result<Unit> = setArchived(agentId, archived = false)
+
+    /**
+     * Writes the archive flag the official apps share ([ComposerLifecycleApi]) and the public v1 lifecycle, then
+     * updates the row. Either write landing is enough for this device; both failing is the only failure. Demo
+     * mode only has the in-memory public API.
+     */
+    private suspend fun setArchived(agentId: String, archived: Boolean): Result<Unit> = runCatching {
         val startedIn = token()
-        session.current.api.archive(agentId)
-        patch(agentId, startedIn) { it.copy(lifecycle = AgentLifecycle.ARCHIVED) }
+        var wrote = false
+        var lastError: Throwable? = null
+        if (!session.isDemo && account != null) {
+            try {
+                if (archived) account.archive(agentId) else account.unarchive(agentId)
+                wrote = true
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                lastError = t
+            }
+        }
+        try {
+            if (archived) session.current.api.archive(agentId) else session.current.api.unarchive(agentId)
+            wrote = true
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            lastError = t
+        }
+        if (!wrote) throw lastError ?: IllegalStateException(if (archived) "Couldn't archive this chat." else "Couldn't unarchive this chat.")
+        patch(agentId, startedIn) { it.copy(lifecycle = if (archived) AgentLifecycle.ARCHIVED else AgentLifecycle.IDLE) }
     }
 
-    suspend fun unarchive(agentId: String): Result<Unit> = runCatching {
+    /**
+     * Renames the chat the way the official apps do (`RenameBackgroundComposer`). The public Cloud Agents API has
+     * no rename; demo mode only updates the in-memory row.
+     */
+    suspend fun rename(agentId: String, name: String): Result<Unit> = runCatching {
         val startedIn = token()
-        session.current.api.unarchive(agentId)
-        patch(agentId, startedIn) { it.copy(lifecycle = AgentLifecycle.IDLE) }
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) throw IllegalArgumentException("Give the chat a name.")
+        if (trimmed.length > MAX_NAME_LENGTH) throw IllegalArgumentException("Name must be $MAX_NAME_LENGTH characters or less.")
+        if (agent(agentId)?.name == trimmed) return@runCatching
+        if (!session.isDemo) {
+            val api = account ?: throw IllegalStateException("Can't rename this chat from here.")
+            api.rename(agentId, trimmed)
+        }
+        patch(agentId, startedIn) { it.copy(name = trimmed) }
+    }
+
+    /**
+     * Folds the account list's name and archive flag onto the rows already shown. Official apps rename and archive
+     * here, and a v1 list that has not caught up (or never will — the public archive is a different write) would
+     * otherwise keep the old title or leave a chat sitting in the open list.
+     */
+    fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
+        if (composers.isEmpty()) return
+        val byId = composers.associateBy { it.id }
+        publish(null, startedIn) { s ->
+            s.copy(
+                agents = s.agents.map { agent ->
+                    val snap = byId[agent.id] ?: return@map agent
+                    val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
+                    val lifecycle = when (snap.archived) {
+                        true -> AgentLifecycle.ARCHIVED
+                        false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
+                        null -> agent.lifecycle
+                    }
+                    if (name == agent.name && lifecycle == agent.lifecycle) agent else agent.copy(name = name, lifecycle = lifecycle)
+                },
+            )
+        }
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
@@ -694,5 +810,7 @@ class AgentRepository(
         /** A row that reads finished but was active this recently may still be going; its record settles it. */
         const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
         const val AGENT_ID_CONFLICT = "agent_id_conflict"
+        /** Same cap as `POST /v1/agents` `name` and the official rename field. */
+        const val MAX_NAME_LENGTH = 100
     }
 }

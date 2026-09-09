@@ -73,10 +73,14 @@ class MainActivity : ComponentActivity() {
         readRequests(intent)
     }
 
-    /** Takes what the intent asks for: a chat to open, the New Chat pane, or an update to finish installing. */
+    /**
+     * Takes what the intent asks for: a chat to open, the New Chat pane, a share to draft, or an update to finish
+     * installing.
+     */
     private fun readRequests(intent: Intent?) {
         DeepLinks.agentId(intent)?.let { pendingAgentId = it }
         if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
+        appGraph.share.receive(intent)
         resumeUpdateIfAsked(intent)
     }
 

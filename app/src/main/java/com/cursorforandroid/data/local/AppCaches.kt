@@ -7,9 +7,8 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
-import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolCall
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -27,6 +26,7 @@ class AppCaches(private val root: JsonDiskCache) {
     val traces = TraceCache(root.child("traces"))
     val catalog = CatalogCache(root.child("catalog"))
     val pullRequests = PullRequestCache(root.child("pullrequests"))
+    val slashCommands = SlashCommandCache(root.child("slashcommands"))
 
     /**
      * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
@@ -35,6 +35,25 @@ class AppCaches(private val root: JsonDiskCache) {
     fun invalidate() = root.invalidate()
 
     suspend fun clear() = root.clear()
+}
+
+/**
+ * The `/` catalog the account service last listed for a repository or an agent, one file per scope, so the composer's
+ * popover has its project and plugin skills before the network answers (and while it does not).
+ */
+class SlashCommandCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
+    suspend fun read(scopeKey: String): JsonDiskCache.Entry<SlashCatalog>? = cache.read(scopeKey, SlashCatalog.serializer(), VERSION)
+
+    suspend fun write(scopeKey: String, catalog: SlashCatalog) {
+        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog)) cache.prune(maxEntries)
+    }
+
+    suspend fun clear() = cache.clear()
+
+    private companion object {
+        const val VERSION = 1
+        const val MAX_ENTRIES = 100
+    }
 }
 
 @Serializable
@@ -171,7 +190,7 @@ class TraceCache(
     suspend fun put(agentId: String, traces: Collection<CachedTrace>, token: Int = cache.token()) {
         if (traces.isEmpty()) return
         locks.getOrPut(agentId) { Mutex() }.withLock {
-            val merged = (read(agentId) + traces.associate { it.runId to it.compact() }).values
+            val merged = (read(agentId) + traces.associate { it.runId to it }).values
                 .sortedByDescending { it.createdAtMillis }
                 .take(maxRunsPerAgent)
             val kept = CachedTraces(agentId, withinBudget(merged))
@@ -201,14 +220,13 @@ class TraceCache(
 
     suspend fun clear() = cache.clear()
 
-    private fun CachedTrace.compact() = copy(
-        items = items.map { item ->
-            if (item is ActivityGroup) item.copy(steps = item.steps.map { step -> if (step is ToolCall) step.copy(args = null, result = null) else step }) else item
-        },
-    )
-
     private companion object {
-        const val VERSION = 1
+        /**
+         * 2: tool calls carry their Cursor-worded summary, server and stats, and subagents are tool calls.
+         * 3: a call keeps the clipped output it opens onto instead of the raw payload it was read from, so nothing
+         * has to be stripped on the way to disk (see [ToolCall.output]).
+         */
+        const val VERSION = 3
         const val MAX_AGENTS = 200
         /**
          * Matches how deep the conversation pages its runs, so every run whose trace the load replays can be kept:

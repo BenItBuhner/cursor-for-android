@@ -2,7 +2,13 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.content.MediaType
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,16 +22,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.placeCursorAtEnd
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -36,28 +51,41 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
+ * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
- * model selector next to the "+". The text is the largest thing in the box and the round buttons the smallest
+ * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
+ * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
+ * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
+ * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
+ * bottom corners, so the box wraps them evenly instead of pinching in behind them.
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
  * nervous double-tap cancelling one that is about to succeed.
+ *
+ * The field is a [TextFieldState] editor so Android can paste images into it — from the clipboard, the keyboard
+ * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ComposerBox(
     value: String,
@@ -72,28 +100,37 @@ fun ComposerBox(
     onCancelSend: (() -> Unit)? = null,
     /** Shows the "+" button and backs its menu; null hides the button. */
     plusMenu: ComposerMenuActions? = null,
+    /** What `/` offers here — the built-ins, or the chat's own list once the account has answered (see [SlashCommandPopover]). */
+    commands: SlashCatalog = SlashCatalog.BUILT_IN,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
+    /** Clipboard / IME image paste; null leaves the field text-only. */
+    onAddAttachments: ((List<PendingAttachment>) -> Unit)? = null,
+    onAttachmentError: ((String) -> Unit)? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
+    focusRequester: FocusRequester? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val shape = CursorTheme.shapes.xl
+    val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
     // Saved alongside the text and the caret, so a composer rebuilt from instance state is left the way the reader
     // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
     // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
     var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
     var wantsFocus by remember { mutableStateOf(focused) }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    val focusRequester = remember { FocusRequester() }
+    val ownFocus = remember { FocusRequester() }
+    // The caller's requester where it drives focus itself, the composer's own otherwise: the "+" menu hands the field
+    // back after inserting a command, which needs one either way.
+    val focus = focusRequester ?: ownFocus
     // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
     LaunchedEffect(wantsFocus, menuOpen) {
         if (wantsFocus && !menuOpen) {
             wantsFocus = false
-            focusRequester.requestFocus()
+            focus.requestFocus()
         }
     }
     var cancelOffered by remember { mutableStateOf(false) }
@@ -113,13 +150,46 @@ fun ComposerBox(
     // from outside, and only a change in that is adopted, with the cursor at the end so typing continues after a
     // slash command from the "+" menu instead of wherever the cursor happened to be. Both are saved: the field keeps
     // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
-    var field by rememberSaveable(stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(value, TextRange(value.length)))
-    }
+    // A TextFieldState field is also what makes image paste possible at all: a value/onValueChange BasicTextField
+    // cannot advertise image MIME types to the IME or receive clipboard images.
+    val field = rememberTextFieldState(initialText = value, initialSelection = TextRange(value.length))
     var adopted by rememberSaveable { mutableStateOf(value) }
-    if (value != adopted) {
-        adopted = value
-        if (value != field.text) field = TextFieldValue(value, TextRange(value.length))
+    SideEffect {
+        if (value != adopted) {
+            adopted = value
+            if (value != field.text.toString()) field.setTextAndPlaceCursorAtEnd(value)
+        }
+    }
+    val receiveImages = rememberImagePasteReceiver(
+        enabled = onAddAttachments != null,
+        currentCount = attachments.size,
+        onAddAttachments = onAddAttachments,
+        onAttachmentError = onAttachmentError,
+    )
+    // The `/` token under the cursor, while the field has focus: what the popover lists completions for. A token the
+    // popover closed on (nothing matched) is not reopened until the cursor moves on to another. The state's text and
+    // selection are snapshot state, so the token follows every keystroke and cursor move.
+    val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) else null
+    var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
+    val recentSkills = plusMenu?.recentSkills.orEmpty()
+    // The popover's rows keep the click handler they were composed with, so the handler reads the token and catalog
+    // as they are when the row is tapped, not as they were when the row first appeared (typing "/", then "g", then
+    // "o" composes the row once, under the "/" token; completing that token would leave the "go" in place).
+    val currentToken by rememberUpdatedState(slashToken)
+    val currentCommands by rememberUpdatedState(commands)
+    val currentMenu by rememberUpdatedState(plusMenu)
+
+    fun complete(entry: SlashCommand) {
+        val token = currentToken ?: return
+        // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
+        if (currentCommands.byName(entry.name) == null) currentMenu?.onSkillUsed?.invoke(entry.name)
+        val next = SlashTokens.complete(field.text.toString(), token, entry.name)
+        field.edit {
+            replace(0, length, next.text)
+            if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
+        }
+        // An edit made here does not pass through the input transformation, so the owner is told directly.
+        if (next.text != value) onValueChange(next.text)
     }
 
     Column(
@@ -131,30 +201,42 @@ fun ComposerBox(
         if (attachments.isNotEmpty() && onRemoveAttachment != null) {
             AttachmentStrip(attachments, onRemoveAttachment)
         }
-        BasicTextField(
-            value = field,
-            onValueChange = { next ->
-                field = next
-                if (next.text != value) onValueChange(next.text)
-            },
-            textStyle = type.input.copy(color = colors.textPrimary),
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            cursorBrush = SolidColor(colors.textPrimary),
-            minLines = minLines,
-            maxLines = 10,
-            modifier = Modifier
-                .fillMaxWidth()
-                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                .heightIn(min = 22.dp)
-                .focusRequester(focusRequester)
-                .onFocusChanged { focused = it.isFocused },
-            decorationBox = { inner ->
-                Box {
-                    if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    inner()
-                }
-            },
-        )
+        // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
+        Box {
+            BasicTextField(
+                state = field,
+                textStyle = type.input.copy(color = colors.textPrimary),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                cursorBrush = SolidColor(colors.textPrimary),
+                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                inputTransformation = InputTransformation {
+                    val next = toString()
+                    if (next != value) onValueChange(next)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                    .heightIn(min = 22.dp)
+                    .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                    .focusRequester(focus)
+                    .onFocusChanged { focused = it.isFocused },
+                decorator = { inner ->
+                    Box {
+                        // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
+                        // back over the first character typed.
+                        if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        inner()
+                    }
+                },
+            )
+            SlashCommandPopover(
+                token = slashToken?.takeIf { it != dismissedToken },
+                catalog = commands,
+                recent = recentSkills,
+                onPick = { complete(it) },
+                onDismiss = { dismissedToken = slashToken },
+            )
+        }
         Spacer(Modifier.height(10.dp))
         // The footer's designed height is a minimum: the model chip and anything [footerExtra] adds are sp-sized, and
         // an exact constraint here would hold them to 28dp however much taller they asked to be.
@@ -174,16 +256,18 @@ fun ComposerBox(
                             wantsFocus = true
                         },
                         actions = plusMenu,
+                        commands = commands,
                     )
                 }
                 Spacer(Modifier.width(10.dp))
             }
-            // The model chip takes what it needs and ellipsises only when the trailing buttons would otherwise be pushed out.
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            // Leftover width (and optional extras) stay on the left so the model chip can sit next to send.
+            // The chip takes what it needs and ellipsises only when send would otherwise be pushed out.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+                footerExtra?.invoke(this)
                 if (modelLabel != null) {
                     SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
                 }
-                footerExtra?.invoke(this)
             }
             Spacer(Modifier.width(8.dp))
             when {
@@ -221,6 +305,65 @@ private const val CancelOfferDelayMillis = 2_500L
  * one on the way back.
  */
 private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.value }, restore = { mutableStateOf(it) })
+
+/**
+ * Advertises image MIME types to the IME and turns clipboard / keyboard / drag-and-drop images into attachments.
+ * Bytes are read before [ReceiveContentListener.onReceive] returns so a clipboard URI grant cannot expire on the
+ * hop to IO; decode and downscale happen off the main thread afterwards.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun rememberImagePasteReceiver(
+    enabled: Boolean,
+    currentCount: Int,
+    onAddAttachments: ((List<PendingAttachment>) -> Unit)?,
+    onAttachmentError: ((String) -> Unit)?,
+): ReceiveContentListener? {
+    if (!enabled || onAddAttachments == null) return null
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val addAttachments = rememberUpdatedState(onAddAttachments)
+    val attachmentError = rememberUpdatedState(onAttachmentError)
+    val count = rememberUpdatedState(currentCount)
+    return remember {
+        ReceiveContentListener { transferableContent ->
+            val resolver = context.contentResolver
+            val clipIsImage = transferableContent.hasMediaType(MediaType.Image)
+            val payloads = mutableListOf<ImagePayload>()
+            var readFailed = false
+            val remaining = transferableContent.consume { item ->
+                val uri = item.uri ?: return@consume false
+                if (!isImageUri(resolver, uri, clipIsImage)) return@consume false
+                val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                if (bytes == null) {
+                    readFailed = true
+                    true
+                } else {
+                    payloads += ImagePayload(
+                        id = uri.toString() + "@" + System.nanoTime(),
+                        bytes = bytes,
+                        declaredMime = resolver.getType(uri),
+                    )
+                    true
+                }
+            }
+            if (payloads.isEmpty()) {
+                if (readFailed || clipIsImage) {
+                    attachmentError.value?.invoke("Couldn't read the image.")
+                    return@ReceiveContentListener remaining
+                }
+                return@ReceiveContentListener transferableContent
+            }
+            val add = addAttachments.value
+            scope.launch {
+                val imported = withContext(Dispatchers.IO) { importPayloads(payloads, count.value) }
+                if (imported.attachments.isNotEmpty()) add(imported.attachments)
+                imported.error?.let { attachmentError.value?.invoke(it) }
+            }
+            remaining
+        }
+    }
+}
 
 /**
  * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 ⌄". Nothing is

@@ -88,21 +88,13 @@ object AgentListOrganizer {
         }
         if (!gitOk) return false
 
-        // One bucket per chat, the way the Source page's checkboxes read: a chat started on this phone is "This
-        // device" whatever it runs on, and every other chat goes by its environment. As additional requirements the
-        // buckets could not be picked apart — "This device" alone matched nothing at all.
-        return sourceOf(row) in prefs.sources
-    }
+        // One exclusive bucket per page, so either page's checkboxes can be picked apart on their own: where the chat
+        // was started from, and what it runs on. A chat launched from this app is the account's API chat like any
+        // other; the launch this device remembers is what makes it "This device" rather than "API".
+        val source = if (row.launchedFromThisDevice) SourceFilter.ThisDevice else SourceFilter.of(agent.source)
+        if (source !in prefs.sources) return false
 
-    /** Which Source bucket a chat belongs to; exactly one, so the buckets can be picked apart. */
-    fun sourceOf(row: AgentRow): SourceFilter = if (row.launchedFromThisDevice) {
-        SourceFilter.ThisDevice
-    } else {
-        when (row.agent.envType) {
-            EnvType.CLOUD, EnvType.UNKNOWN -> SourceFilter.Cloud
-            EnvType.POOL -> SourceFilter.Pool
-            EnvType.MACHINE -> SourceFilter.Machine
-        }
+        return EnvironmentFilter.of(agent.envType) in prefs.environments
     }
 
     fun matchesQuery(agent: Agent, query: String): Boolean {

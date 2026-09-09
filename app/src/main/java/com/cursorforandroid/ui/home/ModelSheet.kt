@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.home
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -21,17 +20,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -41,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.ModelAxis
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelVariant
+import com.cursorforandroid.domain.arrangedForPicker
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
@@ -54,29 +52,21 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The row of the model picker that stands for sending no `model` at all. What that means depends on where the
- * picker opens: on a new chat it is Cursor's configured default; on a follow-up the chat simply keeps the model it
- * has been running on.
+ * A fallback row for a follow-up whose current model the catalog cannot show checked — unknown (started elsewhere)
+ * or no longer offered. There is no "Default" model: the catalog is the list.
  */
-internal data class NoModelRow(val title: String, val subtitle: String?) {
-    companion object {
-        val Default = NoModelRow("Default", "Your Cursor default model")
-    }
-}
+internal data class NoModelRow(val title: String, val subtitle: String?)
 
 /**
- * The composer's model picker: the [noModelRow] (null hides it), the plan-mode / auto-PR options, then one row per
- * model from `GET /v1/models`. A model's parameters — effort, speed, context window — are not rows of their own:
- * they unfold under the model as pickers (a toggle for an on/off parameter, a row of choices otherwise), the way the
- * web app's "Options" panel shows them beside the model list. The selected model opens unfolded; any other model's
- * chevron unfolds its pickers, and changing one of them selects that model with the matching variant. The auto-PR
- * toggle is only shown with an [onAutoCreatePr]: it is a setting of the agent, which a follow-up cannot change.
+ * The composer's model picker: plan-mode / auto-PR, then one clean row per model from `GET /v1/models`. Tapping a
+ * model selects it, lifts it to the top of the list and unfolds its parameters — effort, speed, context — under it.
+ * Pinning keeps a model at the top after something else is selected. The auto-PR toggle is only shown with an
+ * [onAutoCreatePr]: it is a setting of the agent, which a follow-up cannot change.
  *
- * Tapping a model row selects it at the variant shown and closes the sheet; the pickers keep the sheet open so
- * several parameters can be set in one go, as the plan-mode / auto-PR toggles do.
+ * Tapping a model keeps the sheet open so its pickers can be set; dismissing the sheet keeps the last selection.
  *
- * List keys are positional: the API's model ids are unique in practice but nothing guarantees it, and a duplicate
- * key aborts the composition.
+ * List keys are positional plus id: the API's model ids are unique in practice but nothing guarantees it, and a
+ * duplicate key aborts the composition.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,25 +83,35 @@ internal fun ModelSheet(
     onRetry: () -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
     onDismiss: () -> Unit,
-    noModelRow: NoModelRow? = NoModelRow.Default,
+    pinnedIds: List<String> = emptyList(),
+    onTogglePin: (String) -> Unit = {},
+    noModelRow: NoModelRow? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val ordered = remember(models, pinnedIds, selectedModel?.id) { models.arrangedForPicker(pinnedIds, selectedModel?.id) }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
-        // Picking a row plays the sheet's hide animation before the selection is applied.
-        fun pick(model: ModelOption?, variant: ModelVariant?) {
-            onSelect(model, variant)
+        fun pickNone() {
+            onSelect(null, null)
             dismiss()
         }
-        // The model whose pickers are unfolded: the selected one when the sheet opens, then the last chevron tapped.
-        var unfoldedId by remember { mutableStateOf(selectedModel?.id) }
+        val listState = rememberLazyListState()
+        LaunchedEffect(selectedModel?.id, noModelRow != null, ordered.isNotEmpty()) {
+            if (selectedModel == null || ordered.isEmpty()) return@LaunchedEffect
+            val offset = (if (noModelRow != null) 1 else 0) + 1 + 1
+            listState.scrollToItem(offset)
+        }
         SheetHeader("Model") {
             if (loading && models.isNotEmpty()) SpinnerRing(modifier = Modifier.padding(end = 8.dp))
         }
-        LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+            contentPadding = PaddingValues(bottom = 12.dp),
+        ) {
             if (noModelRow != null) {
-                item("default") {
-                    SheetRow(title = noModelRow.title, subtitle = noModelRow.subtitle, checked = selectedModel == null) { pick(null, null) }
+                item("current") {
+                    SheetRow(title = noModelRow.title, subtitle = noModelRow.subtitle, checked = selectedModel == null) { pickNone() }
                     HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
                 }
             }
@@ -133,7 +133,7 @@ internal fun ModelSheet(
                     unavailable -> item("unavailable") {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "Couldn't load the model list. Default still works.",
+                                "Couldn't load the model list.",
                                 style = type.small,
                                 color = colors.textQuaternary,
                                 modifier = Modifier.weight(1f),
@@ -146,23 +146,19 @@ internal fun ModelSheet(
             } else {
                 item("models") { SheetSectionLabel("Models") }
             }
-            models.forEachIndexed { index, model ->
-                item("model-$index") {
+            ordered.forEachIndexed { index, model ->
+                item("model-$index-${model.id}") {
                     val selected = model.id == selectedModel?.id
-                    // The variant the row stands for: the selection for the selected model, the API's default otherwise.
                     val variant = if (selected) selectedVariant ?: model.defaultVariant else model.defaultVariant
                     val axes = remember(model) { model.axes }
-                    val unfolded = axes.isNotEmpty() && unfoldedId == model.id
                     ModelRow(
                         model = model,
-                        variant = variant,
                         selected = selected,
-                        unfoldable = axes.isNotEmpty(),
-                        unfolded = unfolded,
-                        onClick = { pick(model, variant) },
-                        onToggleUnfolded = { unfoldedId = if (unfolded) null else model.id },
+                        pinned = model.id in pinnedIds,
+                        onClick = { onSelect(model, variant) },
+                        onTogglePin = { onTogglePin(model.id) },
                     )
-                    AnimatedVisibility(unfolded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                    AnimatedVisibility(selected && axes.isNotEmpty(), enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                         ModelPickers(axes, variant) { axis, value ->
                             model.variantWith(variant, axis.id, value)?.let { onSelect(model, it) }
                         }
@@ -184,19 +180,14 @@ private fun OptionRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
     }
 }
 
-/**
- * One model: its name over the variant's parameters in words ("High effort · Fast"), or its description when the
- * variant has none; the accent check when selected; a chevron to unfold its pickers when it has any.
- */
+/** One model: its name alone, the accent check when selected, and a pin that keeps it at the top of the list. */
 @Composable
 private fun ModelRow(
     model: ModelOption,
-    variant: ModelVariant?,
     selected: Boolean,
-    unfoldable: Boolean,
-    unfolded: Boolean,
+    pinned: Boolean,
     onClick: () -> Unit,
-    onToggleUnfolded: () -> Unit,
+    onTogglePin: () -> Unit,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -206,41 +197,41 @@ private fun ModelRow(
             .padding(horizontal = 8.dp)
             .pressable(onClick, CursorTheme.shapes.base)
             .heightIn(min = CursorDimens.listRow)
-            .padding(start = 12.dp, end = if (unfoldable) 4.dp else 12.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(model.displayName, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val subtitle = variant?.let { model.qualifier(it) ?: it.description } ?: model.description
-            if (!subtitle.isNullOrBlank()) Text(subtitle, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
+        Text(
+            model.displayName,
+            style = type.base,
+            color = colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
         if (selected) {
             Spacer(Modifier.width(12.dp))
             Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
         }
-        if (unfoldable) {
-            Spacer(Modifier.width(4.dp))
-            UnfoldChevron(unfolded, label = "${if (unfolded) "Hide" else "Show"} ${model.displayName} options", onClick = onToggleUnfolded)
-        }
+        Spacer(Modifier.width(4.dp))
+        PinButton(pinned, model.displayName, onTogglePin)
     }
 }
 
 /**
- * The chevron that unfolds a model's pickers. Its label sits on the clickable node itself: an icon button whose
- * description lives on the glyph would be merged into the (clickable) row around it, and a tap aimed at the label
- * would pick the row instead — for accessibility services and UI tests alike.
+ * The pin control on a model row. Its label sits on the clickable node itself so a tap aimed at it pins rather
+ * than selecting the row — for accessibility services and UI tests alike.
  */
 @Composable
-private fun UnfoldChevron(unfolded: Boolean, label: String, onClick: () -> Unit) {
-    val rotation by animateFloatAsState(if (unfolded) 180f else 0f, label = "chevron")
+private fun PinButton(pinned: Boolean, modelName: String, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
     Box(
         Modifier
             .size(width = 40.dp, height = CursorDimens.iconButton)
             .pressable(onClick, CursorTheme.shapes.lg)
-            .semantics { contentDescription = label },
+            .semantics { contentDescription = if (pinned) "Unpin $modelName" else "Pin $modelName" },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(CursorIcons.ChevronDown, null, tint = CursorTheme.colors.iconTertiary, modifier = Modifier.size(CursorDimens.chevron).rotate(rotation))
+        Icon(CursorIcons.Pin, null, tint = if (pinned) colors.accent else colors.iconTertiary, modifier = Modifier.size(16.dp))
     }
 }
 

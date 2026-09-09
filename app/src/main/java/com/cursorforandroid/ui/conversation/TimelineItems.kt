@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -38,15 +37,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -59,23 +60,20 @@ import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
-import com.cursorforandroid.domain.ToolNames
+import com.cursorforandroid.domain.ToolOutput
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.MarkdownText
-import com.cursorforandroid.ui.components.Pill
-import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -88,7 +86,6 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
         is AssistantMessage -> AssistantMessageView(item, modifier)
         is SummaryRow -> SummaryLine(item.label, item.value, modifier)
         is ActivityGroup -> ActivityGroupView(item, modifier)
-        is SubagentsCard -> SubagentsView(item, modifier)
         is NoticeCard -> NoticeView(item, modifier)
         is SystemNotification -> SystemNotificationView(item, modifier)
         is RunFooter -> RunFooterView(item, modifier)
@@ -105,23 +102,29 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
     val hasText = item.text.isNotBlank()
+    // A prompt the server has not acknowledged yet is drawn faded — through its colours, the way the rest of the app
+    // fades things — and comes up to full strength once its run is filed.
+    val alpha by animateFloatAsState(if (item.isPending) PendingMessageAlpha else 1f, tween(240), label = "pending")
     Box(modifier.fillMaxWidth().padding(start = 32.dp), contentAlignment = Alignment.CenterEnd) {
         MessageActions(
             text = item.text,
             enabled = hasText,
-            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint, colors.stroke, CursorTheme.shapes.xl),
+            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint.faded(alpha), colors.stroke.faded(alpha), CursorTheme.shapes.xl),
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 if (item.attachments.isNotEmpty()) {
-                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp))
+                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
                 }
                 if (hasText || item.attachments.isEmpty()) {
-                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha))
                 }
             }
         }
     }
 }
+
+/** [color] at [alpha] of its own opacity: 1 leaves it as it is. */
+internal fun Color.faded(alpha: Float): Color = if (alpha >= 1f) this else copy(alpha = this.alpha * alpha)
 
 /**
  * A reply has no surface of its own, so its press highlight is a soft `lg` card reaching a few dp past the text on
@@ -279,150 +282,231 @@ fun SummaryLine(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** Collapsible 13sp row with a small chevron — the desktop treatment for "Thought for 1s" and "Explored …". */
+/**
+ * Cursor's collapsible step header (`Collapsible` in the desktop build): the verb in the secondary text colour, its
+ * details after a 4px gap in the tertiary colour with tabular numerals, and a right-pointing chevron at the end that
+ * turns down when the row is open. While the step is still going the verb shimmers — nothing spins beside it. Line
+ * counts of edits ("+12 -3") are set apart in the git colours. The whole row is the toggle.
+ */
 @Composable
 private fun DisclosureRow(
-    label: String,
-    value: String?,
+    action: String,
+    details: String?,
     expanded: Boolean,
     onToggle: () -> Unit,
     busy: Boolean = false,
+    lineStats: String? = null,
+    expandable: Boolean = true,
 ) {
     val colors = CursorTheme.colors
-    val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
+    val chevron by animateFloatAsState(if (expanded) 90f else 0f, tween(180), label = "chevron")
     Row(
         Modifier
             .offset(x = (-6).dp)
-            .pressable(onToggle, CursorTheme.shapes.base)
+            .pressable(onToggle, CursorTheme.shapes.base, enabled = expandable)
             .heightIn(min = 28.dp)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = CursorTheme.typography.base, color = colors.textTertiary)
-        if (value != null) {
-            Spacer(Modifier.width(6.dp))
-            // Yields to the chevron: a long value ellipsizes rather than pushing the chevron off the row.
+        ShimmerText(action, style = CursorTheme.typography.base, color = colors.textSecondary, active = busy, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (details != null) {
+            Spacer(Modifier.width(4.dp))
+            // Yields to the chevron: long details ellipsize rather than pushing the chevron off the row.
             Text(
-                value,
-                style = CursorTheme.typography.base,
-                color = colors.textQuaternary,
+                details,
+                style = CursorTheme.typography.base.copy(fontFeatureSettings = "tnum"),
+                color = colors.textTertiary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
         }
-        Spacer(Modifier.width(4.dp))
-        if (busy) SpinnerRing(size = 11.dp) else Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
+        if (lineStats != null) {
+            Spacer(Modifier.width(4.dp))
+            LineStats(lineStats)
+        }
+        if (expandable) {
+            Spacer(Modifier.width(4.dp))
+            Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
+        }
+    }
+}
+
+/** "+12 -3" in the git colours, tabular so the numbers hold still while a run edits. */
+@Composable
+private fun LineStats(stats: String, style: TextStyle = CursorTheme.typography.base) {
+    val colors = CursorTheme.colors
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        stats.split(' ').forEach { part ->
+            Text(part, style = style.copy(fontFeatureSettings = "tnum"), color = if (part.startsWith("-")) colors.gitRemoved else colors.gitAdded, maxLines = 1)
+        }
     }
 }
 
 /**
- * The agent's work between two messages behind one row — "Explored 6 files, 1 search · thought for 7s", with a spinner
- * in place of the chevron while it is still going — that opens onto the trace in the order it happened: each thought
- * as prose, each run of tool calls as a card. A thought being written is read along as it streams even while the row
- * is closed, as it was when thoughts had rows of their own.
+ * The agent's work between two messages, laid out the way Cursor's client lays out a step group. A thought that came
+ * before any tool call is its own "Thought 3s" row, open while it is being written so it can be read along, closed
+ * once it is done. The tool calls that follow, with the thoughts between them, sit behind one summary row —
+ * "Explored 6 files, 1 search, ran 2 commands", "Edited 2 files, explored 3 files +12 -3" — that opens onto the
+ * steps in order; one or two bare reads are not worth a row of their own and stay as lines.
  */
 @Composable
 private fun ActivityGroupView(item: ActivityGroup, modifier: Modifier) {
-    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth()) {
-        DisclosureRow(label = item.verb, value = item.detail, expanded = expanded, onToggle = { expanded = !expanded }, busy = item.isBusy)
+        if (item.leadingThoughts.isNotEmpty()) ThoughtRow(item)
+        if (item.work.isNotEmpty()) {
+            if (item.isWorkGrouped) WorkRow(item) else StepList(item.work, Modifier.padding(top = if (item.leadingThoughts.isNotEmpty()) 2.dp else 0.dp))
+        }
+    }
+}
+
+/** "Thinking" while the thought streams — open, so it reads along — then "Thought 3s", closed onto its text. */
+@Composable
+private fun ThoughtRow(item: ActivityGroup) {
+    var toggled by rememberSaveable(item.id) { mutableStateOf<Boolean?>(null) }
+    val text = item.leadingThoughts.joinToString("\n\n") { it.text.trim() }.trim()
+    val expandable = text.isNotEmpty()
+    val expanded = expandable && (toggled ?: item.isLeadingThoughtStreaming)
+    Column {
+        DisclosureRow(
+            action = item.thoughtAction,
+            details = item.thoughtDetails,
+            expanded = expanded,
+            onToggle = { toggled = !expanded },
+            busy = item.isLeadingThoughtStreaming,
+            expandable = expandable,
+        )
         AnimatedVisibility(visible = expanded) {
-            Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item.segments().forEach { segment ->
-                    when (val step = segment.first()) {
-                        is ThinkingBlock -> ThoughtText(step.text)
-                        is ToolCall -> ToolCallsCard(segment.filterIsInstance<ToolCall>())
-                    }
-                }
+            ThoughtText(text, Modifier.padding(top = 6.dp, bottom = 4.dp))
+        }
+    }
+}
+
+/** The tool calls behind their summary row, opening onto each step in the order it happened. */
+@Composable
+private fun WorkRow(item: ActivityGroup) {
+    var expanded by rememberSaveable("${item.id}-work") { mutableStateOf(false) }
+    val header = item.header
+    Column {
+        DisclosureRow(
+            action = header.action,
+            details = header.details,
+            expanded = expanded,
+            onToggle = { expanded = !expanded },
+            busy = item.isWorkBusy,
+            lineStats = header.lineStats,
+        )
+        AnimatedVisibility(visible = expanded) {
+            StepList(item.work, Modifier.padding(top = 8.dp, bottom = 4.dp))
+        }
+    }
+}
+
+/** The steps of a group as Cursor lists them: each thought as dimmed prose, each tool call as one line. */
+@Composable
+private fun StepList(steps: List<ActivityStep>, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        steps.forEach { step ->
+            when (step) {
+                is ThinkingBlock -> ThoughtText(step.text, Modifier.padding(vertical = 4.dp))
+                is ToolCall -> ToolCallLine(step)
             }
         }
-        // The last thought is the one streaming; it stays the last while this fades out once it has closed.
-        AnimatedVisibility(visible = !expanded && item.isThinking) {
-            ThoughtText(item.thoughts.lastOrNull()?.text.orEmpty(), Modifier.padding(top = 4.dp, bottom = 2.dp))
-        }
     }
 }
 
-/** The steps in display order: each thought on its own, consecutive tool calls together so they share a card. */
-private fun ActivityGroup.segments(): List<List<ActivityStep>> = buildList<MutableList<ActivityStep>> {
-    steps.forEach { step ->
-        val open = lastOrNull()
-        if (step is ToolCall && open != null && open.last() is ToolCall) open += step else add(mutableListOf(step))
-    }
-}
-
+/** A thought as Cursor shows one: the prose at half strength (`.markdown-normalized { opacity: .5 }`). */
 @Composable
 private fun ThoughtText(text: String, modifier: Modifier = Modifier) {
-    Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary, modifier = modifier.padding(horizontal = 2.dp))
+    Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary, modifier = modifier)
 }
 
+/**
+ * One tool call as one line, Cursor's `ui-tool-call-line`: the verb in the secondary colour — shimmering while the call
+ * runs — then its details in the tertiary colour, ellipsized to the row. An MCP call reads "Ran list_pull_requests in
+ * Github", the tool's name as strong as the verb, behind the plug glyph that stands in for the server's icon. An edit
+ * carries its "+12 -3". A tap opens the line onto what the call was asked and what came back: the command and its
+ * output, the MCP input and result, the full path or query.
+ */
 @Composable
-private fun ToolCallsCard(calls: List<ToolCall>) {
-    CursorCard(Modifier.fillMaxWidth()) {
-        calls.forEachIndexed { index, call ->
-            ToolCallRow(call)
-            if (index != calls.lastIndex) HairlineDivider(Modifier.padding(horizontal = 10.dp))
-        }
-    }
-}
-
-private fun ToolKind.icon(): ImageVector = when (this) {
-    ToolKind.Read -> CursorIcons.File
-    ToolKind.List -> CursorIcons.Folder
-    ToolKind.Search -> CursorIcons.Search
-    ToolKind.Edit -> CursorIcons.Pencil
-    ToolKind.Shell -> CursorIcons.Terminal
-    ToolKind.Web -> CursorIcons.Globe
-    ToolKind.Task -> CursorIcons.Sparkle
-    ToolKind.Mcp -> CursorIcons.Layers
-    ToolKind.Other -> CursorIcons.Sparkle
-}
-
-@Composable
-private fun ToolCallRow(call: ToolCall) {
-    val colors = CursorTheme.colors
-    val mono = call.kind == ToolKind.Shell || call.kind == ToolKind.Read || call.kind == ToolKind.Edit || call.kind == ToolKind.List
-    Row(Modifier.fillMaxWidth().height(34.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(call.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(ToolNames.verb(call.kind, call.status), style = CursorTheme.typography.small, color = colors.textTertiary)
-        Spacer(Modifier.width(6.dp))
-        Text(
-            call.summary,
-            style = if (mono) CursorTheme.typography.code else CursorTheme.typography.small,
-            color = colors.textSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        if (call.isRunning) SpinnerRing(size = 11.dp)
-    }
-}
-
-@Composable
-private fun SubagentsView(item: SubagentsCard, modifier: Modifier) {
+private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    CursorCard(modifier.fillMaxWidth()) {
-        Row(Modifier.padding(horizontal = 12.dp).height(34.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(CursorIcons.Sparkle, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
-            Spacer(Modifier.width(7.dp))
-            Text("Subagents", style = type.small, color = colors.textTertiary)
-            Spacer(Modifier.width(6.dp))
-            Text(item.subagents.size.toString(), style = type.small, color = colors.textQuaternary)
-        }
-        HairlineDivider()
-        item.subagents.forEachIndexed { index, sub ->
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (sub.status == "Running") SpinnerRing(size = 10.dp) else Dot(if (sub.status == "Done") colors.green.copy(alpha = 0.8f) else colors.iconQuaternary, size = 6.dp)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(sub.title, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${sub.status} · ${sub.kind}", style = type.small, color = colors.textQuaternary)
-                }
+    val output = remember(call) { ToolOutput.of(call) }
+    val expandable = !output.isEmpty
+    var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .offset(x = (-6).dp)
+                .pressable({ expanded = !expanded }, CursorTheme.shapes.base, enabled = expandable)
+                .heightIn(min = 24.dp)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (call.kind == ToolKind.Mcp) {
+                Icon(CursorIcons.Plug, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(5.dp))
             }
-            if (index != item.subagents.lastIndex) HairlineDivider(Modifier.padding(start = 28.dp))
+            ShimmerText(call.action, style = type.base, color = colors.textSecondary, active = call.isRunning, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val details = detailsText(call)
+            if (details.isNotEmpty()) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    details,
+                    style = type.base.copy(fontFeatureSettings = "tnum"),
+                    color = colors.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
+            call.lineStats?.let { stats ->
+                Spacer(Modifier.width(4.dp))
+                LineStats(stats)
+            }
+        }
+        if (expandable) {
+            AnimatedVisibility(visible = expanded) {
+                ToolOutputView(call, output, Modifier.padding(top = 4.dp, bottom = 6.dp))
+            }
+        }
+    }
+}
+
+/** The details of a line: for an MCP call the tool's name in the verb's colour, then "in Server" dimmed. */
+@Composable
+private fun detailsText(call: ToolCall): AnnotatedString {
+    val colors = CursorTheme.colors
+    val details = call.details
+    if (call.kind != ToolKind.Mcp || call.isError || details.isEmpty()) return AnnotatedString(details)
+    return buildAnnotatedString {
+        withStyle(SpanStyle(color = colors.textSecondary)) { append(details) }
+        call.server?.let { append(" in $it") }
+    }
+}
+
+/**
+ * What a tool call opens onto, in a faint card of code: a shell call's command behind `$` and its output below, an
+ * MCP call's input and result, otherwise the full path, query or URL the line abbreviated.
+ */
+@Composable
+private fun ToolOutputView(call: ToolCall, output: ToolOutput, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    CursorCard(modifier.fillMaxWidth(), fill = colors.fillFaint, border = Color.Transparent) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            output.input?.let { input ->
+                val text = if (call.kind == ToolKind.Shell) input.trim().lines().joinToString("\n") { "\$ $it" } else input.trim()
+                Text(text, style = type.code, color = colors.textPrimary)
+            }
+            output.output?.let { text ->
+                if (output.input != null) HairlineDivider()
+                Text(text, style = type.code, color = colors.textSecondary)
+            }
+            output.exitCode?.takeIf { it != 0 }?.let { code ->
+                Text("exit code $code", style = type.small, color = colors.red)
+            }
         }
     }
 }
@@ -450,35 +534,21 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 
 @Composable
 private fun RunFooterView(item: RunFooter, modifier: Modifier) {
-    val colors = CursorTheme.colors
-    val uriHandler = LocalUriHandler.current
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val label = when (item.status) {
-            RunStatus.ERROR -> "Failed after"
-            RunStatus.CANCELLED -> "Cancelled after"
-            RunStatus.EXPIRED -> "Expired after"
-            else -> "Worked"
-        }
-        val duration = TimeFormat.duration(item.durationMs)
-        // A status this build cannot read says nothing worth printing; the footer's presence is the point.
-        val named = item.status != RunStatus.FINISHED && item.status != RunStatus.UNKNOWN
-        if (duration != null || named) SummaryLine(label, duration ?: item.status.name.lowercase())
-        if (item.branches.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                item.branches.forEach { b ->
-                    if (b.prUrl != null) {
-                        Pill(
-                            text = b.prUrl.substringAfter("github.com/").replace("/pull/", "#").ifBlank { "Pull request" },
-                            icon = CursorIcons.GitPullRequest,
-                            tint = colors.gitAdded,
-                            fill = colors.gitAdded.copy(alpha = 0.14f),
-                            onClick = { uriHandler.openUri(b.prUrl) },
-                        )
-                    } else if (b.branch != null) {
-                        Pill(text = b.branch, icon = CursorIcons.GitBranch)
-                    }
-                }
-            }
-        }
+    val label = when (item.status) {
+        RunStatus.ERROR -> "Failed after"
+        RunStatus.CANCELLED -> "Cancelled after"
+        RunStatus.EXPIRED -> "Expired after"
+        else -> "Worked"
+    }
+    val duration = TimeFormat.duration(item.durationMs)
+    // Duration and status only. The header already names the branch and owns the pull-request button; repeating
+    // either as a pill under every reply is just noise. A status this build cannot read says nothing worth
+    // printing either; the footer's presence is the point.
+    val named = item.status != RunStatus.FINISHED && item.status != RunStatus.UNKNOWN
+    if (duration != null || named) {
+        SummaryLine(label, duration ?: item.status.name.lowercase(), modifier)
     }
 }
+
+/** Opacity of a prompt sent from here that the server has not acknowledged yet. */
+private const val PendingMessageAlpha = 0.5f

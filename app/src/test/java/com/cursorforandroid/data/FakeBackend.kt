@@ -17,8 +17,12 @@ import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.ListArtifactsResponseDto
 import com.cursorforandroid.data.api.dto.ListModelsResponseDto
+import com.cursorforandroid.data.api.dto.ListPoolsResponseDto
 import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
+import com.cursorforandroid.data.api.dto.ListWorkersResponseDto
+import com.cursorforandroid.data.api.dto.PoolDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.RepositoryDto
 import com.cursorforandroid.data.api.dto.RunDto
@@ -52,10 +56,14 @@ open class FakeCursorApi : CursorApi {
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
+    /** Fails every cancel with this, for failures other than the run being over already. */
+    @Volatile var failCancelWith: Throwable? = null
     var failCreateRun = false
     /** When set, [delete] throws it, as the real API does for a chat the account may not delete. */
     @Volatile var failDelete: Throwable? = null
     val deleted = CopyOnWriteArrayList<String>()
+    /** Answers every follow-up with `409 agent_busy`, the way the server does while a run is still going. */
+    @Volatile var busyCreateRun = false
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
@@ -75,6 +83,12 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationCalls = 0
     @Volatile var modelsCalls = 0
     @Volatile var repositoriesCalls = 0
+    @Volatile var workersCalls = 0
+    @Volatile var poolsCalls = 0
+    @Volatile var failWorkers: Throwable? = null
+    @Volatile var failPools: Throwable? = null
+    var workers: List<WorkerDto> = emptyList()
+    var pools: List<PoolDto> = emptyList()
 
     /** Largest page the fake serves regardless of the requested `limit`. */
     @Volatile var pageSize = Int.MAX_VALUE
@@ -94,6 +108,8 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationGate: CompletableDeferred<Unit>? = null
     /** When set, the agent detail endpoint waits for it before answering. */
     @Volatile var getAgentGate: CompletableDeferred<Unit>? = null
+    /** When set, [getAgent] throws it, like a server that is down. */
+    @Volatile var failGetAgent: Throwable? = null
 
     /** Holds every run-record read until it is completed; the call is counted before it waits. */
     @Volatile var getRunGate: CompletableDeferred<Unit>? = null
@@ -171,6 +187,21 @@ open class FakeCursorApi : CursorApi {
         failRepositories?.let { throw it }
         return ListRepositoriesResponseDto(items = repositoryUrls.map(::RepositoryDto))
     }
+    override suspend fun listWorkers(status: String?, scope: String?, limit: Int, nextPageToken: String?): ListWorkersResponseDto {
+        workersCalls++
+        failWorkers?.let { throw it }
+        val listed = when (scope) {
+            "personal" -> workers.filter { it.scope != "team_pool" }
+            "team_pool" -> workers.filter { it.scope == "team_pool" }
+            else -> workers
+        }
+        return ListWorkersResponseDto(workers = listed)
+    }
+    override suspend fun listPools(scope: String?): ListPoolsResponseDto {
+        poolsCalls++
+        failPools?.let { throw it }
+        return ListPoolsResponseDto(pools = pools)
+    }
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
         listAgentsCalls++
         failListAgents?.let { throw it }
@@ -185,6 +216,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun getAgent(id: String): AgentDto {
         getAgentCalls++
+        failGetAgent?.let { throw it }
         getAgentGate?.await()
         return agents[id] ?: throw notFound()
     }
@@ -201,14 +233,20 @@ open class FakeCursorApi : CursorApi {
         val runId = "run-fake-${ids.incrementAndGet()}"
         val now = "2026-04-13T18:30:00.000Z"
         val name = if (blankCreatedNames) null else body.name ?: body.prompt.text.take(60)
-        val agent = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
+        val agent = AgentDto(id = id, name = name, status = "ACTIVE", env = body.env ?: com.cursorforandroid.data.api.dto.AgentEnvDto(), createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = now, updatedAt = now)
         agents[id] = agent
         runs[runId] = run
         return CreateAgentResponseDto(agent, run)
     }
-    override suspend fun archive(id: String) = IdResponseDto(id)
-    override suspend fun unarchive(id: String) = IdResponseDto(id)
+    override suspend fun archive(id: String): IdResponseDto {
+        agents[id]?.let { agents[id] = it.copy(status = "ARCHIVED") }
+        return IdResponseDto(id)
+    }
+    override suspend fun unarchive(id: String): IdResponseDto {
+        agents[id]?.let { agents[id] = it.copy(status = "IDLE") }
+        return IdResponseDto(id)
+    }
     override suspend fun delete(id: String): IdResponseDto {
         failDelete?.let { throw it }
         deleted += id
@@ -238,6 +276,7 @@ open class FakeCursorApi : CursorApi {
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
         runRequests += body
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
+        if (busyCreateRun) throw CursorApiException(409, "agent_busy", "Agent is busy.")
         val agent = agents[id] ?: throw notFound()
         val sequence = ids.incrementAndGet()
         val runId = "run-followup-$sequence"
@@ -250,6 +289,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
         if (failCancel) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
+        failCancelWith?.let { throw it }
         cancelled += runId
         return IdResponseDto(runId)
     }

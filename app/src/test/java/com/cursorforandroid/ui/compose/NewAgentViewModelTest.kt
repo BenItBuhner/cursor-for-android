@@ -11,6 +11,7 @@ import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
@@ -73,7 +74,7 @@ class NewAgentViewModelTest {
 
     private fun loaded(draftSaveDelayMs: Long = 400L): NewAgentViewModel {
         val vm = NewAgentViewModel(graph, draftSaveDelayMs)
-        runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos } } }
+        runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos && !it.isLoadingDevices } } }
         return vm
     }
 
@@ -226,15 +227,25 @@ class NewAgentViewModelTest {
     }
 
     @Test
-    fun `choosing Default is restored as Default, not as the first model`() {
+    fun `a saved Default choice is restored as the first model`() {
         val first = loaded()
         first.selectModel(null, null)
         first.launchAndWait()
 
         val second = loaded()
-        assertThat(second.state.value.selectedModel).isNull()
-        assertThat(second.state.value.selectedVariant).isNull()
-        assertThat(second.state.value.modelLabel).isEqualTo("Default model")
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
+        assertThat(second.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
+    }
+
+    @Test
+    fun `pinning a model persists across composers`() = runBlocking<Unit> {
+        val first = loaded()
+        val grok = first.state.value.models.first { it.id == "cursor-grok-4.6" }
+        first.togglePinnedModel(grok.id)
+        awaitUntil { grok.id in first.state.value.pinnedModelIds }
+        val second = loaded()
+        awaitUntil { grok.id in second.state.value.pinnedModelIds }
+        assertThat(second.state.value.pinnedModelIds).containsExactly(grok.id)
     }
 
     @Test
@@ -297,6 +308,21 @@ class NewAgentViewModelTest {
     }
 
     @Test
+    fun `the repository picker pins repositories with recent agent activity newest first`() {
+        val vm = loadedWithAgents()
+        // Demo chats from the last day cover every catalogue repository; none is older than a week, so the recent
+        // block is the whole list, ordered by the newest chat in each repository — not the alphabetical catalogue.
+        assertThat(vm.state.value.recentRepositories.map { it.shortName }).containsExactly(
+            "cursor-for-android",
+            "visual-engine",
+            "codex-poly-bot",
+            "market-replay",
+            "cesium",
+            "zen-parity",
+        ).inOrder()
+    }
+
+    @Test
     fun `the branch list is empty without a repository`() {
         val vm = loadedWithAgents()
         vm.selectRepo(null)
@@ -325,6 +351,16 @@ class NewAgentViewModelTest {
         assertThat(vm.state.value.ref).isEqualTo("feature/typed-by-hand")
         vm.selectRepo(null)
         assertThat(vm.state.value.ref).isEqualTo("feature/typed-by-hand")
+    }
+
+    @Test
+    fun `a share is drafted into the composer and appended under text already there`() {
+        val vm = loaded()
+        vm.applyShare("From Photos", emptyList())
+        assertThat(vm.state.value.prompt).isEqualTo("From Photos")
+        vm.applyShare("and this URL", emptyList())
+        assertThat(vm.state.value.prompt).isEqualTo("From Photos\n\nand this URL")
+        assertThat(vm.state.value.canLaunch).isTrue()
     }
 
     @Test
@@ -420,5 +456,28 @@ class NewAgentViewModelTest {
         vm.launchAndWait("Half a thought")
         awaitUntil { graph.drafts.read() == null }
         assertThat(loaded().state.value.prompt).isEmpty()
+    }
+
+    @Test
+    fun `the device picker defaults to cloud and lists the demo machine and pool`() {
+        val vm = loadedWithAgents()
+        assertThat(vm.state.value.selectedDevice).isEqualTo(DeviceTarget.Cloud)
+        assertThat(vm.state.value.deviceLabel).isEqualTo("Cloud")
+        assertThat(vm.state.value.devices.map { it.target }).containsAtLeast(
+            DeviceTarget.Cloud,
+            DeviceTarget.machine("bennett"),
+            DeviceTarget.pool("gpu"),
+        )
+        assertThat(vm.state.value.devices.none { it.target.label.equals("This device", ignoreCase = true) }).isTrue()
+    }
+
+    @Test
+    fun `the device launched on is restored`() {
+        val first = loaded()
+        first.selectDevice(DeviceTarget.machine("bennett"))
+        first.launchAndWait()
+        val second = loaded()
+        assertThat(second.state.value.selectedDevice).isEqualTo(DeviceTarget.machine("bennett"))
+        assertThat(second.state.value.deviceLabel).isEqualTo("bennett")
     }
 }

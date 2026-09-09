@@ -12,6 +12,7 @@ import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
+import com.cursorforandroid.domain.EnvironmentFilter
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
 import com.cursorforandroid.domain.GroupBy
@@ -56,9 +57,6 @@ data class AgentListUiState(
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
-    /** True while GitHub refuses to say where some of the listed pull requests stand — private repositories, read without a token. */
-    val pullRequestsUnreadable: Boolean = false,
-    val hasGitHubToken: Boolean = false,
     /**
      * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
      * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
@@ -69,14 +67,11 @@ data class AgentListUiState(
 
 /**
  * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
- * from the preferences, with the pull request states GitHub last gave folded in; alongside, the pull requests GitHub
- * refused to answer for and whether a GitHub token is set, for the Git filter page's hint, and the last row action
+ * from the preferences, with the pull request states the account last gave folded in; alongside, the last row action
  * the server refused, which the list shows where a failed refresh would show its own error.
  */
 private class DeviceState(
     val local: LocalAgentState,
-    val unreadablePullRequests: Set<String>,
-    val hasGitHubToken: Boolean,
     val actionError: String?,
 )
 
@@ -104,16 +99,10 @@ class AgentsViewModel(
 
     private val device: Flow<DeviceState> = combine(
         graph.prefs.localAgentState,
-        graph.pullRequests.statuses,
-        graph.pullRequests.hasToken,
+        graph.pullRequests.states,
         actionError,
-    ) { local, statuses, hasToken, failed ->
-        DeviceState(
-            local = local.copy(pullRequests = statuses.mapNotNull { (url, status) -> status.state?.let { url to it } }.toMap()),
-            unreadablePullRequests = statuses.filterValues { it.state == null }.keys,
-            hasGitHubToken = hasToken,
-            actionError = failed,
-        )
+    ) { local, states, failed ->
+        DeviceState(local = local.copy(pullRequests = states), actionError = failed)
     }
 
     val uiState: StateFlow<AgentListUiState> = combine(
@@ -142,8 +131,6 @@ class AgentsViewModel(
             error = device.actionError ?: list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
-            pullRequestsUnreadable = list.agents.any { it.prUrl in device.unreadablePullRequests },
-            hasGitHubToken = device.hasGitHubToken,
             nowMillis = now,
         )
     }
@@ -190,10 +177,14 @@ class AgentsViewModel(
         refreshPullRequests(eager = true)
     }
 
-    /** For returning to the foreground: agents that changed while the app was away, without a spinner. */
+    /**
+     * For returning to the foreground: agents that changed while the app was away, without a spinner — and the pull
+     * requests that could have moved meanwhile, re-read the way a pull does, since coming back is the moment a
+     * merge made elsewhere is looked for.
+     */
     fun refreshIfStale() = viewModelScope.launch {
         if (graph.agents.refreshIfStale(STALE_AFTER_MS) == RefreshOutcome.Refreshed) pollFailures = 0
-        refreshPullRequests()
+        refreshPullRequests(eager = true)
     }
 
     private suspend fun refreshPullRequests(eager: Boolean = false) =
@@ -204,9 +195,11 @@ class AgentsViewModel(
      * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
      * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), a deeper
      * pass every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent,
-     * and skipped when something else (the live-notification monitor, a pull) refreshed moments ago. While the
-     * server cannot be reached the interval backs off (see [pollDelayMs]) instead of knocking every half minute for
-     * as long as the screen is up. Runs until the returned job is cancelled; the caller ties it to a list surface
+     * and skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Each tick also
+     * gives the pull request states their turn: the account's list, read after each fetch, says where they stand at
+     * once, and the pass re-reads from the SCM whichever are due on their own schedule (cheap when none is). While
+     * the server cannot be reached the interval backs off (see [pollDelayMs]) instead of knocking every half minute
+     * for as long as the screen is up. Runs until the returned job is cancelled; the caller ties it to a list surface
      * actually being on screen.
      */
     fun pollWhileVisible(): Job = viewModelScope.launch {
@@ -220,6 +213,7 @@ class AgentsViewModel(
                 RefreshOutcome.Failed -> pollFailures++
                 RefreshOutcome.Skipped -> Unit
             }
+            refreshPullRequests()
         }
     }
 
@@ -254,6 +248,7 @@ class AgentsViewModel(
     fun toggleStatus(status: StatusFilter) = updatePrefs { it.copy(statuses = it.statuses.toggle(status)) }
     fun toggleGit(git: GitFilter) = updatePrefs { it.copy(git = it.git.toggle(git)) }
     fun toggleSource(source: SourceFilter) = updatePrefs { it.copy(sources = it.sources.toggle(source)) }
+    fun toggleEnvironment(environment: EnvironmentFilter) = updatePrefs { it.copy(environments = it.environments.toggle(environment)) }
     fun setShowWorkspace(v: Boolean) = updatePrefs { it.copy(showWorkspace = v) }
     fun setShowBranchStatus(v: Boolean) = updatePrefs { it.copy(showBranchStatus = v) }
     fun setShowRuntime(v: Boolean) = updatePrefs { it.copy(showRuntime = v) }
@@ -261,6 +256,7 @@ class AgentsViewModel(
 
     fun archive(agentId: String) = viewModelScope.launch { report(graph.agents.archive(agentId)) }
     fun unarchive(agentId: String) = viewModelScope.launch { report(graph.agents.unarchive(agentId)) }
+    fun rename(agentId: String, name: String) = viewModelScope.launch { graph.agents.rename(agentId, name) }
 
     /**
      * Deletes the chat on the server first. The transcript and the retained trace are the only copy of a run whose

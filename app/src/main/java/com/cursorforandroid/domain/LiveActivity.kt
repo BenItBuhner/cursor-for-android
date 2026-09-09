@@ -84,52 +84,46 @@ data class RunDigest(
         /** Derives the digest from the same timeline items the conversation renders. */
         fun from(items: List<TimelineItem>): RunDigest {
             val calls = items.filterIsInstance<ActivityGroup>().flatMap { it.calls }
-            val edits = calls.filter { it.kind == ToolKind.Edit }
+            val edits = calls.filter { it.isFileChange }
             val reads = calls.filter { it.kind == ToolKind.Read || it.kind == ToolKind.List }
-            val stats = edits.filter { it.additions != null || it.deletions != null }
+            val stats = edits.filter { it.linesAdded != null || it.linesRemoved != null }
             return RunDigest(
                 filesEdited = edits.distinctBy { it.subject() }.size,
                 filesRead = reads.distinctBy { it.subject() }.size,
-                searches = calls.count { it.kind == ToolKind.Search || it.kind == ToolKind.Web },
+                searches = calls.count { it.kind == ToolKind.Search || it.kind == ToolKind.Grep || it.kind == ToolKind.Glob || it.kind == ToolKind.WebSearch },
                 commands = calls.count { it.kind == ToolKind.Shell },
-                subagents = items.filterIsInstance<SubagentsCard>().sumOf { it.subagents.size },
-                additions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.additions ?: 0 },
-                deletions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.deletions ?: 0 },
+                subagents = calls.count { it.kind == ToolKind.Task },
+                additions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.linesAdded ?: 0 },
+                deletions = stats.takeIf { it.isNotEmpty() }?.sumOf { it.linesRemoved ?: 0 },
                 activity = activityOf(items),
             )
         }
 
-        private fun ToolCall.subject(): String = if (summary.isBlank()) callId else "$kind:$summary"
+        private fun ToolCall.subject(): String = (detail ?: summary).trim().ifBlank { callId }.let { "$kind:$it" }
 
         private fun activityOf(items: List<TimelineItem>): Activity = when (val last = items.lastOrNull()) {
             null -> Activity.Starting
             is AssistantMessage -> if (last.isStreaming) Activity.Writing else Activity.Working
-            is ActivityGroup, is SubagentsCard -> currentStep(items)
+            is ActivityGroup -> currentStep(last)
             is RunFooter, is NoticeCard -> Activity.Finishing
             is UserMessage, is SystemNotification, is SummaryRow -> Activity.Working
         }
 
         /**
-         * The agent's own step — a thought being written, a tool running — comes first; delegation counts once it is
-         * waiting on its subagents. Subagent cards sit after the group they were delegated from while that group goes
-         * on collecting the agent's work, so both are read from the trailing activity rather than the last item alone.
+         * The agent's own step — a thought being written, a tool running — comes first; delegation counts once all it
+         * is doing is waiting on its subagents.
          */
-        private fun currentStep(items: List<TimelineItem>): Activity {
-            val trailing = items.takeLastWhile { it is ActivityGroup || it is SubagentsCard }
-            val group = trailing.filterIsInstance<ActivityGroup>().lastOrNull()
-            if (group?.isThinking == true) return Activity.Thinking
-            group?.runningCall?.let { call -> return Activity(ToolNames.verb(call.kind, call.status), call.detail()) }
-            val running = trailing.filterIsInstance<SubagentsCard>().sumOf { card -> card.subagents.count { it.status == "Running" } }
-            return if (running > 0) Activity("Delegating to", "$running ${if (running == 1) "subagent" else "subagents"}") else Activity.Working
+        private fun currentStep(group: ActivityGroup): Activity {
+            if (group.isThinking) return Activity.Thinking
+            val running = group.calls.filter { it.isRunning }
+            running.lastOrNull { it.kind != ToolKind.Task }?.let { call -> return Activity(call.action, call.detail()) }
+            val delegated = running.count { it.kind == ToolKind.Task }
+            return if (delegated > 0) Activity("Delegating to", "$delegated ${if (delegated == 1) "subagent" else "subagents"}") else Activity.Working
         }
 
         private fun ToolCall.detail(): String? {
-            val raw = summary.trim()
-            if (raw.isEmpty()) return null
-            val text = when (kind) {
-                ToolKind.Read, ToolKind.Edit, ToolKind.List -> raw.trimEnd('/').substringAfterLast('/')
-                else -> raw
-            }
+            val text = details.trim()
+            if (text.isEmpty()) return null
             return if (text.length > DETAIL_MAX) text.take(DETAIL_MAX - 1).trimEnd() + "\u2026" else text
         }
     }

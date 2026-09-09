@@ -54,7 +54,7 @@ class SecureKeyStoreTest {
 
         val store = SecureKeyStore(context) { prefs }
         assertThat(store.apiKey()).isNull()
-        assertThat(store.gitHubToken()).isNull()
+        assertThat(store.mcpServersJson()).isNull()
         // The unreadable entries are gone, so the next launch is clean rather than failing the same way.
         assertThat(prefs.contains("api_key")).isFalse()
 
@@ -143,9 +143,9 @@ class SecureKeyStoreTest {
         assertThat(store.setApiKey("key_first")).isTrue()
 
         prefs.failEdits = true
-        assertThat(store.setGitHubToken("ghp_token")).isFalse()
+        assertThat(store.setMcpServersJson("""[{"id":"1","name":"linear"}]""")).isFalse()
         assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
-        assertThat(store.gitHubToken()).isEqualTo("ghp_token")
+        assertThat(store.mcpServersJson()).isEqualTo("""[{"id":"1","name":"linear"}]""")
     }
 
     @Test
@@ -200,12 +200,24 @@ class SecureKeyStoreTest {
         val store = SecureKeyStore(context) { prefs }
 
         assertThat(store.apiKey()).isEqualTo("key_plaintext")
-        assertThat(store.gitHubToken()).isEqualTo("ghp_plaintext")
         assertThat(store.mcpServersJson()).isEqualTo("""[{"id":"1","name":"linear"}]""")
         assertThat(prefs.getString("api_key", null)).isEqualTo("key_plaintext")
+        // The GitHub token nothing reads any more is left behind rather than carried into the encrypted store.
+        assertThat(prefs.contains("github_token")).isFalse()
         assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Encrypted)
         // The plaintext copy is gone, and is never read as a live store again.
         assertThat(sharedPrefsFiles()).doesNotContain("cursor_prefs_fallback.xml")
+    }
+
+    @Test
+    fun `a GitHub token an earlier version stored is removed the first time the store opens`() {
+        val prefs = FailingPrefs(backing("stand-in-github"))
+        prefs.edit().putString("api_key", "key_live").putString("github_token", "ghp_stale").commit()
+
+        val store = SecureKeyStore(context) { prefs }
+
+        assertThat(store.apiKey()).isEqualTo("key_live")
+        assertThat(prefs.contains("github_token")).isFalse()
     }
 
     @Test

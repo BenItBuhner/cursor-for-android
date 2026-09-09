@@ -35,7 +35,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.util.lerp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -53,12 +52,12 @@ import kotlinx.coroutines.launch
  * gesture, with one transform that is seeked by the finger and finished (or rewound) on release.
  *
  * At most two entries are on screen: the resident one and, during a transition, the one beneath it. A single
- * `progress` (0 = the top screen is at rest, 1 = it is gone) drives both: the top screen shrinks to 90 %, rounds its
- * corners, slides in the direction of the swipe and dissolves over the last third, while the screen underneath
- * grows from 96 % and sheds a scrim. Pushes play the same transform backwards, so forward and back share one
- * vocabulary. Because the gesture's [BackEventCompat] is read here, the direction follows the edge the swipe came
- * from and the card trails the finger vertically — the two things a transition inside a navigation library cannot
- * know.
+ * `progress` (0 = the top screen is at rest, 1 = it is gone) drives both: the top screen rounds its corners and
+ * slides in the direction of the swipe until it is entirely off screen, while the screen underneath fades in and
+ * drifts into place behind it. Neither changes size. Pushes play the same transform backwards, so forward and back
+ * share one vocabulary. Because the gesture's [BackEventCompat] is read here, the direction follows the edge the
+ * swipe came from and the card trails the finger vertically — the two things a transition inside a navigation
+ * library cannot know.
  *
  * Each entry gets its own `rememberSaveable` scope and [ViewModelStoreOwner]; both are released once the entry has
  * left the stack and finished animating out.
@@ -67,6 +66,12 @@ import kotlinx.coroutines.launch
 fun CursorNavHost(
     stack: NavStack,
     modifier: Modifier = Modifier,
+    /**
+     * Whether back belongs to the stack at all. The sidebar drawer, which is drawn over the stack, takes the gesture
+     * while it is open: which handler was registered last is not something the caller can rely on, since the pane is
+     * moved between the drawer and the wide layout rather than composed afresh in each.
+     */
+    backEnabled: Boolean = true,
     content: @Composable (Screen) -> Unit,
 ) {
     val stores: NavEntryStores = viewModel()
@@ -107,7 +112,7 @@ fun CursorNavHost(
         }
     }
 
-    PredictiveBackHandler(enabled = stack.canPop) { events ->
+    PredictiveBackHandler(enabled = backEnabled && stack.canPop) { events ->
         val under = stack.underTop
         if (under == null) {
             // The stack emptied out in the frame before the callback's enabled state caught up. The gesture is ours all
@@ -253,6 +258,9 @@ private class NavScene(initialTop: NavEntry) {
 
     var edge by mutableIntStateOf(BackEventCompat.EDGE_LEFT)
 
+    /** Which way the top pane leaves: +1 (right) for a left-edge gesture and every programmatic pop, -1 for a right-edge one. */
+    val direction: Float get() = if (edge == BackEventCompat.EDGE_RIGHT) -1f else 1f
+
     /** Generation of the gesture that currently owns the scene; 0 when none does. */
     private var gesture = 0
     private var gestureCount = 0
@@ -338,24 +346,20 @@ private class NavScene(initialTop: NavEntry) {
 }
 
 /**
- * The pane on top. Shrinks toward 90 %, rounds its corners within the first quarter of the gesture, slides with the
- * swipe (right for a left-edge gesture and for every programmatic pop, left for a right-edge gesture), trails the
- * finger vertically and dissolves over the last third so it is gone by the time the screen beneath is full size.
+ * The pane on top. Rounds its corners within the first quarter of the gesture and slides out of view with the swipe
+ * (right for a left-edge gesture and for every programmatic pop, left for a right-edge gesture), trailing the finger
+ * vertically, until at full progress it is entirely off screen. It keeps its size and stays opaque the whole way: the
+ * screen being left is simply carried away.
  */
 private fun Modifier.topPane(scene: NavScene, cornerPx: Float, outline: Color): Modifier = this
     .graphicsLayer {
         val p = if (scene.under == null) 0f else scene.progress.value
         if (p <= 0f) {
-            scaleX = 1f; scaleY = 1f; translationX = 0f; translationY = 0f; alpha = 1f; clip = false
+            translationX = 0f; translationY = 0f; clip = false
             return@graphicsLayer
         }
-        val scale = lerp(1f, TopMinScale, p)
-        scaleX = scale
-        scaleY = scale
-        val direction = if (scene.edge == BackEventCompat.EDGE_RIGHT) -1f else 1f
-        translationX = direction * p * size.width * TopShift
+        translationX = scene.direction * p * size.width
         translationY = scene.dragY.value
-        alpha = 1f - fadeFraction(p)
         shape = RoundedCornerShape(cornerPx * (p / CornerRampEnd).coerceAtMost(1f))
         clip = true
     }
@@ -363,11 +367,11 @@ private fun Modifier.topPane(scene: NavScene, cornerPx: Float, outline: Color): 
         drawContent()
         val p = if (scene.under == null) 0f else scene.progress.value
         if (p > 0f) {
-            // A hairline keeps the card legible against a same-coloured screen beneath; it fades with the card.
+            // A hairline keeps the card's edge legible against a same-coloured screen beneath.
             val radius = cornerPx * (p / CornerRampEnd).coerceAtMost(1f)
             val half = 0.5f
             drawRoundRect(
-                color = outline.copy(alpha = outline.alpha * (1f - fadeFraction(p))),
+                color = outline,
                 topLeft = Offset(half, half),
                 size = Size(size.width - 2 * half, size.height - 2 * half),
                 cornerRadius = CornerRadius(radius),
@@ -376,31 +380,24 @@ private fun Modifier.topPane(scene: NavScene, cornerPx: Float, outline: Color): 
         }
     }
 
-/** The pane underneath: grows from 96 % to full size while a scrim over it fades out. */
+/**
+ * The pane underneath: fades in over the whole transition and drifts into place from a short way off in the
+ * direction the top pane is leaving, so the two move as one sheet. Full size throughout, and nothing drawn over it.
+ */
 private fun Modifier.underPane(scene: NavScene): Modifier = this
     .graphicsLayer {
         val p = scene.progress.value
-        val scale = lerp(UnderMinScale, 1f, p)
-        scaleX = scale
-        scaleY = scale
-    }
-    .drawWithContent {
-        drawContent()
-        val scrim = UnderScrim * (1f - scene.progress.value)
-        if (scrim > 0f) drawRect(Color.Black.copy(alpha = scrim))
+        alpha = revealFraction(p)
+        translationX = -scene.direction * (1f - p) * size.width * UnderParallax
     }
 
-/** 0 until [FadeStart], then a smooth ramp to 1 at full progress. */
-private fun fadeFraction(p: Float): Float {
-    val t = ((p - FadeStart) / (1f - FadeStart)).coerceIn(0f, 1f)
+/** A smooth ramp from 0 to 1 over the whole transition: slow to start, so what is revealed comes in gradually. */
+private fun revealFraction(p: Float): Float {
+    val t = p.coerceIn(0f, 1f)
     return t * t * (3f - 2f * t)
 }
 
-private const val TopMinScale = 0.90f
-private const val TopShift = 0.12f
-private const val UnderMinScale = 0.96f
-private const val UnderScrim = 0.32f
-private const val FadeStart = 0.62f
+private const val UnderParallax = 0.25f
 private const val CornerRampEnd = 0.25f
 private const val DragFollow = 0.08f
 private val CardCorner = 24.dp

@@ -14,6 +14,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,16 +41,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -180,15 +189,50 @@ fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.co
     Box(modifier.fillMaxWidth().height(CursorDimens.hairline).background(color))
 }
 
-/** Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case, no chevron. */
+/**
+ * Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case. Clicking the header collapses or expands
+ * the section. A chevron sits just to the right of the title while the header is hovered or focused — down when
+ * open, right when closed — and is gone the moment the pointer and focus leave.
+ */
 @Composable
-fun GroupLabel(text: String, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
+fun GroupLabel(
+    text: String,
+    modifier: Modifier = Modifier,
+    expanded: Boolean = true,
+    onToggle: (() -> Unit)? = null,
+) {
+    val colors = CursorTheme.colors
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    val showChevron = onToggle != null && (hovered || focused)
+    val clickable = if (onToggle != null) {
+        Modifier
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = if (expanded) "Collapse" else "Expand",
+                onClick = onToggle,
+            )
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+    } else {
+        Modifier
+    }
+    Row(modifier.fillMaxWidth().then(clickable), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, style = CursorTheme.typography.small, color = colors.textTertiary)
+        if (showChevron) {
+            Icon(
+                imageVector = if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight,
+                contentDescription = if (expanded) "Collapse $text" else "Expand $text",
+                tint = colors.iconQuaternary,
+                modifier = Modifier.padding(start = 4.dp).size(14.dp),
+            )
+        }
     }
 }
 
-/** Capsule pill with 12px text — "Branch", "Open", branch names. */
+/** Capsule pill with 12px text — "Branch", "Open", "Working". A label, never a control. */
 @Composable
 fun Pill(
     text: String,
@@ -196,7 +240,6 @@ fun Pill(
     icon: ImageVector? = null,
     tint: Color = CursorTheme.colors.textSecondary,
     fill: Color = CursorTheme.colors.fill,
-    onClick: (() -> Unit)? = null,
 ) {
     val shape = CursorTheme.shapes.full
     Row(
@@ -204,7 +247,6 @@ fun Pill(
             .height(CursorDimens.pillHeight)
             .clip(shape)
             .background(fill, shape)
-            .then(if (onClick != null) Modifier.pressable(onClick, shape) else Modifier)
             .padding(start = if (icon != null) 7.dp else 9.dp, end = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -235,7 +277,7 @@ fun pullRequestTint(state: PullRequestState?): Color = when (state) {
 
 /** The pill a chat's pull request is shown as: its state, or just "Pull request" while the state is not known. */
 @Composable
-fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier) {
     val tint = pullRequestTint(state)
     Pill(
         text = state?.label ?: "Pull request",
@@ -243,7 +285,6 @@ fun PullRequestPill(state: PullRequestState?, modifier: Modifier = Modifier, onC
         icon = CursorIcons.GitPullRequest,
         tint = tint,
         fill = if (state != null) tint.copy(alpha = 0.14f) else CursorTheme.colors.fill,
-        onClick = onClick,
     )
 }
 
@@ -272,17 +313,23 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
 
 /**
  * Leading state glyph of a sidebar row (12px slot). Web semantics: stepping dot grid while running, unread blue
- * dot, error red dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
+ * dot, error red dot, nothing for a plain read agent. A read agent that pushed shows what it pushed, as the recent
+ * rows do: the pull-request glyph in the colour of the state GitHub reports ([pullRequestTint] — green open, grey
+ * draft, purple merged, red closed, neutral while the state is not known), else the branch glyph in a neutral tint.
+ * The Cloud Agents API only names a PR, so purple is never a guess: it appears once GitHub has said "merged".
  */
 @Composable
-fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, modifier: Modifier = Modifier) {
+fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Boolean, pullRequest: PullRequestState?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     Box(modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
         when (indicator) {
             AgentIndicator.Running -> RunningGlyph(color = colors.iconSecondary, size = 16.dp)
             AgentIndicator.Unread -> Dot(colors.unreadDot)
             AgentIndicator.Error -> Dot(colors.red)
-            AgentIndicator.Read -> if (hasBranch) Icon(CursorIcons.GitBranch, null, tint = colors.branchGlyph, modifier = Modifier.size(16.dp))
+            AgentIndicator.Read -> when {
+                hasPullRequest -> Icon(CursorIcons.GitPullRequest, pullRequest?.label ?: "Pull request", tint = pullRequestTint(pullRequest), modifier = Modifier.size(16.dp))
+                hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
         }
     }
@@ -336,6 +383,69 @@ private val RUNNING_FRAMES = listOf(
     "..X" + "..X" + "XX.",
     "..." + "X.X" + "X.X",
 )
+
+/**
+ * The web chat's working caption: the text itself is the indicator. It sits in the muted tone of a status line
+ * ([color]) while a band of the full text colour ([highlight]) sweeps across it from left to right and loops, the
+ * gradient clipped to the glyphs, nothing beside the text.
+ *
+ * The muted tone is the full colour at a lower alpha (`textTertiary` is `textPrimary` at 60 %), so painting a bright
+ * gradient over the glyphs could never make them brighter: the result would be capped at the glyph's own alpha.
+ * Instead the text is drawn in [highlight] and its alpha is masked (`DstIn` on an offscreen layer): the mask sits at
+ * the muted alpha everywhere and rises to full alpha under the band, so the band is the genuinely bright one. The
+ * phase comes from the shared frame clock like [RunningGlyph]'s step, is read in the draw phase only, and several
+ * captions on screen sweep in lockstep.
+ */
+@Composable
+fun ShimmerText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = CursorTheme.typography.base,
+    color: Color = CursorTheme.colors.textTertiary,
+    highlight: Color = CursorTheme.colors.textPrimary,
+    active: Boolean = true,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
+    // A tool line's verb shimmers only while the call runs; at rest it is plain text in [color].
+    if (!active) {
+        Text(text, style = style, color = color, maxLines = maxLines, overflow = overflow, modifier = modifier)
+        return
+    }
+    val phase by produceState(0f) {
+        while (true) withInfiniteAnimationFrameMillis { value = (it % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS.toFloat() }
+    }
+    val restAlpha = if (highlight.alpha > 0f) (color.alpha / highlight.alpha).coerceIn(0f, 1f) else 1f
+    val rest = Color.White.copy(alpha = restAlpha)
+    val peak = Color.White
+    Text(
+        text,
+        style = style,
+        color = highlight,
+        maxLines = maxLines,
+        overflow = overflow,
+        modifier = modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                // The band is wider than the text and its peak travels from off the left edge to off the right, so
+                // every loop starts and ends with the caption fully at rest and the falloff is soft mid-word.
+                val band = size.width * SHIMMER_BAND
+                val center = -band / 2f + phase * (size.width + band)
+                drawRect(
+                    Brush.horizontalGradient(
+                        colors = listOf(rest, peak, rest),
+                        startX = center - band / 2f,
+                        endX = center + band / 2f,
+                    ),
+                    blendMode = BlendMode.DstIn,
+                )
+            },
+    )
+}
+
+private const val SHIMMER_PERIOD_MS = 1_600L
+private const val SHIMMER_BAND = 1.4f
 
 /** Thin indeterminate ring for in-flight tool calls. */
 @Composable

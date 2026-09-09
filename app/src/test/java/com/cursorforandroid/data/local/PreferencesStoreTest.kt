@@ -153,4 +153,17 @@ class PreferencesStoreTest {
         prefs.setThemeMode(ThemeMode.Light)
         assertThat(prefs.themeMode.first()).isEqualTo(ThemeMode.Light)
     }
+
+    @Test
+    fun `pinned models persist most-recently-pinned first`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.pinnedModelIds.first()).isEmpty()
+        prefs.togglePinnedModel("composer-2")
+        prefs.togglePinnedModel("cursor-grok-4.6")
+        assertThat(prefs.pinnedModelIds.first()).containsExactly("cursor-grok-4.6", "composer-2").inOrder()
+        prefs.togglePinnedModel("composer-2")
+        assertThat(prefs.pinnedModelIds.first()).containsExactly("cursor-grok-4.6").inOrder()
+        prefs.togglePinnedModel("cursor-grok-4.6")
+        assertThat(prefs.pinnedModelIds.first()).isEmpty()
+    }
 }

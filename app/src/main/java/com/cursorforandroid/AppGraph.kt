@@ -8,17 +8,19 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
-import com.cursorforandroid.data.api.GitHubApiFactory
+import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.DraftStore
+import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -30,15 +32,18 @@ import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
-import com.cursorforandroid.data.repo.GitHubPullRequestSource
+import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
@@ -72,6 +77,13 @@ class AppGraph(
      * because it is only file paths until something reads or writes, and the sign-out wipe goes through it.
      */
     val caches = AppCaches(JsonDiskCache(File(app.cacheDir, "cursor")))
+    /** Follow-ups typed or queued but not yet sent, with their images, per chat. Eager for the same reason. */
+    private val followUpStore = FollowUpStore(app)
+    /**
+     * Text and images arriving from the system share sheet, drafted into a composer once a destination is picked.
+     * Eager because every launch offers the activity's intent to it, so deferring it would only defer it by a frame.
+     */
+    val share = ShareInbox(app)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
     val mcpServers = McpServerStore(keyStore)
 
@@ -98,7 +110,7 @@ class AppGraph(
     private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
     /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only. */
     private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }) }
-    /** The account's agent list, pins and pull request statuses: what the desktop Agents window and the iOS app show. */
+    /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
     private val lazyAccountAgents = lazy { BackgroundComposerApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyAccountPullRequests = lazy { CursorPullRequestSource(lazyAccountAgents.value) }
 
@@ -113,40 +125,55 @@ class AppGraph(
         profile = lazy { AccountApi(lazyAccountRpc.value, lazySessionTokens.value) },
     )
 
-    private val lazyAgents = lazy { AgentRepository(session, prefs, attachments, caches.agents) }
+    private val lazyAgents = lazy {
+        AgentRepository(
+            session,
+            prefs,
+            attachments,
+            caches.agents,
+            demoSources = DemoData.sources,
+            account = lazyAccountAgents.value,
+        )
+    }
     val agents: AgentRepository get() = lazyAgents.value
 
-    /**
-     * Where the agents' pull requests stand: the account's word first (the public API names a PR but never says if it
-     * is open, merged or closed), GitHub when the account has none.
-     */
+    /** Where the agents' pull requests stand, on the account's word: the public API names a PR but never says if it is open, merged or closed. */
     private val lazyPullRequests = lazy {
         PullRequestRepository(
-            gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
+            account = lazyAccountPullRequests.value,
             demo = DemoPullRequests,
             isDemo = { session.isDemo },
-            readToken = { keyStore.gitHubToken() },
-            writeToken = { keyStore.setGitHubToken(it) },
             cache = caches.pullRequests,
-            account = lazyAccountPullRequests.value,
         )
     }
     val pullRequests: PullRequestRepository get() = lazyPullRequests.value
 
-    /** Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the PR states. */
+    /**
+     * Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the
+     * PR states and where each chat was started from (the Source filter).
+     */
     private val lazyPins = lazy {
         PinRepository(
             session = session,
             prefs = prefs,
             agents = agents,
             api = lazyAccountAgents.value,
-            onList = { list -> pullRequests.seed(list.pullRequests) },
+            onList = { list ->
+                agents.applySources(list.sources)
+                pullRequests.seed(list.pullRequests)
+            },
         )
     }
     val pins: PinRepository get() = lazyPins.value
 
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value
+
+    /** The composers' `/` catalogs — `/goal`, the built-in skills, and the project, plugin and synced ones the account lists per repository or agent. */
+    private val lazySlashCommands = lazy {
+        SlashCommandRepository(session, DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value), caches.slashCommands)
+    }
+    val slashCommands: SlashCommandRepository get() = lazySlashCommands.value
 
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     private val lazyLiveRuns = lazy { LiveRunHub(session, agents) }
@@ -162,6 +189,7 @@ class AppGraph(
             cache = caches.conversations,
             traceCache = caches.traces,
             isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
+            onOpened = { agentId -> LiveNotifications.cancelFinished(app, agentId) },
         )
     }
     val conversations: ConversationRepository get() = lazyConversations.value
@@ -169,6 +197,22 @@ class AppGraph(
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
+
+    /**
+     * Each chat's unsent follow-ups: the composer's draft, and the queue of messages sent while the agent was still on
+     * its previous turn, which go out by themselves once it is free. Kept on disk so leaving the chat loses nothing.
+     */
+    private val lazyFollowUps = lazy {
+        FollowUpRepository(
+            conversations = conversations,
+            agents = agents,
+            hub = liveRuns,
+            mcpServers = { mcpServers.enabled() },
+            store = followUpStore,
+            persist = { !session.isDemo },
+        )
+    }
+    val followUps: FollowUpRepository get() = lazyFollowUps.value
 
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
     private val lazyArtifacts = lazy { ArtifactRepository(session) }
@@ -216,12 +260,14 @@ class AppGraph(
             // flight can land after the wipe below re-creates the directories it deleted.
             caches.invalidate()
             AttachmentImages.clear()
+            share.clear()
             // Resetting is only ever about what is in memory, so a part this process never built has nothing to
             // reset and is left unbuilt. The wipes further down are the opposite case: what an earlier process
             // wrote is on disk whether or not this one ever looked at it, so those are forced.
             if (lazyRunMonitor.isInitialized()) runMonitor.stop()
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
+            if (lazyFollowUps.isInitialized()) followUps.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
@@ -229,11 +275,13 @@ class AppGraph(
             // reset explicitly or the previous account's agents would show.
             if (lazyAgents.isInitialized()) agents.reset()
             if (lazyCatalog.isInitialized()) catalog.reset()
+            if (lazySlashCommands.isInitialized()) slashCommands.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
             drafts.clear()
+            followUpStore.clear()
             caches.clear()
         }
     }
@@ -258,9 +306,11 @@ class AppGraph(
             "pullRequests" to lazyPullRequests,
             "pins" to lazyPins,
             "catalog" to lazyCatalog,
+            "slashCommands" to lazySlashCommands,
             "liveRuns" to lazyLiveRuns,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,
+            "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,

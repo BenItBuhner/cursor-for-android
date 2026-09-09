@@ -4,10 +4,14 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.AgentDto
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.RunGitBranchDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
+import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -292,6 +296,33 @@ class LiveRunMonitorTest {
         monitor.start()
         awaitUntil { monitor.state.value.hasReconciled }
         assertThat(monitor.state.value.isIdle).isTrue()
+    }
+
+    @Test
+    fun `an agent whose detail could not be read is asked for again rather than given up on`() = runBlocking {
+        // A running agent the list knows without its run id, as a summary-only row: the monitor needs the detail to follow it.
+        val at = "2026-04-13T18:30:00.000Z"
+        api.agents["bc-1"] = AgentDto(id = "bc-1", name = "Agent", status = "ACTIVE", createdAt = at, updatedAt = at, latestRunId = null)
+        api.v0["bc-1"] = V0AgentDto(id = "bc-1", name = "Agent", status = "RUNNING")
+        api.runs["run-1"] = RunDto(id = "run-1", agentId = "bc-1", status = "RUNNING", createdAt = at, updatedAt = at)
+        api.failGetAgent = CursorApiException(503, "unavailable", "Try again later.")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isTrue()
+        assertThat(agents.agent("bc-1")!!.latestRunId).isNull()
+
+        monitor.start()
+        awaitUntil { api.getAgentCalls == 1 && monitor.state.value.hasReconciled }
+        delay(100)
+        assertThat(running()).isEmpty()
+        assertThat(monitor.state.value.runningCount).isEqualTo(1)
+
+        // The server is back. The next reconcile — any change to the running rows — asks again, and the run is followed.
+        api.failGetAgent = null
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-1")
+        agents.patch("bc-1") { it.copy(updatedAtMillis = it.updatedAtMillis + 1) }
+        awaitUntil { api.getAgentCalls == 2 && running().size == 1 }
+        assertThat(running().single().runId).isEqualTo("run-1")
+        awaitUntil { streamer.connections.contains("run-1") }
     }
 
     @Test

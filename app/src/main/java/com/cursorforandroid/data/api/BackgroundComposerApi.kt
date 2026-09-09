@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.PullRequestState
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -11,16 +12,41 @@ import kotlinx.serialization.json.contentOrNull
 data class PinnedIds(val ids: Set<String>, val loaded: Boolean)
 
 /**
- * What one read of the account's agent list says beyond the agents themselves: the pins, and where each agent's pull
- * request stands (by `prUrl`, for the agents in the list window whose PR the account service has a status for).
+ * One composer from `ListBackgroundComposers`: the name and archive flag the desktop Agents window and the iOS
+ * app read. [archived] is null when the record omitted `isArchived`.
  */
-data class AccountList(val pinned: PinnedIds, val pullRequests: Map<String, PullRequestState>)
+data class ComposerSnapshot(val id: String, val name: String? = null, val archived: Boolean? = null)
+
+/**
+ * What one read of the account's agent list says beyond the agents themselves: the pins, where each agent's pull
+ * request stands (by `prUrl`, for the agents in the list window whose PR the account service has a status for),
+ * where each agent was started from (by agent id, for every agent in the window), and the name / archive flag of
+ * each composer in the window.
+ */
+data class AccountList(
+    val pinned: PinnedIds,
+    val pullRequests: Map<String, PullRequestState>,
+    val sources: Map<String, AgentSource> = emptyMap(),
+    val composers: List<ComposerSnapshot> = emptyList(),
+)
 
 /** The account's agent list and its pins, the ones the desktop Agents window and the iOS app share. An interface so the repositories can be faked. */
 interface PinsApi {
     suspend fun list(): AccountList
     suspend fun pin(ids: Collection<String>)
     suspend fun unpin(ids: Collection<String>)
+}
+
+/**
+ * Archive, unarchive and rename as the first-party apps do them: `ArchiveBackgroundComposer` / `RenameBackgroundComposer`
+ * on the account service. The public Cloud Agents API has archive / unarchive of its own, but those writes do not
+ * always land on the flag the official sidebars read — which is why a chat archived here could stay visible on
+ * cursor.com, and the other way around.
+ */
+interface ComposerLifecycleApi {
+    suspend fun archive(id: String)
+    suspend fun unarchive(id: String)
+    suspend fun rename(id: String, name: String)
 }
 
 /** Where one pull request stands according to the account service; null when it does not know. */
@@ -31,31 +57,51 @@ fun interface PullRequestStatusApi {
 /**
  * `aiserver.v1.BackgroundComposerService`, the account-level service behind cursor.com/agents and the first-party
  * apps ("background composer" is what a cloud agent is called there; its `bc_id` is the agent id the public API
- * uses). Three corners of it are used: `ListBackgroundComposers` with `includePinnedState` returns the user's
- * `pinnedBcIds` and, per composer, the `prUrl` / `prStatus` the account keeps in step with the SCM;
- * `Pin` / `UnpinBackgroundComposers` change the pins; `GetPullRequestMergeStatus` answers for one pull request.
- * Calls carry the session token from [SessionTokenProvider] (see [unaryWithSession]).
+ * uses). The corners used here: `ListBackgroundComposers` with `includePinnedState` returns the user's
+ * `pinnedBcIds` and, per composer, the `name` / `isArchived` / `prUrl` / `prStatus` the account keeps and the
+ * `source` the chat was started from (`aiserver.v1.BackgroundComposerSource`, what the Source filter of
+ * cursor.com/agents cuts the list by); `Pin` / `UnpinBackgroundComposers` change the pins;
+ * `ArchiveBackgroundComposer` (with `unarchive`) and `RenameBackgroundComposer` are the official archive and
+ * rename; `GetPullRequestMergeStatus` answers for one pull request. Calls carry the session token from
+ * [SessionTokenProvider] (see [unaryWithSession]).
  */
 class BackgroundComposerApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
-) : PinsApi, PullRequestStatusApi {
+) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi {
 
     override suspend fun list(): AccountList {
         val response = call(
             "ListBackgroundComposers",
-            ListBackgroundComposersRequestDto(n = LIST_WINDOW, includeArchived = true, includeStatus = true, includePinnedState = true),
+            ListBackgroundComposersRequestDto(
+                n = LIST_WINDOW,
+                includeArchived = true,
+                includeStatus = true,
+                includePinnedState = true,
+                includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
+            ),
             ListBackgroundComposersRequestDto.serializer(),
             ListBackgroundComposersResponseDto.serializer(),
         )
         val pullRequests = LinkedHashMap<String, PullRequestState>()
+        val sources = LinkedHashMap<String, AgentSource>()
         for (composer in response.composers) {
+            if (composer.bcId.isNotBlank()) AgentSource.parse(composer.source?.contentOrNull)?.let { sources[composer.bcId] = it }
             // Keyed exactly as the public API names the same PR on the agent's run (`git.branches[].prUrl`).
             val url = composer.prUrl?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             val state = pullRequestState(composer.prStatus, composer.isPrMerged) ?: continue
             pullRequests[url] = state
         }
-        return AccountList(PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState), pullRequests)
+        val composers = response.composers.mapNotNull { composer ->
+            val id = composer.bcId.trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ComposerSnapshot(id = id, name = composer.name, archived = composer.isArchived)
+        }
+        return AccountList(
+            PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState),
+            pullRequests,
+            sources,
+            composers,
+        )
     }
 
     override suspend fun pin(ids: Collection<String>) {
@@ -66,6 +112,18 @@ class BackgroundComposerApi(
     override suspend fun unpin(ids: Collection<String>) {
         if (ids.isEmpty()) return
         call("UnpinBackgroundComposers", BcIdsDto(ids.toList()), BcIdsDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun archive(id: String) {
+        call("ArchiveBackgroundComposer", ArchiveComposerDto(id, unarchive = false), ArchiveComposerDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun unarchive(id: String) {
+        call("ArchiveBackgroundComposer", ArchiveComposerDto(id, unarchive = true), ArchiveComposerDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun rename(id: String, name: String) {
+        call("RenameBackgroundComposer", RenameComposerDto(id, name), RenameComposerDto.serializer(), EmptyResponseDto.serializer())
     }
 
     override suspend fun mergeStatus(prUrl: String): PullRequestState? {
@@ -88,7 +146,14 @@ class BackgroundComposerApi(
     // Request fields carry no defaults on purpose: CursorJson does not encode defaults, and every flag must be sent.
 
     @Serializable
-    private data class ListBackgroundComposersRequestDto(val n: Int, val includeArchived: Boolean, val includeStatus: Boolean, val includePinnedState: Boolean)
+    private data class ListBackgroundComposersRequestDto(
+        val n: Int,
+        val includeArchived: Boolean,
+        val includeStatus: Boolean,
+        val includePinnedState: Boolean,
+        /** `include_hidden_sources`: sources the list leaves out unless asked, named as the proto spells them. */
+        val includeHiddenSources: List<String>,
+    )
 
     @Serializable
     private data class ListBackgroundComposersResponseDto(
@@ -102,14 +167,25 @@ class BackgroundComposerApi(
     @Serializable
     private data class ComposerDto(
         val bcId: String = "",
+        val name: String? = null,
+        val isArchived: Boolean? = null,
         val prUrl: String? = null,
         val isPrMerged: Boolean? = null,
         /** `aiserver.v1.PRStatus`: its name in proto3's JSON mapping, or its number when a server encodes enums that way. */
         val prStatus: JsonPrimitive? = null,
+        /** `aiserver.v1.BackgroundComposerSource`, encoded the same way; absent for the zero value (`UNSPECIFIED`). */
+        val source: JsonPrimitive? = null,
     )
 
     @Serializable
     private data class BcIdsDto(val bcIds: List<String>)
+
+    /** [unarchive] has no default so both `true` and `false` are encoded (`CursorJson` drops defaulted fields). */
+    @Serializable
+    private data class ArchiveComposerDto(val bcId: String, val unarchive: Boolean)
+
+    @Serializable
+    private data class RenameComposerDto(val bcId: String, val newName: String)
 
     @Serializable
     private data class PrUrlDto(val prUrl: String)
@@ -136,6 +212,14 @@ class BackgroundComposerApi(
          * the sidebar shows first (the public list is paged to 500; the rest are looked up one by one).
          */
         const val LIST_WINDOW = 200
+
+        /**
+         * Sources the account service leaves out of the list unless asked for: agents started by the SDK, which
+         * cursor.com/agents and the desktop Agents window hide until their Source filter is set to SDK. The public
+         * list this app draws its rows from does not hide them, so they are asked for here or they would never learn
+         * their source (nor their pins and pull request states).
+         */
+        val HIDDEN_SOURCES: List<AgentSource> = listOf(AgentSource.SDK)
 
         /**
          * `aiserver.v1.PRStatus` as the list reports it. [isPrMerged] stands in when the status is unspecified or

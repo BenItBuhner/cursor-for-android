@@ -289,6 +289,19 @@ class ModelOptionTest {
     }
 
     @Test
+    fun `arrangedForPicker lifts the selection then other pins, and skips unknown ids`() {
+        val composer = ModelOption(id = "composer-2", displayName = "Composer 2")
+        val grok = ModelOption(id = "cursor-grok-4.6", displayName = "Cursor Grok 4.6")
+        val sonnet = ModelOption(id = "claude-sonnet", displayName = "Claude Sonnet")
+        val catalog = listOf(composer, grok, sonnet)
+        assertThat(catalog.arrangedForPicker(listOf("claude-sonnet", "missing", "composer-2"), selectedId = "cursor-grok-4.6").map { it.id })
+            .containsExactly("cursor-grok-4.6", "claude-sonnet", "composer-2").inOrder()
+        assertThat(catalog.arrangedForPicker(listOf("claude-sonnet"), selectedId = "claude-sonnet").map { it.id })
+            .containsExactly("claude-sonnet", "composer-2", "cursor-grok-4.6").inOrder()
+        assertThat(emptyList<ModelOption>().arrangedForPicker(listOf("composer-2"), selectedId = "composer-2")).isEmpty()
+    }
+
+    @Test
     fun `parameter and value names come from the definitions, humanized ids and values otherwise`() {
         assertThat(grokGrid.parameterName("effort")).isEqualTo("Effort")
         assertThat(grokGrid.valueName("effort", "xhigh")).isEqualTo("Extra High")

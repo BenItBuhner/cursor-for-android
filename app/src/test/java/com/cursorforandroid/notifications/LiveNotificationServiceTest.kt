@@ -6,6 +6,7 @@ import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.job.JobScheduler
 import android.content.pm.ServiceInfo
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
@@ -56,11 +57,19 @@ class LiveNotificationServiceTest {
         }
         assertThat(graph.agents.state.value.agents.count { it.isRunning }).isEqualTo(3)
 
+        assertThat(LiveNotificationService.active.value).isFalse()
+        assertThat(FinishWatchdogJobService.isArmed(app)).isFalse()
         val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
         val service = controller.get()
         val foregroundNotification = shadowOf(service).lastForegroundNotification
         assertThat(foregroundNotification).isNotNull()
         assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
+        // Up, and says so; the watchdog is armed in case this process does not live to post the finished cards.
+        assertThat(LiveNotificationService.active.value).isTrue()
+        assertThat(FinishWatchdogJobService.isArmed(app)).isTrue()
+        val armed = checkNotNull(app.getSystemService(JobScheduler::class.java).getPendingJob(FinishWatchdogJobService.JOB_ID))
+        assertThat(armed.isPersisted).isTrue()
+        assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
 
         // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
         // tracker has reported, so wait for the steady state rather than the title alone.
@@ -91,11 +100,38 @@ class LiveNotificationServiceTest {
         assertThat(graph.agents.state.value.agents.first { it.name == "Hyper-realistic human limbs" }.branchName).isEqualTo("cursor/limb-rigging-3e4f")
         assertThat(graph.agents.state.value.agents.count { it.isRunning }).isEqualTo(0)
 
-        // Idle grace elapses on the main looper clock; the service stops itself and removes the live notification.
+        // Idle grace elapses on the main looper clock; the service stops itself and removes the live notification. With
+        // nothing left running there is nothing for the watchdog to watch either.
         awaitOnMain(10_000) { shadowOf(service).isForegroundStopped && shadowOf(service).isStoppedBySelf }
         assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
         assertThat(graph.runMonitor.isRunning).isFalse()
+        assertThat(FinishWatchdogJobService.isArmed(app)).isFalse()
         controller.destroy()
+        assertThat(LiveNotificationService.active.value).isFalse()
+    }
+
+    @Test
+    fun `a data-sync timeout hands the running agents to the watchdog`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val graph = app.appGraph
+        runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+        }
+        val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
+        val service = controller.get()
+        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" }
+
+        // Android 15 ends a dataSync service six hours after the app was last in front; the runs keep going in the cloud.
+        service.onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        awaitOnMain(5_000) { shadowOf(service).isForegroundStopped && shadowOf(service).isStoppedBySelf }
+        assertThat(graph.runMonitor.isRunning).isFalse()
+        // The live notification is gone, but the watchdog is armed to announce the finishes, soon.
+        val armed = checkNotNull(app.getSystemService(JobScheduler::class.java).getPendingJob(FinishWatchdogJobService.JOB_ID))
+        assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
+        controller.destroy()
+        assertThat(LiveNotificationService.active.value).isFalse()
+        FinishWatchdogJobService.disarm(app)
     }
 
     /** Enters demo mode and returns the running service, foreground and following the three scripted runs. */

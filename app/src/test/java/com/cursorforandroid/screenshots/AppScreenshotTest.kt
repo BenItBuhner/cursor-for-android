@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -22,6 +23,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
@@ -32,6 +34,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -109,6 +112,21 @@ class AppScreenshotTest {
         }
     }
 
+    /**
+     * Builds the app graph, decides the session, then composes the app. The session is decided first on purpose: the
+     * test rule runs effects on an unconfined dispatcher, so `CursorRoot`'s `LaunchedEffect { restoreIfNeeded() }`
+     * would flip the session to signed-out on the IO worker it returns from — while the first composition is still being
+     * applied — and about one run in five Compose never saw that write: the sign-in screen stayed blank and the run's
+     * first `waitForText` timed out. With the session already decided, the sign-in screen is composed on the first pass
+     * (as it is in a process whose session was decided before its activity) and `restoreIfNeeded()` is a no-op.
+     */
+    private fun launchApp(): AppGraph {
+        val graph = appGraph()
+        runBlocking { graph.session.restoreIfNeeded() }
+        compose.setContent { App(graph) }
+        return graph
+    }
+
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
@@ -136,8 +154,7 @@ class AppScreenshotTest {
 
     @Test
     fun phoneWalkthrough() {
-        val graph = appGraph()
-        compose.setContent { App(graph) }
+        val graph = launchApp()
 
         // The account sign-in is the one primary action; the pasted-key field sits folded behind "Use an API key instead".
         waitForText("Continue with Cursor")
@@ -148,6 +165,14 @@ class AppScreenshotTest {
         compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Ask Cursor to build, fix bugs, explore"))
         compose.waitForIdle()
         capture("02_home")
+
+        // Device picker: Cloud is the default; My machines and team pools sit under it. This phone is never a row.
+        compose.onNodeWithText("Cloud").performClick()
+        waitForText("My machines")
+        waitForText("bennett")
+        capture("24_device_picker")
+        Espresso.pressBack()
+        compose.waitForIdle()
 
         // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
@@ -173,9 +198,30 @@ class AppScreenshotTest {
         waitForText("Archived")
         capture("05_status_filter")
         Espresso.pressBack()
-        compose.waitForIdle()
+        waitForText("Grouping")
+        // Source: where each chat was started (the account's word), as on cursor.com/agents; Environment: where it runs.
+        compose.onNodeWithText("Source").performClick()
+        waitForText("Grok Bot")
+        capture("25_source_filter")
         Espresso.pressBack()
+        waitForText("Grouping")
+        compose.onNodeWithText("Environment").performClick()
+        waitForText("Team pool")
+        capture("26_environment_filter")
+        Espresso.pressBack()
+        waitForText("Grouping")
+        // The Source filter at work: only the chats started from Slack, the CLI and Grok Bot are left in the sidebar.
+        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = setOf(SourceFilter.Slack, SourceFilter.Cli, SourceFilter.GrokBot)) } }
+        waitForText("CLI +2")
+        Espresso.pressBack() // dismiss the sheet
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithText("Codex-Poly-Bot Scaling").fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodesWithText("Zen browser flawless parity").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
+        capture("27_sidebar_source_filtered")
+        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = SourceFilter.entries.toSet()) } }
+        waitForText("Codex-Poly-Bot Scaling")
         Espresso.pressBack() // close the drawer
         compose.waitForIdle()
 
@@ -234,6 +280,23 @@ class AppScreenshotTest {
         compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Back").performClick()
+
+        // Typing `/` opens the slash-command popover under the cursor: "/go" narrows it to the goal command and the
+        // demo's plugin skill whose description mentions Google Chat, as on cursor.com/agents. Picking a row completes
+        // the token and closes the popover. Done here, with no capture of this composer to follow: typing leaves the
+        // field focused, and its focus ring would otherwise show in the later home captures.
+        scrollListTo("Ask Cursor to build, fix bugs, explore")
+        val composerField = compose.onAllNodes(hasSetTextAction()).onFirst()
+        composerField.performTextInput("/go")
+        waitForText("Set a goal that Cursor will pursue")
+        waitForText("/chat-sdk")
+        capture("24_composer_slash")
+        compose.onNodeWithText("/goal").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Set a goal that Cursor will pursue")).fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("/goal ")).fetchSemanticsNodes().isNotEmpty() }
+        composerField.performTextClearance()
+        compose.waitForIdle()
+
         scrollListTo("Hyper-realistic human limbs")
         compose.onAllNodesWithText("Hyper-realistic human limbs").onFirst().performClick()
         waitForText("Follow up")
@@ -255,8 +318,7 @@ class AppScreenshotTest {
 
     @Test
     fun oledBlack() {
-        val graph = appGraph()
-        compose.setContent { App(graph) }
+        val graph = launchApp()
         enterDemo(graph)
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         waitForText("Demo User")
@@ -284,8 +346,7 @@ class AppScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
     fun tabletTwoPane() {
-        val graph = appGraph()
-        compose.setContent { App(graph) }
+        val graph = launchApp()
         enterDemo(graph)
         capture("09_tablet_home")
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()

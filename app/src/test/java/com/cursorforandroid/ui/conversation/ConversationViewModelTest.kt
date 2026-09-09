@@ -7,6 +7,8 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.ui.components.PendingAttachment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -176,26 +178,97 @@ class ConversationViewModelTest {
         assertThat(vm.picker { it.override == null }.chipLabel).isEqualTo("Model")
     }
 
-    /** The demo's running agent refuses a follow-up with `409 agent_busy`, like the API does. */
+    /**
+     * The demo's running agent would refuse a follow-up with `409 agent_busy`, like the API does; so while it runs,
+     * a send joins the queue above the composer instead, carrying the pick, and goes out when the turn ends.
+     */
     @Test
-    fun `a refused follow-up keeps the pick and the draft for the retry`() {
+    fun `a follow-up sent mid-turn is queued with its pick rather than refused`() {
         val vm = open(RUNNING)
         val gemini = vm.picker().models.first { it.id == "gemini-3.8-flash" }
         vm.selectModel(gemini, null)
+        vm.setPlanMode(true)
 
         vm.sendAndWait("Try it")
 
-        assertThat(vm.draftText.value).isEqualTo("Try it")
-        assertThat(vm.toastMessage.value).isNotNull()
-        assertThat(vm.picker().override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
-        assertThat(vm.picker().chipLabel).isEqualTo("Gemini 3.8 Flash")
+        assertThat(vm.draftText.value).isEmpty()
+        assertThat(vm.toastMessage.value).isNull()
+        val queued = runBlocking { withTimeout(5_000) { vm.queue.first { it.isNotEmpty() } } }.single()
+        assertThat(queued.text).isEqualTo("Try it")
+        assertThat(queued.modelId).isEqualTo("gemini-3.8-flash")
+        assertThat(queued.modelDisplayName).isEqualTo("Gemini 3.8 Flash")
+        assertThat(queued.planMode).isTrue()
+        assertThat(queued.error).isNull()
+        // Nothing reached the server: the row still knows no model.
         assertThat(graph.agents.agent(RUNNING)?.modelId).isNull()
+        // The pick stays for the next message too, as on the desktop.
+        assertThat(vm.picker().override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
     }
 
-    /** The composer stays editable while a follow-up is in flight, so the restore must not undo what was typed. */
+    @Test
+    fun `editing a queued follow-up puts it back in the composer and queues the draft in its place`() {
+        val vm = open(RUNNING)
+        vm.sendAndWait("First thought")
+        val queued = runBlocking { withTimeout(5_000) { vm.queue.first { it.isNotEmpty() } } }.single()
+        vm.setDraft("Second thought")
+
+        vm.editQueued(queued.id)
+
+        runBlocking { withTimeout(5_000) { vm.draftText.first { it == "First thought" } } }
+        assertThat(graph.followUps.state(RUNNING).value.queue.map { it.text }).containsExactly("Second thought")
+        assertThat(runBlocking { withTimeout(5_000) { vm.toastMessage.first { it != null } } }).isEqualTo("Your draft was queued in its place.")
+    }
+
+    @Test
+    fun `removing a queued follow-up takes it away`() {
+        val vm = open(RUNNING)
+        vm.sendAndWait("Never mind")
+        val queued = runBlocking { withTimeout(5_000) { vm.queue.first { it.isNotEmpty() } } }.single()
+
+        vm.removeQueued(queued.id)
+
+        runBlocking { withTimeout(5_000) { vm.queue.first { it.isEmpty() } } }
+    }
+
+    /** The composer is a place to think: leaving the chat and coming back finds the text and the images as they were. */
+    @Test
+    fun `the draft survives leaving the chat`() {
+        val first = open(IDLE)
+        first.setDraft("Half a thought")
+        first.addAttachments(listOf(PendingAttachment("img-1", PromptImage(byteArrayOf(1, 2, 3), "image/png"), null)))
+
+        val second = ConversationViewModel(graph, IDLE)
+
+        runBlocking { withTimeout(5_000) { second.draftText.first { it == "Half a thought" } } }
+        val restored = runBlocking { withTimeout(5_000) { second.pendingAttachments.first { it.isNotEmpty() } } }.single()
+        assertThat(restored.id).isEqualTo("img-1")
+        assertThat(restored.image.bytes.toList()).isEqualTo(listOf<Byte>(1, 2, 3))
+    }
+
+    @Test
+    fun `a sent follow-up leaves no draft behind`() {
+        val vm = open(IDLE)
+        vm.sendAndWait("Off you go")
+        assertThat(vm.toastMessage.value).isNull()
+        assertThat(graph.followUps.state(IDLE).value.draft.isEmpty).isTrue()
+        assertThat(ConversationViewModel(graph, IDLE).draftText.value).isEmpty()
+    }
+
+    @Test
+    fun `a share is drafted into the follow-up composer`() {
+        val vm = open(IDLE)
+        vm.setDraft("Already writing")
+        vm.applyShare("shared screenshot notes", emptyList())
+        assertThat(vm.draftText.value).isEqualTo("Already writing\n\nshared screenshot notes")
+    }
+
+    /**
+     * A busy agent's follow-up is queued; anything else the server refuses comes back to the composer. The composer
+     * stays editable while it is in flight, so the one that came back must not undo what was typed since.
+     */
     @Test
     fun `a refused follow-up does not overwrite a draft typed while it was in flight`() = runBlocking {
-        val vm = open(RUNNING)
+        val vm = open(ARCHIVED)
         vm.setDraft("Try it")
         vm.send()
         vm.setDraft("Actually, do this instead")
@@ -218,7 +291,9 @@ class ConversationViewModelTest {
     private companion object {
         /** "Revenue Scaling Pipeline Research": finished, so it takes a follow-up. */
         const val IDLE = "bc-demo-0002"
-        /** "Codex-Poly-Bot Scaling": mid-run, so a follow-up is refused. */
+        /** "Codex-Poly-Bot Scaling": mid-run, so a follow-up is queued behind the run. */
         const val RUNNING = "bc-demo-0001"
+        /** "Rendezvous registry cleanup": archived, so a follow-up is refused outright. */
+        const val ARCHIVED = "bc-demo-0016"
     }
 }

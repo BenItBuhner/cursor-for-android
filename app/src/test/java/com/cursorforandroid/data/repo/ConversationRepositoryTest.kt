@@ -573,10 +573,12 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.items.count { it is ActivityGroup } == 2 }
         awaitUntil { traces.read("bc-1").keys == setOf("run-1", "run-2") }
         assertThat(streamer.connections).containsExactly("run-1", "run-2")
-        // Payloads are not what the disk keeps; the summaries the cards render are.
+        // Payloads are not what the disk keeps; the summaries the lines render, and the paths behind them, are.
         val saved = traces.read("bc-1").getValue("run-2").items.filterIsInstance<ActivityGroup>().single().calls
-        assertThat(saved.map { it.summary }).containsExactly("app/src/Composer.kt", "app/src/Composer.kt")
-        assertThat(saved.all { it.args == null }).isTrue()
+        assertThat(saved.map { it.summary }).containsExactly("Composer.kt", "Composer.kt")
+        assertThat(saved.map { it.detail }).containsExactly("app/src/Composer.kt", "app/src/Composer.kt")
+        // An edit's row opens onto its path, so there is no output behind it to have been written out.
+        assertThat(saved.all { it.output == null }).isTrue()
 
         // A later process opens the chat: both traces come from disk and no stream is opened for either run.
         val next = repository()
@@ -1067,6 +1069,22 @@ class ConversationRepositoryTest {
         val reopened = conversations.state("bc-1").value
         assertThat(reopened.isStreaming).isFalse()
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+    }
+
+    @Test
+    fun `the first screen to open a chat is reported once, and again after the last one leaves`() {
+        val opened = mutableListOf<String>()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, onOpened = { opened += it }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        )
+        conversations.attach("bc-1")
+        conversations.attach("bc-1")
+        assertThat(opened).containsExactly("bc-1")
+        conversations.detach("bc-1")
+        conversations.detach("bc-1")
+        conversations.attach("bc-1")
+        assertThat(opened).containsExactly("bc-1", "bc-1")
     }
 
     @Test

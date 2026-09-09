@@ -89,9 +89,12 @@ class TraceCacheTest {
         assertThat(traces.read("bc-1").keys).containsExactly("run-1")
     }
 
-    /** Tool payloads are the largest thing a trace carries and nothing renders them. */
+    /**
+     * A tool call is read off its JSON while it is built and carries only what a row shows, so what the disk keeps is
+     * that and nothing else: no whole files, no whole command output.
+     */
     @Test
-    fun `tool call payloads do not reach the disk`() = runBlocking<Unit> {
+    fun `a tool call reaches the disk as the row it renders`() = runBlocking<Unit> {
         val traces = cache()
         val group = ActivityGroup(
             id = "group-1",
@@ -99,12 +102,13 @@ class TraceCacheTest {
                 ThinkingBlock("Looking at the file."),
                 ToolCall(
                     callId = "call-1",
-                    name = "read_file",
-                    kind = ToolKind.Read,
+                    name = "run_terminal_cmd",
+                    kind = ToolKind.Shell,
                     status = ToolCall.STATUS_COMPLETED,
-                    summary = "Read README.md",
-                    args = buildJsonObject { put("path", JsonPrimitive("README.md")) },
-                    result = JsonPrimitive("the whole file"),
+                    summary = "ls",
+                    detail = "ls -la",
+                    output = "total 8\nREADME.md",
+                    exitCode = 0,
                 ),
             ),
         )
@@ -112,8 +116,9 @@ class TraceCacheTest {
         traces.put("bc-1", listOf(CachedTrace("run-1", 1L, listOf(group))))
 
         val call = (traces.read("bc-1").getValue("run-1").items.single() as ActivityGroup).calls.single()
-        assertThat(call.args).isNull()
-        assertThat(call.result).isNull()
-        assertThat(call.summary).isEqualTo("Read README.md")
+        assertThat(call.summary).isEqualTo("ls")
+        assertThat(call.detail).isEqualTo("ls -la")
+        assertThat(call.output).isEqualTo("total 8\nREADME.md")
+        assertThat(call.exitCode).isEqualTo(0)
     }
 }

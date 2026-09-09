@@ -12,6 +12,9 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.api.dto.AgentEnvDto
+import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.RunStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
@@ -92,6 +95,7 @@ class AgentRepositoryLaunchTest {
 
         assertThat(api.createRequests.single().agentId).isEqualTo(id)
         assertThat(api.createRequests.single().repos?.single()?.startingRef).isEqualTo("main")
+        assertThat(api.createRequests.single().env).isNull()
         assertThat(agent.id).isEqualTo(id)
         assertThat(agent.runStatus).isEqualTo(RunStatus.CREATING)
         assertThat(agent.modelDisplayName).isEqualTo("Auto")
@@ -265,5 +269,21 @@ class AgentRepositoryLaunchTest {
         api.listGate = null
         agents.refresh()
         assertThat(agents.state.value.agents.map { it.id }).containsExactly(id, "bc-old")
+    }
+
+    @Test
+    fun `a machine or pool pick is sent as env and stamped on the provisional row`() = runBlocking<Unit> {
+        val machine = request.copy(env = DeviceTarget.machine("bennett#/home/bennett/projects/app"))
+        val id = LaunchIdempotency.agentId(machine, "nonce")
+        val provisional = agents.beginLaunch(machine.copy(agentId = id), "Auto")!!
+        assertThat(provisional.envType).isEqualTo(EnvType.MACHINE)
+        assertThat(provisional.envName).isEqualTo("bennett")
+
+        agents.launch(machine.copy(agentId = id), "Auto").getOrThrow()
+        assertThat(api.createRequests.single().env).isEqualTo(AgentEnvDto(type = "machine", name = "bennett"))
+
+        val pool = request.copy(env = DeviceTarget.pool("gpu"), agentId = LaunchIdempotency.agentId(request.copy(env = DeviceTarget.pool("gpu")), "pool"))
+        agents.launch(pool, null).getOrThrow()
+        assertThat(api.createRequests.last().env).isEqualTo(AgentEnvDto(type = "pool", name = "gpu"))
     }
 }
