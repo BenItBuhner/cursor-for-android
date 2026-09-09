@@ -132,6 +132,8 @@ class GitHubReleasesClient(
     private val apiBaseUrl: String = API_BASE_URL,
     private val json: Json = CursorJson,
     private val now: () -> Long = AppClock::now,
+    /** Seam for tests: free bytes on the filesystem a download would land on. */
+    private val freeSpace: (File) -> Long = { it.usableSpace },
 ) {
     sealed interface ReleasesFetch {
         data class Changed(val releases: List<GitHubReleaseDto>, val etag: String?) : ReleasesFetch
@@ -198,12 +200,27 @@ class GitHubReleasesClient(
     }
 
     /**
-     * Streams [url] into [target] (through a sibling temp file, moved into place only when complete) and returns the
-     * lowercase hex SHA-256 of the bytes written. [onProgress] receives (bytes so far, total or -1) as chunks land.
-     * Cancelling the coroutine cancels the HTTP call and removes the partial file.
+     * Streams [url] into [target] and returns the lowercase hex SHA-256 of the bytes written. [onProgress] receives
+     * (bytes so far, total or -1) as chunks land. Cancelling the coroutine cancels the HTTP call and removes the
+     * partial file. The caller decides when [target] becomes a file it trusts; nothing here renames anything.
+     *
+     * The transfer is bounded three ways, because the call timeout is deliberately unlimited and an endpoint that
+     * streamed forever would otherwise fill the filesystem: [expectedBytes] (GitHub's own size for the asset, when
+     * known) and any `Content-Length` must be plausible for an APK, the bytes written are counted against both, and
+     * the device must have room for the file plus headroom before and while it is written.
      */
-    suspend fun download(url: String, target: File, onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> }): String {
-        val tmp = File(target.parentFile, target.name + ".part")
+    suspend fun download(
+        url: String,
+        target: File,
+        expectedBytes: Long = -1L,
+        onProgress: (bytesRead: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): String {
+        if (expectedBytes > MAX_APK_BYTES) throw IOException(tooLargeMessage(expectedBytes))
+        withContext(Dispatchers.IO) {
+            target.parentFile?.mkdirs()
+            // Asked before anything is asked of the network: a download with nowhere to go is not worth starting.
+            requireSpaceFor(target, expectedBytes)
+        }
         val call = client.newCall(Request.Builder().url(url).build())
         try {
             call.await().use { response ->
@@ -213,35 +230,64 @@ class GitHubReleasesClient(
                     target.parentFile?.mkdirs()
                     val digest = MessageDigest.getInstance("SHA-256")
                     val total = body.contentLength()
+                    if (total > MAX_APK_BYTES) throw IOException(tooLargeMessage(total))
+                    // What the transfer may write: whichever size is known, else the ceiling on its own.
+                    val limit = listOf(expectedBytes, total).filter { it > 0 }.minOrNull() ?: MAX_APK_BYTES
+                    requireSpaceFor(target, limit)
                     var read = 0L
+                    var spaceCheckedAt = 0L
                     body.byteStream().use { input ->
-                        tmp.outputStream().use { output ->
+                        target.outputStream().use { output ->
                             val buffer = ByteArray(64 * 1024)
                             while (true) {
                                 coroutineContext.ensureActive()
                                 val n = input.read(buffer)
                                 if (n < 0) break
+                                read += n
+                                // Checked before the bytes are written: an overrun must not reach the disk at all.
+                                if (read > limit) throw IOException("The download is larger than the release says it is; it was stopped.")
                                 output.write(buffer, 0, n)
                                 digest.update(buffer, 0, n)
-                                read += n
+                                if (read - spaceCheckedAt >= SPACE_CHECK_EVERY_BYTES) {
+                                    requireSpaceFor(target, limit - read)
+                                    spaceCheckedAt = read
+                                }
                                 onProgress(read, total)
                             }
                         }
                     }
                     if (total >= 0 && read != total) throw IOException("Download ended early ($read of $total bytes).")
-                    if (!tmp.renameTo(target)) {
-                        target.delete()
-                        if (!tmp.renameTo(target)) throw IOException("Couldn't save the download.")
+                    if (expectedBytes > 0 && read != expectedBytes) {
+                        throw IOException("The download is $read bytes; the release says $expectedBytes.")
                     }
                     digest.digest().joinToString("") { "%02x".format(it) }
                 }
             }
         } catch (t: Throwable) {
             call.cancel()
-            tmp.delete()
+            target.delete()
             throw t
         }
     }
+
+    /**
+     * Room for [bytes] more plus headroom, so a download cannot be the thing that fills the device.
+     * `File.getUsableSpace` is the `StatFs` the platform would report for the filesystem the cache lives on, without
+     * the Android dependency the tests would then need.
+     */
+    private fun requireSpaceFor(target: File, bytes: Long) {
+        if (bytes <= 0) return
+        val free = freeSpace(target.parentFile ?: target)
+        // 0 is "cannot tell" (an unreadable path); refusing then would block downloads on nothing.
+        if (free > 0 && free < bytes + FREE_SPACE_HEADROOM_BYTES) {
+            throw IOException("There isn't enough free space for the update (${mb(bytes + FREE_SPACE_HEADROOM_BYTES)} MB needed, ${mb(free)} MB free).")
+        }
+    }
+
+    private fun tooLargeMessage(bytes: Long) =
+        "That release's APK is ${mb(bytes)} MB, far larger than this app has ever been; it wasn't downloaded."
+
+    private fun mb(bytes: Long) = bytes / (1024 * 1024)
 
     private fun Response.toCheckException(): UpdateCheckException = when {
         // 403 and 429 both mean "too many": the primary quota with its remaining count at zero, or a secondary limit
@@ -299,6 +345,18 @@ class GitHubReleasesClient(
         /** A reset further out than this is a clock disagreement, not a real wait. */
         private const val MAX_RATE_LIMIT_WAIT_MS = DEFAULT_RATE_LIMIT_WAIT_MS
         private val NEXT_LINK = Regex("""<([^>]+)>\s*;\s*rel="next"""")
+
+        /**
+         * The most an APK of this app could plausibly be. The universal release build is a few tens of megabytes;
+         * anything past this is a mistake or a hostile endpoint, and no `callTimeout` is set to stop it on its own.
+         */
+        const val MAX_APK_BYTES = 128L * 1024 * 1024
+
+        /** Left free after the download, so the update is never what leaves the device with nothing to work with. */
+        private const val FREE_SPACE_HEADROOM_BYTES = 32L * 1024 * 1024
+
+        /** How often the remaining space is re-checked while writing; a `StatFs` per 64 KB chunk would be absurd. */
+        private const val SPACE_CHECK_EVERY_BYTES = 8L * 1024 * 1024
 
         fun releasesPageUrl(repo: String) = "https://github.com/$repo/releases"
     }

@@ -183,9 +183,69 @@ class GitHubReleasesClientTest {
 
         assertThat(sha256).isEqualTo(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) })
         assertThat(target.readBytes()).isEqualTo(bytes)
-        assertThat(File(folder.root, "20199.apk.part").exists()).isFalse()
         assertThat(progress.last()).isEqualTo(bytes.size.toLong() to bytes.size.toLong())
         assertThat(progress.map { it.first }).isInOrder()
+    }
+
+    @Test
+    fun `a release that declares an implausible APK size is not downloaded at all`() = runBlocking {
+        val target = File(folder.root, "big.apk")
+        val error = runCatching {
+            client.download(server.url("/dl").toString(), target, expectedBytes = GitHubReleasesClient.MAX_APK_BYTES + 1)
+        }.exceptionOrNull()
+        assertThat(error).isInstanceOf(IOException::class.java)
+        assertThat(error!!).hasMessageThat().contains("far larger than this app has ever been")
+        assertThat(server.requestCount).isEqualTo(0)
+        assertThat(target.exists()).isFalse()
+    }
+
+    @Test
+    fun `a response that announces more than an APK could be is refused before it is written`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(Buffer().write(ByteArray(1024)))
+                .setHeader("Content-Length", GitHubReleasesClient.MAX_APK_BYTES + 1),
+        )
+        val target = File(folder.root, "big.apk")
+        val error = runCatching { client.download(server.url("/dl").toString(), target) }.exceptionOrNull()
+        assertThat(error).isInstanceOf(IOException::class.java)
+        assertThat(folder.root.listFiles()!!.toList()).isEmpty()
+    }
+
+    @Test
+    fun `a body that keeps coming past the size the release declared is stopped and thrown away`() = runBlocking {
+        // Chunked, so nothing announces the length: only the declared size bounds it.
+        server.enqueue(MockResponse().setChunkedBody(Buffer().write(ByteArray(400_000)), 16 * 1024))
+        val target = File(folder.root, "over.apk")
+        val error = runCatching { client.download(server.url("/dl").toString(), target, expectedBytes = 100_000L) }.exceptionOrNull()
+        assertThat(error).isInstanceOf(IOException::class.java)
+        assertThat(error!!).hasMessageThat().contains("larger than the release says")
+        assertThat(folder.root.listFiles()!!.toList()).isEmpty()
+    }
+
+    @Test
+    fun `a body that stops short of the size the release declared is a failure`() = runBlocking {
+        server.enqueue(MockResponse().setChunkedBody(Buffer().write(ByteArray(1_000)), 512))
+        val target = File(folder.root, "short.apk")
+        val error = runCatching { client.download(server.url("/dl").toString(), target, expectedBytes = 100_000L) }.exceptionOrNull()
+        assertThat(error!!).hasMessageThat().contains("the release says 100000")
+        assertThat(folder.root.listFiles()!!.toList()).isEmpty()
+    }
+
+    @Test
+    fun `a device without room for the update says so instead of filling itself`() = runBlocking {
+        val cramped = GitHubReleasesClient(
+            OkHttpClient(),
+            GitHubFixtures.OWNER_REPO,
+            apiBaseUrl = server.url("/").toString(),
+            now = { now },
+            freeSpace = { 40L * 1024 * 1024 },
+        )
+        server.enqueue(MockResponse().setBody(Buffer().write(ByteArray(1024))))
+        val target = File(folder.root, "roomless.apk")
+        val error = runCatching { cramped.download(server.url("/dl").toString(), target, expectedBytes = 20L * 1024 * 1024) }.exceptionOrNull()
+        assertThat(error).isInstanceOf(IOException::class.java)
+        assertThat(error!!).hasMessageThat().contains("enough free space")
+        assertThat(folder.root.listFiles()!!.toList()).isEmpty()
     }
 
     @Test
