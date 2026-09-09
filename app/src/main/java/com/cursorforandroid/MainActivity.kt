@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
         pendingNewChat = intent?.action == ACTION_NEW_CHAT
 
         val graph = appGraph
+        graph.share.receive(intent)
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
         LiveNotifications.ensureChannels(this)
         LiveNotificationCoordinator.bind(this, graph)
@@ -63,8 +64,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         agentIdFrom(intent)?.let { pendingAgentId = it }
         if (intent.action == ACTION_NEW_CHAT) pendingNewChat = true
+        appGraph.share.receive(intent)
         resumeUpdateIfAsked(intent)
     }
 

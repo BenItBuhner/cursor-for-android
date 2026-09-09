@@ -27,6 +27,7 @@ enum class RunStatus { CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED, U
 }
 
 /** Where the agent's VM lives: Cursor-hosted cloud, a self-hosted team pool, or one of the user's machines. */
+@Serializable
 enum class EnvType { CLOUD, POOL, MACHINE, UNKNOWN;
     companion object {
         fun parse(raw: String?): EnvType = when (raw?.lowercase()) {
@@ -320,6 +321,22 @@ fun List<ModelOption>.choiceLabelled(label: String): ModelChoice? {
     return firstNotNullOfOrNull { model ->
         model.variants.firstOrNull { model.legacyLabelFor(it) == label }?.let { ModelChoice(model, it) }
     }
+}
+
+/**
+ * The picker's order: the selected model first so tapping one lifts it to the top with its options, then any other
+ * pinned models (most recently pinned first), then the rest of the catalog in the API's order.
+ */
+fun List<ModelOption>.arrangedForPicker(pinnedIds: List<String>, selectedId: String?): List<ModelOption> {
+    if (isEmpty()) return this
+    val index = associateBy { it.id }
+    val selected = selectedId?.let { index[it] }
+    val pinned = pinnedIds.mapNotNull { index[it] }.filter { it.id != selected?.id }
+    val seen = buildSet {
+        selected?.id?.let(::add)
+        pinned.forEach { add(it.id) }
+    }
+    return listOfNotNull(selected) + pinned + filter { it.id !in seen }
 }
 
 @Serializable

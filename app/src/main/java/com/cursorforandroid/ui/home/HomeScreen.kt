@@ -28,6 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -97,6 +99,7 @@ fun HomeScreen(
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
     var branchSheet by remember { mutableStateOf(false) }
+    var deviceSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
@@ -108,6 +111,13 @@ fun HomeScreen(
         onError = viewModel::reportError,
     )
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val draft = share ?: return@LaunchedEffect
+        if (draft.target != ShareTarget.NewChat) return@LaunchedEffect
+        viewModel.applyShare(draft.text, draft.attachments, draft.warning)
+        graph.share.consume(draft.generation)
+    }
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         if (onOpenSidebar != null) {
@@ -138,7 +148,7 @@ fun HomeScreen(
                             // A blank ref leaves the starting point to the repository's default branch.
                             SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
                         }
-                        SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
+                        SelectorChip(state.deviceLabel, onClick = { deviceSheet = true }, icon = deviceIcon(state.selectedDevice))
                     }
                     ComposerBox(
                         value = state.prompt,
@@ -151,6 +161,8 @@ fun HomeScreen(
                         plusMenu = plusMenu,
                         attachments = state.attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
+                        onAddAttachments = viewModel::addAttachments,
+                        onAttachmentError = viewModel::reportError,
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
                         onModel = { modelSheet = true },
                     )
@@ -204,6 +216,16 @@ fun HomeScreen(
             onDismiss = { branchSheet = false },
         )
     }
+    if (deviceSheet) {
+        DeviceSheet(
+            devices = state.devices,
+            selected = state.selectedDevice,
+            loading = state.isLoadingDevices,
+            onSelect = viewModel::selectDevice,
+            onRefresh = viewModel::refreshDevices,
+            onDismiss = { deviceSheet = false },
+        )
+    }
     if (modelSheet) {
         ModelSheet(
             models = state.models,
@@ -218,6 +240,8 @@ fun HomeScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = state.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
         )
     }
 }

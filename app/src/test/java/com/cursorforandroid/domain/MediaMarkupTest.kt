@@ -36,6 +36,9 @@ class MediaMarkupTest {
             .containsExactly(MediaSegment.Image("/opt/cursor/artifacts/shot.png", "Shot"))
         assertThat(MediaMarkup.split("<a href=\"https://x.test\"><img src=\"x.png\"></a> tail"))
             .containsExactly(MediaSegment.Image("x.png", null), MediaSegment.Text("tail")).inOrder()
+        // A text link is left for the inline renderer — stripping the tags would drop the URL.
+        assertThat(MediaMarkup.split("See <a href=\"https://x.test/p\">PR #1</a>."))
+            .containsExactly(MediaSegment.Text("See <a href=\"https://x.test/p\">PR #1</a>.")).inOrder()
     }
 
     @Test
