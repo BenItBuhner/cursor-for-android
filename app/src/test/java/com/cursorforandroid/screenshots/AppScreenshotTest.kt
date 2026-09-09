@@ -153,6 +153,14 @@ class AppScreenshotTest {
         compose.waitForIdle()
         capture("02_home")
 
+        // Device picker: Cloud is the default; My machines and team pools sit under it. This phone is never a row.
+        compose.onNodeWithText("Cloud").performClick()
+        waitForText("My machines")
+        waitForText("bennett")
+        capture("24_device_picker")
+        Espresso.pressBack()
+        compose.waitForIdle()
+
         // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         waitForText("Orchestrate multiple subagents in parallel")
@@ -181,12 +189,12 @@ class AppScreenshotTest {
         // Source: where each chat was started (the account's word), as on cursor.com/agents; Environment: where it runs.
         compose.onNodeWithText("Source").performClick()
         waitForText("Grok Bot")
-        capture("24_source_filter")
+        capture("25_source_filter")
         Espresso.pressBack()
         waitForText("Grouping")
         compose.onNodeWithText("Environment").performClick()
         waitForText("Team pool")
-        capture("25_environment_filter")
+        capture("26_environment_filter")
         Espresso.pressBack()
         waitForText("Grouping")
         // The Source filter at work: only the chats started from Slack, the CLI and Grok Bot are left in the sidebar.
@@ -198,7 +206,7 @@ class AppScreenshotTest {
                 compose.onAllNodesWithText("Zen browser flawless parity").fetchSemanticsNodes().isNotEmpty()
         }
         compose.waitForIdle()
-        capture("26_sidebar_source_filtered")
+        capture("27_sidebar_source_filtered")
         runBlocking { graph.prefs.updateListPreferences { it.copy(sources = SourceFilter.entries.toSet()) } }
         waitForText("Codex-Poly-Bot Scaling")
         Espresso.pressBack() // close the drawer
