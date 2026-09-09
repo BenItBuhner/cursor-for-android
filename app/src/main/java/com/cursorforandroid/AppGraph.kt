@@ -39,6 +39,7 @@ import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
@@ -115,6 +116,7 @@ class AppGraph(context: Context) {
         cache = caches.conversations,
         traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
+        onOpened = { agentId -> LiveNotifications.cancelFinished(context, agentId) },
     )
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     val launcher = ChatLauncher(conversations)
