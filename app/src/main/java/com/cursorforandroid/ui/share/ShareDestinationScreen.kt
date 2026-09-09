@@ -78,7 +78,7 @@ fun ShareDestinationScreen(
         onTogglePin = {},
         onArchive = {},
         onUnarchive = {},
-        onDelete = {},
+        onRename = { _, _ -> },
     )
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {

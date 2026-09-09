@@ -183,16 +183,15 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     fun archive(onDone: () -> Unit) = viewModelScope.launch {
-        graph.agents.archive(agentId).onSuccess { toast.value = "Agent archived"; onDone() }.onFailure { toast.value = it.userMessage() }
+        graph.agents.archive(agentId).onSuccess { toast.value = "Chat archived"; onDone() }.onFailure { toast.value = it.userMessage() }
     }
 
     fun unarchive() = viewModelScope.launch {
-        graph.agents.unarchive(agentId).onSuccess { toast.value = "Agent unarchived" }.onFailure { toast.value = it.userMessage() }
+        graph.agents.unarchive(agentId).onSuccess { toast.value = "Chat unarchived" }.onFailure { toast.value = it.userMessage() }
     }
 
-    fun delete(onDone: () -> Unit) = viewModelScope.launch {
-        graph.conversations.forget(agentId)
-        graph.agents.delete(agentId).onSuccess { onDone() }.onFailure { toast.value = it.userMessage() }
+    fun rename(name: String) = viewModelScope.launch {
+        graph.agents.rename(agentId, name).onFailure { toast.value = it.userMessage() }
     }
 
     fun clearToast() { toast.value = null }

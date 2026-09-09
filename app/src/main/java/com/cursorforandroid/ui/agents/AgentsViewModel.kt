@@ -205,10 +205,7 @@ class AgentsViewModel(
 
     fun archive(agentId: String) = viewModelScope.launch { graph.agents.archive(agentId) }
     fun unarchive(agentId: String) = viewModelScope.launch { graph.agents.unarchive(agentId) }
-    fun delete(agentId: String) = viewModelScope.launch {
-        graph.conversations.forget(agentId)
-        graph.agents.delete(agentId)
-    }
+    fun rename(agentId: String, name: String) = viewModelScope.launch { graph.agents.rename(agentId, name) }
 
     fun filterLabel(kind: FilterKind): String = uiState.value.prefs.summaryFor(kind)
 
