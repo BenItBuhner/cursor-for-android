@@ -20,6 +20,8 @@ data class UserMessage(
     val text: String,
     val timestampMillis: Long? = null,
     val attachments: List<MessageAttachment> = emptyList(),
+    /** Sent from here and not yet acknowledged by the server; drawn faded until its run is filed. */
+    val isPending: Boolean = false,
 ) : TimelineItem
 
 /**

@@ -19,6 +19,7 @@ import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -30,6 +31,7 @@ import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
+import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
@@ -52,6 +54,8 @@ class AppGraph(context: Context) {
     val caches = AppCaches(JsonDiskCache(File(context.applicationContext.cacheDir, "cursor")))
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     val attachments = AttachmentStore(context)
+    /** Follow-ups typed or queued but not yet sent, with their images, per chat. */
+    private val followUpStore = FollowUpStore(context)
     /** Text and images arriving from the system share sheet, drafted into a composer once a destination is picked. */
     val share = ShareInbox(context)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
@@ -130,6 +134,18 @@ class AppGraph(context: Context) {
     )
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     val launcher = ChatLauncher(conversations)
+    /**
+     * Each chat's unsent follow-ups: the composer's draft, and the queue of messages sent while the agent was still on
+     * its previous turn, which go out by themselves once it is free. Kept on disk so leaving the chat loses nothing.
+     */
+    val followUps = FollowUpRepository(
+        conversations = conversations,
+        agents = agents,
+        hub = liveRuns,
+        mcpServers = { mcpServers.enabled() },
+        store = followUpStore,
+        persist = { !session.isDemo },
+    )
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
     val artifacts = ArtifactRepository(session)
     val media = MediaLoader(context, CursorApiFactory.mediaClient(), artifacts)
@@ -158,6 +174,7 @@ class AppGraph(context: Context) {
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()
+            followUps.resetAll()
             pins.reset()
             accountPullRequests.reset()
             sessionTokens.clear()
@@ -170,6 +187,7 @@ class AppGraph(context: Context) {
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
+            followUpStore.clear()
             share.clear()
             caches.clear()
         }

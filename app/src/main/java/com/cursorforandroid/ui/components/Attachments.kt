@@ -47,12 +47,20 @@ class PendingAttachment(
          * The strip's entry for an image that went out with a draft the composer takes back: the same bytes, a
          * thumbnail decoded from them again. Decodes a bitmap, so not for the main thread.
          */
-        fun of(image: PromptImage): PendingAttachment =
-            PendingAttachment(id = "returned@" + UUID.randomUUID(), image = image, thumbnail = thumbnailOf(image))
+        fun of(image: PromptImage): PendingAttachment = of(image, id = "returned@" + UUID.randomUUID())
+
+        /**
+         * The strip's entry for an image kept under an id from before — a draft restored from disk, a queued
+         * follow-up taken back for editing — with [thumbnail] when one is already decoded. Decodes one otherwise,
+         * so not for the main thread then.
+         */
+        fun of(image: PromptImage, id: String, thumbnail: ImageBitmap? = null): PendingAttachment =
+            PendingAttachment(id = id, image = image, thumbnail = thumbnail ?: thumbnailOf(image))
     }
 }
 
-private fun thumbnailOf(image: PromptImage): ImageBitmap? {
+/** A small (≈160px) bitmap of [image] for a strip or a card. Decodes, so not for the main thread. */
+fun thumbnailOf(image: PromptImage): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(image.bytes, 0, image.sizeBytes, bounds)
     val sample = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 160)

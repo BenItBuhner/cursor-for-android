@@ -102,23 +102,29 @@ fun TimelineItemView(item: TimelineItem, modifier: Modifier = Modifier) {
 private fun HumanMessage(item: UserMessage, modifier: Modifier) {
     val colors = CursorTheme.colors
     val hasText = item.text.isNotBlank()
+    // A prompt the server has not acknowledged yet is drawn faded — through its colours, the way the rest of the app
+    // fades things — and comes up to full strength once its run is filed.
+    val alpha by animateFloatAsState(if (item.isPending) PendingMessageAlpha else 1f, tween(240), label = "pending")
     Box(modifier.fillMaxWidth().padding(start = 32.dp), contentAlignment = Alignment.CenterEnd) {
         MessageActions(
             text = item.text,
             enabled = hasText,
-            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint, colors.stroke, CursorTheme.shapes.xl),
+            modifier = Modifier.widthIn(min = 150.dp, max = 640.dp).cursorSurface(colors.fillFaint.faded(alpha), colors.stroke.faded(alpha), CursorTheme.shapes.xl),
         ) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 if (item.attachments.isNotEmpty()) {
-                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp))
+                    MessageAttachments(item.attachments, Modifier.padding(bottom = if (hasText) 8.dp else 0.dp), alpha = alpha)
                 }
                 if (hasText || item.attachments.isEmpty()) {
-                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary)
+                    MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha))
                 }
             }
         }
     }
 }
+
+/** [color] at [alpha] of its own opacity: 1 leaves it as it is. */
+internal fun Color.faded(alpha: Float): Color = if (alpha >= 1f) this else copy(alpha = this.alpha * alpha)
 
 /**
  * A reply has no surface of its own, so its press highlight is a soft `lg` card reaching a few dp past the text on
@@ -541,3 +547,6 @@ private fun RunFooterView(item: RunFooter, modifier: Modifier) {
         SummaryLine(label, duration ?: item.status.name.lowercase(), modifier)
     }
 }
+
+/** Opacity of a prompt sent from here that the server has not acknowledged yet. */
+private const val PendingMessageAlpha = 0.5f

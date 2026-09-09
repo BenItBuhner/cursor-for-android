@@ -100,6 +100,8 @@ fun ConversationScreen(
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val queue by viewModel.queue.collectAsStateWithLifecycle()
+    val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
@@ -279,11 +281,31 @@ fun ConversationScreen(
         }
 
         val archived = agent?.isArchived == true
-        Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(), contentAlignment = Alignment.Center) {
+        val willQueue = isActive || queue.isNotEmpty()
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // What is waiting to go out sits right above the box it came from, oldest first, one line each.
+            if (queue.isNotEmpty()) {
+                QueuedFollowUps(
+                    queue = queue,
+                    thumbnails = thumbnails,
+                    onEdit = { viewModel.editQueued(it.id) },
+                    onSteer = { viewModel.steerQueued(it.id) },
+                    onRemove = { viewModel.removeQueued(it.id) },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                )
+            }
             ComposerBox(
                 value = draft,
                 onValueChange = viewModel::setDraft,
-                placeholder = if (archived) "Unarchive to follow up" else "Follow up…",
+                placeholder = when {
+                    archived -> "Unarchive to follow up"
+                    // A send now joins the queue rather than interrupting; the placeholder says so before the tap.
+                    willQueue -> "Follow up (sends when the turn ends)…"
+                    else -> "Follow up…"
+                },
                 onSend = viewModel::send,
                 canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && !archived,
                 isRunning = isActive,
