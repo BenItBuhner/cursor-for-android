@@ -60,4 +60,30 @@ class MediaViewerTest {
     fun `pan is centred before the viewer has been measured`() {
         assertThat(clampedPan(Offset(120f, 120f), scale = 4f, 1080, 1080, IntSize.Zero)).isEqualTo(Offset.Zero)
     }
+
+    @Test
+    fun `a rotation pulls a dragged figure back inside the bounds the new viewport allows`() {
+        // Dragged to the right edge of a square image zoomed 3x in portrait: 1080 of overhang each side.
+        val square = IntSize(1080, 1080)
+        val landscape = IntSize(2400, 1080)
+        assertThat(reclampedPan(Offset(1080f, 0f), scale = 3f, square, phone)).isEqualTo(Offset(1080f, 0f))
+        // The same image in a landscape viewport is still drawn 1080 wide, so at 3x it overhangs by 420 each side
+        // rather than 1080; the saved offset is off the screen until this brings it back.
+        val rotated = reclampedPan(Offset(1080f, 0f), scale = 3f, square, landscape)
+        assertThat(rotated.x).isWithin(0.5f).of(420f)
+        assertThat(rotated.y).isEqualTo(0f)
+    }
+
+    @Test
+    fun `a re-clamp of an unzoomed or undecoded figure centres it`() {
+        assertThat(reclampedPan(Offset(400f, 400f), scale = 1f, IntSize(1080, 1080), phone)).isEqualTo(Offset.Zero)
+        assertThat(reclampedPan(Offset(400f, 400f), scale = 3f, IntSize.Zero, phone)).isEqualTo(Offset.Zero)
+    }
+
+    @Test
+    fun `a full-screen decode asks for different pixels in each orientation`() {
+        // Why the high-resolution load is keyed on its target: the activity handles rotation itself, so the viewer
+        // is not recreated and a load keyed on the figure alone would keep the portrait-sized decode.
+        assertThat(boundedPixels(1080, 2400)).isNotEqualTo(boundedPixels(2400, 1080))
+    }
 }

@@ -338,6 +338,15 @@ internal fun clampedPan(offset: Offset, scale: Float, imageWidth: Int, imageHeig
 
 private fun withinOverhang(value: Float, max: Float): Float = if (max <= 0f) 0f else value.coerceIn(-max, max)
 
+/**
+ * Where a figure the user had dragged belongs once the viewport or the decoded bitmap changed under it: an in-place
+ * rotation, or the screen-sized decode replacing the inline one. An unzoomed figure is centred; anything else is
+ * pulled back inside the bounds the new dimensions allow.
+ */
+internal fun reclampedPan(offset: Offset, scale: Float, image: IntSize, viewport: IntSize): Offset =
+    if (scale <= 1f || image.width <= 0 || image.height <= 0) Offset.Zero
+    else clampedPan(offset, scale, image.width, image.height, viewport)
+
 /** One source pixel per dp, shrunk (never enlarged) to fit [maxWidth] x [maxHeight] while keeping the aspect ratio. */
 private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): DpSize {
     val w = widthPx.coerceAtLeast(1).toFloat()
@@ -357,10 +366,12 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, lo
     // when the inline decode already was full resolution). Bounded by the screen rather than by twice its pixels:
     // the old request was 2x the screen in each direction, four times its area, and a screenshot close to that
     // shape decoded to tens of megabytes of software bitmap with nothing between it and OutOfMemoryError.
-    LaunchedEffect(ref) {
-        val target = with(density) {
-            boundedPixels(configuration.screenWidthDp.dp.roundToPx(), configuration.screenHeightDp.dp.roundToPx())
-        }
+    val target = with(density) {
+        boundedPixels(configuration.screenWidthDp.dp.roundToPx(), configuration.screenHeightDp.dp.roundToPx())
+    }
+    // Keyed on the target as well as the figure: the activity handles rotation itself, so this composable lives on
+    // through one with new screen dimensions, and a portrait-sized decode would stay on screen in landscape.
+    LaunchedEffect(ref, target) {
         runCatching { loader.image(ref, target.width, target.height) }
             .onSuccess { if (it.width >= (bitmap?.width ?: 0)) bitmap = it.asImageBitmap() }
     }
@@ -368,6 +379,14 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, lo
     var offsetX by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
     var offsetY by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
+    // A rotation, or the sharper decode landing, changes what the offsets were clamped against; without this they
+    // stay where the old bounds allowed until the next gesture, which for a zoomed image is off the screen.
+    val shownSize = bitmap?.let { IntSize(it.width, it.height) } ?: IntSize.Zero
+    LaunchedEffect(viewport, shownSize) {
+        val panned = reclampedPan(Offset(offsetX, offsetY), scale, shownSize, viewport)
+        offsetX = panned.x
+        offsetY = panned.y
+    }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 6f)
         val shown = bitmap
