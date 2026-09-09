@@ -58,6 +58,13 @@ class SidebarSectionsTest {
     }
 
     @Test
+    fun `the account footer shows the name and never the email`() {
+        showSidebar(isDemo = false)
+        compose.onNodeWithText("Demo User").assertIsDisplayed()
+        compose.onNodeWithText("a@b.com").assertDoesNotExist()
+    }
+
+    @Test
     fun `clicking Pinned collapses only the pinned group`() {
         showSidebar()
         compose.onNodeWithText("Pinned chat").assertIsDisplayed()
@@ -96,7 +103,7 @@ class SidebarSectionsTest {
         compose.onNodeWithContentDescription("Expand Yesterday").assertDoesNotExist()
     }
 
-    private fun showSidebar() {
+    private fun showSidebar(isDemo: Boolean = true) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
@@ -109,7 +116,7 @@ class SidebarSectionsTest {
                         hasLoaded = true,
                     ),
                     user = CursorUser("key", "a@b.com", "Demo", "User", 1),
-                    isDemo = true,
+                    isDemo = isDemo,
                     selectedAgentId = null,
                     selectedDestination = null,
                     onQueryChange = {},
