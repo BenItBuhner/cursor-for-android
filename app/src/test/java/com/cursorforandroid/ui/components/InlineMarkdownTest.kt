@@ -5,6 +5,7 @@ import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -14,7 +15,7 @@ class InlineMarkdownTest {
     private fun render(text: String, onLinkClick: ((String) -> Unit)? = null): AnnotatedString =
         InlineMarkdown.render(
             text = text,
-            base = TextStyle.Default,
+            base = TextStyle(fontSize = 15.sp),
             codeColor = Color.White,
             codeBackground = Color.DarkGray,
             linkColor = Color.Blue,
@@ -64,6 +65,51 @@ class InlineMarkdownTest {
         val elapsedMillis = (System.nanoTime() - started) / 1_000_000
         assertThat(rendered.text).isEqualTo(log)
         assertThat(rendered.getLinkAnnotations(0, log.length)).isEmpty()
+        assertThat(elapsedMillis).isLessThan(2_000)
+    }
+
+    @Test
+    fun `a double-backtick span shows the backtick inside it`() {
+        // The single-backtick search closed on the opener's own second tick, emitting an empty chip and then the
+        // content as prose with a stray delimiter behind it.
+        assertThat(render("``a ` b``").text).isEqualTo(" a ` b ")
+        assertThat(render("use ``code`` here").text).isEqualTo("use  code  here")
+    }
+
+    @Test
+    fun `a single-backtick span is unchanged`() {
+        assertThat(render("call `render()` twice").text).isEqualTo("call  render()  twice")
+        assertThat(render("an unclosed ` tick").text).isEqualTo("an unclosed ` tick")
+    }
+
+    @Test
+    fun `multiplication and globs are not italics`() {
+        assertThat(render("2 * 3 * 4").text).isEqualTo("2 * 3 * 4")
+        assertThat(render("2 * 3 * 4")).isEqualTo(AnnotatedString("2 * 3 * 4"))
+        assertThat(render("run a * b then c").text).isEqualTo("run a * b then c")
+    }
+
+    @Test
+    fun `emphasis that hugs its text still renders`() {
+        val em = render("this is *important* today")
+        assertThat(em.text).isEqualTo("this is important today")
+        assertThat(em.spanStyles.single().let { it.start to it.end }).isEqualTo(8 to 17)
+        assertThat(render("an _underscored_ word").text).isEqualTo("an underscored word")
+    }
+
+    @Test
+    fun `an identifier with underscores is left alone`() {
+        assertThat(render("snake_case_name and __init__")).isEqualTo(AnnotatedString("snake_case_name and __init__"))
+    }
+
+    @Test
+    fun `an unclosed delimiter is scanned once, not once per delimiter`() {
+        // Every "*x" is a candidate opener with no closer anywhere; searching to the end for each is quadratic.
+        val stars = (1..12_000).joinToString(" ") { "*item$it" }
+        val started = System.nanoTime()
+        val rendered = render(stars)
+        val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+        assertThat(rendered.text).isEqualTo(stars)
         assertThat(elapsedMillis).isLessThan(2_000)
     }
 

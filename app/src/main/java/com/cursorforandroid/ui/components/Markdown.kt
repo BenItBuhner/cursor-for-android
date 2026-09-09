@@ -243,6 +243,46 @@ class IncrementalMarkdown {
     }
 }
 
+/** How many [delimiter]s in a row start at [from]. */
+private fun runLength(text: String, from: Int, delimiter: Char): Int {
+    var end = from
+    while (end < text.length && text[end] == delimiter) end++
+    return end - from
+}
+
+/** Where the next run of exactly [length] [delimiter]s starts at or after [from], or -1. */
+private fun closingRun(text: String, from: Int, delimiter: Char, length: Int): Int {
+    var at = text.indexOf(delimiter, from)
+    while (at >= 0) {
+        val run = runLength(text, at, delimiter)
+        if (run == length) return at
+        at = text.indexOf(delimiter, at + run)
+    }
+    return -1
+}
+
+/** True when the delimiter at [at] hugs the text after it, and for `_` is not sitting inside a word. */
+private fun opensEmphasis(text: String, at: Int): Boolean {
+    val c = text[at]
+    if (c != '*' && c != '_') return false
+    // A doubled delimiter is bold (handled before this) or, for `__init__`, a name; either way not an italic run.
+    if (at + 1 >= text.length || text[at + 1].isWhitespace() || text[at + 1] == c) return false
+    if (at > 0 && text[at - 1] == c) return false
+    return c == '*' || at == 0 || !text[at - 1].isLetterOrDigit()
+}
+
+/** Where the emphasis opened with [delimiter] closes: the next one hugging the text before it, or -1. */
+private fun closingEmphasis(text: String, from: Int, delimiter: Char): Int {
+    var at = text.indexOf(delimiter, from)
+    while (at > 0) {
+        val hugsText = !text[at - 1].isWhitespace()
+        val outsideWord = delimiter == '*' || at + 1 >= text.length || !text[at + 1].isLetterOrDigit()
+        if (hugsText && outsideWord) return at
+        at = text.indexOf(delimiter, at + 1)
+    }
+    return -1
+}
+
 object InlineMarkdown {
     private val linkRegex = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
     private val schemeRegex = Regex("[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -288,16 +328,22 @@ object InlineMarkdown {
     ): AnnotatedString = buildAnnotatedString {
         var i = 0
         val n = text.length
+        var noStarCloser = Int.MAX_VALUE
+        var noUnderscoreCloser = Int.MAX_VALUE
         while (i < n) {
             val c = text[i]
             when {
                 c == '`' -> {
-                    val end = text.indexOf('`', i + 1)
-                    if (end > i) {
+                    // A run of backticks is closed by a run of the same length, which is how CommonMark lets
+                    // ``a ` b`` show a backtick. Matching a single one would close on the opener's second tick and
+                    // emit an empty chip followed by the literal content.
+                    val open = runLength(text, i, '`')
+                    val end = closingRun(text, i + open, '`', open)
+                    if (end > 0) {
                         withStyle(SpanStyle(fontFamily = JetBrainsMono, color = codeColor, background = codeBackground, fontSize = base.fontSize * 0.9f)) {
-                            append(" ${text.substring(i + 1, end)} ")
+                            append(" ${text.substring(i + open, end).trim()} ")
                         }
-                        i = end + 1
+                        i = end + open
                     } else {
                         append(c); i++
                     }
@@ -311,12 +357,16 @@ object InlineMarkdown {
                         append("**"); i += 2
                     }
                 }
-                c == '*' || (c == '_' && (i == 0 || !text[i - 1].isLetterOrDigit())) -> {
-                    val end = text.indexOf(c, i + 1)
-                    if (end > i + 1 && (end + 1 >= n || !text[end + 1].isLetterOrDigit() || c == '*')) {
+                opensEmphasis(text, i) -> {
+                    // Only a delimiter hugging the text it emphasises counts, so "2 * 3 * 4" is arithmetic rather
+                    // than an italic 3. A scan that runs off the end proves there is no closer later either.
+                    val exhausted = if (c == '*') noStarCloser else noUnderscoreCloser
+                    val end = if (i >= exhausted) -1 else closingEmphasis(text, i + 1, c)
+                    if (end > 0) {
                         withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(text.substring(i + 1, end)) }
                         i = end + 1
                     } else {
+                        if (c == '*') noStarCloser = i else noUnderscoreCloser = i
                         append(c); i++
                     }
                 }
