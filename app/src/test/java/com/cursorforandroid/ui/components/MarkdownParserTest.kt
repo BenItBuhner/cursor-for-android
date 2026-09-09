@@ -28,10 +28,9 @@ class MarkdownParserTest {
         assertThat(blocks.map { it::class.simpleName }).containsExactly("Heading", "Paragraph", "Bullets", "Bullets", "Code", "Quote", "Rule").inOrder()
         assertThat((blocks[0] as MdBlock.Heading).level).isEqualTo(1)
         val bullets = blocks[2] as MdBlock.Bullets
-        assertThat(bullets.ordered).isFalse()
-        assertThat(bullets.items).containsExactly("one", "two continued").inOrder()
+        assertThat(bullets.items).containsExactly(MdItem("one"), MdItem("two continued")).inOrder()
         val ordered = blocks[3] as MdBlock.Bullets
-        assertThat(ordered.ordered).isTrue()
+        assertThat(ordered.items).containsExactly(MdItem("first", number = 1), MdItem("second", number = 2)).inOrder()
         val code = blocks[4] as MdBlock.Code
         assertThat(code.language).isEqualTo("kotlin")
         assertThat(code.code).isEqualTo("val x = 1")
@@ -87,6 +86,103 @@ class MarkdownParserTest {
     fun `list items keep their raw text so the renderer can split media per item`() {
         val blocks = MarkdownParser.parse("- Before: <img src=\"a.png\">\n- After: <img src=\"b.png\">")
         val bullets = blocks.single() as MdBlock.Bullets
-        assertThat(bullets.items).containsExactly("Before: <img src=\"a.png\">", "After: <img src=\"b.png\">").inOrder()
+        assertThat(bullets.items.map { it.text })
+            .containsExactly("Before: <img src=\"a.png\">", "After: <img src=\"b.png\">").inOrder()
+    }
+
+    @Test
+    fun `a nested list keeps its levels instead of flattening`() {
+        val md = """
+            - top level
+              - nested
+                - deeper
+              - back to nested
+            - back to top
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items).containsExactly(
+            MdItem("top level", depth = 0),
+            MdItem("nested", depth = 1),
+            MdItem("deeper", depth = 2),
+            MdItem("back to nested", depth = 1),
+            MdItem("back to top", depth = 0),
+        ).inOrder()
+    }
+
+    @Test
+    fun `an ordered list nested under a bullet is a list, not literal text`() {
+        val md = """
+            - steps
+              1. first
+              2. second
+            - done
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items).containsExactly(
+            MdItem("steps", depth = 0),
+            MdItem("first", depth = 1, number = 1),
+            MdItem("second", depth = 1, number = 2),
+            MdItem("done", depth = 0),
+        ).inOrder()
+    }
+
+    @Test
+    fun `a list that continues a sequence keeps the numbers it was written with`() {
+        val bullets = MarkdownParser.parse("3. third\n4. fourth\n5. fifth").single() as MdBlock.Bullets
+        assertThat(bullets.items.map { it.number }).containsExactly(3, 4, 5).inOrder()
+    }
+
+    @Test
+    fun `every item written as 1 still counts up`() {
+        // The usual way to write a numbered list without renumbering it by hand.
+        val bullets = MarkdownParser.parse("1. a\n1. b\n1. c").single() as MdBlock.Bullets
+        assertThat(bullets.items.map { it.number }).containsExactly(1, 2, 3).inOrder()
+    }
+
+    @Test
+    fun `an outer list resumes its own count after a sublist`() {
+        val md = """
+            1. one
+               1. inner
+               2. inner two
+            2. two
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items).containsExactly(
+            MdItem("one", depth = 0, number = 1),
+            MdItem("inner", depth = 1, number = 1),
+            MdItem("inner two", depth = 1, number = 2),
+            MdItem("two", depth = 0, number = 2),
+        ).inOrder()
+    }
+
+    @Test
+    fun `wrapped text still belongs to the item above it`() {
+        val md = """
+            - top
+              wrapped onto the next line
+              - nested
+                also wrapped
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items).containsExactly(
+            MdItem("top wrapped onto the next line", depth = 0),
+            MdItem("nested also wrapped", depth = 1),
+        ).inOrder()
+    }
+
+    @Test
+    fun `a rule is any run of three or more markers`() {
+        val rules = listOf("---", "----", "***", "___", "- - -", "* * *", "  ---")
+        for (line in rules) {
+            assertThat(MarkdownParser.parse(line)).containsExactly(MdBlock.Rule)
+        }
+    }
+
+    @Test
+    fun `two markers are not a rule`() {
+        // "--" and a lone "-" stay prose; "- x" is still a list.
+        assertThat(MarkdownParser.parse("--")).containsExactly(MdBlock.Paragraph("--"))
+        assertThat(MarkdownParser.parse("- x").single()).isInstanceOf(MdBlock.Bullets::class.java)
     }
 }

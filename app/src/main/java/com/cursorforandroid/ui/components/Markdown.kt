@@ -40,7 +40,7 @@ import com.cursorforandroid.ui.theme.JetBrainsMono
 sealed interface MdBlock {
     data class Paragraph(val text: String) : MdBlock
     data class Heading(val level: Int, val text: String) : MdBlock
-    data class Bullets(val items: List<String>, val ordered: Boolean) : MdBlock
+    data class Bullets(val items: List<MdItem>) : MdBlock
     data class Code(val language: String?, val code: String) : MdBlock
     data class Quote(val text: String) : MdBlock
     data object Rule : MdBlock
@@ -50,10 +50,24 @@ sealed interface MdBlock {
     data class Video(val src: String, val poster: String?) : MdBlock
 }
 
+/**
+ * One line of a list. [depth] is how far it is nested (0 for the outer level) and [number] is the numeral to print,
+ * or null for a bullet.
+ */
+data class MdItem(val text: String, val depth: Int = 0, val number: Int? = null)
+
 object MarkdownParser {
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
-    private val bulletRegex = Regex("^\\s*[-*+]\\s+(.*)$")
-    private val orderedRegex = Regex("^\\s*\\d+[.)]\\s+(.*)$")
+    private val bulletRegex = Regex("^([ \\t]*)[-*+]\\s+(.*)$")
+    private val orderedRegex = Regex("^([ \\t]*)(\\d+)[.)]\\s+(.*)$")
+
+    /** Three or more of the same marker, spaces allowed between them: `---`, `----`, `***`, `___`, `- - -`. */
+    private val ruleRegex = Regex("^ {0,3}([-*_])[ \\t]*(?:\\1[ \\t]*){2,}$")
+
+    private fun isItem(line: String) = bulletRegex.matches(line) || orderedRegex.matches(line)
+
+    /** Leading whitespace as a column, so a tab-indented sublist nests like a space-indented one. */
+    private fun indentOf(whitespace: String): Int = whitespace.sumOf { if (it == '\t') 4 else 1 }
 
     fun parse(markdown: String): List<MdBlock> = parseWithStarts(markdown).blocks
 
@@ -115,7 +129,7 @@ object MarkdownParser {
                     val m = headingRegex.find(line)!!
                     emit(MdBlock.Heading(m.groupValues[1].length, m.groupValues[2].trim()), lineStart[i])
                 }
-                line.trim() == "---" || line.trim() == "***" -> {
+                ruleRegex.matches(line) -> {
                     flushParagraph()
                     emit(MdBlock.Rule, lineStart[i])
                 }
@@ -130,23 +144,50 @@ object MarkdownParser {
                     emit(MdBlock.Quote(quote.toString().trim()), start)
                     continue
                 }
-                bulletRegex.matches(line) || orderedRegex.matches(line) -> {
+                isItem(line) -> {
                     flushParagraph()
                     val start = lineStart[i]
-                    val ordered = orderedRegex.matches(line)
-                    val regex = if (ordered) orderedRegex else bulletRegex
-                    val items = mutableListOf<String>()
-                    while (i < lines.size && regex.matches(lines[i])) {
-                        val item = StringBuilder(regex.find(lines[i])!!.groupValues[1])
+                    val items = mutableListOf<MdItem>()
+                    // One entry per open level: the column its items start at, and the numeral the next ordered
+                    // item there prints. A sublist keeps the numbers its author wrote instead of restarting the
+                    // outer count, and a level resumed after a sublist carries on from where it left off.
+                    val columns = mutableListOf<Int>()
+                    val counters = mutableListOf<Int>()
+                    var outerOrdered: Boolean? = null
+                    while (i < lines.size && isItem(lines[i]) && !ruleRegex.matches(lines[i])) {
+                        val ordered = orderedRegex.find(lines[i])
+                        val bullet = ordered ?: bulletRegex.find(lines[i])!!
+                        val column = indentOf(bullet.groupValues[1])
+                        val first = if (ordered != null) ordered.groupValues[2].toIntOrNull() ?: 1 else 1
+                        // Swapping the marker at the outer level starts a new list, as it does in CommonMark: a
+                        // bullet list followed by "1." is two lists, not one with mixed markers.
+                        if (outerOrdered != null && column <= columns.first() && (ordered != null) != outerOrdered) break
+                        if (outerOrdered == null) outerOrdered = ordered != null
+
+                        while (columns.size > 1 && column < columns.last()) {
+                            columns.removeAt(columns.lastIndex)
+                            counters.removeAt(counters.lastIndex)
+                        }
+                        if (columns.isEmpty() || column > columns.last()) {
+                            columns += column
+                            counters += first
+                        } else {
+                            counters[counters.lastIndex]++
+                        }
+                        val depth = columns.lastIndex
+
+                        val text = StringBuilder(bullet.groupValues.last())
                         i++
-                        // continuation lines indented under the bullet
-                        while (i < lines.size && lines[i].isNotBlank() && lines[i].startsWith("  ") && !regex.matches(lines[i])) {
-                            item.append(' ').append(lines[i].trim())
+                        // Wrapped text belongs to the item above it; a line that starts its own marker does not.
+                        while (i < lines.size && lines[i].isNotBlank() && !isItem(lines[i]) &&
+                            !ruleRegex.matches(lines[i]) && lines[i].takeWhile { it.isWhitespace() }.let(::indentOf) >= column + 2
+                        ) {
+                            text.append(' ').append(lines[i].trim())
                             i++
                         }
-                        items += item.toString()
+                        items += MdItem(text.toString(), depth, if (ordered != null) counters[depth] else null)
                     }
-                    emit(MdBlock.Bullets(items, ordered), start)
+                    emit(MdBlock.Bullets(items), start)
                     continue
                 }
                 else -> {
@@ -345,15 +386,15 @@ fun MarkdownText(
                         InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp))
                     }
                     is MdBlock.Bullets -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        block.items.forEachIndexed { index, item ->
-                            Row {
+                        block.items.forEach { item ->
+                            Row(Modifier.padding(start = (item.depth * 16).dp)) {
                                 Text(
-                                    if (block.ordered) "${index + 1}." else "•",
+                                    item.number?.let { "$it." } ?: "•",
                                     style = style,
                                     color = colors.textTertiary,
                                     modifier = Modifier.width(22.dp),
                                 )
-                                InlineContent(item, style, color, modifier = Modifier.weight(1f))
+                                InlineContent(item.text, style, color, modifier = Modifier.weight(1f))
                             }
                         }
                     }
