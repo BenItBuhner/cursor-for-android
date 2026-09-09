@@ -1,6 +1,11 @@
 package com.cursorforandroid.data.local
 
 import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.CredentialInfo
@@ -8,12 +13,17 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -61,6 +71,69 @@ class PreferencesStoreTest {
         assertThat(prefs.oledBlack.first()).isTrue()
         assertThat(prefs.autoUpdate.first()).isFalse()
         assertThat(prefs.pinSyncEnabled.first()).isFalse()
+    }
+
+    @Test
+    fun `a pin the settings could not save is not reported as saved`() = runBlocking<Unit> {
+        val store = FailingWrites(ApplicationProvider.getApplicationContext())
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext(), store)
+
+        store.failing = true
+        assertThat(prefs.togglePinnedAwaitingServer("bc-1", recordPending = true)).isNull()
+        assertThat(prefs.localAgentState.first().pinnedIds).isEmpty()
+
+        store.failing = false
+        assertThat(prefs.togglePinnedAwaitingServer("bc-1", recordPending = true)).isTrue()
+        assertThat(prefs.localAgentState.first().pinnedIds).containsExactly("bc-1")
+    }
+
+    /**
+     * The sign-out cleanup can be the write that fails. Reporting it as done would leave the previous account's
+     * pins, read markers and identity to be read for the rest of the process and adopted by whoever signs in next.
+     */
+    @Test
+    fun `a sign-out cleanup that could not be written shows as cleared and is written later`() = runBlocking<Unit> {
+        val store = FailingWrites(ApplicationProvider.getApplicationContext())
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext(), store)
+        prefs.setCachedUser(CursorUser("key", "a@b.c", "A", "B", 7))
+        prefs.togglePinnedAwaitingServer("bc-1", recordPending = true)
+        prefs.markRead("bc-1", 42L)
+
+        store.failing = true
+        assertThat(prefs.clearSession()).isFalse()
+
+        // Nothing of the account is readable although it is all still in the file.
+        assertThat(prefs.cachedUser.first()).isNull()
+        assertThat(prefs.localAgentState.first().pinnedIds).isEmpty()
+        assertThat(prefs.localAgentState.first().readMarkers).isEmpty()
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
+        assertThat(store.data.first()[stringSetPreferencesKey("pinned_ids")]).containsExactly("bc-1")
+
+        // The next account's sign-in finishes the removal before its own state lands, so nothing is inherited.
+        store.failing = false
+        prefs.setCachedUser(CursorUser("next", "d@e.f", "D", "E", 8))
+        assertThat(store.data.first()[stringSetPreferencesKey("pinned_ids")]).isNull()
+        assertThat(prefs.cachedUser.first()?.email).isEqualTo("d@e.f")
+        assertThat(prefs.localAgentState.first().pinnedIds).isEmpty()
+        prefs.togglePinnedAwaitingServer("bc-2", recordPending = false)
+        assertThat(prefs.localAgentState.first().pinnedIds).containsExactly("bc-2")
+    }
+
+    /** The real store, with its writes refused on demand: what a full disk or an unreadable file does. */
+    private class FailingWrites(context: Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("failing_writes") },
+        )
+
+        @Volatile var failing = false
+
+        override val data: Flow<Preferences> get() = delegate.data
+
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+            if (failing) throw IOException("No space left on device")
+            return delegate.updateData(transform)
+        }
     }
 
     @Test

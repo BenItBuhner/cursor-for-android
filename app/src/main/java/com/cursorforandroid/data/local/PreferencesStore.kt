@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -45,15 +46,11 @@ private data class CachedUser(
 )
 
 /** Everything that is device-local: theme, list customization, pins, read markers and composer defaults. */
-class PreferencesStore(context: Context) {
-
-    private val store: DataStore<Preferences> = PreferenceDataStoreFactory.create(
-        // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read for the
-        // rest of the install's life; everything here is device-local and re-derivable, so it starts over instead.
-        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-        produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
-    )
+class PreferencesStore(
+    context: Context,
+    /** Injectable for tests only: a store whose writes fail, so a lost write can be told from one that landed. */
+    private val store: DataStore<Preferences> = settingsStore(context),
+) {
 
     /**
      * What every flow below reads. A settings file that cannot be read even after being replaced degrades to
@@ -66,13 +63,16 @@ class PreferencesStore(context: Context) {
         emit(emptyPreferences())
     }
 
-    /** A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. */
-    private suspend fun edit(transform: (MutablePreferences) -> Unit) {
-        runCatching { store.edit(transform) }.onFailure { t ->
+    /**
+     * A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. False when
+     * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so.
+     */
+    private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
+        runCatching { store.edit(transform); true }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
+            false
         }
-    }
 
     private object Keys {
         val theme = stringPreferencesKey("theme_mode")
@@ -101,6 +101,32 @@ class PreferencesStore(context: Context) {
         val pinSync = booleanPreferencesKey("pin_sync")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
+    }
+
+    /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
+    private val sessionKeys = listOf(
+        Keys.demoMode,
+        Keys.cachedUser,
+        Keys.signInMethod,
+        Keys.apiKeyExpiresAt,
+        Keys.pinsMigrated,
+        Keys.pendingPins,
+        Keys.pinned,
+        Keys.readMarkers,
+        Keys.launchedHere,
+    )
+
+    /**
+     * Set when [clearSession]'s transaction could not be written. The values it should have removed are then masked
+     * for the rest of this process — otherwise the flows below would go on serving the signed-out account's pins,
+     * read markers and identity from the file — and the removal is retried by the next sign-in and by the session
+     * restore of the next start, so a failed sign-out cleanup is neither re-exposed nor permanent.
+     */
+    @Volatile private var sessionClearFailed = false
+
+    /** [data] with a [clearSession] that could not reach the disk applied in memory. */
+    private val accountData: Flow<Preferences> = data.map { p ->
+        if (!sessionClearFailed) p else p.toMutablePreferences().apply { sessionKeys.forEach { this -= it } }
     }
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
@@ -139,12 +165,12 @@ class PreferencesStore(context: Context) {
     suspend fun setPinSyncEnabled(enabled: Boolean) = edit { it[Keys.pinSync] = enabled }
 
     /** True once this account's first sync has pushed the pins that were made on this device before syncing existed. */
-    val pinsMigrated: Flow<Boolean> = data.map { it[Keys.pinsMigrated] ?: false }
+    val pinsMigrated: Flow<Boolean> = accountData.map { it[Keys.pinsMigrated] ?: false }
 
     suspend fun setPinsMigrated(migrated: Boolean) = edit { it[Keys.pinsMigrated] = migrated }
 
     /** agentId -> pinned, for pin changes made here that the server has not acknowledged yet (offline, or a failed call). */
-    val pendingPinChanges: Flow<Map<String, Boolean>> = data.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
+    val pendingPinChanges: Flow<Map<String, Boolean>> = accountData.map { p -> p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap() }
 
     /** Records [pinned] as awaiting the server, or forgets the entry when [pinned] is null. */
     suspend fun setPendingPinChange(agentId: String, pinned: Boolean?) = edit { p ->
@@ -199,7 +225,7 @@ class PreferencesStore(context: Context) {
     private fun Preferences.listPreferences(): ListPreferences =
         this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
 
-    val localAgentState: Flow<LocalAgentState> = data.map { p ->
+    val localAgentState: Flow<LocalAgentState> = accountData.map { p ->
         LocalAgentState(
             pinnedIds = p[Keys.pinned] ?: emptySet(),
             readMarkers = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap(),
@@ -207,15 +233,15 @@ class PreferencesStore(context: Context) {
         )
     }
 
-    val demoMode: Flow<Boolean> = data.map { it[Keys.demoMode] ?: false }
+    val demoMode: Flow<Boolean> = accountData.map { it[Keys.demoMode] ?: false }
 
-    val cachedUser: Flow<CursorUser?> = data.map { p ->
+    val cachedUser: Flow<CursorUser?> = accountData.map { p ->
         p[Keys.cachedUser]?.let { runCatching { CursorJson.decodeFromString(CachedUser.serializer(), it) }.getOrNull() }
             ?.let { CursorUser(it.apiKeyName, it.email, it.firstName, it.lastName, it.userId, it.profilePictureUrl) }
     }
 
     /** How the stored key was obtained and when it lapses. A key stored before this was recorded counts as pasted. */
-    val credentialInfo: Flow<CredentialInfo?> = data.map { p ->
+    val credentialInfo: Flow<CredentialInfo?> = accountData.map { p ->
         val method = p[Keys.signInMethod]?.let { raw -> SignInMethod.entries.firstOrNull { it.name == raw } }
         method?.let { CredentialInfo(it, p[Keys.apiKeyExpiresAt]) }
     }
@@ -263,11 +289,12 @@ class PreferencesStore(context: Context) {
     /**
      * Flips [agentId]'s pin and, when [recordPending] is set, records what the flip produced as the state the server
      * still owes — both in one transaction, so two quick taps cannot each read the state before the other's flip and
-     * leave the device and the account disagreeing. Returns whether the agent is pinned now.
+     * leave the device and the account disagreeing. Returns whether the agent is pinned now, or null when the
+     * transaction could not be written and nothing at all changed.
      */
-    suspend fun togglePinnedAwaitingServer(agentId: String, recordPending: Boolean): Boolean {
+    suspend fun togglePinnedAwaitingServer(agentId: String, recordPending: Boolean): Boolean? {
         var pinned = false
-        edit { p ->
+        val written = edit { p ->
             val current = p[Keys.pinned] ?: emptySet()
             pinned = agentId !in current
             p[Keys.pinned] = if (pinned) current + agentId else current - agentId
@@ -276,7 +303,7 @@ class PreferencesStore(context: Context) {
                 p[Keys.pendingPins] = encodePendingPins(pending + (agentId to pinned))
             }
         }
-        return pinned
+        return pinned.takeIf { written }
     }
 
     suspend fun markRead(agentId: String, updatedAtMillis: Long) = edit { p ->
@@ -291,26 +318,35 @@ class PreferencesStore(context: Context) {
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
     }
 
-    suspend fun setDemoMode(enabled: Boolean) = edit { it[Keys.demoMode] = enabled }
+    suspend fun setDemoMode(enabled: Boolean): Boolean {
+        beginSession()
+        return edit { it[Keys.demoMode] = enabled }
+    }
 
-    suspend fun setCachedUser(user: CursorUser?) = edit { p ->
-        if (user == null) {
-            p.remove(Keys.cachedUser)
-        } else {
-            p[Keys.cachedUser] = CursorJson.encodeToString(
-                CachedUser.serializer(),
-                CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId, user.profilePictureUrl),
-            )
+    suspend fun setCachedUser(user: CursorUser?): Boolean {
+        beginSession()
+        return edit { p ->
+            if (user == null) {
+                p.remove(Keys.cachedUser)
+            } else {
+                p[Keys.cachedUser] = CursorJson.encodeToString(
+                    CachedUser.serializer(),
+                    CachedUser(user.apiKeyName, user.email, user.firstName, user.lastName, user.userId, user.profilePictureUrl),
+                )
+            }
         }
     }
 
-    suspend fun setCredentialInfo(info: CredentialInfo?) = edit { p ->
-        if (info == null) {
-            p.remove(Keys.signInMethod)
-            p.remove(Keys.apiKeyExpiresAt)
-        } else {
-            p[Keys.signInMethod] = info.method.name
-            if (info.expiresAtMs == null) p.remove(Keys.apiKeyExpiresAt) else p[Keys.apiKeyExpiresAt] = info.expiresAtMs
+    suspend fun setCredentialInfo(info: CredentialInfo?): Boolean {
+        beginSession()
+        return edit { p ->
+            if (info == null) {
+                p.remove(Keys.signInMethod)
+                p.remove(Keys.apiKeyExpiresAt)
+            } else {
+                p[Keys.signInMethod] = info.method.name
+                if (info.expiresAtMs == null) p.remove(Keys.apiKeyExpiresAt) else p[Keys.apiKeyExpiresAt] = info.expiresAtMs
+            }
         }
     }
 
@@ -324,20 +360,32 @@ class PreferencesStore(context: Context) {
             p[Keys.autoCreatePr] = autoCreatePr
         }
 
-    suspend fun clearSession() = edit { p ->
-        p.remove(Keys.demoMode)
-        p.remove(Keys.cachedUser)
-        p.remove(Keys.signInMethod)
-        p.remove(Keys.apiKeyExpiresAt)
-        // The next account starts its own migration and owes the server nothing of this one's pending changes.
-        p.remove(Keys.pinsMigrated)
-        p.remove(Keys.pendingPins)
-        // Pins, read markers and launched-here markers are the account's, not the device's: with pin sync off
-        // nothing would ever rewrite them, so they would outlive the account they belong to. The demo re-seeds
-        // its own pins on the way back in.
-        p.remove(Keys.pinned)
-        p.remove(Keys.readMarkers)
-        p.remove(Keys.launchedHere)
+    /**
+     * Removes everything the account owns, so the next one starts clean. False when the transaction could not be
+     * written; [sessionClearFailed] then keeps those values out of every flow for the rest of the process and the
+     * removal is retried, so a sign-out never leaves the previous account's state to be read again.
+     *
+     * The next account starts its own pin migration and owes the server nothing of this one's pending changes.
+     * Pins, read markers and launched-here markers are the account's, not the device's: with pin sync off nothing
+     * would ever rewrite them, so they would outlive the account they belong to. The demo re-seeds its own pins on
+     * the way back in.
+     */
+    suspend fun clearSession(): Boolean {
+        // Nothing of an account is on disk, so there is nothing to make durable — and the retry the next start makes
+        // for a clear that failed must not rewrite the file just to find that out.
+        if (!sessionClearFailed && data.first().let { p -> sessionKeys.none { p.contains(it) } }) return true
+        val written = edit { p -> sessionKeys.forEach { p -= it } }
+        sessionClearFailed = !written
+        return written
+    }
+
+    /**
+     * An account is being recorded. A cleanup the previous sign-out could not write is retried first: the mask that
+     * stood in for it is lifted here, and lifting it over a file that still held those values would show them.
+     */
+    private suspend fun beginSession() {
+        if (!sessionClearFailed) return
+        if (edit { p -> sessionKeys.forEach { p -= it } }) sessionClearFailed = false
     }
 
     private fun decodeMarkers(raw: String): Map<String, Long> =
@@ -363,3 +411,11 @@ class PreferencesStore(context: Context) {
         const val TAG = "PreferencesStore"
     }
 }
+
+private fun settingsStore(context: Context): DataStore<Preferences> = PreferenceDataStoreFactory.create(
+    // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read for the rest of
+    // the install's life; everything here is device-local and re-derivable, so it starts over instead.
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+    scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+    produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
+)

@@ -137,6 +137,9 @@ class SessionManager(
         // The encrypted key store initialises the Android Keystore on first access; never on the main thread.
         val key = withContext(Dispatchers.IO) { keyStore.apiKey() }
         if (key.isNullOrBlank()) {
+            // No key and not the demo: no account owns the settings a sign-out clears, so a clear that could not be
+            // written last time is tried again here rather than being inherited by whoever signs in next.
+            prefs.clearSession()
             _signedOutReason.value = when (keyStore.availability.value) {
                 SecureKeyStore.Availability.Encrypted -> null
                 SecureKeyStore.Availability.Reset -> KEY_STORE_RESET_MESSAGE
@@ -282,9 +285,10 @@ class SessionManager(
     }
 
     /**
-     * Signs out. False when the key's removal could not be made durable even after the store was started over, in
-     * which case a tombstone withholds it and [restore] retries on the next start: a sign-out never reports success
-     * while the key could come back.
+     * Signs out. False when the sign-out could not be made durable — the key's removal even after the store was
+     * started over, or the account's own settings — in which case a tombstone withholds the key, the settings are
+     * masked in memory, and [restore] retries both on the next start: a sign-out never reports success while
+     * anything of the account could come back.
      */
     suspend fun signOut(): Boolean {
         cancelCursorLogin()
@@ -294,10 +298,10 @@ class SessionManager(
         // The repositories bump their account generations and stop what is in flight in here, so nothing of this
         // account can still be about to write when the preferences it owns are cleared.
         runCatching { onSignedOut() }
-        prefs.clearSession()
+        val forgotten = prefs.clearSession()
         _backend.value = realBackend
         _state.value = SessionState.SignedOut
-        return cleared
+        return cleared && forgotten
     }
 
     /** The removal a previous sign-out could not prove, tried again, together with the cleanup that went with it. */
