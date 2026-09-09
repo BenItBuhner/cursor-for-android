@@ -61,7 +61,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.RunningGlyph
+import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
@@ -199,16 +199,15 @@ fun ConversationScreen(
                 if (showWorking) {
                     item("working") {
                         // A dropped connection is not the run's problem: the agent keeps working while the stream is
-                        // re-established, so the glyph keeps stepping and only the caption says what is going on.
+                        // re-established, so the caption keeps shimmering and only its wording says what is going on.
+                        // The caption is the whole indicator, as in the web chat: no glyph beside it.
                         val caption = when {
                             conversation.runStatus == RunStatus.CREATING -> "Starting…"
                             conversation.isReconnecting -> "Reconnecting…"
                             else -> "Working…"
                         }
-                        Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
-                            RunningGlyph(size = 16.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(caption, style = type.base, color = colors.textTertiary)
+                        Box(paneWidth) {
+                            ShimmerText(caption, style = type.base)
                         }
                     }
                 }
