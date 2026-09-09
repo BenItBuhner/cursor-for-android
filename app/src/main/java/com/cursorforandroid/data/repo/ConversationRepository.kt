@@ -186,6 +186,14 @@ class ConversationRepository(
         var launch: Deferred<Result<Launched>>? = null
         @Volatile var launching = false
         var attached = 0
+        /**
+         * Nothing can see the chat although a screen is still attached (see [pause]). A load that was already in
+         * flight when this went up finishes — its inputs are worth having — but must not open a stream or replay a
+         * log behind a screen nobody is looking at.
+         */
+        @Volatile var paused = false
+        /** The terminal runs whose traces [pause] turned away, replayed by [resume]. */
+        var deferredTraceRuns: List<RunDto> = emptyList()
         var lastUsedAt = AppClock.now()
         private var builtPrefix: Prefix? = null
         private var orderedFromRuns: List<RunDto>? = null
@@ -338,7 +346,10 @@ class ConversationRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.attached++
+            // A screen attaching can see the chat, whatever the last one that left had done.
+            e.paused = false
             if (e.attached == 1 && !e.launching) {
+                e.deferredTraceRuns = emptyList()
                 e.loadJob?.cancel()
                 e.loadJob = e.scope.launch {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
@@ -358,6 +369,8 @@ class ConversationRepository(
         synchronized(e) {
             e.attached = (e.attached - 1).coerceAtLeast(0)
             if (e.attached == 0) {
+                e.paused = false
+                e.deferredTraceRuns = emptyList()
                 e.loadJob?.cancel()
                 e.loadJob = null
                 e.traceJob?.cancel()
@@ -403,6 +416,8 @@ class ConversationRepository(
                 streamJob = null
                 traceJob = null
                 loadJob = null
+                paused = false
+                deferredTraceRuns = emptyList()
                 recordedFinishes.clear()
                 tracesRestored = false
                 transcriptUnavailable = false
@@ -426,6 +441,7 @@ class ConversationRepository(
         val e = synchronized(entries) { entries[agentId] } ?: return
         synchronized(e) {
             if (e.attached == 0) return
+            e.paused = true
             e.traceJob?.cancel()
             e.traceJob = null
             e.stopFollowing()
@@ -439,10 +455,16 @@ class ConversationRepository(
      */
     fun resume(agentId: String) {
         val e = synchronized(entries) { entries[agentId] } ?: return
-        val run = synchronized(e) {
-            if (e.attached == 0 || e.streamJob != null || e.launching) null else e.latestRun()?.takeIf { it.statusEnum().isActive }
+        val (run, deferred) = synchronized(e) {
+            if (e.attached == 0) return
+            e.paused = false
+            val deferred = e.deferredTraceRuns
+            e.deferredTraceRuns = emptyList()
+            val active = if (e.streamJob != null || e.launching) null else e.latestRun()?.takeIf { it.statusEnum().isActive }
+            active to deferred
         }
         if (run != null) startStreaming(e, e.agentId, run)
+        if (deferred.isNotEmpty()) loadTraces(e, agentId, deferred)
         revalidate(agentId)
     }
 
@@ -722,6 +744,14 @@ class ConversationRepository(
      * asked. Every trace that lands is written back, so it is asked for exactly once in the life of the install.
      */
     private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
+        // A load that was in flight when the screen went away arrives here; the replays wait for it to come back.
+        synchronized(e) {
+            if (e.paused) {
+                val held = e.deferredTraceRuns
+                e.deferredTraceRuns = held + finishedRuns.filterNot { run -> held.any { it.id == run.id } }
+                return
+            }
+        }
         e.traceJob?.cancel()
         val tokens = cacheTokens()
         e.traceJob = e.scope.launch {
@@ -790,9 +820,9 @@ class ConversationRepository(
                 }
         }
         val following = synchronized(e) {
-            // The last screen may have left while the load that got here was wrapping up: then nobody is looking,
-            // and the next attach decides afresh.
-            if (e.attached == 0) return@synchronized false
+            // The last screen may have left, or the one still attached been covered, while the load that got here
+            // was wrapping up: then nobody is looking, and the next attach or resume decides afresh.
+            if (e.attached == 0 || e.paused) return@synchronized false
             e.publish(mutate = { streamJob = job; live = null }, transform = { copy(activeRunId = run.id, runStatus = RunStatus.parse(run.status), isStreaming = true) })
             true
         }

@@ -1004,6 +1004,42 @@ class ConversationRepositoryTest {
             .isEqualTo("Working on it.")
     }
 
+    /**
+     * The screen can go away while the load is still waiting on the network. Nothing can see the chat by the time
+     * that answer arrives, so the load must not be the thing that opens a stream or replays a log behind it.
+     */
+    @Test
+    fun `a load that answers after the screen went away opens nothing until it is back`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        val startedAt = "2026-04-13T20:00:00.000Z"
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = startedAt, updatedAt = startedAt)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = startedAt)
+        agents.refresh()
+        // run-1's retained log reads to its end, so a replay pass would settle and write its trace.
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val conversations = repository()
+        api.conversationGate = CompletableDeferred()
+        conversations.attach("bc-1")
+        awaitUntil { api.conversationCalls == 1 }
+        conversations.pause("bc-1")
+        api.conversationGate!!.complete(Unit)
+
+        // The inputs the load fetched are still worth having; the stream and the replay are not started for them.
+        awaitUntil { conversations.state("bc-1").value.items.any { it is UserMessage } }
+        delay(150)
+        assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+        assertThat(streamer.connections).doesNotContain("run-2")
+        assertThat(traces.read("bc-1")).isEmpty()
+
+        // Back on screen: the run is followed and the replay the pause turned away runs now.
+        conversations.resume("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        awaitUntil { traces.read("bc-1").keys == setOf("run-1") }
+    }
+
     @Test
     fun `a run whose status this build cannot read does not leave the chat working`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
