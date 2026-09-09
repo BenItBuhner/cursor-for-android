@@ -73,7 +73,6 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.MarkdownText
-import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
@@ -449,21 +448,16 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 
 @Composable
 private fun RunFooterView(item: RunFooter, modifier: Modifier) {
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val label = when (item.status) {
-            RunStatus.ERROR -> "Failed after"
-            RunStatus.CANCELLED -> "Cancelled after"
-            RunStatus.EXPIRED -> "Expired after"
-            else -> "Worked"
-        }
-        val duration = TimeFormat.duration(item.durationMs)
-        if (duration != null || item.status != RunStatus.FINISHED) SummaryLine(label, duration ?: item.status.name.lowercase())
-        // Only the branches: the pull request is the header button's job, so the footer never repeats it.
-        val pushed = item.branches.mapNotNull { it.branch }
-        if (pushed.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                pushed.forEach { branch -> Pill(text = branch, icon = CursorIcons.GitBranch) }
-            }
-        }
+    val label = when (item.status) {
+        RunStatus.ERROR -> "Failed after"
+        RunStatus.CANCELLED -> "Cancelled after"
+        RunStatus.EXPIRED -> "Expired after"
+        else -> "Worked"
+    }
+    val duration = TimeFormat.duration(item.durationMs)
+    // Duration and status only. The header already names the branch and owns the pull-request button; repeating
+    // either as a pill under every reply is just noise.
+    if (duration != null || item.status != RunStatus.FINISHED) {
+        SummaryLine(label, duration ?: item.status.name.lowercase(), modifier)
     }
 }
