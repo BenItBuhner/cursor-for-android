@@ -203,15 +203,25 @@ class NewAgentViewModelTest {
     }
 
     @Test
-    fun `choosing Default is restored as Default, not as the first model`() {
+    fun `a saved Default choice is restored as the first model`() {
         val first = loaded()
         first.selectModel(null, null)
         first.launchAndWait()
 
         val second = loaded()
-        assertThat(second.state.value.selectedModel).isNull()
-        assertThat(second.state.value.selectedVariant).isNull()
-        assertThat(second.state.value.modelLabel).isEqualTo("Default model")
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
+        assertThat(second.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
+    }
+
+    @Test
+    fun `pinning a model persists across composers`() = runBlocking<Unit> {
+        val first = loaded()
+        val grok = first.state.value.models.first { it.id == "cursor-grok-4.6" }
+        first.togglePinnedModel(grok.id)
+        awaitUntil { grok.id in first.state.value.pinnedModelIds }
+        val second = loaded()
+        awaitUntil { grok.id in second.state.value.pinnedModelIds }
+        assertThat(second.state.value.pinnedModelIds).containsExactly(grok.id)
     }
 
     @Test
@@ -271,6 +281,21 @@ class NewAgentViewModelTest {
         vm.selectRepo(vm.repo("visual-engine"))
         assertThat(vm.state.value.branches.map { it.name }).containsNoneOf("cursor/cli-exploration-9c1d", "cursor/deps-bump-2f3a")
         assertThat(vm.state.value.branches.map { it.name }).contains("cursor/house-environment-7b3e")
+    }
+
+    @Test
+    fun `the repository picker pins repositories with recent agent activity newest first`() {
+        val vm = loadedWithAgents()
+        // Demo chats from the last day cover every catalogue repository; none is older than a week, so the recent
+        // block is the whole list, ordered by the newest chat in each repository — not the alphabetical catalogue.
+        assertThat(vm.state.value.recentRepositories.map { it.shortName }).containsExactly(
+            "cursor-for-android",
+            "visual-engine",
+            "codex-poly-bot",
+            "market-replay",
+            "cesium",
+            "zen-parity",
+        ).inOrder()
     }
 
     @Test

@@ -308,6 +308,8 @@ fun ConversationScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = picker.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
             // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
             // (started elsewhere), or no longer offered. It reads as the label when there is one.
             noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),

@@ -186,6 +186,7 @@ fun HomeScreen(
     if (repoSheet) {
         RepositorySheet(
             repos = state.repositories,
+            recent = state.recentRepositories,
             selected = state.selectedRepo,
             noRepo = state.noRepo,
             loading = state.isLoadingRepos,
@@ -228,6 +229,8 @@ fun HomeScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = state.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
         )
     }
 }
@@ -308,6 +311,7 @@ private fun PreviewCard(row: AgentRow) {
 @Composable
 private fun RepositorySheet(
     repos: List<Repository>,
+    recent: List<Repository>,
     selected: Repository?,
     noRepo: Boolean,
     loading: Boolean,
@@ -331,7 +335,10 @@ private fun RepositorySheet(
         SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
         Spacer(Modifier.height(6.dp))
         // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.
-        val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
+        fun matches(repo: Repository) = repo.slug.contains(filter, ignoreCase = true)
+        val recentVisible = recent.distinctBy { it.url }.filter(::matches)
+        val recentSlugs = recent.map { it.slug.lowercase() }.toSet()
+        val restVisible = repos.distinctBy { it.url }.filter { matches(it) && it.slug.lowercase() !in recentSlugs }
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             item("none") {
                 SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
@@ -345,12 +352,21 @@ private fun RepositorySheet(
                     )
                 }
             }
-            if (visible.isEmpty() && repos.isNotEmpty()) {
+            if (recentVisible.isEmpty() && restVisible.isEmpty() && repos.isNotEmpty()) {
                 item("no-match") {
                     Text("No repositories match \"$filter\"", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
             }
-            items(visible, key = { it.url }) { repo ->
+            items(recentVisible, key = { "recent:${it.url}" }) { repo ->
+                SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
+            }
+            // Recent activity (last week, at most ten) sits above the catalogue; the hairline is the only mark.
+            if (recentVisible.isNotEmpty() && restVisible.isNotEmpty()) {
+                item("recent-divider") {
+                    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+                }
+            }
+            items(restVisible, key = { it.url }) { repo ->
                 SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
             }
         }

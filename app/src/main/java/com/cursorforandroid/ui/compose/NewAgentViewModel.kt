@@ -19,8 +19,10 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +36,11 @@ data class NewAgentUiState(
     val prompt: String = "",
     val attachments: List<PendingAttachment> = emptyList(),
     val repositories: List<Repository> = emptyList(),
+    /**
+     * Repositories an agent has been active in within the last week, newest first, at most ten. Empty when nothing
+     * has been touched recently — the picker then lists the catalogue alone, without a recent block.
+     */
+    val recentRepositories: List<Repository> = emptyList(),
     val selectedRepo: Repository? = null,
     val noRepo: Boolean = false,
     /** The branch (or commit) the agent starts from; blank leaves it to the repository's default branch. */
@@ -59,12 +66,14 @@ data class NewAgentUiState(
     val isLoadingModels: Boolean = false,
     val error: String? = null,
     val reposUnavailable: Boolean = false,
-    /** `GET /v1/models` failed and nothing is cached; the picker offers a retry and "Default" keeps working. */
+    /** `GET /v1/models` failed and nothing is cached; the picker offers a retry. */
     val modelsUnavailable: Boolean = false,
+    /** Model ids pinned in the picker, most recently pinned first. */
+    val pinnedModelIds: List<String> = emptyList(),
 ) {
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
     /** The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. */
-    val modelLabel: String get() = selectedModel?.displayName ?: "Default model"
+    val modelLabel: String get() = selectedModel?.displayName ?: "Model"
     val deviceLabel: String get() = selectedDevice.label
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
@@ -102,7 +111,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             // every later page, launch or finished run may teach the picker a branch.
             graph.agents.state.collect { s ->
                 agents = s.agents
-                _state.update { it.withBranches().withDevices() }
+                _state.update { it.withPickerLists() }
             }
         }
         // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
@@ -110,7 +119,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
-            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main", selectedDevice = loaded.env, isLoadingDevices = true).withDevices() }
+            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main", selectedDevice = loaded.env, isLoadingDevices = true).withPickerLists() }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
             graph.catalog.restoreFromCache()
@@ -118,6 +127,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             launch { loadRepositories(loaded.repoUrl) }
             launch { loadModels() }
             launch { loadDevices() }
+        }
+        viewModelScope.launch {
+            graph.prefs.pinnedModelIds.collect { ids -> _state.update { it.copy(pinnedModelIds = ids) } }
         }
     }
 
@@ -135,9 +147,11 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
         _state.update { s ->
             val selected = s.selectedRepo ?: repos.firstOrNull { it.url == preferredUrl } ?: repos.firstOrNull()
-            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withBranches()
+            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withPickerLists()
         }
     }
+
+    private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withBranches().withRecentRepos().withDevices()
 
     private fun NewAgentUiState.withBranches(): NewAgentUiState {
         val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
@@ -146,6 +160,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     private fun NewAgentUiState.withDevices(): NewAgentUiState =
         copy(devices = KnownDevices.compose(agents, liveDevices, selectedDevice))
+
+    private fun NewAgentUiState.withRecentRepos(): NewAgentUiState =
+        copy(recentRepositories = RecentRepositories.partition(repositories, agents, AppClock.now()).recent)
 
     private suspend fun loadModels(force: Boolean = false) {
         // The saved list shows right away (the picker spins in its header while it is revalidated).
@@ -160,17 +177,17 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     /**
      * Adopts a freshly loaded model list. A selection already made on this screen is re-resolved against the new
-     * instances; otherwise the last launch's choice is restored — "Default" stays "Default", and a variant is matched
-     * on its exact parameters, so a parameter-less variant is not swapped for the model's default one — and a
-     * user who has never picked anything starts on the first recommended model. A list that lacks the wanted model
-     * (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it rather than the
-     * stand-in.
+     * instances; otherwise the last launch's choice is restored — a variant is matched on its exact parameters, so a
+     * parameter-less variant is not swapped for the model's default one — and a user who has never picked anything
+     * (or who last launched with the old "Default" choice) starts on the first recommended model. A list that lacks
+     * the wanted model (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it
+     * rather than the stand-in.
      */
     private fun NewAgentUiState.withModels(models: List<ModelOption>): NewAgentUiState {
         val remembered = defaults
         val (wantedId, wantedParams) = when {
             modelSelectionResolved -> selectedModel?.id to selectedVariant?.params?.associate { it.id to it.value }
-            remembered?.modelChosen == true -> remembered.modelId to remembered.modelParams
+            remembered?.modelChosen == true && remembered.modelId != null -> remembered.modelId to remembered.modelParams
             else -> models.firstOrNull()?.id to null
         }
         val model = wantedId?.let { id -> models.firstOrNull { it.id == id } ?: models.firstOrNull() }
@@ -195,16 +212,19 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
      */
     fun selectRepo(repo: Repository?) = _state.update { s ->
         val sameRepo = repo != null && !s.noRepo && repo.url == s.selectedRepo?.url
-        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withBranches()
+        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withPickerLists()
         val keepRef = sameRepo || repo == null || s.ref.isBlank() || next.branches.any { it.name == s.ref.trim() }
         if (keepRef) next else next.copy(ref = "")
     }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         // An explicit pick settles the selection: a list arriving afterwards re-resolves it, never the remembered one.
+        // There is no "Default" model; a null pick lands on the first catalog entry.
         modelSelectionResolved = true
-        _state.update { it.copy(selectedModel = model, selectedVariant = variant ?: model?.defaultVariant) }
+        val chosen = model ?: _state.value.models.firstOrNull()
+        _state.update { it.copy(selectedModel = chosen, selectedVariant = variant ?: chosen?.defaultVariant) }
     }
+    fun togglePinnedModel(modelId: String) = viewModelScope.launch { graph.prefs.togglePinnedModel(modelId) }
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
     fun selectDevice(device: DeviceTarget) = _state.update { it.copy(selectedDevice = device).withDevices() }
@@ -296,8 +316,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         if (waiting.isEmpty() || !_state.value.isFree) return
         val draft = waiting.removeFirst()
         launchNonce = draft.failed.nonce
-        // "Default", or a model the list has: the pick is settled, and a list arriving later re-resolves it rather
-        // than the remembered one.
+        // A model the list has, or a launch that sent none: the pick is settled, and a list arriving later
+        // re-resolves it rather than the remembered one.
         if (_state.value.resolvesModelOf(draft.failed.request)) modelSelectionResolved = true
         _state.update { it.restored(draft) }
     }
@@ -319,21 +339,21 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             noRepo = request.repoUrl == null,
             selectedRepo = repo ?: selectedRepo,
             ref = request.ref ?: "",
-            selectedModel = if (modelResolved) model else selectedModel,
+            selectedModel = if (modelResolved) model ?: models.firstOrNull() else selectedModel,
             selectedVariant = when {
                 !modelResolved -> selectedVariant
-                model == null -> null
-                else -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
+                model != null -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
+                else -> models.firstOrNull()?.defaultVariant
             },
             autoCreatePr = request.autoCreatePr,
             planMode = request.planMode,
             selectedDevice = request.env,
-        ).withBranches().withDevices()
+        ).withPickerLists()
     }
 
     private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }
 
-    /** True when [request]'s model is "Default" or one the current list has, so the composer can show it as picked. */
+    /** True when [request]'s model is one the current list has, or the launch sent none, so the composer can show it as picked. */
     private fun NewAgentUiState.resolvesModelOf(request: LaunchRequest): Boolean = request.modelId == null || modelFor(request) != null
 
     /** A failed launch's draft with its images ready for the strip again. */
