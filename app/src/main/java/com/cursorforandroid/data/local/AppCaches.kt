@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.local
 
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
@@ -157,6 +158,7 @@ class TraceCache(
     private val cache: JsonDiskCache,
     private val maxAgents: Int = MAX_AGENTS,
     private val maxRunsPerAgent: Int = MAX_RUNS_PER_AGENT,
+    private val maxBytesPerAgent: Int = MAX_BYTES_PER_AGENT,
 ) {
     /** One writer per agent at a time: adding a run is a read-merge-write of the agent's file. */
     private val locks = ConcurrentHashMap<String, Mutex>()
@@ -172,8 +174,24 @@ class TraceCache(
             val merged = (read(agentId) + traces.associate { it.runId to it.compact() }).values
                 .sortedByDescending { it.createdAtMillis }
                 .take(maxRunsPerAgent)
-            if (cache.write(agentId, CachedTraces.serializer(), VERSION, CachedTraces(agentId, merged), token)) cache.prune(maxAgents)
+            val kept = CachedTraces(agentId, withinBudget(merged))
+            if (cache.write(agentId, CachedTraces.serializer(), VERSION, kept, token)) cache.prune(maxAgents)
         }
+    }
+
+    /**
+     * The newest of [traces] — already ordered newest first — that fit the agent's byte budget. A trace is as long
+     * as the run's log, so a count alone does not bound the file; the oldest are let go of until it does.
+     */
+    private fun withinBudget(traces: List<CachedTrace>): List<CachedTrace> {
+        var used = 0
+        val kept = ArrayList<CachedTrace>(traces.size)
+        for (trace in traces) {
+            used += CursorJson.encodeToString(CachedTrace.serializer(), trace).length
+            if (kept.isNotEmpty() && used > maxBytesPerAgent) break
+            kept += trace
+        }
+        return kept
     }
 
     /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
@@ -192,8 +210,15 @@ class TraceCache(
     private companion object {
         const val VERSION = 1
         const val MAX_AGENTS = 200
-        /** Matches the page of runs the conversation loads; older runs are never asked for. */
-        const val MAX_RUNS_PER_AGENT = 50
+        /**
+         * Matches how deep the conversation pages its runs, so every run whose trace the load replays can be kept:
+         * keeping fewer meant a long chat replayed the same logs on every open and then lost them for good once
+         * they expired.
+         */
+        const val MAX_RUNS_PER_AGENT = 400
+
+        /** How much of one agent's traces is worth keeping; past this the oldest go, however few runs that is. */
+        const val MAX_BYTES_PER_AGENT = 2 shl 20
     }
 }
 
