@@ -7,12 +7,18 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 /**
- * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key, the GitHub token that reads
- * pull request states, and the MCP server definitions (their headers and environment variables hold credentials).
+ * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key and the MCP server definitions
+ * (their headers and environment variables hold credentials).
  */
 class SecureKeyStore(private val context: Context) {
 
-    private val prefs: SharedPreferences by lazy { create() }
+    private val prefs: SharedPreferences by lazy {
+        create().also { prefs ->
+            // A GitHub token saved by an earlier version, back when pull request states had a GitHub fallback: nothing
+            // reads it any more, and a credential nothing reads has no business staying on the device.
+            if (prefs.contains(LEGACY_KEY_GITHUB_TOKEN)) prefs.edit().remove(LEGACY_KEY_GITHUB_TOKEN).apply()
+        }
+    }
 
     private fun create(): SharedPreferences = try {
         val masterKey = MasterKey.Builder(context, MasterKey.DEFAULT_MASTER_KEY_ALIAS)
@@ -52,26 +58,9 @@ class SecureKeyStore(private val context: Context) {
         }.apply()
     }
 
-    @Volatile
-    private var cachedGitHubToken: String? = null
-
-    /**
-     * The GitHub token pull request states are read with; null without one (public repositories still answer). Like
-     * the MCP definitions it belongs to the device rather than the Cursor account, so signing out leaves it alone.
-     */
-    fun gitHubToken(): String? = cachedGitHubToken ?: prefs.getString(KEY_GITHUB_TOKEN, null)?.also { cachedGitHubToken = it }
-
-    fun setGitHubToken(token: String?) {
-        val trimmed = token?.trim()?.takeIf { it.isNotEmpty() }
-        cachedGitHubToken = trimmed
-        prefs.edit().apply {
-            if (trimmed == null) remove(KEY_GITHUB_TOKEN) else putString(KEY_GITHUB_TOKEN, trimmed)
-        }.apply()
-    }
-
     private companion object {
         const val KEY_API_KEY = "api_key"
         const val KEY_MCP_SERVERS = "mcp_servers"
-        const val KEY_GITHUB_TOKEN = "github_token"
+        const val LEGACY_KEY_GITHUB_TOKEN = "github_token"
     }
 }
