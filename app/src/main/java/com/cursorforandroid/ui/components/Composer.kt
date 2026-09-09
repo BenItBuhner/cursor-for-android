@@ -142,7 +142,9 @@ fun ComposerBox(
             },
         )
         Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
+        // The footer's designed height is a minimum: the model chip and anything [footerExtra] adds are sp-sized, and
+        // an exact constraint here would hold them to 28dp however much taller they asked to be.
+        Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
                 var menuOpen by rememberSaveable { mutableStateOf(false) }
                 // The Box is the anchor: the menu drops from the "+" like the web's popover.
