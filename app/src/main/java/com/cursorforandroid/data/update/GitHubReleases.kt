@@ -132,8 +132,12 @@ class GitHubReleasesClient(
     private val apiBaseUrl: String = API_BASE_URL,
     private val json: Json = CursorJson,
     private val now: () -> Long = AppClock::now,
-    /** Seam for tests: free bytes on the filesystem a download would land on. */
-    private val freeSpace: (File) -> Long = { it.usableSpace },
+    /**
+     * Bytes a download may still count on where it is being written. Supplied rather than defaulted so that no
+     * caller can end up without the check by accident; the device answer is
+     * [com.cursorforandroid.update.allocatableBytes].
+     */
+    private val freeSpace: (File) -> Long,
 ) {
     sealed interface ReleasesFetch {
         data class Changed(val releases: List<GitHubReleaseDto>, val etag: String?) : ReleasesFetch

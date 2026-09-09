@@ -33,7 +33,14 @@ class GitHubReleasesClientTest {
     fun setUp() {
         server.start()
         val http = OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).build()
-        client = GitHubReleasesClient(http, GitHubFixtures.OWNER_REPO, apiBaseUrl = server.url("/").toString(), now = { now })
+        client = GitHubReleasesClient(
+            http,
+            GitHubFixtures.OWNER_REPO,
+            apiBaseUrl = server.url("/").toString(),
+            now = { now },
+            // A device with room; the tests that are about running out build their own client.
+            freeSpace = { Long.MAX_VALUE / 2 },
+        )
     }
 
     @After

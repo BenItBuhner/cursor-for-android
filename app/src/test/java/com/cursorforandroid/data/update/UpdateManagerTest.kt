@@ -115,7 +115,13 @@ class UpdateManagerTest {
     }
 
     private fun manager(backgroundIdleMs: Long = 0L): UpdateManager = UpdateManager(
-        client = GitHubReleasesClient(OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(), GitHubFixtures.OWNER_REPO, apiBaseUrl = server.url("/").toString()),
+        client = GitHubReleasesClient(
+            OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(),
+            GitHubFixtures.OWNER_REPO,
+            apiBaseUrl = server.url("/").toString(),
+            // Free space is GitHubReleasesClientTest's subject; here every download has room.
+            freeSpace = { Long.MAX_VALUE / 2 },
+        ),
         prefs = prefs,
         cache = cache,
         platform = platform,

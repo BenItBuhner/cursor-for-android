@@ -41,6 +41,7 @@ import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
+import com.cursorforandroid.update.allocatableBytes
 import java.io.File
 
 /** Hand-rolled dependency graph. Small enough that a DI framework would only add build time. */
@@ -140,7 +141,12 @@ class AppGraph(
      * cache and downloads sit next to (not inside) [caches], so signing out leaves them alone.
      */
     val updates = UpdateManager(
-        client = GitHubReleasesClient(CursorApiFactory.updateClient(), BuildConfig.GITHUB_REPO, apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL),
+        client = GitHubReleasesClient(
+            CursorApiFactory.updateClient(),
+            BuildConfig.GITHUB_REPO,
+            apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
+            freeSpace = { allocatableBytes(context, it) },
+        ),
         prefs = prefs,
         cache = UpdateCache(JsonDiskCache(File(context.applicationContext.cacheDir, "update-check"))),
         platform = AndroidUpdatePlatform(context),

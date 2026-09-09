@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.storage.StorageManager
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -112,6 +113,18 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
+
+/**
+ * Bytes an update download may count on landing in [dir], for
+ * [com.cursorforandroid.data.update.GitHubReleasesClient]. `getAllocatableBytes` rather than `File.getUsableSpace`
+ * because the download goes into the cache directory and the system will clear other apps' cached data to make room:
+ * the usable figure alone would refuse updates on devices that do have space for them. Falls back to the usable
+ * figure when the path is not on a volume the storage manager knows.
+ */
+internal fun allocatableBytes(context: Context, dir: File): Long = runCatching {
+    val storage = context.getSystemService(StorageManager::class.java) ?: return@runCatching dir.usableSpace
+    storage.getAllocatableBytes(storage.getUuidForPath(dir))
+}.getOrElse { dir.usableSpace }
 
 /** `PendingIntent` flags: `PackageInstaller` fills in the status extras, so the intent must stay mutable. */
 internal fun statusPendingIntentFlags(): Int =
