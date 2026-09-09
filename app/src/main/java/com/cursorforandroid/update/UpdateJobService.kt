@@ -64,6 +64,18 @@ class UpdateJobService : JobService() {
         const val JOB_ID = 0x55504431
         val PERIOD_MS: Long = TimeUnit.HOURS.toMillis(12)
 
+        /**
+         * The slice at the *end* of each period the run may fall in. Without it the period is its own flex, and a
+         * freshly scheduled job's first window opens immediately: the scheduler dispatches [onStartJob] into the
+         * main thread of the launch that just scheduled it, seconds after the first frame. That callback has a
+         * deadline, and a launch that is still hydrating its first screen can miss it — an ANR, not a slow start.
+         * With a flex the first window cannot open until [PERIOD_MS] minus this, long after any launch is over.
+         *
+         * Nothing waits on it: [UpdateCoordinator] checks for updates whenever the app comes forward, so the job
+         * only matters for a device the app is not opened on, where an eleven-hour-later first check costs nothing.
+         */
+        val FLEX_MS: Long = TimeUnit.HOURS.toMillis(1)
+
         fun isScheduled(context: Context): Boolean = scheduler(context)?.getPendingJob(JOB_ID) != null
 
         /** Idempotent: an already scheduled job keeps its timing rather than being reset. */
@@ -71,7 +83,7 @@ class UpdateJobService : JobService() {
             val scheduler = scheduler(context) ?: return
             if (scheduler.getPendingJob(JOB_ID) != null) return
             val job = JobInfo.Builder(JOB_ID, ComponentName(context, UpdateJobService::class.java))
-                .setPeriodic(PERIOD_MS)
+                .setPeriodic(PERIOD_MS, FLEX_MS)
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setRequiresBatteryNotLow(true)
                 .setPersisted(true)

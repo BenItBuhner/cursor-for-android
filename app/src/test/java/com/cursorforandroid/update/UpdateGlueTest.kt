@@ -59,6 +59,11 @@ class UpdateGlueTest {
         assertThat(scheduler.allPendingJobs).hasSize(1)
         assertThat(job.isPeriodic).isTrue()
         assertThat(job.intervalMillis).isEqualTo(UpdateJobService.PERIOD_MS)
+        // The run belongs in a slice at the end of the period, never in the one that starts the moment the job is
+        // scheduled: that window opens during the launch doing the scheduling, and onStartJob is dispatched into a
+        // main thread that is still building the first screen. A flex equal to the period is what makes it immediate.
+        assertThat(job.flexMillis).isEqualTo(UpdateJobService.FLEX_MS)
+        assertThat(job.flexMillis).isLessThan(job.intervalMillis)
         assertThat(job.networkType).isEqualTo(JobInfo.NETWORK_TYPE_ANY)
         assertThat(job.isPersisted).isTrue()
         assertThat(job.isRequireBatteryNotLow).isTrue()
