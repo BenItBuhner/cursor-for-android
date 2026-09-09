@@ -1,5 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
@@ -21,7 +25,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -33,6 +40,7 @@ import org.robolectric.annotation.Config
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
@@ -76,9 +84,34 @@ class PinRepositoryTest {
         }
     }
 
+    /** The real settings store, with its reads held up and its writes refused on demand. */
+    private class GatedSettings(context: android.content.Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("pin_repository_test") },
+        )
+
+        /** Awaited by every read while set, so a test can stop a caller between what it reads and what it writes. */
+        @Volatile var readGate: CompletableDeferred<Unit>? = null
+        val reads = AtomicInteger()
+        @Volatile var writesFail = false
+
+        override val data: Flow<Preferences> = flow {
+            reads.incrementAndGet()
+            readGate?.await()
+            emitAll(delegate.data)
+        }
+
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+            if (writesFail) throw IOException("No space left on device")
+            return delegate.updateData(transform)
+        }
+    }
+
     private val api = FakeCursorApi()
     private val pinsApi = FakePinsApi()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private lateinit var settings: GatedSettings
     private lateinit var prefs: PreferencesStore
     private lateinit var session: SessionManager
     private lateinit var agents: AgentRepository
@@ -88,7 +121,8 @@ class PinRepositoryTest {
     @Before
     fun setUp() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        prefs = PreferencesStore(context)
+        settings = GatedSettings(context)
+        prefs = PreferencesStore(context, settings)
         val backend = CursorBackend(api, FakeRunStreamer(), isDemo = false)
         session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, FakeRunStreamer(), isDemo = true))
         agents = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10)
@@ -363,6 +397,48 @@ class PinRepositoryTest {
         assertThat(pinnedIds()).containsExactly("bc-3")
         assertThat(handed).isEmpty()
         assertThat(prefs.pendingPinChanges.first()).isEmpty()
+    }
+
+    /**
+     * The pin the user asked for is a preference write like any other, and it can be the one that fails. Reporting
+     * it as done would leave the sidebar and the account disagreeing about a pin nobody ever made.
+     */
+    @Test
+    fun `a pin the settings could not save is reported as failed, not as pinned`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        settings.writesFail = true
+
+        val result = pins.toggle("bc-1")
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(IOException::class.java)
+        settings.writesFail = false
+        assertThat(pinnedIds()).isEmpty()
+        assertThat(pinsApi.pinCalls).isEmpty()
+    }
+
+    /**
+     * The tap has read what it needs and is about to flip the pin when the sign-out lands. The flip must not happen
+     * after it: the preferences are cleared as part of that sign-out, so a pin written afterwards is the previous
+     * account's state left sitting in the next one's.
+     */
+    @Test
+    fun `a pin tapped for the previous account is never flipped into the next one's`() = runBlocking<Unit> {
+        prefs.setPinsMigrated(true)
+        val before = settings.reads.get()
+        settings.readGate = CompletableDeferred()
+
+        val tap = scope.launch { assertThat(pins.toggle("bc-1").isSuccess).isTrue() }
+        awaitUntil { settings.reads.get() > before }
+        // reset() takes the same lock the flip does, so this returning means no flip is half-done behind it.
+        pins.reset()
+        settings.readGate!!.complete(Unit)
+        settings.readGate = null
+        tap.join()
+
+        assertThat(pinnedIds()).isEmpty()
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
+        assertThat(pinsApi.pinCalls).isEmpty()
     }
 
     @Test

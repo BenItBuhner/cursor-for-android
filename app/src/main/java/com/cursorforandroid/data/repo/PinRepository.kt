@@ -127,8 +127,10 @@ class PinRepository(
      * cancelled and, since a response can already be on its way back, the generation it captured is invalidated so
      * it cannot write the previous account's pins into this one's state, preferences or rows.
      */
-    fun reset() {
-        generation.incrementAndGet()
+    suspend fun reset() {
+        // Bumped under the lock the local flip holds, so a tap cannot find the generation current and then write the
+        // previous account's pin: either it has already flipped and this invalidates its round, or it sees this one.
+        localMutex.withLock { generation.incrementAndGet() }
         work.cancel()
         work = workScope()
         halted = false
@@ -145,15 +147,19 @@ class PinRepository(
      * reached, at the next sync. The result says whether the server has it — the pin itself has already been applied.
      */
     suspend fun toggle(agentId: String): Result<Unit> {
+        // Captured before anything is read or written for this tap, so a sign-out in between invalidates all of it.
+        val startedIn = generation.get()
         val eligible = eligible()
         // The flip and the wish it records are one transaction: two taps in quick succession cannot both read the
         // state before the other's flip has landed. The revision then orders the wishes they left behind.
         val tapRevision = localMutex.withLock {
+            // The account this tap belongs to has been signed out; its pin is not the next one's to inherit.
+            if (generation.get() != startedIn) return Result.success(Unit)
             prefs.togglePinnedAwaitingServer(agentId, recordPending = eligible)
+                ?: return Result.failure(IOException("This device couldn't save the pin."))
             revision.incrementAndGet().also { revisions[agentId] = it }
         }
         if (!eligible) return Result.success(Unit)
-        val startedIn = generation.get()
         return serverMutex.withLock {
             // What the wish is now, not what it was at the tap: a tap that landed while this one waited its turn is
             // the state the server should end up in, and it makes no difference which of the two gets here first.
