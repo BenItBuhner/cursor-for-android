@@ -106,6 +106,7 @@ fun Sidebar(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var searching by rememberSaveable { mutableStateOf(false) }
+    var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
     val focusRequester = remember { FocusRequester() }
 
     Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
@@ -167,18 +168,28 @@ fun Sidebar(
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
                 state.sections.forEach { section ->
+                    val expanded = section.key !in collapsedKeys
                     item("hdr-${section.key}") {
-                        GroupLabel(section.title, Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
-                    }
-                    items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
-                        AgentRowItem(
-                            row = row,
-                            selected = row.agent.id == selectedAgentId,
-                            prefs = state.prefs,
-                            actions = callbacks.rowActions,
-                            modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
-                            nowMillis = state.nowMillis,
+                        GroupLabel(
+                            section.title,
+                            Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap),
+                            expanded = expanded,
+                            onToggle = {
+                                collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
+                            },
                         )
+                    }
+                    if (expanded) {
+                        items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                            AgentRowItem(
+                                row = row,
+                                selected = row.agent.id == selectedAgentId,
+                                prefs = state.prefs,
+                                actions = callbacks.rowActions,
+                                modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                nowMillis = state.nowMillis,
+                            )
+                        }
                     }
                 }
             }
