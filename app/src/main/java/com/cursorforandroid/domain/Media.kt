@@ -29,7 +29,9 @@ object MediaMarkup {
     private val anchorCloseAfter = Regex("""\s*</a\s*>""", RegexOption.IGNORE_CASE)
     private val bracketBefore = Regex("""\[\s*$""")
     private val linkCloseAfter = Regex("""\s*]\([^)\s]*\)""")
-    private val strayTags = Regex("""</video\s*>|<source\b[^>]*>|</?a\b[^>]*>""", RegexOption.IGNORE_CASE)
+    // Image-wrapped <a>…</a> is consumed by [linkWrapper]. Standalone <a href> stays in the text so the inline
+    // renderer can turn it into a link; leftover video/source tags are never meaningful as prose.
+    private val strayTags = Regex("""</video\s*>|<source\b[^>]*>""", RegexOption.IGNORE_CASE)
     /**
      * An opening tag or markdown image that has not been closed yet — what a streaming reply looks like mid-token.
      * A `<video>` without `</video>` only counts for a short stretch so a missing close tag cannot hide paragraphs.
