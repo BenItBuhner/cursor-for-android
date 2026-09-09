@@ -161,6 +161,8 @@ fun HomeScreen(
                         plusMenu = plusMenu,
                         attachments = state.attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
+                        onAddAttachments = viewModel::addAttachments,
+                        onAttachmentError = viewModel::reportError,
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
                         onModel = { modelSheet = true },
                     )
