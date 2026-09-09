@@ -3,6 +3,7 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -171,14 +172,14 @@ class SecureKeyStore(
     private fun recordOpenFailure(): Int {
         val prefs = healthPrefs() ?: return 0
         val failures = runCatching { prefs.getInt(KEY_OPEN_FAILURES, 0) }.getOrDefault(0) + 1
-        runCatching { prefs.edit().putInt(KEY_OPEN_FAILURES, failures).commit() }
+        runCatching { prefs.edit(commit = true) { putInt(KEY_OPEN_FAILURES, failures) } }
         return failures
     }
 
     private fun clearOpenFailures() {
         val prefs = healthPrefs() ?: return
         if (runCatching { prefs.getInt(KEY_OPEN_FAILURES, 0) }.getOrDefault(0) == 0) return
-        runCatching { prefs.edit().remove(KEY_OPEN_FAILURES).commit() }
+        runCatching { prefs.edit(commit = true) { remove(KEY_OPEN_FAILURES) } }
     }
 
     @Volatile
@@ -269,7 +270,7 @@ class SecureKeyStore(
         val had = signedOut
         signedOut = false
         if (had == false) return
-        runCatching { healthPrefs()?.edit()?.remove(KEY_SIGNED_OUT)?.commit() }
+        runCatching { healthPrefs()?.edit(commit = true) { remove(KEY_SIGNED_OUT) } }
     }
 
     /** The MCP server list as JSON; the shape is owned by [McpServerStore]. */
