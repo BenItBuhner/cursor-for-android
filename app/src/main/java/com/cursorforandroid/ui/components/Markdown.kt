@@ -16,8 +16,11 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
@@ -136,10 +139,37 @@ object MarkdownParser {
 
 object InlineMarkdown {
     private val linkRegex = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
+    private val schemeRegex = Regex("[a-zA-Z][a-zA-Z0-9+.-]*:")
+
+    /** Schemes a phone reliably has a handler for. Everything else — `file:`, `javascript:`, a bare path — is text. */
+    private val openableSchemes = setOf("http", "https", "mailto", "tel", "sms")
+
+    /**
+     * The address `[text](target)` should open, or null when the target is not something the system can be asked
+     * for. Agents write repository-relative links constantly (`./diff.patch`, `app/src/main/…`), and a scheme-less
+     * URI resolves to no activity at all: those stay plain text instead of becoming a link that fails on tap.
+     */
+    fun linkTarget(raw: String): String? {
+        val target = raw.trim()
+        // Protocol-relative, as written in copied HTML.
+        if (target.startsWith("//")) return "https:$target"
+        val scheme = schemeRegex.matchAt(target, 0) ?: return null
+        if (scheme.value.dropLast(1).lowercase() !in openableSchemes) return null
+        return target.takeIf { it.length > scheme.value.length }
+    }
+
+    /**
+     * Opens a tapped link. `AndroidUriHandler` throws when no activity handles the address — a `mailto:` on a device
+     * with no mail app — and the throw would come out of the click handler on the main thread, so it is swallowed.
+     */
+    fun opener(uriHandler: UriHandler): (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
 
     /**
      * Renders inline code, bold, italics and links to an AnnotatedString. Inline code gets a 12% base chip in
      * JetBrains Mono, links use Cursor's textLink blue, both matching the desktop chat renderer.
+     *
+     * [onLinkClick] receives the target of a tapped link. Without one the annotation falls back to Compose's
+     * `LocalUriHandler`, which throws when nothing on the device handles the address.
      */
     fun render(
         text: String,
@@ -148,6 +178,7 @@ object InlineMarkdown {
         codeBackground: Color,
         linkColor: Color,
         boldColor: Color,
+        onLinkClick: ((String) -> Unit)? = null,
     ): AnnotatedString = buildAnnotatedString {
         var i = 0
         val n = text.length
@@ -186,12 +217,18 @@ object InlineMarkdown {
                 c == '[' -> {
                     val m = linkRegex.find(text, i)
                     if (m != null && m.range.first == i) {
-                        withLink(
-                            LinkAnnotation.Url(
-                                url = m.groupValues[2],
-                                styles = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None)),
-                            ),
-                        ) { append(m.groupValues[1]) }
+                        val target = linkTarget(m.groupValues[2])
+                        if (target == null) {
+                            append(m.groupValues[1])
+                        } else {
+                            withLink(
+                                LinkAnnotation.Url(
+                                    url = target,
+                                    styles = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None)),
+                                    linkInteractionListener = onLinkClick?.let { click -> LinkInteractionListener { click(target) } },
+                                ),
+                            ) { append(m.groupValues[1]) }
+                        }
                         i = m.range.last + 1
                     } else {
                         append(c); i++
@@ -289,7 +326,9 @@ private fun InlineContent(text: String, style: TextStyle, color: Color, modifier
 @Composable
 private fun InlineText(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    val annotated = remember(text, style, color) {
+    val uriHandler = LocalUriHandler.current
+    val openLink = remember(uriHandler) { InlineMarkdown.opener(uriHandler) }
+    val annotated = remember(text, style, color, openLink) {
         InlineMarkdown.render(
             text = text,
             base = style,
@@ -297,6 +336,7 @@ private fun InlineText(text: String, style: TextStyle, color: Color, modifier: M
             codeBackground = colors.fillMedium,
             linkColor = colors.link,
             boldColor = colors.textPrimary,
+            onLinkClick = openLink,
         )
     }
     Text(text = annotated, style = style.copy(color = color), modifier = modifier)
