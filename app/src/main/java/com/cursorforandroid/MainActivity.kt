@@ -14,13 +14,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.cursorforandroid.data.repo.LoginProgress
 import com.cursorforandroid.data.repo.SessionState
-import com.cursorforandroid.notifications.LiveNotificationCoordinator
-import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
-import com.cursorforandroid.update.UpdateCoordinator
 import com.cursorforandroid.update.UpdateNotifications
 import com.cursorforandroid.util.DeepLinks
 import kotlinx.coroutines.launch
@@ -40,9 +37,7 @@ class MainActivity : ComponentActivity() {
 
         val graph = appGraph
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
-        LiveNotifications.ensureChannels(this)
-        LiveNotificationCoordinator.bind(this, graph)
-        UpdateCoordinator.bind(this, graph)
+        DeferredStartup.arm(this, graph)
         readRequests(intent)
         returnFromBrowserWhenLoginEnds(graph)
         followThemePreference(graph)

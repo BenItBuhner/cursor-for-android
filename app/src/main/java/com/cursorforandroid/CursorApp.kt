@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import androidx.work.Configuration
 import com.cursorforandroid.update.UpdateJobService
-import com.cursorforandroid.widget.WidgetSync
 
 class CursorApp : Application(), Configuration.Provider {
     lateinit var graph: AppGraph
@@ -24,8 +23,6 @@ class CursorApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         graph = AppGraph(this)
-        // Placed home-screen widgets follow the list, pins, filters, theme and session for as long as this process lives.
-        WidgetSync.start(this, graph)
     }
 
     private companion object {
