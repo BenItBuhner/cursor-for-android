@@ -188,6 +188,36 @@ class CatalogRepositoryTest {
     }
 
     @Test
+    fun `catalogs fetched for the previous account never reach the next one's pickers or disk`() = runBlocking<Unit> {
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        api.repositoryUrls = listOf("https://github.com/previous/app")
+        api.modelsGate = CompletableDeferred()
+        api.repositoriesGate = CompletableDeferred()
+        val catalog = CatalogRepository(session, cache)
+
+        val models = async { catalog.loadModels() }
+        val repos = async { catalog.loadRepositories() }
+        yield()
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        catalog.reset()
+        api.modelsGate!!.complete(Unit)
+        api.repositoriesGate!!.complete(Unit)
+        models.await()
+        repos.await()
+
+        assertThat(catalog.models.value).isEmpty()
+        assertThat(catalog.repositories.value).isEmpty()
+        assertThat(cache.readModels()).isNull()
+        assertThat(cache.readRepositories()).isNull()
+
+        // The next account's own fetch lands as usual.
+        assertThat(catalog.loadModels().getOrThrow().map { it.id }).containsExactly("claude")
+        assertThat(catalog.models.value.map { it.id }).containsExactly("claude")
+    }
+
+    @Test
     fun `the saved repository list replaces one merely seeded from the agent list`() = runBlocking<Unit> {
         cache.writeRepositories(listOf(Repository("https://github.com/acme/app"), Repository("https://github.com/acme/web")))
         val catalog = CatalogRepository(session, cache)
