@@ -184,12 +184,92 @@ class SecureKeyStore(
     @Volatile
     private var cached: String? = null
 
-    fun apiKey(): String? = cached ?: read(KEY_API_KEY)?.also { cached = it }
+    /**
+     * The in-process answer to "has a sign-out been through here", which is the authority while this process runs:
+     * null until the durable tombstone below has been consulted.
+     */
+    @Volatile
+    private var signedOut: Boolean? = null
+
+    fun apiKey(): String? {
+        // A sign-out whose removal could not be proven left a tombstone; the key it could not delete stays unread.
+        if (signOutPending()) return null
+        return cached ?: read(KEY_API_KEY)?.also { cached = it }
+    }
+
+    /**
+     * True while a sign-out has not been proven to have removed the stored key, so the key is being withheld. The
+     * session retries the removal and the preference cleanup that went with it on the next start.
+     */
+    fun signOutPending(): Boolean {
+        signedOut?.let { return it }
+        val stored = runCatching { healthPrefs()?.getBoolean(KEY_SIGNED_OUT, false) }.getOrNull() ?: false
+        signedOut = stored
+        return stored
+    }
 
     /** False when the key could not be persisted, so this sign-in only lasts as long as the process. */
     fun setApiKey(key: String?): Boolean {
+        if (key.isNullOrBlank()) return clearApiKey()
         cached = key
-        return write(KEY_API_KEY, key)
+        val written = write(KEY_API_KEY, key)
+        // This process is signed in, whatever the last sign-out managed to delete.
+        forgetSignOut()
+        return written
+    }
+
+    /**
+     * Removal for a sign-out, fail-closed: it may not report success while the next process start could still read
+     * the key. A refused commit takes the whole encrypted store with it — the user is signing out, so losing the
+     * store is the right trade — and if even that cannot be proven, a tombstone in the ordinary preferences
+     * withholds the key from every read until a sign-in clears it.
+     */
+    private fun clearApiKey(): Boolean {
+        cached = null
+        memory.remove(KEY_API_KEY)
+        if (removePersistedApiKey()) {
+            forgetSignOut()
+            return true
+        }
+        if (discardStoreForSignOut()) {
+            forgetSignOut()
+            return true
+        }
+        return markSignedOut()
+    }
+
+    private fun removePersistedApiKey(): Boolean {
+        val prefs = prefs() ?: return false
+        return runCatching { prefs.edit().remove(KEY_API_KEY).commit() }
+            .onFailure { Log.w(TAG, "Couldn't remove the API key from the encrypted store", it) }
+            .getOrDefault(false)
+    }
+
+    /** Deletes the encrypted store and reopens it empty; true only once the key is provably unreadable. */
+    private fun discardStoreForSignOut(): Boolean = synchronized(openLock) {
+        deleteEncryptedStore()
+        val fresh = runCatching { openEncrypted(context) }.getOrNull()
+        prefs = fresh
+        opened = true
+        _availability.value = if (fresh == null) Availability.Unavailable else Availability.Reset
+        // A store that cannot even be opened cannot be read for proof either, so it counts as unproven.
+        fresh != null && runCatching { fresh.getString(KEY_API_KEY, null) == null }.getOrDefault(false)
+    }
+
+    /** Records the sign-out where it can be read before any key is; false when even that could not be written. */
+    private fun markSignedOut(): Boolean {
+        signedOut = true
+        val prefs = healthPrefs() ?: return false
+        return runCatching { prefs.edit().putBoolean(KEY_SIGNED_OUT, true).commit() }
+            .onFailure { Log.w(TAG, "Couldn't record the sign-out", it) }
+            .getOrDefault(false)
+    }
+
+    private fun forgetSignOut() {
+        val had = signedOut
+        signedOut = false
+        if (had == false) return
+        runCatching { healthPrefs()?.edit()?.remove(KEY_SIGNED_OUT)?.commit() }
     }
 
     /** The MCP server list as JSON; the shape is owned by [McpServerStore]. */
@@ -301,6 +381,7 @@ class SecureKeyStore(
         /** Long enough for a Keystore busy with the unlock that woke the app, short enough not to be a stall. */
         const val OPEN_RETRY_DELAY_MS = 150L
         const val KEY_OPEN_FAILURES = "open_failures"
+        const val KEY_SIGNED_OUT = "signed_out"
         val MIGRATED_KEYS = listOf(KEY_API_KEY, KEY_MCP_SERVERS, KEY_GITHUB_TOKEN)
         /** What a `GeneralSecurityException` about a keyset that will never decrypt again says about itself. */
         val KEYSET_FAILURES = listOf("keyset", "decryption failed")

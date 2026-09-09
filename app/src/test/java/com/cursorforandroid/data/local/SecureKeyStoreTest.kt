@@ -109,6 +109,44 @@ class SecureKeyStoreTest {
     }
 
     @Test
+    fun `a sign-out the store refuses to commit withholds the key from the next start`() {
+        val prefs = FailingPrefs(backing("sign-out"))
+        val store = SecureKeyStore(context, openRetryDelayMs = 0) { prefs }
+        assertThat(store.setApiKey("key_live")).isTrue()
+
+        prefs.failEdits = true
+        // Reported as done only because the tombstone landed: the encrypted entry itself is still there.
+        assertThat(store.setApiKey(null)).isTrue()
+        assertThat(prefs.getString("api_key", null)).isEqualTo("key_live")
+        assertThat(store.apiKey()).isNull()
+
+        val next = SecureKeyStore(context, openRetryDelayMs = 0) { prefs }
+        assertThat(next.signOutPending()).isTrue()
+        assertThat(next.apiKey()).isNull()
+
+        // Signing in again is what clears the tombstone; the new key reads back as usual.
+        prefs.failEdits = false
+        assertThat(next.setApiKey("key_new")).isTrue()
+        val third = SecureKeyStore(context, openRetryDelayMs = 0) { prefs }
+        assertThat(third.signOutPending()).isFalse()
+        assertThat(third.apiKey()).isEqualTo("key_new")
+    }
+
+    @Test
+    fun `an ordinary sign-out removes the key and leaves no tombstone behind`() {
+        val prefs = FailingPrefs(backing("sign-out-clean"))
+        val store = SecureKeyStore(context, openRetryDelayMs = 0) { prefs }
+        assertThat(store.setApiKey("key_live")).isTrue()
+
+        assertThat(store.setApiKey(null)).isTrue()
+        assertThat(prefs.contains("api_key")).isFalse()
+
+        val next = SecureKeyStore(context, openRetryDelayMs = 0) { prefs }
+        assertThat(next.signOutPending()).isFalse()
+        assertThat(next.apiKey()).isNull()
+    }
+
+    @Test
     fun `values an older build left in the plaintext file are migrated into the encrypted store and deleted`() {
         val legacy = backing("cursor_prefs_fallback")
         legacy.edit()

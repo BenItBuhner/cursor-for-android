@@ -123,6 +123,12 @@ class SessionManager(
      * the wait for it is bounded even when nothing is cached, so a slow network never holds the splash screen.
      */
     suspend fun restore() {
+        // A sign-out that could not prove the key was gone left a tombstone behind. The key stays withheld while it
+        // stands, and the removal and the preference cleanup it could not finish are retried now.
+        if (withContext(Dispatchers.IO) { keyStore.signOutPending() }) {
+            finishPendingSignOut()
+            return
+        }
         if (prefs.demoMode.first()) {
             _backend.value = demoBackend
             _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
@@ -275,12 +281,31 @@ class SessionManager(
         _state.value = SessionState.SignedIn(demoUser(), isDemo = true)
     }
 
-    suspend fun signOut() {
+    /**
+     * Signs out. False when the key's removal could not be made durable even after the store was started over, in
+     * which case a tombstone withholds it and [restore] retries on the next start: a sign-out never reports success
+     * while the key could come back.
+     */
+    suspend fun signOut(): Boolean {
         cancelCursorLogin()
         _signedOutReason.value = null
-        storeKey(null)
-        prefs.clearSession()
+        // Fail-closed, and before anything else: whatever else goes wrong, the key must not be readable again.
+        val cleared = storeKey(null)
+        // The repositories bump their account generations and stop what is in flight in here, so nothing of this
+        // account can still be about to write when the preferences it owns are cleared.
         runCatching { onSignedOut() }
+        prefs.clearSession()
+        _backend.value = realBackend
+        _state.value = SessionState.SignedOut
+        return cleared
+    }
+
+    /** The removal a previous sign-out could not prove, tried again, together with the cleanup that went with it. */
+    private suspend fun finishPendingSignOut() {
+        storeKey(null)
+        runCatching { onSignedOut() }
+        prefs.clearSession()
+        _signedOutReason.value = null
         _backend.value = realBackend
         _state.value = SessionState.SignedOut
     }
