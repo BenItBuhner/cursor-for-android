@@ -131,15 +131,62 @@ class SecureKeyStoreTest {
     }
 
     @Test
-    fun `a plaintext file is deleted unread when the encrypted store has to be recreated`() {
+    fun `a plaintext file is carried into the encrypted store that had to be recreated, not destroyed with it`() {
         backing("cursor_prefs_fallback").edit().putString("api_key", "key_plaintext").commit()
         var attempts = 0
-        val store = SecureKeyStore(context) {
+        val store = SecureKeyStore(context, openRetryDelayMs = 0) {
             attempts++
             if (attempts == 1) throw GeneralSecurityException("keyset invalid") else FailingPrefs(backing("recreated-2"))
         }
 
-        assertThat(store.apiKey()).isNull()
+        // The recreated store is empty, so the plaintext file can be the only copy of the key there is: it is
+        // migrated first and only deleted once those values have committed.
+        assertThat(store.apiKey()).isEqualTo("key_plaintext")
+        assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Reset)
         assertThat(sharedPrefsFiles()).doesNotContain("cursor_prefs_fallback.xml")
+    }
+
+    @Test
+    fun `a transient open failure keeps every stored copy for the next launch`() {
+        backing("cursor_prefs_fallback").edit().putString("api_key", "key_plaintext").commit()
+        var attempts = 0
+        val store = SecureKeyStore(context, openRetryDelayMs = 0) {
+            attempts++
+            throw IllegalStateException("the Keystore is not ready yet")
+        }
+
+        assertThat(store.apiKey()).isNull()
+        // Asked twice: a Keystore busy with the unlock that woke the app usually answers the second time.
+        assertThat(attempts).isEqualTo(2)
+        assertThat(store.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
+        // Nothing was deleted, so the launch that does open the store still finds the key.
+        assertThat(sharedPrefsFiles()).contains("cursor_prefs_fallback.xml")
+
+        val next = SecureKeyStore(context, openRetryDelayMs = 0) { FailingPrefs(backing("stand-in-after-transient")) }
+        assertThat(next.apiKey()).isEqualTo("key_plaintext")
+        assertThat(next.availability.value).isEqualTo(SecureKeyStore.Availability.Encrypted)
+    }
+
+    @Test
+    fun `a store that has not opened in three launches is started over`() {
+        var attempts = 0
+        // Two attempts a launch; the reset on the third launch is the seventh call.
+        fun store() = SecureKeyStore(context, openRetryDelayMs = 0) {
+            attempts++
+            if (attempts <= 6) throw IllegalStateException("the Keystore is not ready yet") else FailingPrefs(backing("recreated-3"))
+        }
+
+        assertThat(store().also { it.apiKey() }.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
+        assertThat(store().also { it.apiKey() }.availability.value).isEqualTo(SecureKeyStore.Availability.Unavailable)
+        val third = store()
+        assertThat(third.apiKey()).isNull()
+        assertThat(third.availability.value).isEqualTo(SecureKeyStore.Availability.Reset)
+        assertThat(attempts).isEqualTo(7)
+
+        // The run of failures is over, so a store that opens straight away is not reset again.
+        val fourth = store()
+        assertThat(fourth.apiKey()).isNull()
+        assertThat(fourth.availability.value).isEqualTo(SecureKeyStore.Availability.Encrypted)
+        assertThat(attempts).isEqualTo(8)
     }
 }

@@ -9,30 +9,42 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.AEADBadTagException
 
 /** The one file secrets are ever written to. */
 private const val ENCRYPTED_FILE = "cursor_secure_prefs"
+
+/** Ordinary, non-secret preferences: how the encrypted store has been behaving across launches. */
+private const val HEALTH_FILE = "cursor_secure_health"
 
 /**
  * Secrets, encrypted with an Android Keystore-backed master key: the Cursor API key, the GitHub token that reads
  * pull request states, and the MCP server definitions (their headers and environment variables hold credentials).
  *
- * The encrypted store is the only place any of it is ever written. It can genuinely fail to open or to decrypt — a
- * master key invalidated by an OS upgrade or a lock-screen change, a device restore, a Keystore that is wedged — so
- * two fallbacks sit behind it, in this order:
+ * The encrypted store is the only place any of it is ever written. It can genuinely fail to open or to decrypt, and
+ * the two reasons are worlds apart. Stored bytes that will never decrypt again — a master key invalidated by an OS
+ * upgrade or a lock-screen change, a keyset a restore left unreadable — can only be fixed by starting over. A
+ * Keystore that is merely not ready — the device is still locked, the provider is being installed, the disk is busy —
+ * is fixed by asking again, and throwing the credentials away for it would be a data loss the user never asked for.
+ * So a failure to open is classified ([isPermanentCorruption]) and only the first kind resets anything:
  *
- *  1. Start over: delete the encrypted file and the master key and recreate both. The stored secrets go with them,
- *     which means signing in again, but the app works and the next launch is clean ([Availability.Reset]).
- *  2. Keep them in memory for this process only ([Availability.Unavailable]). Nothing is persisted, so the sign-in
- *     lasts until the process does, and [availability] lets the UI say so.
+ *  1. Positively identified corruption: start over at once. Delete the encrypted file and the master key and
+ *     recreate both. Whatever was stored goes with them, which means signing in again ([Availability.Reset]).
+ *  2. Anything else: retry once, then keep the secrets in memory for this process only
+ *     ([Availability.Unavailable]) without deleting a thing, and count the launch. A store that has not opened in
+ *     [MAX_OPEN_FAILURES] consecutive launches is not going to, and is reset like the first kind.
  *
  * Neither writes anything in the clear. An older build did fall back to plaintext `cursor_prefs_fallback`, which
- * this one migrates into the encrypted store the first time it opens it, and then deletes.
+ * this one migrates into the encrypted store the first time it opens it — including a store it had to recreate,
+ * which may be the only copy left — and deletes only once the values have committed.
  */
 class SecureKeyStore(
     private val context: Context,
+    /** How long the retry of a failed open waits; zero in tests, which have no transient state to wait out. */
+    private val openRetryDelayMs: Long = OPEN_RETRY_DELAY_MS,
     /** Opens the encrypted store. Injected by tests, which have no Android Keystore to open it with. */
     private val openEncrypted: (Context) -> SharedPreferences = ::encryptedPrefs,
 ) {
@@ -78,24 +90,95 @@ class SecureKeyStore(
         }
     }
 
-    /** Opens the encrypted store, recreating it once if it cannot be opened; null means memory-only. */
+    /**
+     * Opens the encrypted store. Corruption is started over from at once; anything else is retried, and only
+     * recreated after [MAX_OPEN_FAILURES] launches have failed the same way. Null means memory-only.
+     */
     private fun open(): SharedPreferences? {
-        runCatching { openEncrypted(context) }
-            .onSuccess {
-                migrateLegacyFallback(it)
-                return it
+        val first = runCatching { openEncrypted(context) }
+        first.getOrNull()?.let { return opened(it, Availability.Encrypted) }
+        val error = first.exceptionOrNull()
+        if (error != null && isPermanentCorruption(error)) {
+            Log.w(TAG, "Encrypted store cannot be decrypted; recreating it", error)
+            return recreate()
+        }
+        Log.w(TAG, "Encrypted store did not open; trying once more", error)
+        if (openRetryDelayMs > 0) runCatching { Thread.sleep(openRetryDelayMs) }
+        val second = runCatching { openEncrypted(context) }
+        second.getOrNull()?.let { return opened(it, Availability.Encrypted) }
+        val retryError = second.exceptionOrNull()
+        val failures = recordOpenFailure()
+        if (failures >= MAX_OPEN_FAILURES) {
+            Log.w(TAG, "Encrypted store has not opened in $failures launches; recreating it", retryError)
+            return recreate()
+        }
+        // Nothing is deleted: the store may well open on the next launch, and it holds the only copy of the secrets.
+        Log.w(TAG, "Encrypted store unavailable; secrets stay in memory for this process", retryError)
+        _availability.value = Availability.Unavailable
+        return null
+    }
+
+    /** The store is open: the launch counter starts over and anything an older build left in the clear moves in. */
+    private fun opened(prefs: SharedPreferences, availability: Availability): SharedPreferences {
+        clearOpenFailures()
+        migrateLegacyFallback(prefs)
+        _availability.value = availability
+        return prefs
+    }
+
+    /**
+     * Starts the encrypted store over: the file and the master key go, and both are recreated. The legacy plaintext
+     * file is deliberately left alone — after this the recreated store is empty, so that file can be the only copy
+     * of the secrets there is, and [migrateLegacyFallback] deletes it once it has committed them.
+     */
+    private fun recreate(): SharedPreferences? {
+        deleteEncryptedStore()
+        val fresh = runCatching { openEncrypted(context) }.getOrElse {
+            Log.w(TAG, "Encrypted store could not be recreated; secrets stay in memory", it)
+            _availability.value = Availability.Unavailable
+            return null
+        }
+        return opened(fresh, Availability.Reset)
+    }
+
+    /**
+     * True only for a failure that says the stored bytes will never be readable again: a GCM tag that does not
+     * match what it protects, or a Tink keyset that cannot be parsed or decrypted. A Keystore that is not ready,
+     * a device that is still locked, a provider that is missing and plain IO trouble are all transient by
+     * comparison, and deleting a perfectly good credential over one of them is the loss this classification exists
+     * to prevent.
+     */
+    private fun isPermanentCorruption(error: Throwable): Boolean {
+        var cause: Throwable? = error
+        while (cause != null) {
+            if (cause is AEADBadTagException) return true
+            // Tink shades its protobuf, so the keyset parse failure is matched by name rather than by type.
+            if (cause.javaClass.name.endsWith("InvalidProtocolBufferException")) return true
+            if (cause is GeneralSecurityException) {
+                val message = cause.message?.lowercase().orEmpty()
+                if (KEYSET_FAILURES.any { it in message }) return true
             }
-            .onFailure { Log.w(TAG, "Encrypted store unavailable; recreating it", it) }
-        // A master key that no longer matches the file can only be fixed by starting both over.
-        discardEncryptedStore()
-        discardLegacyFallback()
-        return runCatching { openEncrypted(context) }
-            .onSuccess { _availability.value = Availability.Reset }
-            .onFailure {
-                Log.w(TAG, "Encrypted store could not be recreated; secrets stay in memory", it)
-                _availability.value = Availability.Unavailable
-            }
-            .getOrNull()
+            cause = cause.cause.takeIf { it !== cause }
+        }
+        return false
+    }
+
+    /** Ordinary preferences, so they stay readable exactly when the encrypted ones do not. */
+    private fun healthPrefs(): SharedPreferences? =
+        runCatching { context.getSharedPreferences(HEALTH_FILE, Context.MODE_PRIVATE) }.getOrNull()
+
+    /** Counts this launch's failure to open and returns the run of them; zero when even this cannot be recorded. */
+    private fun recordOpenFailure(): Int {
+        val prefs = healthPrefs() ?: return 0
+        val failures = runCatching { prefs.getInt(KEY_OPEN_FAILURES, 0) }.getOrDefault(0) + 1
+        runCatching { prefs.edit().putInt(KEY_OPEN_FAILURES, failures).commit() }
+        return failures
+    }
+
+    private fun clearOpenFailures() {
+        val prefs = healthPrefs() ?: return
+        if (runCatching { prefs.getInt(KEY_OPEN_FAILURES, 0) }.getOrDefault(0) == 0) return
+        runCatching { prefs.edit().remove(KEY_OPEN_FAILURES).commit() }
     }
 
     @Volatile
@@ -157,7 +240,7 @@ class SecureKeyStore(
 
     /** Starts the encrypted store over after a failure the store could not repair itself. */
     private fun reopenAfterFailure() = synchronized(openLock) {
-        discardEncryptedStore()
+        deleteEncryptedStore()
         prefs = runCatching { openEncrypted(context) }.getOrNull()
         opened = true
         _availability.value = if (prefs == null) Availability.Unavailable else Availability.Reset
@@ -169,7 +252,7 @@ class SecureKeyStore(
         _availability.value = Availability.Unavailable
     }
 
-    private fun discardEncryptedStore() {
+    private fun deleteEncryptedStore() {
         runCatching { context.deleteSharedPreferences(ENCRYPTED_FILE) }
         runCatching {
             KeyStore.getInstance(ANDROID_KEY_STORE).apply { load(null) }.deleteEntry(MasterKey.DEFAULT_MASTER_KEY_ALIAS)
@@ -213,7 +296,14 @@ class SecureKeyStore(
         const val KEY_GITHUB_TOKEN = "github_token"
         const val LEGACY_FALLBACK_FILE = "cursor_prefs_fallback"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
+        /** Launches in a row that may fail to open the store before it is started over. */
+        const val MAX_OPEN_FAILURES = 3
+        /** Long enough for a Keystore busy with the unlock that woke the app, short enough not to be a stall. */
+        const val OPEN_RETRY_DELAY_MS = 150L
+        const val KEY_OPEN_FAILURES = "open_failures"
         val MIGRATED_KEYS = listOf(KEY_API_KEY, KEY_MCP_SERVERS, KEY_GITHUB_TOKEN)
+        /** What a `GeneralSecurityException` about a keyset that will never decrypt again says about itself. */
+        val KEYSET_FAILURES = listOf("keyset", "decryption failed")
     }
 }
 
