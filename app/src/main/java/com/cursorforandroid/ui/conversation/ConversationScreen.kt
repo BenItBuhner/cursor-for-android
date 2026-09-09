@@ -60,8 +60,10 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
@@ -143,7 +145,8 @@ fun ConversationScreen(
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     val showWorking = conversation.showsWorkingRow()
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
-    val markdownMedia = remember(agentId) { MarkdownMediaContext(agentId, graph.media) }
+    val lightbox = rememberLightboxState(agentId)
+    val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -310,6 +313,10 @@ fun ConversationScreen(
             )
         }
     }
+
+    // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
+    // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
+    FigureLightbox(lightbox, graph.media, agentId)
 
     if (modelSheet) {
         ModelSheet(

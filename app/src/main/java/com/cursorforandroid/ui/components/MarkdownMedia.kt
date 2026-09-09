@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -82,12 +83,61 @@ import kotlinx.coroutines.CancellationException
 import kotlin.math.sqrt
 
 /**
- * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to and the
- * loader that fetches them. Provided by the conversation screen; absent elsewhere.
+ * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to, the
+ * loader that fetches them, and where a tapped figure opens. Provided by the conversation screen; absent elsewhere.
  */
-class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader)
+class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader, val lightbox: LightboxState)
 
 val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null }
+
+/**
+ * Which figure is open full-screen, held by the screen rather than by the row it was tapped in. A row is disposed
+ * whenever the transcript scrolls it out of the lazy list, and the viewer must not go with it.
+ */
+class LightboxState internal constructor(
+    private val src: MutableState<String?>,
+    private val alt: MutableState<String?>,
+    private val preview: MutableState<ImageBitmap?>,
+) {
+    internal val openSrc: String? get() = src.value
+    internal val openAlt: String? get() = alt.value
+
+    /** The inline decode the row already had, shown until the screen-sized one lands. */
+    internal val seen: ImageBitmap? get() = preview.value
+
+    internal fun open(src: String, alt: String?, seen: ImageBitmap?) {
+        preview.value = seen
+        this.alt.value = alt
+        this.src.value = src
+    }
+
+    fun close() {
+        src.value = null
+        alt.value = null
+        preview.value = null
+    }
+}
+
+/** Survives rotation and the row it was opened from; a new agent starts with nothing open. */
+@Composable
+fun rememberLightboxState(agentId: String?): LightboxState {
+    // Only the source is worth saving: a bitmap is not state, and the screen-sized decode is fetched again anyway.
+    val src = rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val alt = rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val preview = remember(agentId) { mutableStateOf<ImageBitmap?>(null) }
+    return remember(src, alt, preview) { LightboxState(src, alt, preview) }
+}
+
+/**
+ * The full-screen viewer for whatever figure [state] has open. Composed by the screen so that scrolling the
+ * transcript, or a window that changes shape, cannot tear it down mid-view.
+ */
+@Composable
+fun FigureLightbox(state: LightboxState, loader: MediaLoader, agentId: String?) {
+    val src = state.openSrc ?: return
+    val ref = remember(src, agentId) { MediaRef.parse(src, agentId) }
+    ImageLightbox(ref, state.seen, state.openAlt, loader, onDismiss = state::close)
+}
 
 /** Figures never grow past this (or 45 % of the screen on short displays); taller media is fitted and opens full size on tap. */
 private val MediaMaxHeightCap = 420.dp
@@ -121,7 +171,6 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
         val request = inlineDecodeBounds()
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
-        var lightbox by rememberSaveable(ref.cacheKey) { mutableStateOf(false) }
 
         // Keyed on the artifact, not on the measured width: the column is re-measured whenever the device is
         // rotated (configChanges absorbs it) or the sidebar appears, and that must not throw the decoded bitmap
@@ -141,7 +190,6 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
             }
         }
 
-        val ready = (state as? ImageLoad.Ready)?.bitmap
         when (val s = state) {
             ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), "Loading image")
             is ImageLoad.Failed -> MediaErrorRow(
@@ -157,13 +205,8 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
                 modifier = Modifier
                     .size(fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight))
                     .cursorSurface(Color.Transparent, colors.strokeSubtle, shape)
-                    .pressable({ lightbox = true }, shape, role = Role.Image),
+                    .pressable({ media?.lightbox?.open(src, alt, s.bitmap) }, shape, role = Role.Image),
             )
-        }
-        // Outside the load state: the viewer carries its own bitmap, and one that is open must not be torn down
-        // because the figure behind it went back to loading.
-        if (lightbox && media != null) {
-            ImageLightbox(ref, ready, alt, media.loader, onDismiss = { lightbox = false })
         }
     }
 }
