@@ -13,12 +13,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,11 +32,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentRow
@@ -48,7 +60,7 @@ data class AgentRowActions(
     val onTogglePin: (AgentRow) -> Unit,
     val onArchive: (AgentRow) -> Unit,
     val onUnarchive: (AgentRow) -> Unit,
-    val onDelete: (AgentRow) -> Unit,
+    val onRename: (AgentRow, String) -> Unit,
 )
 
 /**
@@ -69,6 +81,7 @@ fun AgentRowItem(
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
     var menuOpen by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
@@ -115,6 +128,7 @@ fun AgentRowItem(
             val clipboard = LocalClipboardManager.current
             val uriHandler = LocalUriHandler.current
             MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; actions.onTogglePin(row) }
+            MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
             MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; uriHandler.openUri(agent.url) }
             MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
             if (agent.isArchived) {
@@ -122,10 +136,80 @@ fun AgentRowItem(
             } else {
                 MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; actions.onArchive(row) }
             }
-            MenuItem("Delete", CursorIcons.Trash, tint = colors.red) { menuOpen = false; actions.onDelete(row) }
+        }
+        if (renameOpen) {
+            RenameChatDialog(
+                initialName = agent.name,
+                onConfirm = { name -> renameOpen = false; actions.onRename(row, name) },
+                onDismiss = { renameOpen = false },
+            )
         }
     }
 }
+
+/** Rename field as the official apps expose it: one line, 100 characters, same cap as create. */
+@Composable
+fun RenameChatDialog(
+    initialName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val focus = remember { FocusRequester() }
+    var field by remember {
+        mutableStateOf(TextFieldValue(initialName, TextRange(0, initialName.length)))
+    }
+    val trimmed = field.text.trim()
+    val canSave = trimmed.isNotEmpty() && trimmed.length <= NAME_MAX
+    fun save() {
+        if (canSave) onConfirm(trimmed)
+    }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.elevated,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textSecondary,
+        shape = CursorTheme.shapes.xl,
+        title = { Text("Rename chat", style = type.sectionTitle) },
+        text = {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(colors.fillFaint, CursorTheme.shapes.base)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                BasicTextField(
+                    value = field,
+                    onValueChange = { incoming ->
+                        field = if (incoming.text.length <= NAME_MAX) incoming else incoming.copy(text = incoming.text.take(NAME_MAX))
+                    },
+                    singleLine = true,
+                    textStyle = type.base.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.textPrimary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { save() }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                    decorationBox = { inner ->
+                        Box {
+                            if (field.text.isEmpty()) Text("Chat name", style = type.base, color = colors.textQuaternary)
+                            inner()
+                        }
+                    },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { save() }, enabled = canSave) {
+                Text("Rename", style = type.baseMedium, color = if (canSave) colors.textPrimary else colors.textQuaternary)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
+    )
+}
+
+private const val NAME_MAX = 100
 
 /** Context-menu row: 13sp label with a 16px glyph at 66 %, tall enough to tap without care. */
 @Composable

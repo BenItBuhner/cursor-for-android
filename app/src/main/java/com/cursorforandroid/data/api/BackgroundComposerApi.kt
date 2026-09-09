@@ -11,16 +11,39 @@ import kotlinx.serialization.json.contentOrNull
 data class PinnedIds(val ids: Set<String>, val loaded: Boolean)
 
 /**
- * What one read of the account's agent list says beyond the agents themselves: the pins, and where each agent's pull
- * request stands (by `prUrl`, for the agents in the list window whose PR the account service has a status for).
+ * One composer from `ListBackgroundComposers`: the name and archive flag the desktop Agents window and the iOS
+ * app read. [archived] is null when the record omitted `isArchived`.
  */
-data class AccountList(val pinned: PinnedIds, val pullRequests: Map<String, PullRequestState>)
+data class ComposerSnapshot(val id: String, val name: String? = null, val archived: Boolean? = null)
+
+/**
+ * What one read of the account's agent list says beyond the agents themselves: the pins, where each agent's pull
+ * request stands (by `prUrl`, for the agents in the list window whose PR the account service has a status for),
+ * and the name / archive flag of each composer in the window.
+ */
+data class AccountList(
+    val pinned: PinnedIds,
+    val pullRequests: Map<String, PullRequestState>,
+    val composers: List<ComposerSnapshot> = emptyList(),
+)
 
 /** The account's agent list and its pins, the ones the desktop Agents window and the iOS app share. An interface so the repositories can be faked. */
 interface PinsApi {
     suspend fun list(): AccountList
     suspend fun pin(ids: Collection<String>)
     suspend fun unpin(ids: Collection<String>)
+}
+
+/**
+ * Archive, unarchive and rename as the first-party apps do them: `ArchiveBackgroundComposer` / `RenameBackgroundComposer`
+ * on the account service. The public Cloud Agents API has archive / unarchive of its own, but those writes do not
+ * always land on the flag the official sidebars read — which is why a chat archived here could stay visible on
+ * cursor.com, and the other way around.
+ */
+interface ComposerLifecycleApi {
+    suspend fun archive(id: String)
+    suspend fun unarchive(id: String)
+    suspend fun rename(id: String, name: String)
 }
 
 /** Where one pull request stands according to the account service; null when it does not know. */
@@ -31,15 +54,16 @@ fun interface PullRequestStatusApi {
 /**
  * `aiserver.v1.BackgroundComposerService`, the account-level service behind cursor.com/agents and the first-party
  * apps ("background composer" is what a cloud agent is called there; its `bc_id` is the agent id the public API
- * uses). Three corners of it are used: `ListBackgroundComposers` with `includePinnedState` returns the user's
- * `pinnedBcIds` and, per composer, the `prUrl` / `prStatus` the account keeps in step with the SCM;
- * `Pin` / `UnpinBackgroundComposers` change the pins; `GetPullRequestMergeStatus` answers for one pull request.
- * Calls carry the session token from [SessionTokenProvider] (see [unaryWithSession]).
+ * uses). The corners used here: `ListBackgroundComposers` with `includePinnedState` returns the user's
+ * `pinnedBcIds` and, per composer, the `name` / `isArchived` / `prUrl` / `prStatus` the account keeps;
+ * `Pin` / `UnpinBackgroundComposers` change the pins; `ArchiveBackgroundComposer` (with `unarchive`) and
+ * `RenameBackgroundComposer` are the official archive and rename; `GetPullRequestMergeStatus` answers for one
+ * pull request. Calls carry the session token from [SessionTokenProvider] (see [unaryWithSession]).
  */
 class BackgroundComposerApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
-) : PinsApi, PullRequestStatusApi {
+) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi {
 
     override suspend fun list(): AccountList {
         val response = call(
@@ -55,7 +79,11 @@ class BackgroundComposerApi(
             val state = pullRequestState(composer.prStatus, composer.isPrMerged) ?: continue
             pullRequests[url] = state
         }
-        return AccountList(PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState), pullRequests)
+        val composers = response.composers.mapNotNull { composer ->
+            val id = composer.bcId.trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ComposerSnapshot(id = id, name = composer.name, archived = composer.isArchived)
+        }
+        return AccountList(PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState), pullRequests, composers)
     }
 
     override suspend fun pin(ids: Collection<String>) {
@@ -66,6 +94,18 @@ class BackgroundComposerApi(
     override suspend fun unpin(ids: Collection<String>) {
         if (ids.isEmpty()) return
         call("UnpinBackgroundComposers", BcIdsDto(ids.toList()), BcIdsDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun archive(id: String) {
+        call("ArchiveBackgroundComposer", ArchiveComposerDto(id, unarchive = false), ArchiveComposerDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun unarchive(id: String) {
+        call("ArchiveBackgroundComposer", ArchiveComposerDto(id, unarchive = true), ArchiveComposerDto.serializer(), EmptyResponseDto.serializer())
+    }
+
+    override suspend fun rename(id: String, name: String) {
+        call("RenameBackgroundComposer", RenameComposerDto(id, name), RenameComposerDto.serializer(), EmptyResponseDto.serializer())
     }
 
     override suspend fun mergeStatus(prUrl: String): PullRequestState? {
@@ -102,6 +142,8 @@ class BackgroundComposerApi(
     @Serializable
     private data class ComposerDto(
         val bcId: String = "",
+        val name: String? = null,
+        val isArchived: Boolean? = null,
         val prUrl: String? = null,
         val isPrMerged: Boolean? = null,
         /** `aiserver.v1.PRStatus`: its name in proto3's JSON mapping, or its number when a server encodes enums that way. */
@@ -110,6 +152,13 @@ class BackgroundComposerApi(
 
     @Serializable
     private data class BcIdsDto(val bcIds: List<String>)
+
+    /** [unarchive] has no default so both `true` and `false` are encoded (`CursorJson` drops defaulted fields). */
+    @Serializable
+    private data class ArchiveComposerDto(val bcId: String, val unarchive: Boolean)
+
+    @Serializable
+    private data class RenameComposerDto(val bcId: String, val newName: String)
 
     @Serializable
     private data class PrUrlDto(val prUrl: String)

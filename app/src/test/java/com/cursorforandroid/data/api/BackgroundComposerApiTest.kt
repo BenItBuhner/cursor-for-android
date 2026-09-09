@@ -16,7 +16,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
-/** The pin RPCs of `aiserver.v1.BackgroundComposerService` over Connect JSON, against a fake api2 that also plays the token exchange. */
+/** The pin, archive and rename RPCs of `aiserver.v1.BackgroundComposerService` over Connect JSON, against a fake api2 that also plays the token exchange. */
 class BackgroundComposerApiTest {
 
     private val server = MockWebServer()
@@ -42,13 +42,13 @@ class BackgroundComposerApiTest {
         server.enqueue(
             MockResponse().setBody(
                 """{"composers":[
-                     {"bcId":"bc-1","name":"x","prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN"},
+                     {"bcId":"bc-1","name":"x","isArchived":false,"prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN"},
                      {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT"},
                      {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED"},
                      {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4},
                      {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true},
                      {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false},
-                     {"bcId":"bc-7","name":"no pr"}
+                     {"bcId":"bc-7","name":"no pr","isArchived":true}
                    ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
             ),
         )
@@ -56,6 +56,10 @@ class BackgroundComposerApiTest {
         val list = api.list()
 
         assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
+        assertThat(list.composers).containsAtLeast(
+            ComposerSnapshot("bc-1", name = "x", archived = false),
+            ComposerSnapshot("bc-7", name = "no pr", archived = true),
+        )
         assertThat(list.pullRequests).containsExactly(
             "https://github.com/acme/app/pull/1", PullRequestState.Open,
             "https://github.com/acme/app/pull/2", PullRequestState.Draft,
@@ -123,6 +127,41 @@ class BackgroundComposerApiTest {
         val unpin = server.takeRequest()
         assertThat(unpin.path).isEqualTo("/aiserver.v1.BackgroundComposerService/UnpinBackgroundComposers")
         assertThat(unpin.json()["bcIds"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("bc-3")
+    }
+
+    @Test
+    fun `archive and unarchive use ArchiveBackgroundComposer with the unarchive flag`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        api.archive("bc-1")
+        api.unarchive("bc-1")
+
+        server.takeRequest()
+        val archive = server.takeRequest()
+        assertThat(archive.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ArchiveBackgroundComposer")
+        val archived = archive.json()
+        assertThat(archived["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-1")
+        assertThat(archived["unarchive"]?.jsonPrimitive?.content).isEqualTo("false")
+        val unarchive = server.takeRequest()
+        assertThat(unarchive.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ArchiveBackgroundComposer")
+        assertThat(unarchive.json()["unarchive"]?.jsonPrimitive?.content).isEqualTo("true")
+    }
+
+    @Test
+    fun `rename sends bcId and newName`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        api.rename("bc-1", "Billing fix")
+
+        server.takeRequest()
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/RenameBackgroundComposer")
+        val body = request.json()
+        assertThat(body["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-1")
+        assertThat(body["newName"]?.jsonPrimitive?.content).isEqualTo("Billing fix")
     }
 
     @Test

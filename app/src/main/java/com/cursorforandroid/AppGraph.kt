@@ -75,9 +75,9 @@ class AppGraph(context: Context) {
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
         profile = AccountApi(accountRpc, sessionTokens),
     )
-    val agents = AgentRepository(session, prefs, attachments, caches.agents)
-    /** The account's agent list, pins and pull request statuses: what the desktop Agents window and the iOS app show. */
+    /** The account's agent list, pins, archive and rename: what the desktop Agents window and the iOS app show. */
     private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
+    val agents = AgentRepository(session, prefs, attachments, caches.agents, account = accountAgents)
     private val accountPullRequests = CursorPullRequestSource(accountAgents)
     /**
      * Where the agents' pull requests stand: the account's word first (the public API names a PR but never says if it

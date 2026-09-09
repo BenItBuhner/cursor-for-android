@@ -119,7 +119,7 @@ class SidebarSectionsTest {
                         onCustomize = {},
                         onToggleSidebar = null,
                         onRefresh = {},
-                        rowActions = AgentRowActions({}, {}, {}, {}, {}),
+                        rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }),
                     ),
                 )
             }
