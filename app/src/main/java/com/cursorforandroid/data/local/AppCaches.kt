@@ -172,7 +172,8 @@ class TraceCache(
     )
 
     private companion object {
-        const val VERSION = 1
+        /** 2: tool calls carry their Cursor-worded summary, server and stats, and subagents are tool calls. */
+        const val VERSION = 2
         const val MAX_AGENTS = 200
         /** Matches the page of runs the conversation loads; older runs are never asked for. */
         const val MAX_RUNS_PER_AGENT = 50
