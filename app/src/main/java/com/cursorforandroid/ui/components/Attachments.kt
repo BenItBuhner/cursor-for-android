@@ -72,7 +72,7 @@ fun rememberImagePicker(
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2))) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         scope.launch {
-            val result = withContext(Dispatchers.IO) { uris.take(remaining).map { loadAttachment(context, it) } }
+            val result = withContext(Dispatchers.IO) { uris.take(remaining).map { loadAttachment(context, it, fallbackMime = null) } }
             val ok = result.mapNotNull { it.getOrNull() }
             result.firstOrNull { it.isFailure }?.exceptionOrNull()?.message?.let(onError)
             if (uris.size > remaining) onError("Only ${PromptImage.MAX_COUNT} images can be attached to a prompt.")
@@ -85,11 +85,15 @@ fun rememberImagePicker(
     }
 }
 
-private fun loadAttachment(context: Context, uri: Uri): Result<PendingAttachment> = runCatching {
+/**
+ * Reads one image URI the way the photo picker and the system share sheet both deliver them. [fallbackMime] is
+ * the share intent's type when the resolver has none (a `file://` screenshot, typically).
+ */
+fun loadAttachment(context: Context, uri: Uri, fallbackMime: String? = null): Result<PendingAttachment> = runCatching {
     val resolver = context.contentResolver
-    val mime = resolver.getType(uri)?.lowercase() ?: "image/jpeg"
+    val mime = (resolver.getType(uri) ?: fallbackMime)?.lowercase() ?: "image/jpeg"
     if (!PromptImage.isSupported(mime)) error("Unsupported image type ($mime). Use PNG, JPEG, GIF or WebP.")
-    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Couldn't read the selected image.")
+    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Couldn't read the shared image.")
     if (bytes.size > PromptImage.MAX_BYTES) error("Images must be 15 MB or smaller.")
     // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
     val image = AttachmentImages.prepare(bytes, mime)

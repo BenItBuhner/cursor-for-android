@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -169,6 +170,18 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         restoreWaitingIfFree()
     }
     fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
+    /**
+     * Drops a share into this composer: the incoming text is appended under whatever is already written, images
+     * fill the remaining attachment slots, and a warning from the share (an unsupported file, too many images)
+     * shows as the composer's error line.
+     */
+    fun applyShare(text: String, items: List<PendingAttachment>, warning: String? = null) = _state.update { s ->
+        s.copy(
+            prompt = ShareDraft.mergeText(s.prompt, text),
+            attachments = (s.attachments + items).take(PromptImage.MAX_COUNT),
+            error = warning,
+        )
+    }
     fun removeAttachment(item: PendingAttachment) {
         _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
         restoreWaitingIfFree()
