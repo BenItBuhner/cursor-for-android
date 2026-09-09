@@ -46,6 +46,8 @@ object TimelineBuilder {
         runs: List<RunDto>,
         traces: Map<String, List<TimelineItem>> = emptyMap(),
         attachments: Map<String, List<MessageAttachment>> = emptyMap(),
+        /** Runs whose prompt the server has not filed yet (placeholders): their user message reads as pending. */
+        pending: Set<String> = emptySet(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         val items = mutableListOf<TimelineItem>()
@@ -80,7 +82,7 @@ object TimelineBuilder {
                     // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
                     // but is shown as the notification it is rather than as something the user said.
                     items += SystemNotifications.parse(msg.id, msg.text, startedAt)?.items
-                        ?: listOf(UserMessage(msg.id, msg.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList()))
+                        ?: listOf(UserMessage(msg.id, msg.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
                 }
                 else -> replies += AssistantMessage(msg.id, msg.text)
             }
