@@ -168,16 +168,6 @@ class CursorDrawerState(initialValue: DrawerValue) {
 
     suspend fun close() = slideTo(DrawerValue.Closed)
 
-    /**
-     * Puts the sheet at [value] this frame, with no animation, cutting off any slide or fling in flight — the same
-     * contract as Material's `DrawerState.snapTo`, for the moments the drawer is swapped for the rail rather than
-     * dismissed.
-     */
-    suspend fun snapTo(value: DrawerValue) {
-        targetValue = value
-        mutex.mutate { fraction = value.fraction }
-    }
-
     /** Animates to [value] from wherever the sheet is now, taking longer the further it has to travel. */
     internal suspend fun slideTo(value: DrawerValue) {
         targetValue = value
@@ -191,6 +181,15 @@ class CursorDrawerState(initialValue: DrawerValue) {
             val millis = (SlideMillis * distance).roundToInt().coerceIn(MinSlideMillis, SlideMillis)
             runAnimation { animate(fraction, target, animationSpec = tween(millis, easing = SlideEasing)) { v, _ -> fraction = v } }
         }
+    }
+
+    /**
+     * Puts the sheet at [value] at once, no animation, cancelling one in flight: for a layout change that replaces the
+     * drawer with something else (the rail, when the window turns wide), where a slide would play under the new layout.
+     */
+    suspend fun snapTo(value: DrawerValue) {
+        targetValue = value
+        mutex.mutate { fraction = value.fraction }
     }
 
     /** Puts the sheet at [fraction] for this frame of a back gesture, taking over from any animation in flight. */
