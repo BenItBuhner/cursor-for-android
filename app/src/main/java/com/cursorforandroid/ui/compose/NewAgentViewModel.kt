@@ -16,8 +16,10 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +33,11 @@ data class NewAgentUiState(
     val prompt: String = "",
     val attachments: List<PendingAttachment> = emptyList(),
     val repositories: List<Repository> = emptyList(),
+    /**
+     * Repositories an agent has been active in within the last week, newest first, at most ten. Empty when nothing
+     * has been touched recently — the picker then lists the catalogue alone, without a recent block.
+     */
+    val recentRepositories: List<Repository> = emptyList(),
     val selectedRepo: Repository? = null,
     val noRepo: Boolean = false,
     /** The branch (or commit) the agent starts from; blank leaves it to the repository's default branch. */
@@ -91,7 +98,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             // every later page, launch or finished run may teach the picker a branch.
             graph.agents.state.collect { s ->
                 agents = s.agents
-                _state.update { it.withBranches() }
+                _state.update { it.withPickerLists() }
             }
         }
         // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
@@ -123,14 +130,19 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
         _state.update { s ->
             val selected = s.selectedRepo ?: repos.firstOrNull { it.url == preferredUrl } ?: repos.firstOrNull()
-            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withBranches()
+            s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withPickerLists()
         }
     }
+
+    private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withBranches().withRecentRepos()
 
     private fun NewAgentUiState.withBranches(): NewAgentUiState {
         val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
         return copy(branches = KnownBranches.forRepository(agents, repo.url))
     }
+
+    private fun NewAgentUiState.withRecentRepos(): NewAgentUiState =
+        copy(recentRepositories = RecentRepositories.partition(repositories, agents, AppClock.now()).recent)
 
     private suspend fun loadModels(force: Boolean = false) {
         // The saved list shows right away (the picker spins in its header while it is revalidated).
@@ -180,7 +192,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
      */
     fun selectRepo(repo: Repository?) = _state.update { s ->
         val sameRepo = repo != null && !s.noRepo && repo.url == s.selectedRepo?.url
-        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withBranches()
+        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withPickerLists()
         val keepRef = sameRepo || repo == null || s.ref.isBlank() || next.branches.any { it.name == s.ref.trim() }
         if (keepRef) next else next.copy(ref = "")
     }
@@ -299,7 +311,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             },
             autoCreatePr = request.autoCreatePr,
             planMode = request.planMode,
-        ).withBranches()
+        ).withPickerLists()
     }
 
     private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }
