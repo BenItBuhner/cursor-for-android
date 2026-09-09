@@ -273,6 +273,21 @@ class NewAgentViewModelTest {
     }
 
     @Test
+    fun `the repository picker pins repositories with recent agent activity newest first`() {
+        val vm = loadedWithAgents()
+        // Demo chats from the last day cover every catalogue repository; none is older than a week, so the recent
+        // block is the whole list, ordered by the newest chat in each repository — not the alphabetical catalogue.
+        assertThat(vm.state.value.recentRepositories.map { it.shortName }).containsExactly(
+            "cursor-for-android",
+            "visual-engine",
+            "codex-poly-bot",
+            "market-replay",
+            "cesium",
+            "zen-parity",
+        ).inOrder()
+    }
+
+    @Test
     fun `the branch list is empty without a repository`() {
         val vm = loadedWithAgents()
         vm.selectRepo(null)
