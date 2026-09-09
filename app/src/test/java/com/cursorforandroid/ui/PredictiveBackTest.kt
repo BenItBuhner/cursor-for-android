@@ -9,6 +9,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
@@ -18,9 +20,12 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -76,15 +81,18 @@ class PredictiveBackTest {
 
     private fun onScreen(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
-    /** A gesture from the left edge, reported at each of [progress] on its way to the commit threshold. */
-    private fun OnBackPressedDispatcher.swipe(vararg progress: Float) {
-        dispatchOnBackStarted(BackEventCompat(0f, 600f, 0f, BackEventCompat.EDGE_LEFT))
+    /** A gesture from [edge] (the left by default), reported at each of [progress] on its way to the commit threshold. */
+    private fun OnBackPressedDispatcher.swipe(vararg progress: Float, edge: Int = BackEventCompat.EDGE_LEFT) {
+        dispatchOnBackStarted(BackEventCompat(0f, 600f, 0f, edge))
         compose.waitForIdle()
         progress.forEach {
-            dispatchOnBackProgressed(BackEventCompat(it * 400f, 600f, it, BackEventCompat.EDGE_LEFT))
+            dispatchOnBackProgressed(BackEventCompat(it * 400f, 600f, it, edge))
             compose.waitForIdle()
         }
     }
+
+    /** The sidebar drawer's sheet, found by its pane title. Its position in the root says how far it has slid. */
+    private fun drawerSheet() = compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "Navigation menu")).fetchSemanticsNode()
 
     private fun OnBackPressedDispatcher.release() {
         onBackPressed()
@@ -170,6 +178,58 @@ class PredictiveBackTest {
         dispatcher.release()
         compose.waitUntil(10_000) { !sheetShowing() }
         assertThat(onScreen(ROOT_PAGE)).isFalse()
+    }
+
+    /**
+     * The drawer's sheet moves toward its edge by exactly the gesture's progress — half-way at 0.5, the same for a
+     * swipe from either edge — and keeps its size while it does; Material's own handler shrank it and pushed it toward
+     * whichever edge the finger came from. Open over a screen that can itself go back, back closes the drawer first.
+     */
+    @Test
+    fun `sidebar drawer slides linearly with the gesture from either edge, rewinds on cancel and closes on commit`() {
+        val dispatcher = compose.activity.onBackPressedDispatcher
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.waitForIdle()
+        val sheet = drawerSheet()
+        val width = sheet.size.width.toFloat()
+        assertThat(sheet.positionInRoot.x).isWithin(1f).of(0f)
+
+        dispatcher.swipe(0.25f, 0.5f)
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(-width / 2f)
+        assertThat(drawerSheet().size.width.toFloat()).isEqualTo(width)
+
+        dispatcher.cancel()
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(0f)
+
+        // A right-edge swipe sends the sheet the same way: toward its own edge, never toward the finger.
+        dispatcher.swipe(0.5f, edge = BackEventCompat.EDGE_RIGHT)
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(-width / 2f)
+        dispatcher.cancel()
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(0f)
+
+        dispatcher.swipe(0.6f)
+        dispatcher.release()
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(-width)
+        // At the New Chat root with the drawer shut there is nothing left for back to do.
+        assertThat(dispatcher.hasEnabledCallbacks()).isFalse()
+
+        // Over Settings — whose header has a back button, not a sidebar one — the drawer is dragged in, and back is the
+        // drawer's before it is the screen's.
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        waitForText("Demo User")
+        compose.onNodeWithText("Demo User").performClick()
+        waitForText(SETTINGS_PAGE)
+        compose.waitForIdle()
+        compose.onRoot().performTouchInput { swipeRight(startX = 0f, endX = width * 0.9f) }
+        compose.waitForIdle()
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(0f)
+        dispatcher.swipe(0.6f)
+        dispatcher.release()
+        assertThat(drawerSheet().positionInRoot.x).isWithin(1f).of(-width)
+        assertThat(onScreen(SETTINGS_PAGE)).isTrue()
+        assertThat(onScreen(HOME_PLACEHOLDER)).isFalse()
+        assertThat(dispatcher.hasEnabledCallbacks()).isTrue()
     }
 
     @Test

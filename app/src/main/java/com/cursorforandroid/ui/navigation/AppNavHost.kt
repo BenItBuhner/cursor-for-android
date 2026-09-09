@@ -8,10 +8,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
@@ -25,8 +21,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -41,6 +35,8 @@ import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
+import com.cursorforandroid.ui.components.CursorDrawer
+import com.cursorforandroid.ui.components.rememberCursorDrawerState
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.share.ShareTarget
@@ -57,7 +53,7 @@ import kotlinx.coroutines.launch
  * collapsible with the drawer's slide) and an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered
  * by [CursorNavHost].
  */
-@OptIn(ExperimentalMaterial3WindowSizeClassApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 fun AppNavHost(
     graph: AppGraph,
@@ -75,7 +71,7 @@ fun AppNavHost(
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
     val topScreen = stack.top.screen
     val selectedAgentId = (topScreen as? Screen.Agent)?.id
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
     // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
@@ -231,21 +227,12 @@ fun AppNavHost(
             detailHost(Modifier.weight(1f).fillMaxHeight())
         }
     } else {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            gesturesEnabled = true,
-            scrimColor = Color.Black.copy(alpha = 0.45f),
-            drawerContent = {
-                ModalDrawerSheet(
-                    drawerState = drawerState,
-                    drawerContainerColor = colors.sidebar,
-                    drawerContentColor = colors.textPrimary,
-                    drawerShape = RectangleShape,
-                    modifier = Modifier.width(CursorDimens.sidebarWidth),
-                ) {
-                    sidebar(inDrawer = true, modifier = Modifier.fillMaxSize())
-                }
-            },
+        CursorDrawer(
+            state = drawerState,
+            drawerWidth = CursorDimens.sidebarWidth,
+            containerColor = colors.sidebar,
+            contentColor = colors.textPrimary,
+            drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
         ) {
             detailHost(Modifier.fillMaxSize())
         }

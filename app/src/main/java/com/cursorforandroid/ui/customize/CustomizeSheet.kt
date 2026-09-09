@@ -147,12 +147,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                             viewModel.setRepos(if (next.size == state.repoSlugs.size) null else next)
                         }
                         FilterKind.Status -> ChecklistPage(StatusFilter.entries.map { it.label to (it in state.prefs.statuses) }) { viewModel.toggleStatus(StatusFilter.entries[it]) }
-                        FilterKind.Git -> {
-                            ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) }
-                            if (state.pullRequestsUnreadable && !state.hasGitHubToken) {
-                                PageNote("Pull request states are read from GitHub. Some of these repositories are private: add a GitHub token under Settings › GitHub to see where their pull requests stand.")
-                            }
-                        }
+                        FilterKind.Git -> ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) }
                         FilterKind.Source -> {
                             ChecklistPage(SourceFilter.entries.map { it.label to (it in state.prefs.sources) }) { viewModel.toggleSource(SourceFilter.entries[it]) }
                             PageNote("Where each chat was started, as your Cursor account records it. Chats started from this app count as \"This device\"; the account sees them as API.")
