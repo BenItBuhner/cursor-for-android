@@ -54,6 +54,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isFinite
@@ -75,6 +76,7 @@ import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CancellationException
+import kotlin.math.sqrt
 
 /**
  * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to and the
@@ -113,27 +115,30 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
         val maxHeight = mediaMaxHeight()
-        val density = LocalDensity.current
-        val maxWidthPx = with(density) { maxWidth.roundToPx() }
-        val maxHeightPx = with(density) { maxHeight.roundToPx() }
+        val request = inlineDecodeBounds()
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
         var lightbox by rememberSaveable(ref.cacheKey) { mutableStateOf(false) }
 
-        LaunchedEffect(ref, attempt, maxWidthPx) {
+        // Keyed on the artifact, not on the measured width: the column is re-measured whenever the device is
+        // rotated (configChanges absorbs it) or the sidebar appears, and that must not throw the decoded bitmap
+        // away and blank the figure back to a placeholder. The decode is sized for the device instead, and the
+        // layout fits it to whatever width it ends up with.
+        LaunchedEffect(ref, attempt) {
             if (media == null || ref is MediaRef.Unavailable) {
                 state = ImageLoad.Failed("Image isn't available", retryable = false)
                 return@LaunchedEffect
             }
             state = ImageLoad.Loading
             state = try {
-                ImageLoad.Ready(media.loader.image(ref, maxWidthPx, maxHeightPx).asImageBitmap())
+                ImageLoad.Ready(media.loader.image(ref, request.width, request.height).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 ImageLoad.Failed("Couldn't load image", retryable = true)
             }
         }
 
+        val ready = (state as? ImageLoad.Ready)?.bitmap
         when (val s = state) {
             ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), "Loading image")
             is ImageLoad.Failed -> MediaErrorRow(
@@ -142,23 +147,35 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
                 detail = alt ?: ref.label,
                 onRetry = if (s.retryable) ({ attempt++ }) else null,
             )
-            is ImageLoad.Ready -> {
-                val size = fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight)
-                Image(
-                    bitmap = s.bitmap,
-                    contentDescription = alt ?: "Image",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(size)
-                        .cursorSurface(Color.Transparent, colors.strokeSubtle, shape)
-                        .pressable({ lightbox = true }, shape, role = Role.Image),
-                )
-                if (lightbox && media != null) {
-                    ImageLightbox(ref, s.bitmap, alt, media.loader, onDismiss = { lightbox = false })
-                }
-            }
+            is ImageLoad.Ready -> Image(
+                bitmap = s.bitmap,
+                contentDescription = alt ?: "Image",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight))
+                    .cursorSurface(Color.Transparent, colors.strokeSubtle, shape)
+                    .pressable({ lightbox = true }, shape, role = Role.Image),
+            )
+        }
+        // Outside the load state: the viewer carries its own bitmap, and one that is open must not be torn down
+        // because the figure behind it went back to loading.
+        if (lightbox && media != null) {
+            ImageLightbox(ref, ready, alt, media.loader, onDismiss = { lightbox = false })
         }
     }
+}
+
+/**
+ * How large an inline figure is decoded. Bounded by the device's short edge rather than by the measured column:
+ * that is the widest a message column ever is in portrait, it does not change when the display is re-measured, and
+ * a figure is never laid out taller than [MediaMaxHeightCap] anyway.
+ */
+@Composable
+private fun inlineDecodeBounds(): IntSize {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val edge = minOf(configuration.screenWidthDp, configuration.screenHeightDp).dp
+    return with(density) { boundedPixels(edge.roundToPx(), MediaMaxHeightCap.roundToPx()) }
 }
 
 /** A `<video>` from a reply: poster frame with a play button; tapping swaps in an inline player. */
@@ -287,6 +304,19 @@ private fun MediaErrorRow(icon: ImageVector, title: String, detail: String?, onR
     }
 }
 
+/** ARGB_8888 at [MaxDecodePixels] is about 12 MB; no single figure may ask for more than that. */
+private const val MaxDecodePixels = 3_000_000L
+
+/** Shrinks a decode request, keeping its proportions, until it fits inside [MaxDecodePixels]. */
+internal fun boundedPixels(widthPx: Int, heightPx: Int): IntSize {
+    val width = widthPx.coerceAtLeast(1)
+    val height = heightPx.coerceAtLeast(1)
+    val pixels = width.toLong() * height
+    if (pixels <= MaxDecodePixels) return IntSize(width, height)
+    val scale = sqrt(MaxDecodePixels.toDouble() / pixels)
+    return IntSize((width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1))
+}
+
 /** One source pixel per dp, shrunk (never enlarged) to fit [maxWidth] x [maxHeight] while keeping the aspect ratio. */
 private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): DpSize {
     val w = widthPx.coerceAtLeast(1).toFloat()
@@ -297,46 +327,59 @@ private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): Dp
 
 /** Full-screen viewer: pinch to zoom, drag to pan, double-tap to toggle 2.5x, close button or back to leave. */
 @Composable
-private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap, alt: String?, loader: MediaLoader, onDismiss: () -> Unit) {
+private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, loader: MediaLoader, onDismiss: () -> Unit) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     var bitmap by remember(ref) { mutableStateOf(initial) }
+    LaunchedEffect(initial) { if (bitmap == null) bitmap = initial }
     // The inline copy was decoded for the message width; fetch one sized for the screen (Coil serves it from cache
-    // when the inline decode already was full resolution).
+    // when the inline decode already was full resolution). Bounded by the screen rather than by twice its pixels:
+    // the old request was 2x the screen in each direction, four times its area, and a screenshot close to that
+    // shape decoded to tens of megabytes of software bitmap with nothing between it and OutOfMemoryError.
     LaunchedEffect(ref) {
-        val targetW = with(density) { (configuration.screenWidthDp * 2).dp.roundToPx() }
-        val targetH = with(density) { (configuration.screenHeightDp * 2).dp.roundToPx() }
-        runCatching { loader.image(ref, targetW, targetH) }.onSuccess { if (it.width >= bitmap.width) bitmap = it.asImageBitmap() }
+        val target = with(density) {
+            boundedPixels(configuration.screenWidthDp.dp.roundToPx(), configuration.screenHeightDp.dp.roundToPx())
+        }
+        runCatching { loader.image(ref, target.width, target.height) }
+            .onSuccess { if (it.width >= (bitmap?.width ?: 0)) bitmap = it.asImageBitmap() }
     }
     var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 6f)
-        offset = if (scale == 1f) Offset.Zero else offset + panChange
+        offsetX = if (scale == 1f) 0f else offsetX + panChange.x
+        offsetY = if (scale == 1f) 0f else offsetY + panChange.y
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = alt,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .transformable(transform)
-                    .pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = {
-                            scale = if (scale > 1f) 1f else 2.5f
-                            offset = Offset.Zero
-                        })
-                    }
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    },
-            )
+            val shown = bitmap
+            if (shown == null) {
+                SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.Center))
+            } else {
+                Image(
+                    bitmap = shown,
+                    contentDescription = alt,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .transformable(transform)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = {
+                                scale = if (scale > 1f) 1f else 2.5f
+                                offsetX = 0f
+                                offsetY = 0f
+                            })
+                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offsetX
+                            translationY = offsetY
+                        },
+                )
+            }
             Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape)) {
                 FlatIconButton(CursorIcons.Close, "Close", onClick = onDismiss, tint = Color.White)
             }
