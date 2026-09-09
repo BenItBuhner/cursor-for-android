@@ -202,15 +202,25 @@ class NewAgentViewModelTest {
     }
 
     @Test
-    fun `choosing Default is restored as Default, not as the first model`() {
+    fun `a saved Default choice is restored as the first model`() {
         val first = loaded()
         first.selectModel(null, null)
         first.launchAndWait()
 
         val second = loaded()
-        assertThat(second.state.value.selectedModel).isNull()
-        assertThat(second.state.value.selectedVariant).isNull()
-        assertThat(second.state.value.modelLabel).isEqualTo("Default model")
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
+        assertThat(second.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
+    }
+
+    @Test
+    fun `pinning a model persists across composers`() = runBlocking<Unit> {
+        val first = loaded()
+        val grok = first.state.value.models.first { it.id == "cursor-grok-4.6" }
+        first.togglePinnedModel(grok.id)
+        awaitUntil { grok.id in first.state.value.pinnedModelIds }
+        val second = loaded()
+        awaitUntil { grok.id in second.state.value.pinnedModelIds }
+        assertThat(second.state.value.pinnedModelIds).containsExactly(grok.id)
     }
 
     @Test

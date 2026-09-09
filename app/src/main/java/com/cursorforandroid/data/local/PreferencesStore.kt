@@ -73,6 +73,7 @@ class PreferencesStore(context: Context) {
         val pinSync = booleanPreferencesKey("pin_sync")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
+        val pinnedModels = stringPreferencesKey("pinned_model_ids")
     }
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
@@ -133,6 +134,18 @@ class PreferencesStore(context: Context) {
     /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
     suspend fun setPinnedIds(agentIds: Set<String>) = store.edit { it[Keys.pinned] = agentIds }
 
+    /** Model ids the user pinned in the picker, most recently pinned first, so they stay at the top of the list. */
+    val pinnedModelIds: Flow<List<String>> = store.data.map { p ->
+        p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+    }
+
+    /** Pins [modelId] to the front of the list, or drops it when it is already pinned. */
+    suspend fun togglePinnedModel(modelId: String) = store.edit { p ->
+        val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+        val next = if (modelId in current) current - modelId else listOf(modelId) + current
+        if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+    }
+
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
     val recentSkills: Flow<List<String>> = store.data.map { p ->
         p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
@@ -191,7 +204,7 @@ class PreferencesStore(context: Context) {
         val repoUrl: String?,
         /** Branch launched from last time; blank is the repository's default branch, null means no launch yet. */
         val ref: String?,
-        /** Model launched with last time; null is "Default" (Cursor's configured model) once [modelChosen] is set. */
+        /** Model launched with last time; null is an older "no model" choice once [modelChosen] is set. */
         val modelId: String?,
         val modelParams: Map<String, String>,
         val autoCreatePr: Boolean,

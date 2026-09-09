@@ -218,6 +218,8 @@ fun HomeScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = state.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
         )
     }
 }
