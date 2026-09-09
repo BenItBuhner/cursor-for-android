@@ -64,6 +64,10 @@ data class VerifiedDownload(val versionCode: Int, val sizeBytes: Long, val sha25
  * A session handed to `PackageInstaller`, recorded before it is committed. The status callback can start the process
  * that receives it, in which case nothing is in memory to attribute it to; [handledStatus] keeps a redelivery of the
  * same verdict from being acted on twice.
+ *
+ * [committedAtMs] is when the session was *recorded*, which is a moment before the commit is issued; [commitIssued]
+ * says whether the commit was reached at all. A process that died in between left a session no verdict will ever be
+ * about, and a record that would otherwise look exactly like an install still in flight.
  */
 @Serializable
 data class PendingInstall(
@@ -71,6 +75,7 @@ data class PendingInstall(
     val release: AppRelease,
     val committedAtMs: Long,
     val handledStatus: Int? = null,
+    val commitIssued: Boolean = false,
 )
 
 class UpdateCache(private val cache: JsonDiskCache) {
@@ -135,6 +140,8 @@ class UpdateManager(
     private val now: () -> Long = AppClock::now,
     /** How long the app has to stay off screen and idle before a silent install is committed. */
     private val backgroundIdleMs: Long = BACKGROUND_IDLE_MS,
+    /** Waits out a duration. A seam so the install watchdog can be driven without waiting ten real minutes. */
+    private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
@@ -156,6 +163,10 @@ class UpdateManager(
     /** The system's confirmation Intent from a `STATUS_PENDING_USER_ACTION`, launched when the user is around. */
     @Volatile
     private var pendingConfirmation: Intent? = null
+
+    /** Waits out [PENDING_INSTALL_TTL_MS] on a committed session, so that a verdict that never comes is not forever. */
+    @Volatile
+    private var watchdog: Job? = null
 
     // A failure here (an unreadable cache file, say) must not poison every later await; the state simply starts Idle.
     private val restored: Deferred<Unit> = scope.async(start = CoroutineStart.LAZY) { runCatching { restore() }.getOrDefault(Unit) }
@@ -210,13 +221,19 @@ class UpdateManager(
             current is UpdateState.Downloaded -> install()
             current is UpdateState.Installing -> {
                 // The session belonged to a process that is gone; its confirmation cannot be recovered.
-                platform.abandonSessions()
-                cache.clearPending()
-                val apk = verifiedApk(current.release)
-                _state.value = if (apk != null) UpdateState.Downloaded(current.release, apk) else UpdateState.Available(current.release, now())
-                if (apk != null) install()
+                giveUpOnSession(current.release)
+                if (state.value is UpdateState.Downloaded) install()
             }
         }
+    }
+
+    /**
+     * The way out of an `Installing` state that is not going anywhere: a session whose verdict never arrived, or one
+     * a dead process left behind. The download stays ready, so installing again is one tap away.
+     */
+    fun cancelInstall() = launchExclusive {
+        val current = state.value as? UpdateState.Installing ?: return@launchExclusive
+        giveUpOnSession(current.release)
     }
 
     // ---- automatic mode (job + process lifecycle) --------------------------------------------------------------------
@@ -399,12 +416,22 @@ class UpdateManager(
             prefs.setPendingUpdateVersionCode(release.versionCode)
             pendingConfirmation = null
             _state.value = UpdateState.Installing(release)
+            var recorded: PendingInstall? = null
             withContext(Dispatchers.IO) {
                 platform.install(apk, release) { sessionId ->
                     // On disk before the session is committed: the verdict can arrive in a process that has nothing
                     // in memory about this install, including one the verdict itself started.
-                    cache.writePending(PendingInstall(sessionId, release, now()))
+                    val record = PendingInstall(sessionId, release, now())
+                    recorded = record
+                    cache.writePending(record)
                 }
+            }
+            // Reached only when the commit did not replace this process on the spot: from here the record says a
+            // verdict is genuinely owed, and the watchdog gives up on it if none arrives.
+            recorded?.let {
+                val issued = it.copy(commitIssued = true)
+                cache.writePending(issued)
+                armInstallWatchdog(issued)
             }
         } catch (e: CancellationException) {
             throw e
@@ -425,6 +452,46 @@ class UpdateManager(
         if (platform.isAppVisible() || agentsRunning()) return false
         delay(backgroundIdleMs)
         return !platform.isAppVisible() && !agentsRunning()
+    }
+
+    /**
+     * Gives a committed session [PENDING_INSTALL_TTL_MS] to produce a verdict. `PackageInstaller` is not obliged to
+     * send one — a session the system dropped, or one this process only thinks it committed, produces nothing at all
+     * — and until something moves the state on, `Installing` blocks every check, download and install there is.
+     *
+     * At the deadline the installer is asked about that exact session. One still making progress is left to it: it
+     * is a real install, and Settings offers the user a way out of it in the meantime. Anything else is abandoned
+     * and the verified download is offered again.
+     */
+    private fun armInstallWatchdog(pending: PendingInstall) {
+        watchdog?.cancel()
+        watchdog = scope.launch {
+            sleep((pending.committedAtMs + PENDING_INSTALL_TTL_MS - now()).coerceAtLeast(0L))
+            busy.withLock {
+                val current = state.value
+                if (current !is UpdateState.Installing || current.awaitingConfirmation) return@withLock
+                val record = cache.readPending() ?: return@withLock
+                if (record.sessionId != pending.sessionId || record.handledStatus != null) return@withLock
+                if (runCatching { platform.isSessionActive(record.sessionId) }.getOrDefault(false)) return@withLock
+                giveUpOnSession(current.release)
+            }
+        }
+    }
+
+    /**
+     * Drops a session that will not finish and goes back to what is actually true: the release is downloaded and
+     * verified, or — when the file did not survive — merely available.
+     */
+    private suspend fun giveUpOnSession(release: AppRelease) {
+        // Not cancelled here: this can be the watchdog's own coroutine. A watchdog left over from a session that is
+        // already gone finds the state moved on and does nothing, and arming a new one replaces it.
+        pendingConfirmation = null
+        runCatching { platform.abandonSessions() }
+        cache.clearPending()
+        prefs.setPendingUpdateVersionCode(null)
+        platform.cancelNotifications()
+        val apk = verifiedApk(release)
+        _state.value = if (apk != null) UpdateState.Downloaded(release, apk) else UpdateState.Available(release, now())
     }
 
     /**
@@ -496,11 +563,14 @@ class UpdateManager(
             val committed = cache.readPending()?.takeIf {
                 it.handledStatus == null && it.release.versionCode == pending && now() - it.committedAtMs < PENDING_INSTALL_TTL_MS
             }
-            if (committed != null) {
+            // A record written before a commit that was never reached names a session nothing will ever report on;
+            // only one the installer still has in hand can be waiting for a verdict.
+            if (committed != null && (committed.commitIssued || runCatching { platform.isSessionActive(committed.sessionId) }.getOrDefault(false))) {
                 // The session was committed by a process that is gone and its verdict has not been seen. It may be
                 // moments away — this process may have been started to receive it — so the session is left alone and
-                // the state says what it is waiting for. resumePendingInstall recovers if nothing ever arrives.
+                // the state says what it is waiting for. The watchdog gives up on it if nothing ever arrives.
                 _state.value = UpdateState.Installing(committed.release)
+                armInstallWatchdog(committed)
                 return
             }
             // Committed but never applied (declined, or the process died first): an orphaned session may remain.

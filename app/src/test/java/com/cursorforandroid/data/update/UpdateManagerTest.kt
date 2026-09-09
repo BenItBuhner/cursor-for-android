@@ -10,10 +10,12 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
@@ -114,7 +116,7 @@ class UpdateManagerTest {
         server.shutdown()
     }
 
-    private fun manager(backgroundIdleMs: Long = 0L): UpdateManager = UpdateManager(
+    private fun manager(backgroundIdleMs: Long = 0L, sleep: suspend (Long) -> Unit = { delay(it) }): UpdateManager = UpdateManager(
         client = GitHubReleasesClient(
             OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(),
             GitHubFixtures.OWNER_REPO,
@@ -130,6 +132,7 @@ class UpdateManagerTest {
         scope = scope,
         now = { now },
         backgroundIdleMs = backgroundIdleMs,
+        sleep = sleep,
     )
 
     private var agentsRunning = false
@@ -629,6 +632,86 @@ class UpdateManagerTest {
         after.ensureRestored()
         assertThat(after.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
         assertThat(platform.abandoned).isEqualTo(1)
+    }
+
+    @Test
+    fun `a verdict that never arrives is given up on by the process that is waiting for it`() = runBlocking {
+        val waited = CopyOnWriteArrayList<Long>()
+        val deadline = CompletableDeferred<Unit>()
+        val manager = manager(sleep = { waited += it; deadline.await() })
+        manager.check()
+        manager.download()
+        manager.install()
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Installing::class.java)
+        withTimeout(5_000) { while (waited.isEmpty()) delay(10) }
+        assertThat(waited.single()).isEqualTo(UpdateManager.PENDING_INSTALL_TTL_MS)
+
+        // Ten minutes on, the installer has no such session: no verdict is coming, so this process — not the next
+        // one, ten minutes after a restart — puts the ready download back in front of the user.
+        now += UpdateManager.PENDING_INSTALL_TTL_MS + 1
+        platform.forgetSessions()
+        deadline.complete(Unit)
+        val recovered = manager.awaitState { it is UpdateState.Downloaded } as UpdateState.Downloaded
+        assertThat(recovered.apk).isEqualTo(apk(20099))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+        withTimeout(5_000) { while (prefs.pendingUpdateVersionCode.first() != null) delay(10) }
+
+        // Installing is what an `Installing` state turns into a no-op, so it is the proof the manager is unstuck.
+        manager.installNow()
+        withTimeout(5_000) { while (platform.installs.size < 2) delay(10) }
+    }
+
+    @Test
+    fun `a session the installer is still working on is left alone at the deadline, and can still be given up on`() = runBlocking {
+        val deadline = CompletableDeferred<Unit>()
+        val manager = manager(sleep = { deadline.await() })
+        manager.check()
+        manager.download()
+        manager.install()
+        val release = manager.state.value.release!!
+
+        now += UpdateManager.PENDING_INSTALL_TTL_MS + 1
+        deadline.complete(Unit)
+        withTimeout(5_000) { while (platform.sessionQueries.isEmpty()) delay(10) }
+        assertThat(platform.sessionQueries).containsExactly(lastSession())
+        assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release))
+        assertThat(platform.abandoned).isEqualTo(0)
+
+        // Settings offers Cancel for exactly this state, and it is the only way out of a session that never ends.
+        manager.cancelInstall()
+        assertThat(manager.awaitState { it is UpdateState.Downloaded }).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+    }
+
+    @Test
+    fun `a process that died before its commit is not mistaken for an install in flight`() = runBlocking {
+        val staged = CompletableDeferred<Unit>()
+        val stuck = CompletableDeferred<Unit>()
+        platform.beforeCommit = {
+            staged.complete(Unit)
+            stuck.await()
+        }
+        val before = manager()
+        before.check()
+        before.download()
+        val release = before.state.value.release!!
+
+        // The session is recorded and the process goes away on its way to the commit.
+        val dying = launch(Dispatchers.Default) { before.install() }
+        withTimeout(5_000) { staged.await() }
+        assertThat(cache.readPending()!!.commitIssued).isFalse()
+        dying.cancelAndJoin()
+
+        // Nothing will ever report on that session, so the fresh process must not wait ten minutes for it.
+        platform.beforeCommit = null
+        val after = manager()
+        after.ensureRestored()
+        assertThat(after.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(cache.readPending()).isNull()
+        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
+        assertThat(after.install()).isInstanceOf(UpdateState.Installing::class.java)
     }
 
     @Test

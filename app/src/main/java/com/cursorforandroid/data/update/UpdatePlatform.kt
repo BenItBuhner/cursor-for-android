@@ -51,6 +51,13 @@ interface UpdatePlatform {
     /** Abandons install sessions this app still owns, e.g. one whose confirmation was never answered. */
     fun abandonSessions()
 
+    /**
+     * Whether the installer still holds session [sessionId] and it is making progress. False once the session has
+     * been consumed, abandoned or forgotten — and for one that was created but never committed, which is what a
+     * process death between recording a session and committing it leaves behind.
+     */
+    fun isSessionActive(sessionId: Int): Boolean
+
     /** Brings up the system's install confirmation; false when it could not be started. */
     fun startConfirmation(intent: Intent): Boolean
 

@@ -80,8 +80,8 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
                     apk.inputStream().use { it.copyTo(out) }
                     session.fsync(out)
                 }
-                // The commit below can replace this process before anything after it runs.
                 onSessionCreated(sessionId)
+                // The commit below can replace this process before anything after it runs.
                 session.commit(UpdateInstallReceiver.statusReceiver(context, sessionId, release).intentSender)
             }
         } catch (t: Throwable) {
@@ -94,6 +94,9 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
         val installer = packageManager.packageInstaller
         installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
     }
+
+    override fun isSessionActive(sessionId: Int): Boolean =
+        runCatching { packageManager.packageInstaller.getSessionInfo(sessionId)?.isActive }.getOrNull() == true
 
     override fun startConfirmation(intent: Intent): Boolean =
         runCatching { context.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess

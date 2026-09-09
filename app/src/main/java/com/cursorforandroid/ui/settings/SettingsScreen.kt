@@ -341,7 +341,8 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit) {
                 if (s.awaitingConfirmation) {
                     CursorButton("Confirm", onClick = updates::resumePendingInstall, primary = true, height = 30.dp)
                 } else {
-                    CursorButton("Installing…", onClick = {}, enabled = false, height = 30.dp)
+                    // The status line says what is happening; this is the way out of a session that never finishes.
+                    CursorButton("Cancel", onClick = updates::cancelInstall, height = 30.dp)
                 }
             is UpdateState.Failed ->
                 CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = 30.dp)

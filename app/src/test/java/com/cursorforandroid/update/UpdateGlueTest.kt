@@ -90,6 +90,7 @@ class UpdateGlueTest {
 
         platform.abandonSessions()
         assertThat(installer.mySessions).isEmpty()
+        assertThat(platform.isSessionActive(session.sessionId)).isFalse()
     }
 
     @Test

@@ -47,17 +47,37 @@ class FakeUpdatePlatform(
     override fun installedSigningSha256s() = signatures
     override fun inspect(apk: File): ApkInfo? = inspection(apk)
 
+    /** Runs between the session being recorded and the commit — the window a process death leaves a session in. */
+    var beforeCommit: (suspend () -> Unit)? = null
+
+    /** Sessions the installer still has in hand: committed here, until they are abandoned. */
+    private val active = CopyOnWriteArrayList<Int>()
+
     override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
         installError?.let { throw it }
         val sessionId = nextSessionId++
         sessions += sessionId
         onSessionCreated(sessionId)
+        beforeCommit?.invoke()
+        active += sessionId
         installs += apk to release
     }
 
     override fun abandonSessions() {
         abandoned++
+        active.clear()
     }
+
+    /** Which sessions were asked about, in order: the watchdog's question at the deadline. */
+    val sessionQueries = CopyOnWriteArrayList<Int>()
+
+    override fun isSessionActive(sessionId: Int): Boolean {
+        sessionQueries += sessionId
+        return sessionId in active
+    }
+
+    /** What the installer forgetting a committed session looks like: it is simply no longer there to ask about. */
+    fun forgetSessions() = active.clear()
 
     override fun startConfirmation(intent: Intent): Boolean {
         confirmations += intent
