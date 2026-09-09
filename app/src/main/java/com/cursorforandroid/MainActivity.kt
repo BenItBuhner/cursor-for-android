@@ -21,6 +21,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.update.UpdateCoordinator
 import com.cursorforandroid.update.UpdateNotifications
+import com.cursorforandroid.util.DeepLinks
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -35,15 +36,13 @@ class MainActivity : ComponentActivity() {
         val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        pendingAgentId = agentIdFrom(intent)
-        pendingNewChat = intent?.action == ACTION_NEW_CHAT
 
         val graph = appGraph
         splash.setKeepOnScreenCondition { graph.session.state.value is SessionState.Loading }
         LiveNotifications.ensureChannels(this)
         LiveNotificationCoordinator.bind(this, graph)
         UpdateCoordinator.bind(this, graph)
-        resumeUpdateIfAsked(intent)
+        readRequests(intent)
         returnFromBrowserWhenLoginEnds(graph)
 
         setContent {
@@ -53,24 +52,42 @@ class MainActivity : ComponentActivity() {
                 CursorRoot(
                     graph = graph,
                     deepLinkAgentId = pendingAgentId,
-                    onDeepLinkConsumed = { pendingAgentId = null },
+                    onDeepLinkConsumed = {
+                        pendingAgentId = null
+                        DeepLinks.clearAgentLink(intent)
+                    },
                     newChatRequested = pendingNewChat,
-                    onNewChatConsumed = { pendingNewChat = false },
+                    onNewChatConsumed = {
+                        pendingNewChat = false
+                        DeepLinks.clearAction(intent, ACTION_NEW_CHAT)
+                    },
                 )
             }
         }
     }
 
+    /**
+     * A second launch of this `singleTask` activity. [setIntent] is what makes [getIntent] answer with it: without
+     * that, a later recreation reads the *launch* intent again and replays a deep link the user left long ago.
+     */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        agentIdFrom(intent)?.let { pendingAgentId = it }
-        if (intent.action == ACTION_NEW_CHAT) pendingNewChat = true
+        setIntent(intent)
+        readRequests(intent)
+    }
+
+    /** Takes what the intent asks for: a chat to open, the New Chat pane, or an update to finish installing. */
+    private fun readRequests(intent: Intent?) {
+        DeepLinks.agentId(intent)?.let { pendingAgentId = it }
+        if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
         resumeUpdateIfAsked(intent)
     }
 
     /** The "ready to install" notification opens the app with this action; the confirmation the system wants follows. */
     private fun resumeUpdateIfAsked(intent: Intent?) {
-        if (intent?.action == UpdateNotifications.ACTION_INSTALL_UPDATE) appGraph.updates.resumePendingInstall()
+        if (intent?.action != UpdateNotifications.ACTION_INSTALL_UPDATE) return
+        DeepLinks.clearAction(intent, UpdateNotifications.ACTION_INSTALL_UPDATE)
+        appGraph.updates.resumePendingInstall()
     }
 
     /**
@@ -94,15 +111,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    private fun agentIdFrom(intent: Intent?): String? {
-        val uri = intent?.data ?: return null
-        if (uri.host != "cursor.com") return null
-        val segments = uri.pathSegments
-        val idx = segments.indexOf("agents")
-        return segments.getOrNull(idx + 1)?.takeIf { it.startsWith("bc") }
-            ?: uri.getQueryParameter("id")?.takeIf { it.startsWith("bc") }
     }
 
     companion object {

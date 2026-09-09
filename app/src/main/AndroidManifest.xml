@@ -50,6 +50,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
                 <data android:host="cursor.com" />
+                <data android:host="www.cursor.com" />
                 <data android:pathPrefix="/agents/" />
             </intent-filter>
         </activity>
