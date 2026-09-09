@@ -17,8 +17,12 @@ import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.ListArtifactsResponseDto
 import com.cursorforandroid.data.api.dto.ListModelsResponseDto
+import com.cursorforandroid.data.api.dto.ListPoolsResponseDto
 import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
+import com.cursorforandroid.data.api.dto.ListWorkersResponseDto
+import com.cursorforandroid.data.api.dto.PoolDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.RepositoryDto
 import com.cursorforandroid.data.api.dto.RunDto
@@ -74,6 +78,12 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationCalls = 0
     @Volatile var modelsCalls = 0
     @Volatile var repositoriesCalls = 0
+    @Volatile var workersCalls = 0
+    @Volatile var poolsCalls = 0
+    @Volatile var failWorkers: Throwable? = null
+    @Volatile var failPools: Throwable? = null
+    var workers: List<WorkerDto> = emptyList()
+    var pools: List<PoolDto> = emptyList()
 
     /** Largest page the fake serves regardless of the requested `limit`. */
     @Volatile var pageSize = Int.MAX_VALUE
@@ -163,6 +173,21 @@ open class FakeCursorApi : CursorApi {
         failRepositories?.let { throw it }
         return ListRepositoriesResponseDto(items = repositoryUrls.map(::RepositoryDto))
     }
+    override suspend fun listWorkers(status: String?, scope: String?, limit: Int, nextPageToken: String?): ListWorkersResponseDto {
+        workersCalls++
+        failWorkers?.let { throw it }
+        val listed = when (scope) {
+            "personal" -> workers.filter { it.scope != "team_pool" }
+            "team_pool" -> workers.filter { it.scope == "team_pool" }
+            else -> workers
+        }
+        return ListWorkersResponseDto(workers = listed)
+    }
+    override suspend fun listPools(scope: String?): ListPoolsResponseDto {
+        poolsCalls++
+        failPools?.let { throw it }
+        return ListPoolsResponseDto(pools = pools)
+    }
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
         listAgentsCalls++
         failListAgents?.let { throw it }
@@ -194,7 +219,7 @@ open class FakeCursorApi : CursorApi {
         val runId = "run-fake-${ids.incrementAndGet()}"
         val now = "2026-04-13T18:30:00.000Z"
         val name = if (blankCreatedNames) null else body.name ?: body.prompt.text.take(60)
-        val agent = AgentDto(id = id, name = name, status = "ACTIVE", createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
+        val agent = AgentDto(id = id, name = name, status = "ACTIVE", env = body.env ?: com.cursorforandroid.data.api.dto.AgentEnvDto(), createdAt = now, updatedAt = now, latestRunId = runId, repos = body.repos.orEmpty())
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = now, updatedAt = now)
         agents[id] = agent
         runs[runId] = run

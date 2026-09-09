@@ -99,6 +99,11 @@ class ConversationRepository(
     private val traceCache: TraceCache? = null,
     /** Prefetching only runs while the app is visible; the default lets tests and the demo skip that question. */
     private val isForeground: () -> Boolean = { true },
+    /**
+     * The first screen to show this chat. The finished notification for it can go: the user is reading the reply
+     * here. Default is nothing, so repository tests do not need a shade.
+     */
+    private val onOpened: (agentId: String) -> Unit = {},
     private val prefetchLimit: Int = PREFETCH_LIMIT,
     private val prefetchSpacingMs: Long = PREFETCH_SPACING_MS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -287,7 +292,7 @@ class ConversationRepository(
      */
     fun attach(agentId: String) {
         val e = entry(agentId)
-        synchronized(e) {
+        val firstScreen = synchronized(e) {
             e.attached++
             if (e.attached == 1 && !e.launching) {
                 e.loadJob?.cancel()
@@ -296,7 +301,9 @@ class ConversationRepository(
                     load(e, agentId)
                 }
             }
+            e.attached == 1
         }
+        if (firstScreen) onOpened(agentId)
     }
 
     /**

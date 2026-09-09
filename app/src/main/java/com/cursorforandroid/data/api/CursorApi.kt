@@ -12,8 +12,10 @@ import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.ListArtifactsResponseDto
 import com.cursorforandroid.data.api.dto.ListModelsResponseDto
+import com.cursorforandroid.data.api.dto.ListPoolsResponseDto
 import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
+import com.cursorforandroid.data.api.dto.ListWorkersResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
@@ -40,6 +42,24 @@ interface CursorApi {
 
     @GET("v1/repositories")
     suspend fun repositories(): ListRepositoriesResponseDto
+
+    /**
+     * Connected self-hosted workers (My Machines and team-pool members). User keys often cannot call this — the
+     * fleet docs want a pool service account — so callers treat a failure as "none listed".
+     */
+    @GET("v0/private-workers")
+    suspend fun listWorkers(
+        @Query("status") status: String? = "all",
+        @Query("scope") scope: String? = null,
+        @Query("limit") limit: Int = 100,
+        @Query("nextPageToken") nextPageToken: String? = null,
+    ): ListWorkersResponseDto
+
+    /** Durable team pools with connected / in-use counts. Same auth caveat as [listWorkers]. */
+    @GET("v0/private-workers/pools")
+    suspend fun listPools(
+        @Query("scope") scope: String? = null,
+    ): ListPoolsResponseDto
 
     // -- agents --
     @GET("v1/agents")

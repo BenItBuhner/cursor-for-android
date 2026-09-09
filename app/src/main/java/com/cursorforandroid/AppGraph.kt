@@ -37,9 +37,11 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
@@ -53,6 +55,8 @@ class AppGraph(context: Context) {
     val attachments = AttachmentStore(context)
     /** Follow-ups typed or queued but not yet sent, with their images, per chat. */
     private val followUpStore = FollowUpStore(context)
+    /** Text and images arriving from the system share sheet, drafted into a composer once a destination is picked. */
+    val share = ShareInbox(context)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
     val mcpServers = McpServerStore(keyStore)
 
@@ -116,6 +120,7 @@ class AppGraph(context: Context) {
         cache = caches.conversations,
         traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
+        onOpened = { agentId -> LiveNotifications.cancelFinished(context, agentId) },
     )
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     val launcher = ChatLauncher(conversations)
@@ -172,6 +177,7 @@ class AppGraph(context: Context) {
             media.clearCaches()
             attachments.clear()
             followUpStore.clear()
+            share.clear()
             caches.clear()
         }
     }

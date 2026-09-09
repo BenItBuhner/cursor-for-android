@@ -5,7 +5,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.dto.ModelListItemDto
+import com.cursorforandroid.data.api.dto.PoolDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.data.local.CatalogCache
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -100,5 +103,22 @@ class CatalogRepositoryTest {
         assertThat(catalog.repositories.value).hasSize(2)
         assertThat(catalog.loadRepositories().getOrThrow()).hasSize(2)
         assertThat(api.repositoriesCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun `live workers and pools are listed and a failed fleet call is empty rather than fatal`() = runBlocking<Unit> {
+        api.workers = listOf(WorkerDto(name = "studio", displayName = "Studio", isInUse = false, repoName = "app", scope = "personal"))
+        api.pools = listOf(PoolDto(name = "gpu", connectedWorkerCount = 2, inUseWorkerCount = 1))
+        val catalog = CatalogRepository(session, cache)
+
+        val listed = catalog.loadDevices().getOrThrow()
+        assertThat(listed.map { it.target }).containsExactly(DeviceTarget.machine("studio"), DeviceTarget.pool("gpu")).inOrder()
+        assertThat(listed[0].online).isTrue()
+        assertThat(listed[0].subtitle).isEqualTo("app")
+        assertThat(listed[1].subtitle).isEqualTo("2 connected · 1 in use")
+
+        api.failWorkers = IOException("forbidden")
+        api.failPools = IOException("forbidden")
+        assertThat(catalog.loadDevices().getOrThrow()).isEmpty()
     }
 }
