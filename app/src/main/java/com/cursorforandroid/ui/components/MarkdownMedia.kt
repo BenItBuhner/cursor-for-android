@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -317,6 +318,24 @@ internal fun boundedPixels(widthPx: Int, heightPx: Int): IntSize {
     return IntSize((width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1))
 }
 
+/**
+ * Where a zoomed figure may be dragged to. The image is drawn `Fit` inside [viewport], so only the part of it that
+ * hangs off an edge once scaled is pannable; beyond that the drag would pull the picture off the screen and leave
+ * the viewer showing nothing but black with no way back other than closing it.
+ */
+internal fun clampedPan(offset: Offset, scale: Float, imageWidth: Int, imageHeight: Int, viewport: IntSize): Offset {
+    if (viewport.width <= 0 || viewport.height <= 0) return Offset.Zero
+    val fit = minOf(
+        viewport.width.toFloat() / imageWidth.coerceAtLeast(1),
+        viewport.height.toFloat() / imageHeight.coerceAtLeast(1),
+    )
+    val maxX = (imageWidth * fit * scale - viewport.width) / 2f
+    val maxY = (imageHeight * fit * scale - viewport.height) / 2f
+    return Offset(withinOverhang(offset.x, maxX), withinOverhang(offset.y, maxY))
+}
+
+private fun withinOverhang(value: Float, max: Float): Float = if (max <= 0f) 0f else value.coerceIn(-max, max)
+
 /** One source pixel per dp, shrunk (never enlarged) to fit [maxWidth] x [maxHeight] while keeping the aspect ratio. */
 private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): DpSize {
     val w = widthPx.coerceAtLeast(1).toFloat()
@@ -343,13 +362,20 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, lo
         runCatching { loader.image(ref, target.width, target.height) }
             .onSuccess { if (it.width >= (bitmap?.width ?: 0)) bitmap = it.asImageBitmap() }
     }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var offsetY by remember { mutableFloatStateOf(0f) }
+    var scale by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(1f) }
+    var offsetX by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
+    var offsetY by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 6f)
-        offsetX = if (scale == 1f) 0f else offsetX + panChange.x
-        offsetY = if (scale == 1f) 0f else offsetY + panChange.y
+        val shown = bitmap
+        val panned = if (scale == 1f || shown == null) {
+            Offset.Zero
+        } else {
+            clampedPan(Offset(offsetX + panChange.x, offsetY + panChange.y), scale, shown.width, shown.height, viewport)
+        }
+        offsetX = panned.x
+        offsetY = panned.y
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -364,6 +390,7 @@ private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, lo
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxSize()
+                        .onSizeChanged { viewport = it }
                         .transformable(transform)
                         .pointerInput(Unit) {
                             detectTapGestures(onDoubleTap = {
