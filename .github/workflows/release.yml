@@ -69,8 +69,11 @@ jobs:
 
       - uses: ./.github/actions/android-toolchain
 
+      # The tag's version is passed here too, so AppVersionTest's parity check covers the version being released.
       - name: Lint and unit tests
-        run: ./gradlew :app:lintDebug :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+        run: >
+          ./gradlew :app:lintDebug :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+          -Papp.versionName="${{ steps.tag.outputs.version }}"
 
       - name: Prepare signing
         id: signing

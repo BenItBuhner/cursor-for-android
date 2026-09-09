@@ -1,10 +1,23 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.BuildConfig
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /** The versionCode scheme must agree with app/build.gradle.kts, which the examples here are taken from. */
 class AppVersionTest {
+
+    /**
+     * The one assertion the examples below cannot make: that the build script derived this build's versionCode from
+     * the same name the app reports. A CI build carries `-Papp.versionNameSuffix`, so this is where a code computed
+     * from the base version rather than the resolved one shows up (0.2.0-dev.148 as 20099 instead of 20024).
+     */
+    @Test
+    fun `the build's own versionCode is the one this scheme derives from its versionName`() {
+        val version = AppVersion.parse(BuildConfig.VERSION_NAME)
+        assertThat(version).isNotNull()
+        assertThat(version!!.versionCode).isEqualTo(BuildConfig.VERSION_CODE)
+    }
 
     /** Expected values are what `./gradlew -q :app:printAppVersion -Papp.versionName=…` prints for the same names. */
     @Test
