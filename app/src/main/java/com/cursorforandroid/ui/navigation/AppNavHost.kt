@@ -80,6 +80,17 @@ fun AppNavHost(
         if (drawerState.isOpen) scope.launch { drawerState.close() }
     }
 
+    // The activity handles size and orientation changes itself, so unfolding a Fold, or turning a phone on its side,
+    // swaps the drawer for the rail in place, and the two must agree: a drawer the user had open (or was opening)
+    // carries over as the expanded rail, and the drawer is put away so that folding back meets the detail pane rather
+    // than a drawer that opened on its own.
+    LaunchedEffect(wide) {
+        if (wide && drawerState.targetValue == DrawerValue.Open) {
+            sidebarCollapsed = false
+            drawerState.snapTo(DrawerValue.Closed)
+        }
+    }
+
     // The navigation callbacks below read the stack when they run, never `topScreen` / `selectedAgentId` as they were
     // at composition. A screen can hold on to an older callback: `HomeScreen` is composed underneath a chat while a
     // back gesture reveals it, and when the pop lands its parameters compare equal (a `::localFunction` reference is
