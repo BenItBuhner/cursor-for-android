@@ -44,6 +44,20 @@ object LiveNotifications {
 
     fun areEnabled(context: Context): Boolean = hasPermission(context) && NotificationManagerCompat.from(context).areNotificationsEnabled()
 
+    /**
+     * Whether the live notification would actually appear if it were posted now: the runtime permission, the
+     * app-wide switch, and the channel's own switch, all three of which the user can change while the app is away.
+     * Following runs in the background exists to produce that notification, so it is not worth a foreground service
+     * and its streams when the answer is no.
+     */
+    fun canShowLive(context: Context): Boolean {
+        if (!areEnabled(context)) return false
+        // Absent until the channels are created, which happens before anything is posted; it will be importance LOW.
+        val channel = runCatching { NotificationManagerCompat.from(context).getNotificationChannel(CHANNEL_LIVE) }
+            .getOrNull() ?: return true
+        return channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
+
     /** Android 16 introduced Live Updates (promoted ongoing notifications). */
     val supportsLiveUpdates: Boolean get() = Build.VERSION.SDK_INT >= 36
 

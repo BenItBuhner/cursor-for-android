@@ -30,6 +30,7 @@ object LiveNotificationCoordinator {
     private sealed interface Decision {
         data class Track(val runningIds: Set<String>) : Decision
         data object Idle : Decision
+        data object Blocked : Decision
         data object SignedOut : Decision
     }
 
@@ -43,13 +44,19 @@ object LiveNotificationCoordinator {
                         // A list restored from disk may still say "running" about runs that finished hours ago; the
                         // service only starts once a fetch has confirmed what is actually running.
                         list.isFromCache -> Decision.Idle
-                        enabled && session is SessionState.SignedIn && running.isNotEmpty() -> Decision.Track(running)
+                        enabled && session is SessionState.SignedIn && running.isNotEmpty() ->
+                            if (LiveNotifications.canShowLive(activity)) Decision.Track(running) else Decision.Blocked
                         else -> Decision.Idle
                     }
+                    // Notification capability is not a flow, so it is read here rather than observed: this whole
+                    // collection restarts every time the activity becomes visible, which is when the user can be
+                    // coming back from the system settings page that changed the answer.
                 }.distinctUntilChanged().collect { decision ->
                     when (decision) {
                         // Re-issued whenever the running set changes; a live service just gets another start command.
                         is Decision.Track -> LiveNotificationService.start(activity)
+                        // Following streams to post a card the system would drop is all cost and no benefit.
+                        Decision.Blocked -> LiveNotificationService.stop(activity)
                         Decision.SignedOut -> {
                             LiveNotificationService.stop(activity)
                             runCatching { NotificationManagerCompat.from(activity).cancelAll() }

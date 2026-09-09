@@ -2,8 +2,11 @@ package com.cursorforandroid.notifications
 
 import android.Manifest
 import android.app.Application
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.pm.ServiceInfo
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -14,6 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import java.time.Duration
 
@@ -91,6 +95,108 @@ class LiveNotificationServiceTest {
         awaitOnMain(10_000) { shadowOf(service).isForegroundStopped && shadowOf(service).isStoppedBySelf }
         assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
         assertThat(graph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    /** Enters demo mode and returns the running service, foreground and following the three scripted runs. */
+    private fun startTracking(): ServiceController<LiveNotificationService> {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val graph = app.appGraph
+        runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+        }
+        return Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
+    }
+
+    @Test
+    fun `without permission to post, nothing is followed and no foreground service is held`() {
+        val graph = app.appGraph
+        runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+        }
+        shadowOf(app).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+
+        val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
+        val service = controller.get()
+
+        assertThat(shadowOf(service).lastForegroundNotification).isNull()
+        assertThat(shadowOf(service).isStoppedBySelf).isTrue()
+        assertThat(graph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    @Test
+    fun `a live channel the user switched off stops the service instead of streaming into it`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val graph = app.appGraph
+        runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+        }
+
+        // Created after onCreate, so this is the channel the start command sees rather than the default one.
+        val controller = Robolectric.buildService(LiveNotificationService::class.java).create()
+        app.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(LiveNotifications.CHANNEL_LIVE, "Live", NotificationManager.IMPORTANCE_NONE),
+        )
+        assertThat(LiveNotifications.canShowLive(app)).isFalse()
+
+        controller.startCommand(0, 1)
+        val service = controller.get()
+        assertThat(shadowOf(service).lastForegroundNotification).isNull()
+        assertThat(shadowOf(service).isStoppedBySelf).isTrue()
+        assertThat(graph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    @Test
+    fun `a foreground start the platform refuses leaves nothing running behind it`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val graph = app.appGraph
+        runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+        }
+
+        val controller = Robolectric.buildService(LiveNotificationService::class.java).create()
+        shadowOf(controller.get()).setThrowInStartForeground(ForegroundServiceStartNotAllowedException("started from the background"))
+
+        controller.startCommand(0, 1)
+        val service = controller.get()
+        assertThat(shadowOf(service).isStoppedBySelf).isTrue()
+        assertThat(graph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    @Test
+    fun `the data-sync budget running out stops the service rather than crashing the process`() {
+        val controller = startTracking()
+        val service = controller.get()
+        assertThat(shadowOf(service).lastForegroundNotification).isNotNull()
+
+        service.onTimeout(1, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+
+        assertThat(shadowOf(service).isStoppedBySelf).isTrue()
+        assertThat(shadowOf(service).isForegroundStopped).isTrue()
+        assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
+        assertThat(app.appGraph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    @Test
+    fun `an idle shutdown names the start it is answering, so a newer one is not stopped with it`() {
+        val controller = startTracking()
+        val service = controller.get()
+        controller.startCommand(0, 7)
+
+        // Switching the feature off is the shutdown path the collector reaches soonest; the route does not matter.
+        runBlocking { app.appGraph.prefs.setLiveNotifications(false) }
+        awaitOnMain(10_000) { shadowOf(service).isStoppedBySelf }
+
+        assertThat(shadowOf(service).stopSelfResultId).isEqualTo(7)
+        assertThat(app.appGraph.runMonitor.isRunning).isFalse()
         controller.destroy()
     }
 }

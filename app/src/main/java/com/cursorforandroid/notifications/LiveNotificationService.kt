@@ -42,6 +42,7 @@ class LiveNotificationService : Service() {
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
     private var idleJob: Job? = null
+    private var latestStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,6 +52,13 @@ class LiveNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
+        // The only reason to follow runs from the background is the notification. Without one the service would hold
+        // a dataSync budget open and keep up to eight streams alive to produce nothing the user can see.
+        if (!LiveNotifications.canShowLive(this)) {
+            shutdown(force = true)
+            return START_NOT_STICKY
+        }
         val firstStart = !inForeground
         if (!enterForeground()) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP_RUN) {
@@ -58,8 +66,10 @@ class LiveNotificationService : Service() {
             val runId = intent.getStringExtra(EXTRA_RUN_ID)
             if (agentId != null && runId != null) stopRun(agentId, runId)
         } else if (!firstStart) {
-            // Re-issued start (running set changed, or notification permission was just granted): show the current state.
-            graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }?.let { post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, it)) }
+            // Re-issued start (running set changed, or notification permission was just granted): show the current
+            // state, or start the wait over if this arrived just as a shutdown was declining to stop the service.
+            val state = graph.runMonitor.state.value
+            if (state.running.isNotEmpty()) post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, state)) else scheduleIdleShutdown(state)
         }
         return START_NOT_STICKY
     }
@@ -143,17 +153,25 @@ class LiveNotificationService : Service() {
         }
     }
 
-    private fun shutdown() {
+    /**
+     * [force] stops the service whatever else is in flight, for the cases where staying is not an option.
+     * Otherwise `stopSelfResult` is asked: a start command that arrived while this shutdown was being decided means
+     * the service is wanted again, and then nothing is torn down. The start that is already on its way re-posts the
+     * notification or starts the idle wait over.
+     */
+    private fun shutdown(force: Boolean = false) {
         idleJob?.cancel()
         idleJob = null
+        if (!force && !stopSelfResult(latestStartId)) return
         graph.runMonitor.stop()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (force) stopSelf()
     }
 
     /** Android 15+ ends `dataSync` services after their daily budget; the run keeps going in the cloud. */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        shutdown()
+        // Not optional: the platform kills the process instead if the service is still up when this returns.
+        shutdown(force = true)
     }
 
     override fun onDestroy() {
@@ -170,17 +188,23 @@ class LiveNotificationService : Service() {
         private const val IDLE_GRACE_MS = 2_500L
         private const val FIRST_RECONCILE_TIMEOUT_MS = 20_000L
 
-        /** Idempotent: a running service just receives another start command. Must be called from the foreground. */
+        /**
+         * Idempotent: a running service just receives another start command. Must be called from the foreground;
+         * `ForegroundServiceStartNotAllowedException` (Android 12+) is swallowed because the next running-set change
+         * or the next time the app comes forward tries again, and there is nothing to tell the user in the meantime.
+         */
         fun start(context: Context) {
-            runCatching { ContextCompat.startForegroundService(context, Intent(context, LiveNotificationService::class.java)) }
+            runCatching { ContextCompat.startForegroundService(context, serviceIntent(context)) }
         }
 
         fun stop(context: Context) {
-            runCatching { context.stopService(Intent(context, LiveNotificationService::class.java)) }
+            runCatching { context.stopService(serviceIntent(context)) }
         }
 
+        private fun serviceIntent(context: Context) = Intent(context, LiveNotificationService::class.java)
+
         fun stopRunIntent(context: Context, agentId: String, runId: String): Intent =
-            Intent(context, LiveNotificationService::class.java)
+            serviceIntent(context)
                 .setAction(ACTION_STOP_RUN)
                 .putExtra(EXTRA_AGENT_ID, agentId)
                 .putExtra(EXTRA_RUN_ID, runId)
