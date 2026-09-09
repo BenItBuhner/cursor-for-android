@@ -7,6 +7,7 @@ import androidx.glance.appwidget.updateAll
 import com.cursorforandroid.AppGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -14,7 +15,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Keeps the home-screen widgets in step with the app for as long as its process lives: a list page landing, a run
@@ -28,7 +28,9 @@ object WidgetSync {
     private const val SETTLE_MS = 750L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val following = AtomicBoolean(false)
+
+    /** The collection of [WidgetData.snapshots], held so that it can be dropped when the last widget goes. */
+    private var followJob: Job? = null
 
     /** From the application: follow the app if widgets are placed, and hand the widget picker a live preview. */
     fun start(context: Context, graph: AppGraph) {
@@ -42,18 +44,34 @@ object WidgetSync {
 
     /** From a render: a widget exists, so what changes from here on has to reach it. Idempotent. */
     fun follow(context: Context, graph: AppGraph) {
-        if (!following.compareAndSet(false, true)) return
         val app = context.applicationContext
-        scope.launch {
-            // The first value is the state as it stands, which the widgets show already (from this render, or their
-            // last one in an earlier process); only what changes from here on is news to them.
-            WidgetData.snapshots(graph).drop(1).collectLatest {
-                delay(SETTLE_MS)
-                // A render in progress is finished even if a newer change arrives; the next one follows it.
-                withContext(NonCancellable) { renderAll(app) }
+        synchronized(this) {
+            if (followJob?.isActive == true) return
+            followJob = scope.launch {
+                // The first value is the state as it stands, which the widgets show already (from this render, or
+                // their last one in an earlier process); only what changes from here on is news to them.
+                WidgetData.snapshots(graph).drop(1).collectLatest {
+                    delay(SETTLE_MS)
+                    // A render in progress is finished even if a newer change arrives; the next one follows it.
+                    withContext(NonCancellable) { renderAll(app) }
+                }
             }
         }
     }
+
+    /**
+     * From the receiver when the last widget is removed. Without this, every session, list, pin, filter and theme
+     * change for the rest of the process's life would still wake the collector, wait out [SETTLE_MS] and ask the
+     * launcher for widget ids that are no longer there. Adding a widget again starts a render, which calls [follow].
+     */
+    fun stop() {
+        synchronized(this) {
+            followJob?.cancel()
+            followJob = null
+        }
+    }
+
+    internal fun isFollowing(): Boolean = synchronized(this) { followJob?.isActive == true }
 
     private suspend fun hasWidgets(app: Context): Boolean =
         runCatching { GlanceAppWidgetManager(app).getGlanceIds(ChatsWidget::class.java).isNotEmpty() }.getOrDefault(false)

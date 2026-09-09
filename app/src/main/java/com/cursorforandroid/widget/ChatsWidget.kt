@@ -38,7 +38,7 @@ class ChatsWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val graph = context.appGraph
-        WidgetData.prepare(graph)
+        WidgetData.prepare(graph, deviceRefreshBudget(context))
         // This widget exists, so from now on the app's changes must reach it (a no-op once following).
         WidgetSync.follow(context, graph)
         val snapshots = WidgetData.snapshots(graph)
@@ -69,6 +69,12 @@ class ChatsWidget : GlanceAppWidget() {
 
 class ChatsWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = ChatsWidget()
+
+    /** The last widget was removed: there is nothing left for [WidgetSync] to keep in step. */
+    override fun onDisabled(context: Context) {
+        WidgetSync.stop()
+        super.onDisabled(context)
+    }
 }
 
 /** What the widget's taps launch. Each is distinct by action or data, so their pending intents never merge. */
