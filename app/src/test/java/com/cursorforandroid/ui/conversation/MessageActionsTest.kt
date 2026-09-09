@@ -54,6 +54,15 @@ class MessageActionsTest {
     }
 
     @Test
+    fun `a reply with a markdown PR link shows the label, not the raw markup`() {
+        show(AssistantMessage("a1", "Opened [PR #66](https://github.com/BenItBuhner/cursor-for-android/pull/66) against `main`."))
+        compose.onNodeWithText("PR #66", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("main", substring = true).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("](", substring = true).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("github.com", substring = true).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
     fun `holding a reply copies its markdown as written, not as rendered`() {
         show(AssistantMessage("a1", "Done, **README** added."))
         compose.onNodeWithText("Done, README added.").performTouchInput { longClick() }

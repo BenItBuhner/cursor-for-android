@@ -16,6 +16,7 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
+import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +57,8 @@ data class FollowUpModelState(
     val override: ModelChoice? = null,
     /** null keeps the conversation's mode; true / false asks the next run for plan / agent mode explicitly. */
     val planMode: Boolean? = null,
+    /** Model ids pinned in the picker, most recently pinned first. */
+    val pinnedModelIds: List<String> = emptyList(),
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
@@ -82,8 +85,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
     val isPinned: StateFlow<Boolean> = graph.prefs.localAgentState.map { agentId in it.pinnedIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-    val modelPicker: StateFlow<FollowUpModelState> = combine(agent, graph.catalog.models, picker) { a, models, local -> pickerState(a, models, local) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
+    val modelPicker: StateFlow<FollowUpModelState> = combine(agent, graph.catalog.models, picker, graph.prefs.pinnedModelIds) { a, models, local, pinned ->
+        pickerState(a, models, local).copy(pinnedModelIds = pinned)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
 
     /**
      * What `/` offers the follow-up composer: the agent's skills and the `.cursor/commands` its machine reported, over
@@ -143,11 +147,19 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun setPlanMode(value: Boolean) { picker.update { it.copy(planMode = value) } }
 
+    fun togglePinnedModel(modelId: String) = viewModelScope.launch { graph.prefs.togglePinnedModel(modelId) }
+
     fun setDraft(value: String) { draft.value = value }
 
     fun addAttachments(items: List<PendingAttachment>) { attachments.value = (attachments.value + items).take(PromptImage.MAX_COUNT) }
     fun removeAttachment(item: PendingAttachment) { attachments.value = attachments.value.filterNot { it.id == item.id } }
     fun showMessage(message: String) { toast.value = message }
+    /** See [com.cursorforandroid.ui.compose.NewAgentViewModel.applyShare]: same merge into this chat's follow-up. */
+    fun applyShare(text: String, items: List<PendingAttachment>, warning: String? = null) {
+        draft.value = ShareDraft.mergeText(draft.value, text)
+        attachments.value = (attachments.value + items).take(PromptImage.MAX_COUNT)
+        if (warning != null) toast.value = warning
+    }
 
     fun send() {
         val text = draft.value.trim()

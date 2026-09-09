@@ -154,6 +154,14 @@ class AppScreenshotTest {
         compose.waitForIdle()
         capture("02_home")
 
+        // Device picker: Cloud is the default; My machines and team pools sit under it. This phone is never a row.
+        compose.onNodeWithText("Cloud").performClick()
+        waitForText("My machines")
+        waitForText("bennett")
+        capture("24_device_picker")
+        Espresso.pressBack()
+        compose.waitForIdle()
+
         // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         waitForText("Orchestrate multiple subagents in parallel")

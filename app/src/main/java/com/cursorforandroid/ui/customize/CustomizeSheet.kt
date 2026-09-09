@@ -146,12 +146,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                             viewModel.setRepos(if (next.size == state.repoSlugs.size) null else next)
                         }
                         FilterKind.Status -> ChecklistPage(StatusFilter.entries.map { it.label to (it in state.prefs.statuses) }) { viewModel.toggleStatus(StatusFilter.entries[it]) }
-                        FilterKind.Git -> {
-                            ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) }
-                            if (state.pullRequestsUnreadable && !state.hasGitHubToken) {
-                                PageNote("Pull request states are read from GitHub. Some of these repositories are private: add a GitHub token under Settings › GitHub to see where their pull requests stand.")
-                            }
-                        }
+                        FilterKind.Git -> ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) }
                         FilterKind.Source -> ChecklistPage(SourceFilter.entries.map { it.label to (it in state.prefs.sources) }) { viewModel.toggleSource(SourceFilter.entries[it]) }
                     }
                 }
@@ -271,17 +266,6 @@ private fun CheckRow(label: String, checked: Boolean, onClick: () -> Unit, icon:
 private fun ChecklistPage(items: List<Pair<String, Boolean>>, onToggle: (Int) -> Unit) {
     Spacer(Modifier.height(6.dp))
     items.forEachIndexed { index, (label, checked) -> CheckRow(label, checked, onClick = { onToggle(index) }) }
-}
-
-/** A line of explanation under a page's rows. */
-@Composable
-private fun PageNote(text: String) {
-    Text(
-        text,
-        style = CursorTheme.typography.small,
-        color = CursorTheme.colors.textQuaternary,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 4.dp),
-    )
 }
 
 @Composable

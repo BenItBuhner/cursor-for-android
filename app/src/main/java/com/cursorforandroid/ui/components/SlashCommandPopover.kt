@@ -49,9 +49,12 @@ object SlashTokens {
      * right before the slash is not in the token; one right after it is (the query is then empty, and everything is
      * offered).
      */
-    fun at(value: TextFieldValue): SlashToken? {
-        if (value.selection.collapsed.not()) return null
-        return at(value.text, value.selection.start)
+    fun at(value: TextFieldValue): SlashToken? = at(value.text, value.selection)
+
+    /** The same for a `TextFieldState`'s text and selection. */
+    fun at(text: String, selection: TextRange): SlashToken? {
+        if (selection.collapsed.not()) return null
+        return at(text, selection.start)
     }
 
     fun at(text: String, cursor: Int): SlashToken? {
@@ -71,8 +74,10 @@ object SlashTokens {
      * [value] with the token replaced by `/name` and one space, the cursor after the space, so the argument (or the
      * message) is typed next. A space already following the token is not doubled.
      */
-    fun complete(value: TextFieldValue, token: SlashToken, name: String): TextFieldValue {
-        val text = value.text
+    fun complete(value: TextFieldValue, token: SlashToken, name: String): TextFieldValue = complete(value.text, token, name)
+
+    /** The completed text and the cursor to place, as a [TextFieldValue], for [text] as it stands. */
+    fun complete(text: String, token: SlashToken, name: String): TextFieldValue {
         val after = text.substring(token.end)
         val insertion = "/$name" + if (after.startsWith(" ")) "" else " "
         val next = text.substring(0, token.start) + insertion + after
