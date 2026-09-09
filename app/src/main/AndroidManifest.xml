@@ -60,6 +60,13 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- The live notification's safety net: while the service is gone (killed, timed out, or the phone rebooted),
+             a persisted job reads the running agents' run records and posts the "Finished" cards. -->
+        <service
+            android:name=".notifications.FinishWatchdogJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <!-- PackageInstaller reports the outcome of an update session here. -->
         <receiver
             android:name=".update.UpdateInstallReceiver"

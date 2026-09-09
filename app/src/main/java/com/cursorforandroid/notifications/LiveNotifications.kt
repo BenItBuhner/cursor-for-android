@@ -1,6 +1,7 @@
 package com.cursorforandroid.notifications
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -12,7 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.cursorforandroid.R
 
-/** Capability checks and settings deep links for the live notification feature. */
+/** Capability checks, posting and settings deep links for the live notification feature. */
 object LiveNotifications {
     const val CHANNEL_LIVE = "live_agents"
     const val CHANNEL_FINISHED = "agent_finished"
@@ -43,6 +44,25 @@ object LiveNotifications {
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     fun areEnabled(context: Context): Boolean = hasPermission(context) && NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    /**
+     * Posts [notification] under [id] when the app may. A denied `POST_NOTIFICATIONS` (Android 13+) is not an error:
+     * the notification is simply not shown, and the next state change tries again. Checked inline (not via
+     * [hasPermission]) so lint's MissingPermission analysis can see it; the permission only exists from API 33, and
+     * earlier releases report it as denied, hence the version guard.
+     */
+    fun post(context: Context, id: Int, notification: Notification) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        try {
+            NotificationManagerCompat.from(context).notify(id, notification)
+        } catch (_: SecurityException) {
+            // Permission revoked between the check and the call.
+        }
+    }
 
     /** Android 16 introduced Live Updates (promoted ongoing notifications). */
     val supportsLiveUpdates: Boolean get() = Build.VERSION.SDK_INT >= 36
