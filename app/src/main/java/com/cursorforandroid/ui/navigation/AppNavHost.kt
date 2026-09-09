@@ -2,7 +2,6 @@ package com.cursorforandroid.ui.navigation
 
 import android.app.Activity
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -49,8 +47,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 /**
- * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent column on wide screens and
- * an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered by [CursorNavHost].
+ * Same shell as the official app: the New Chat pane is home; the sidebar is a column on wide screens (a [SidebarRail],
+ * collapsible with the drawer's slide) and an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered
+ * by [CursorNavHost].
  */
 @OptIn(ExperimentalMaterial3WindowSizeClassApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -209,9 +208,8 @@ fun AppNavHost(
 
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
-            if (!sidebarCollapsed) {
-                sidebar(inDrawer = false, modifier = Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight())
-                Box(Modifier.fillMaxHeight().width(1.dp).background(colors.strokeSubtle))
+            SidebarRail(expanded = !sidebarCollapsed) {
+                sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
             }
             detailHost(Modifier.weight(1f).fillMaxHeight())
         }
