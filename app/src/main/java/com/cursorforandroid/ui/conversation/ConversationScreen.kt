@@ -287,7 +287,7 @@ fun ConversationScreen(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // What is waiting to go out sits right above the box it came from, oldest first, in the same cut.
+            // What is waiting to go out sits right above the box it came from, oldest first, one line each.
             if (queue.isNotEmpty()) {
                 QueuedFollowUps(
                     queue = queue,
@@ -295,7 +295,7 @@ fun ConversationScreen(
                     onEdit = { viewModel.editQueued(it.id) },
                     onSteer = { viewModel.steerQueued(it.id) },
                     onRemove = { viewModel.removeQueued(it.id) },
-                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 6.dp),
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
             }
             ComposerBox(

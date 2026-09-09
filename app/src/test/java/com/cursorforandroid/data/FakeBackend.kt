@@ -56,6 +56,8 @@ open class FakeCursorApi : CursorApi {
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
+    /** Fails every cancel with this, for failures other than the run being over already. */
+    @Volatile var failCancelWith: Throwable? = null
     var failCreateRun = false
     /** Answers every follow-up with `409 agent_busy`, the way the server does while a run is still going. */
     @Volatile var busyCreateRun = false
@@ -260,6 +262,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
         if (failCancel) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
+        failCancelWith?.let { throw it }
         cancelled += runId
         return IdResponseDto(runId)
     }

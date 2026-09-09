@@ -37,6 +37,11 @@ data class QueuedFollowUp(
     /** The request is out and the server has not answered yet. */
     val isSending: Boolean = false,
     /**
+     * Steered: it has left the cards and shows in the transcript as a pending prompt while the turn under way is
+     * stopped and the request goes out. Still in the queue underneath so a restart finds it and sends it in order.
+     */
+    val isSteered: Boolean = false,
+    /**
      * Why the last attempt to send it failed, for anything other than the agent still being busy. The message stays
      * at the head of the queue and nothing behind it goes out until the user retries it or takes it away.
      */

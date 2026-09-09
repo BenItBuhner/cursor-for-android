@@ -140,10 +140,10 @@ class FollowUpRepository(
         return item
     }
 
-    /** Takes a queued follow-up away. One in flight stays until the server has answered. */
+    /** Takes a queued follow-up away. One in flight, or steered, stays until the server has answered. */
     fun remove(agentId: String, id: String) {
         val e = entry(agentId)
-        e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending }) }
+        e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
         e.scheduleSave()
     }
 
@@ -155,7 +155,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         var taken: QueuedFollowUp? = null
         e.update {
-            val item = queue.firstOrNull { it.id == id && !it.isSending } ?: return@update this
+            val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
             taken = item
             val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
                 item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
@@ -179,26 +179,91 @@ class FollowUpRepository(
     }
 
     /**
-     * Steers: sends a queued follow-up now rather than in its turn. It moves to the head of the queue and, when the
-     * agent is on a turn, that turn is cancelled — the API has no way to hand a message to a run in progress — so the
-     * dispatcher sends it the moment the cancel has landed. The failure is the cancel's, when it does not go through.
+     * Steers: sends a queued follow-up now rather than in its turn. The message leaves the cards at once and shows in
+     * the transcript as a pending prompt, faded, as if sent; when the agent is on a turn that turn is cancelled — the
+     * API has no way to hand a message to a run in progress — and the request goes out the moment the agent is free,
+     * ahead of everything else queued. The bubble comes up to full strength once the server has filed the run. Should
+     * the cancel or the send not go through, the message returns to the cards with the reason. All of it runs in the
+     * repository's own scope, so neither the screen's thread nor its lifetime is involved. False when [id] is not a
+     * queued message that could be steered.
      */
-    suspend fun sendNow(agentId: String, id: String): Result<Unit> {
+    fun sendNow(agentId: String, id: String): Boolean {
         val e = entry(agentId)
-        val found = synchronized(e) {
-            val item = e.state.value.queue.firstOrNull { it.id == id } ?: return@synchronized false
-            e.update { copy(queue = listOf(item.copy(error = null)) + queue.filterNot { it.id == id }) }
+        val item = synchronized(e) {
+            val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@synchronized null
+            val steered = found.copy(error = null, isSteered = true)
+            e.update { copy(queue = listOf(steered) + queue.filterNot { it.id == id }) }
             e.ensureDispatcher()
-            true
-        }
-        if (!found) return Result.failure(IllegalStateException("That follow-up is no longer queued."))
+            steered
+        } ?: return false
         e.scheduleSave()
-        if (isIdle(agentId).first()) return Result.success(Unit)
-        return conversations.cancelActiveRun(agentId).recoverCatching { t ->
-            // The turn ended by itself while the cancel was on its way: the message goes out all the same, so that
-            // is not a failure to report. The chat is brought up to date so it shows the turn as finished.
-            if (t.toCursorError()?.code == RUN_NOT_CANCELLABLE || isIdle(agentId).first()) conversations.revalidate(agentId) else throw t
+        scope.launch { steer(e, item) }
+        return true
+    }
+
+    private suspend fun steer(e: Entry, item: QueuedFollowUp) {
+        val staged = conversations.stageFollowUp(e.agentId, item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }, item.images.map { it.image })
+        if (!isIdle(e.agentId).first()) {
+            val cancel = conversations.cancelActiveRun(e.agentId).recoverCatching { t ->
+                // The turn ended by itself while the cancel was on its way: the message goes out all the same, so that
+                // is not a failure to report. The chat is brought up to date so it shows the turn as finished.
+                if (t.toCursorError()?.code == RUN_NOT_CANCELLABLE || isIdle(e.agentId).first()) conversations.revalidate(e.agentId) else throw t
+            }
+            cancel.exceptionOrNull()?.let { t ->
+                if (t is CancellationException) throw t
+                unsteer(e, item, staged, t)
+                return
+            }
         }
+        sendSteered(e, item, staged)
+    }
+
+    /** A steer that did not go through: the bubble comes down and the message is back among the cards, with the reason. */
+    private suspend fun unsteer(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp, cause: Throwable) {
+        conversations.discardStaged(e.agentId, staged)
+        e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSteered = false, isSending = false, error = cause.userMessage()) else it }) }
+    }
+
+    /** Sends a steered message once the agent is free, waiting out any turn the server still reports; see [sendNow]. */
+    private suspend fun sendSteered(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp) {
+        while (true) {
+            isIdle(e.agentId).first { it }
+            val result = conversations.sendStaged(
+                e.agentId,
+                staged,
+                item.images.map { it.image },
+                mcpServers = mcpServers(),
+                planMode = item.planMode,
+                modelId = item.modelId,
+                modelParams = item.modelParams,
+                modelDisplayName = item.modelDisplayName,
+            )
+            val t = result.exceptionOrNull()
+            when {
+                t == null -> {
+                    e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                    e.scheduleSave()
+                    return
+                }
+                t is CancellationException -> throw t
+                t.toCursorError()?.code == AGENT_BUSY -> awaitBusyTurn(e.agentId)
+                else -> {
+                    unsteer(e, item, staged, t)
+                    return
+                }
+            }
+        }
+    }
+
+    /**
+     * The row said idle and the server disagreed: the turn is still going. The row takes the server's word until the
+     * run's end or the next refresh corrects it. Should nothing report the turn — no row, no stream — it is asked
+     * again after a while rather than at once.
+     */
+    private suspend fun awaitBusyTurn(agentId: String) {
+        agents.patch(agentId) { if (it.isRunning) it else it.copy(runStatus = RunStatus.RUNNING) }
+        conversations.revalidate(agentId)
+        withTimeoutOrNull(busyRecheckMs) { isIdle(agentId).first { !it } }
     }
 
     /** Drops everything held for an agent, on disk too; used when it is deleted. */
@@ -305,9 +370,10 @@ class FollowUpRepository(
                 }
                 if (done) break
                 // The head can go once it is restored, free of a failure, not already out, and the agent is free.
+                // A steered message at the head is on its own way out (see [sendNow]); the rest wait behind it.
                 val ready = combine(e.state, isIdle(e.agentId)) { s, idle ->
                     val head = s.queue.firstOrNull()
-                    s.restored && idle && head != null && head.error == null && !head.isSending
+                    s.restored && idle && head != null && head.error == null && !head.isSending && !head.isSteered
                 }
                 ready.first { it }
                 val head = e.state.value.queue.firstOrNull() ?: continue
@@ -338,13 +404,9 @@ class FollowUpRepository(
             onFailure = { t ->
                 if (t is CancellationException) throw t
                 if (t.toCursorError()?.code == AGENT_BUSY) {
-                    // The row said idle and the server disagreed: the turn is still going. The row takes the server's
-                    // word until the run's end or the next refresh corrects it, and the message waits its turn again.
+                    // The message waits its turn again.
                     e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false) else it }) }
-                    agents.patch(e.agentId) { if (it.isRunning) it else it.copy(runStatus = RunStatus.RUNNING) }
-                    conversations.revalidate(e.agentId)
-                    // Should nothing report the turn — no row, no stream — ask again after a while rather than at once.
-                    withTimeoutOrNull(busyRecheckMs) { isIdle(e.agentId).first { !it } }
+                    awaitBusyTurn(e.agentId)
                 } else {
                     e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, error = t.userMessage()) else it }) }
                 }

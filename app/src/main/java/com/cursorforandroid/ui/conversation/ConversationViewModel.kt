@@ -95,9 +95,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val pendingAttachments: StateFlow<List<PendingAttachment>> = attachments.asStateFlow()
     val isSending: StateFlow<Boolean> = sending.asStateFlow()
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
-    /** Follow-ups sent while the agent was busy, oldest first; they go out by themselves once it is free. */
-    val queue: StateFlow<List<QueuedFollowUp>> = graph.followUps.state(agentId).map { it.queue }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.followUps.state(agentId).value.queue)
+    /**
+     * Follow-ups sent while the agent was busy, oldest first; they go out by themselves once it is free. A steered
+     * one is not among them: it shows in the transcript as a pending prompt instead.
+     */
+    val queue: StateFlow<List<QueuedFollowUp>> = graph.followUps.state(agentId).map { s -> s.queue.filterNot { it.isSteered } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.followUps.state(agentId).value.queue.filterNot { it.isSteered })
     val imageThumbnails: StateFlow<Map<String, ImageBitmap>> = thumbnails.asStateFlow()
     val isPinned: StateFlow<Boolean> = graph.prefs.localAgentState.map { agentId in it.pinnedIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -270,10 +273,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun removeQueued(id: String) = graph.followUps.remove(agentId, id)
 
-    /** Sends a queued follow-up now: the turn under way is stopped, and the message goes out ahead of the others. */
-    fun steerQueued(id: String) = viewModelScope.launch {
-        graph.followUps.sendNow(agentId, id).onFailure { toast.value = it.userMessage() }
-    }
+    /**
+     * Sends a queued follow-up now: it shows in the transcript as a pending prompt at once, the turn under way is
+     * stopped, and the message goes out ahead of the others. A failure brings it back among the cards with the reason.
+     */
+    fun steerQueued(id: String) { graph.followUps.sendNow(agentId, id) }
 
     fun retryQueued(id: String) = graph.followUps.retry(agentId, id)
 

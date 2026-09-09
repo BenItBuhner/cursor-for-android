@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -15,6 +16,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
@@ -92,6 +94,8 @@ class FollowUpRepositoryTest {
 
     /** The texts of the follow-ups the server has accepted, in order. */
     private fun sent() = api.runRequests.map { it.prompt.text }
+
+    private fun prompts(agentId: String) = conversations.state(agentId).value.items.filterIsInstance<UserMessage>()
 
     private suspend fun finish(runId: String, text: String = "Done.") {
         streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, text, 5_000, null))
@@ -175,17 +179,52 @@ class FollowUpRepositoryTest {
         agents.refresh()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // Like the real server, the cancelled turn is still winding down when the first send arrives.
+        api.busyCreateRun = true
         val followUps = repository()
         followUps.enqueue("bc-1", "First")
         val urgent = followUps.enqueue("bc-1", "Actually, stop and do this")
 
-        val result = followUps.sendNow("bc-1", urgent.id)
+        assertThat(followUps.sendNow("bc-1", urgent.id)).isTrue()
 
-        assertThat(result.isSuccess).isTrue()
-        assertThat(api.cancelled).containsExactly("run-1")
-        // The cancel marks the row idle, so the steered message is the next thing the server hears, ahead of the other.
-        awaitUntil { sent() == listOf("Actually, stop and do this") }
+        // Steered, the message has left the cards and is in the transcript as a pending prompt, as if sent.
+        assertThat(followUps.state("bc-1").value.queue.single { it.id == urgent.id }.isSteered).isTrue()
+        awaitUntil { prompts("bc-1").any { it.text == "Actually, stop and do this" && it.isPending } }
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { api.runRequests.isNotEmpty() }
+        delay(200)
+        // Refused as busy, it stays pending on screen — and nothing behind it moves.
+        assertThat(prompts("bc-1").single { it.text == "Actually, stop and do this" }.isPending).isTrue()
+        assertThat(sent()).doesNotContain("First")
+
+        // The turn is over: the steered message is the next thing the server hears, ahead of the other.
+        api.busyCreateRun = false
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.CANCELLED) }
+        awaitUntil { api.runs.values.any { it.id.startsWith("run-followup") } }
+        assertThat(sent().last()).isEqualTo("Actually, stop and do this")
         awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("First") }
+        // Filed by the server, the prompt comes up to full strength.
+        awaitUntil { prompts("bc-1").single { it.text == "Actually, stop and do this" }.isPending.not() }
+    }
+
+    @Test
+    fun `a steer whose cancel fails returns the message to the cards with the reason`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        api.failCancelWith = CursorApiException(503, "unavailable", "Try again later.")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        awaitUntil { followUps.state("bc-1").value.queue.single().error != null }
+        val back = followUps.state("bc-1").value.queue.single()
+        assertThat(back.isSteered).isFalse()
+        // The pending bubble came down with it.
+        assertThat(prompts("bc-1").none { it.text == "Now" }).isTrue()
+        assertThat(sent()).isEmpty()
     }
 
     @Test
@@ -198,7 +237,7 @@ class FollowUpRepositoryTest {
         val followUps = repository()
         val item = followUps.enqueue("bc-1", "Now")
 
-        assertThat(followUps.sendNow("bc-1", item.id).isSuccess).isTrue()
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
 
         // The message is still first in line and goes out when the row learns the turn is over.
         awaitUntil { streamer.connections.contains("run-1") }
@@ -213,7 +252,8 @@ class FollowUpRepositoryTest {
         val followUps = repository()
         followUps.enqueue("bc-1", "Still here")
 
-        assertThat(followUps.sendNow("bc-1", "gone").isFailure).isTrue()
+        assertThat(followUps.sendNow("bc-1", "gone")).isFalse()
+        delay(200)
 
         assertThat(api.cancelled).isEmpty()
         assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("Still here")
@@ -230,8 +270,8 @@ class FollowUpRepositoryTest {
         api.failCreateRun = false
 
         // A message that is no longer queued is not a reason to stop anything.
-        assertThat(followUps.sendNow("bc-1", "missing").isFailure).isTrue()
-        assertThat(followUps.sendNow("bc-1", followUps.state("bc-1").value.queue.single().id).isSuccess).isTrue()
+        assertThat(followUps.sendNow("bc-1", "missing")).isFalse()
+        assertThat(followUps.sendNow("bc-1", followUps.state("bc-1").value.queue.single().id)).isTrue()
 
         assertThat(api.cancelled).isEmpty()
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }

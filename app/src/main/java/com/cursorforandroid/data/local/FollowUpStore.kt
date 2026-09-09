@@ -9,9 +9,12 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Device-local copy of what the follow-up composer holds for each chat and has not sent yet: the draft as typed and
@@ -25,6 +28,10 @@ import java.io.File
 class FollowUpStore(context: Context) {
 
     private val root = File(context.applicationContext.filesDir, "followups")
+    /** One writer per chat at a time: a save that outlives the one scheduled after it must not undo its files. */
+    private val locks = ConcurrentHashMap<String, Mutex>()
+
+    private fun lock(agentId: String): Mutex = locks.getOrPut(agentId) { Mutex() }
 
     @Serializable
     private data class StoredImage(val id: String, val file: String, val mimeType: String)
@@ -48,7 +55,7 @@ class FollowUpStore(context: Context) {
     private data class Stored(val draft: StoredDraft = StoredDraft(), val queue: List<StoredQueued> = emptyList())
 
     /** What the disk holds for [agentId]; null when nothing is filed. Images whose file has gone are left out. */
-    suspend fun read(agentId: String): FollowUpComposerState? = withContext(Dispatchers.IO) {
+    suspend fun read(agentId: String): FollowUpComposerState? = lock(agentId).withLock { withContext(Dispatchers.IO) {
         val dir = agentDir(agentId)
         val file = File(dir, STATE_FILE).takeIf { it.isFile } ?: return@withContext null
         val stored = runCatching { CursorJson.decodeFromString(Stored.serializer(), file.readText()) }.getOrNull() ?: return@withContext null
@@ -68,10 +75,10 @@ class FollowUpStore(context: Context) {
             },
             restored = true,
         )
-    }
+    } }
 
     /** Files [draft] and [queue] for [agentId], or removes the chat's directory when both are empty. */
-    suspend fun write(agentId: String, draft: FollowUpDraft, queue: List<QueuedFollowUp>) = withContext(Dispatchers.IO) {
+    suspend fun write(agentId: String, draft: FollowUpDraft, queue: List<QueuedFollowUp>) = lock(agentId).withLock { withContext(Dispatchers.IO) {
         val dir = agentDir(agentId)
         if (draft.isEmpty && queue.isEmpty()) {
             dir.deleteRecursively()
@@ -110,12 +117,12 @@ class FollowUpStore(context: Context) {
             tmp.delete()
         }
         dir.listFiles()?.forEach { if (it.name != STATE_FILE && it.name !in referenced) it.delete() }
-    }
+    } }
 
-    suspend fun remove(agentId: String) = withContext(Dispatchers.IO) {
+    suspend fun remove(agentId: String) = lock(agentId).withLock { withContext(Dispatchers.IO) {
         agentDir(agentId).deleteRecursively()
         Unit
-    }
+    } }
 
     suspend fun clear() = withContext(Dispatchers.IO) {
         root.deleteRecursively()
