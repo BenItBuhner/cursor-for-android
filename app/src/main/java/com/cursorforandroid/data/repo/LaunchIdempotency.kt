@@ -10,8 +10,8 @@ import java.util.UUID
  *
  * The API treats a repeated `agentId` as the same create (`409 agent_id_conflict`), so a launch that is retried after
  * a timeout, a dropped connection or a cancel adopts the agent the first attempt may already have created instead of
- * starting a duplicate. Hashing the request means any edit to the draft (text, images, repo, ref, model, options)
- * yields a fresh id, while an unchanged retry keeps the old one. The enabled MCP servers count as part of the draft,
+ * starting a duplicate. Hashing the request means any edit to the draft (text, images, repo, ref, model, device,
+ * options) yields a fresh id, while an unchanged retry keeps the old one. The enabled MCP servers count as part of the draft,
  * hashed in the shape they are sent. [nonce] separates otherwise identical drafts — the composer rotates it after
  * every successful launch so that sending the same prompt twice on purpose still creates two agents.
  */
@@ -37,6 +37,8 @@ object LaunchIdempotency {
         field(request.autoCreatePr.toString())
         field(request.planMode.toString())
         field(request.name)
+        field(request.env.type.name)
+        field(request.env.name)
         field(request.images.size.toString())
         request.images.forEach { image ->
             field(image.mimeType)

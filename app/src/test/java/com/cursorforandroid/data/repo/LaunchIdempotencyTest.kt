@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpTransport
 import com.cursorforandroid.domain.ModelParam
@@ -45,6 +46,8 @@ class LaunchIdempotencyTest {
             request.copy(autoCreatePr = false),
             request.copy(planMode = true),
             request.copy(name = "Login fix"),
+            request.copy(env = DeviceTarget.machine("studio")),
+            request.copy(env = DeviceTarget.pool("gpu")),
         )
         val ids = edits.map { LaunchIdempotency.agentId(it, "nonce-1") }
         assertThat(ids).containsNoDuplicates()

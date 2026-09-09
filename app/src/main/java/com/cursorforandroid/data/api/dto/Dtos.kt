@@ -208,6 +208,67 @@ data class RepositoryDto(val url: String)
 @Serializable
 data class ListRepositoriesResponseDto(val items: List<RepositoryDto> = emptyList())
 
+/**
+ * One connected self-hosted worker from `GET /v0/private-workers`. Field names follow the fleet docs and the
+ * dashboard's worker list; anything else the server adds is ignored.
+ */
+@Serializable
+data class WorkerDto(
+    val id: String? = null,
+    val name: String? = null,
+    val displayName: String? = null,
+    val machineDisplayName: String? = null,
+    val isInUse: Boolean = false,
+    val repoOwner: String? = null,
+    val repoName: String? = null,
+    val repoUrl: String? = null,
+    val scope: String? = null,
+    val labels: List<WorkerLabelDto> = emptyList(),
+) {
+    /** The name `env.name` wants: the worker's registered name, then its display names, then its id. */
+    fun targetName(): String? = name?.trim()?.takeIf { it.isNotEmpty() }
+        ?: displayName?.trim()?.takeIf { it.isNotEmpty() }
+        ?: machineDisplayName?.trim()?.takeIf { it.isNotEmpty() }
+        ?: id?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+@Serializable
+data class WorkerLabelDto(val key: String = "", val value: String = "")
+
+@Serializable
+data class ListWorkersResponseDto(
+    val workers: List<WorkerDto> = emptyList(),
+    val items: List<WorkerDto> = emptyList(),
+    val privateWorkers: List<WorkerDto> = emptyList(),
+    val nextPageToken: String? = null,
+) {
+    fun listed(): List<WorkerDto> = when {
+        workers.isNotEmpty() -> workers
+        items.isNotEmpty() -> items
+        else -> privateWorkers
+    }
+}
+
+/** A durable team pool from `GET /v0/private-workers/pools`. */
+@Serializable
+data class PoolDto(
+    val name: String? = null,
+    val connectedWorkerCount: Int? = null,
+    val inUseWorkerCount: Int? = null,
+    val isStale: Boolean? = null,
+    val repoOwner: String? = null,
+    val repoName: String? = null,
+    val repoUrl: String? = null,
+)
+
+@Serializable
+data class ListPoolsResponseDto(
+    val pools: List<PoolDto> = emptyList(),
+    val items: List<PoolDto> = emptyList(),
+) {
+    fun listed(): List<PoolDto> = pools.ifEmpty { items }
+}
+
 @Serializable
 data class UsageTokensDto(
     val inputTokens: Long = 0,

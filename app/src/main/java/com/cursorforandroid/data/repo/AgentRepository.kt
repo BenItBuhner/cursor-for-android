@@ -17,6 +17,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
@@ -81,6 +82,8 @@ data class LaunchRequest(
     val agentId: String? = null,
     /** Sent inline as `mcpServers[]`; only the enabled ones go out. */
     val mcpServers: List<McpServer> = emptyList(),
+    /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
+    val env: DeviceTarget = DeviceTarget.Cloud,
 ) {
     /**
      * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
@@ -97,6 +100,20 @@ data class LaunchRequest(
 
     private companion object {
         const val PROVISIONAL_NAME_LENGTH = 60
+    }
+}
+
+/**
+ * `env` on Create An Agent. Default cloud with a repository omits the field (the repo is the target); no-repo
+ * cloud still sends `{ type: cloud }` so the VM is empty rather than local. Pool and machine always go out.
+ */
+fun DeviceTarget.toEnvDto(hasRepo: Boolean): AgentEnvDto? = when (type) {
+    EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
+    EnvType.MACHINE -> AgentEnvDto(type = "machine", name = apiName)
+    EnvType.CLOUD, EnvType.UNKNOWN -> when {
+        apiName != null -> AgentEnvDto(type = "cloud", name = apiName)
+        hasRepo -> null
+        else -> AgentEnvDto(type = "cloud")
     }
 }
 
@@ -431,8 +448,8 @@ class AgentRepository(
             name = request.provisionalName,
             lifecycle = AgentLifecycle.ACTIVE,
             runStatus = RunStatus.CREATING,
-            envType = EnvType.CLOUD,
-            envName = null,
+            envType = request.env.type.takeIf { it != EnvType.UNKNOWN } ?: EnvType.CLOUD,
+            envName = request.env.name,
             url = "https://cursor.com/agents/$id",
             createdAtMillis = now,
             updatedAtMillis = now,
@@ -477,7 +494,7 @@ class AgentRepository(
                         agentId = request.agentId,
                         model = modelRef(request.modelId, request.modelParams),
                         name = request.name,
-                        env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
+                        env = request.env.toEnvDto(hasRepo = request.repoUrl != null),
                         repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
                         autoCreatePR = request.autoCreatePr.takeIf { it },
                         mcpServers = request.mcpServers.toInlineServers(),

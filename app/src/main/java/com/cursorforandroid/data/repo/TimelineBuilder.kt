@@ -25,7 +25,7 @@ object TimelineBuilder {
 
     /**
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
-     * ("Worked 3m 5s" + branches) is placed right before the next user message, and after the final assistant
+     * ("Worked 3m 5s") is placed right before the next user message, and after the final assistant
      * message when that run has finished.
      *
      * The transcript only carries text. When a run's stream has been replayed (or is being followed live), its
