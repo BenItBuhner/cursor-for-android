@@ -52,9 +52,15 @@ class JsonDiskCache(
         }
     }
 
-    suspend fun <T> write(key: String, serializer: KSerializer<T>, version: Int, value: T): Boolean = withContext(dispatcher) {
-        val generation = epoch.current()
-        if (epoch.isStale(generation)) return@withContext false
+    /**
+     * The generation the cache is on. Work that will write later takes one of these when it starts and hands it to
+     * [write]: sampling it inside the write instead would accept an entry from an account that was signed out while
+     * the work was suspended, since by then the wipe has finished and the new generation looks current.
+     */
+    fun token(): Int = epoch.current()
+
+    suspend fun <T> write(key: String, serializer: KSerializer<T>, version: Int, value: T, token: Int = epoch.current()): Boolean = withContext(dispatcher) {
+        if (epoch.isStale(token)) return@withContext false
         lockFor(key).withLock {
             val file = fileFor(key)
             val tmp = File(directory, file.name + ".tmp")
@@ -63,7 +69,7 @@ class JsonDiskCache(
                 tmp.writeText(json.encodeToString(Envelope.serializer(serializer), Envelope(version, nowProvider(), value)))
                 // Blocking file IO is not a cancellation point, so a writer cancelled by a sign-out can still get
                 // this far. Checking here is what keeps it from putting the signed-out account back on disk.
-                if (epoch.isStale(generation)) throw IOException("The cache was wiped while this entry was being written")
+                if (epoch.isStale(token)) throw IOException("The cache was wiped while this entry was being written")
                 moveIntoPlace(tmp, file)
             }.onFailure { tmp.delete() }.isSuccess
         }

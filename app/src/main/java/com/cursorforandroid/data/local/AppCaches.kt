@@ -43,9 +43,12 @@ private data class CachedPullRequests(val statuses: Map<String, PullRequestStatu
 class PullRequestCache(private val cache: JsonDiskCache) {
     suspend fun read(): Map<String, PullRequestStatus>? = cache.read(KEY, CachedPullRequests.serializer(), VERSION)?.value?.statuses
 
-    suspend fun write(statuses: Map<String, PullRequestStatus>) {
-        cache.write(KEY, CachedPullRequests.serializer(), VERSION, CachedPullRequests(statuses))
+    suspend fun write(statuses: Map<String, PullRequestStatus>, token: Int = cache.token()) {
+        cache.write(KEY, CachedPullRequests.serializer(), VERSION, CachedPullRequests(statuses), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
@@ -62,9 +65,12 @@ class AgentListCache(private val cache: JsonDiskCache) {
     suspend fun read(): JsonDiskCache.Entry<List<Agent>>? =
         cache.read(KEY, CachedAgentList.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.agents, it.savedAtMillis) }
 
-    suspend fun write(agents: List<Agent>) {
-        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents))
+    suspend fun write(agents: List<Agent>, token: Int = cache.token()) {
+        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
@@ -106,9 +112,12 @@ class ConversationCache(private val cache: JsonDiskCache, private val maxEntries
     suspend fun read(agentId: String): JsonDiskCache.Entry<CachedConversation>? =
         cache.read(agentId, CachedConversation.serializer(), VERSION)
 
-    suspend fun write(conversation: CachedConversation) {
-        if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation)) cache.prune(maxEntries)
+    suspend fun write(conversation: CachedConversation, token: Int = cache.token()) {
+        if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation, token)) cache.prune(maxEntries)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun remove(agentId: String) = cache.remove(agentId)
 
@@ -157,15 +166,18 @@ class TraceCache(
         cache.read(agentId, CachedTraces.serializer(), VERSION)?.value?.runs?.associateBy { it.runId } ?: emptyMap()
 
     /** Adds [traces] to the agent's file, replacing what it held for the same runs; the newest runs are kept. */
-    suspend fun put(agentId: String, traces: Collection<CachedTrace>) {
+    suspend fun put(agentId: String, traces: Collection<CachedTrace>, token: Int = cache.token()) {
         if (traces.isEmpty()) return
         locks.getOrPut(agentId) { Mutex() }.withLock {
             val merged = (read(agentId) + traces.associate { it.runId to it.compact() }).values
                 .sortedByDescending { it.createdAtMillis }
                 .take(maxRunsPerAgent)
-            if (cache.write(agentId, CachedTraces.serializer(), VERSION, CachedTraces(agentId, merged))) cache.prune(maxAgents)
+            if (cache.write(agentId, CachedTraces.serializer(), VERSION, CachedTraces(agentId, merged), token)) cache.prune(maxAgents)
         }
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun remove(agentId: String) = cache.remove(agentId)
 
@@ -195,16 +207,19 @@ class CatalogCache(private val cache: JsonDiskCache) {
     suspend fun readModels(): JsonDiskCache.Entry<List<ModelOption>>? =
         cache.read(MODELS, CachedModels.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.models, it.savedAtMillis) }
 
-    suspend fun writeModels(models: List<ModelOption>) {
-        cache.write(MODELS, CachedModels.serializer(), VERSION, CachedModels(models))
+    suspend fun writeModels(models: List<ModelOption>, token: Int = cache.token()) {
+        cache.write(MODELS, CachedModels.serializer(), VERSION, CachedModels(models), token)
     }
 
     suspend fun readRepositories(): JsonDiskCache.Entry<List<Repository>>? =
         cache.read(REPOSITORIES, CachedRepositories.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.repositories, it.savedAtMillis) }
 
-    suspend fun writeRepositories(repositories: List<Repository>) {
-        cache.write(REPOSITORIES, CachedRepositories.serializer(), VERSION, CachedRepositories(repositories))
+    suspend fun writeRepositories(repositories: List<Repository>, token: Int = cache.token()) {
+        cache.write(REPOSITORIES, CachedRepositories.serializer(), VERSION, CachedRepositories(repositories), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 

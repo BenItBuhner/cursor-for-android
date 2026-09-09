@@ -110,6 +110,25 @@ class JsonDiskCacheTest {
     }
 
     @Test
+    fun `a write held up until after the wipe finished is still refused`() = runBlocking<Unit> {
+        val dir = folder.newFolder("straggler")
+        val root = cache(dir)
+        val conversations = root.child("conversations")
+        // The token the work took when it started. A trace replay cancelled by the sign-out finishes its file in a
+        // NonCancellable block, so it can reach the write only once the wipe is over and the epoch open again.
+        val token = conversations.token()
+        conversations.write("bc-1", Note.serializer(), 1, Note("account A"))
+
+        root.invalidate()
+        root.clear()
+
+        assertThat(conversations.write("bc-1", Note.serializer(), 1, Note("account A"), token)).isFalse()
+        assertThat(File(dir, "conversations/bc-1.json").exists()).isFalse()
+        // Work that starts after the wipe carries the new generation and lands.
+        assertThat(conversations.write("bc-2", Note.serializer(), 1, Note("account B"), conversations.token())).isTrue()
+    }
+
+    @Test
     fun `a write invalidated after its bytes were staged leaves nothing behind`() = runBlocking<Unit> {
         val dir = folder.newFolder("racing")
         val root = cache(dir)

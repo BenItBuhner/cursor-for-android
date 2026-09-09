@@ -461,9 +461,14 @@ class AgentRepository(
 
     private suspend fun persist() {
         val backend = session.current
-        val s = _state.value
-        if (cache == null || backend.isDemo || !s.hasLoaded || s.isFromCache) return
-        cache.write(s.agents.filterNot { it.id in pendingLaunches })
+        if (cache == null || backend.isDemo) return
+        // The cache generation belongs to the list being written, so a wipe between here and the file refuses it.
+        val (token, agents) = synchronized(publishLock) {
+            val s = _state.value
+            if (!s.hasLoaded || s.isFromCache) return
+            cache.token() to s.agents.filterNot { it.id in pendingLaunches }
+        }
+        cache.write(agents, token)
     }
 
     /**

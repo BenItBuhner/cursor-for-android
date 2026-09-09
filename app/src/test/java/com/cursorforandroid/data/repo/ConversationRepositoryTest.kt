@@ -72,6 +72,7 @@ class ConversationRepositoryTest {
     private lateinit var hub: LiveRunHub
     private lateinit var cache: ConversationCache
     private lateinit var traces: TraceCache
+    private lateinit var traceDisk: JsonDiskCache
     private val traceWrites = AtomicInteger()
 
     @Before
@@ -87,7 +88,8 @@ class ConversationRepositoryTest {
         cache = ConversationCache(disk.child("conversations"))
         // The cache stamps each write with the clock, so counting the stamps counts the writes to the trace file.
         traceWrites.set(0)
-        traces = TraceCache(JsonDiskCache(folder.newFolder("traces"), nowProvider = { traceWrites.incrementAndGet(); now }, dispatcher = Dispatchers.Unconfined))
+        traceDisk = JsonDiskCache(folder.newFolder("traces"), nowProvider = { traceWrites.incrementAndGet(); now }, dispatcher = Dispatchers.Unconfined)
+        traces = TraceCache(traceDisk)
         AppClock.nowMillis = { now }
     }
 
@@ -913,6 +915,37 @@ class ConversationRepositoryTest {
 
         assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
         assertThat(traceWrites.get()).isEqualTo(1)
+    }
+
+    /**
+     * A replay pass keeps what it found even when the screen leaves half-way through, which it does in a
+     * NonCancellable block — so a sign-out that cancels it can see that write arrive once the wipe is over and the
+     * cache open again for the next account.
+     */
+    @Test
+    fun `a trace pass a sign-out cancelled does not write back into the wiped cache`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+        )
+        agents.refresh()
+        // run-1's log reads to its end; run-2's never does, so the pass is still under way when the sign-out lands.
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        assertThat(traces.read("bc-1")).isEmpty()
+
+        traceDisk.invalidate()
+        traceDisk.clear()
+        conversations.resetAll()
+
+        delay(200)
+        assertThat(traces.read("bc-1")).isEmpty()
     }
 
     @Test

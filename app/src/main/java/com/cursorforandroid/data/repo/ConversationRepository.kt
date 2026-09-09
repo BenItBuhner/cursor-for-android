@@ -483,6 +483,7 @@ class ConversationRepository(
 
     private suspend fun load(e: Entry, agentId: String) {
         val backend = session.current
+        val tokens = cacheTokens()
         val api = backend.api
         if (!e.hasInputs) restoreFromCache(e, agentId)
         e.state.update { it.copy(isLoading = true, error = null) }
@@ -548,7 +549,7 @@ class ConversationRepository(
                 launch { agents.loadDetail(agentId, latest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
-                    persist(e, backend)
+                    persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
                         startStreaming(e, agentId, active)
@@ -672,26 +673,35 @@ class ConversationRepository(
         return runCatching { store.read(agentId) }.getOrDefault(emptyMap())
     }
 
-    private suspend fun persist(e: Entry, backend: CursorBackend) {
+    /**
+     * The cache generations the work started under. Sampling them inside the write instead would let a pass that a
+     * sign-out cancelled — one that finishes its file after the wipe, as the trace replay deliberately does — write
+     * the signed-out account's chat back to a cache that has since been reopened for the next one.
+     */
+    private data class CacheTokens(val conversations: Int, val traces: Int)
+
+    private fun cacheTokens() = CacheTokens(cache?.token() ?: 0, traceCache?.token() ?: 0)
+
+    private suspend fun persist(e: Entry, backend: CursorBackend, tokens: CacheTokens = cacheTokens()) {
         val store = cache ?: return
         if (backend.isDemo) return
         val snapshot = synchronized(e) { if (e.hasInputs || e.local.isNotEmpty()) e.toCached() else null } ?: return
-        store.write(snapshot)
+        store.write(snapshot, tokens.conversations)
         diskIndex[snapshot.agentId] = snapshot.agentUpdatedAtMillis
     }
 
-    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>) =
-        writeTraces(agentId, listOf(CachedTrace(runId, createdAtMillis, items)))
+    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>, tokens: CacheTokens = cacheTokens()) =
+        writeTraces(agentId, listOf(CachedTrace(runId, createdAtMillis, items)), tokens)
 
     /**
      * One read-merge-write of the agent's trace file. Written in batches: the file holds every trace of the agent,
      * so writing it per run turns opening a long chat into fifty parse-and-serialise cycles of a file growing
      * toward its full size, all through the same per-agent lock.
      */
-    private suspend fun writeTraces(agentId: String, traces: List<CachedTrace>) {
+    private suspend fun writeTraces(agentId: String, traces: List<CachedTrace>, tokens: CacheTokens = cacheTokens()) {
         if (traces.isEmpty()) return
         val store = traceCache?.takeIf { !session.isDemo } ?: return
-        runCatching { store.put(agentId, traces) }.onFailure { if (it is CancellationException) throw it }
+        runCatching { store.put(agentId, traces, tokens.traces) }.onFailure { if (it is CancellationException) throw it }
     }
 
     /**
@@ -703,6 +713,7 @@ class ConversationRepository(
      */
     private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
         e.traceJob?.cancel()
+        val tokens = cacheTokens()
         e.traceJob = e.scope.launch {
             if (!e.tracesRestored) {
                 val saved = readTraces(agentId)
@@ -735,7 +746,7 @@ class ConversationRepository(
                 }
             } finally {
                 // Whatever this pass found is kept, including when a screen left half-way through it.
-                withContext(NonCancellable) { writeTraces(agentId, settled.toList()) }
+                withContext(NonCancellable) { writeTraces(agentId, settled.toList(), tokens) }
             }
         }
     }
@@ -1130,6 +1141,7 @@ class ConversationRepository(
 
     private suspend fun prefetch(candidates: List<Agent>) {
         val backend = session.current
+        val tokens = cacheTokens()
         val api = backend.api
         for (agent in candidates) {
             if (!isForeground()) return
@@ -1158,7 +1170,7 @@ class ConversationRepository(
                             },
                             transform = { copy(isLoading = false, activeRunId = latest?.id, runStatus = latest?.statusEnum()) },
                         )
-                        persist(e, backend)
+                        persist(e, backend, tokens)
                     }
                 }
             }.isSuccess

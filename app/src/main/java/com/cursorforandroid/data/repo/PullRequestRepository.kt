@@ -200,6 +200,7 @@ class PullRequestRepository(
 
     private suspend fun pass(urls: Collection<String>, eager: Boolean) = passMutex.withLock {
         val startedIn = generation.get()
+        val token = cache?.token() ?: 0
         val demo = isDemo()
         if (demoMode != demo) {
             if (demoMode != null) {
@@ -236,8 +237,8 @@ class PullRequestRepository(
             // account this repository no longer speaks for.
             if (generation.get() != startedIn) return
             when (result) {
-                is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo)
-                PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo)
+                is PullRequestLookup.Found -> remember(url, PullRequestStatus(result.state, AppClock.now()), persist = !demo, token = token)
+                PullRequestLookup.Unreadable -> remember(url, PullRequestStatus(null, AppClock.now()), persist = !demo, token = token)
                 is PullRequestLookup.RateLimited -> {
                     rateLimitedUntil = result.untilMillis
                     return
@@ -246,7 +247,7 @@ class PullRequestRepository(
                 PullRequestLookup.Failed -> return
             }
         }
-        if (!demo && generation.get() == startedIn) forgetStale(now)
+        if (!demo && generation.get() == startedIn) forgetStale(now, token)
     }
 
     /**
@@ -257,6 +258,7 @@ class PullRequestRepository(
     suspend fun seed(states: Map<String, PullRequestState>) {
         if (states.isEmpty() || isDemo()) return
         val startedIn = generation.get()
+        val token = cache?.token() ?: 0
         if (demoMode == true) {
             // Leaving the demo: its seeded states never mix with the account's.
             _statuses.value = emptyMap()
@@ -271,7 +273,7 @@ class PullRequestRepository(
                 if (all[url]?.state == PullRequestState.Merged && state != PullRequestState.Merged) null else url to PullRequestStatus(state, at)
             }
         }
-        cache?.write(next)
+        cache?.write(next, token)
     }
 
     private fun PullRequestStatus?.isDue(now: Long, eager: Boolean): Boolean {
@@ -287,23 +289,23 @@ class PullRequestRepository(
         return now - checkedAtMillis >= effective
     }
 
-    private suspend fun remember(url: String, status: PullRequestStatus, persist: Boolean) {
+    private suspend fun remember(url: String, status: PullRequestStatus, persist: Boolean, token: Int) {
         val next = _statuses.updateAndGet { it + (url to status) }
-        if (persist) cache?.write(next)
+        if (persist) cache?.write(next, token)
     }
 
     /**
      * Keeps the record bounded: a pull request not looked at for a month belongs to an agent that is long gone from
      * the list (a merged one is never re-read, so it is asked about once more should its agent still be around).
      */
-    private suspend fun forgetStale(now: Long) {
+    private suspend fun forgetStale(now: Long, token: Int) {
         var dropped = false
         val next = _statuses.updateAndGet { all ->
             val kept = all.filterValues { now - it.checkedAtMillis < MAX_AGE_MS }
             dropped = kept.size != all.size
             kept
         }
-        if (dropped) cache?.write(next)
+        if (dropped) cache?.write(next, token)
     }
 
     /**
@@ -312,6 +314,7 @@ class PullRequestRepository(
      */
     suspend fun setToken(token: String?) {
         val startedIn = generation.get()
+        val cacheToken = cache?.token() ?: 0
         val trimmed = token?.trim()?.takeIf { it.isNotEmpty() }
         withContext(Dispatchers.IO) { writeToken(trimmed) }
         if (generation.get() != startedIn) return
@@ -319,7 +322,7 @@ class PullRequestRepository(
         // A token has a budget of its own; a limit spent anonymously says nothing about it.
         rateLimitedUntil = 0L
         val next = _statuses.updateAndGet { all -> all.filterValues { it.state != null } }
-        if (!isDemo()) cache?.write(next)
+        if (!isDemo()) cache?.write(next, cacheToken)
     }
 
     /**
