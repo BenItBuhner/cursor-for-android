@@ -147,7 +147,7 @@ fun ComposerBox(
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
-                var menuOpen by remember { mutableStateOf(false) }
+                var menuOpen by rememberSaveable { mutableStateOf(false) }
                 // The Box is the anchor: the menu drops from the "+" like the web's popover.
                 Box {
                     ComposerRoundButton(CursorIcons.Plus, "Add to prompt", onClick = { menuOpen = true })
