@@ -135,11 +135,17 @@ object MarkdownParser {
 }
 
 object InlineMarkdown {
-    private val linkRegex = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
+    private val htmlAnchor = Regex(
+        """<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
+    private val autolink = Regex("""<(https?://[^>\s]+)>""", RegexOption.IGNORE_CASE)
+    private val bareUrl = Regex("""https?://[^\s<]+""", RegexOption.IGNORE_CASE)
 
     /**
-     * Renders inline code, bold, italics and links to an AnnotatedString. Inline code gets a 12% base chip in
-     * JetBrains Mono, links use Cursor's textLink blue, both matching the desktop chat renderer.
+     * Renders inline code, bold, italics, strikethrough and links to an AnnotatedString. Nested markup is parsed
+     * (a bold wrap around a `[label](url)` is still a link); inline code stays literal. Links use Cursor's
+     * textLink blue, matching the desktop chat renderer.
      */
     fun render(
         text: String,
@@ -149,8 +155,28 @@ object InlineMarkdown {
         linkColor: Color,
         boldColor: Color,
     ): AnnotatedString = buildAnnotatedString {
+        appendInline(text, base, codeColor, codeBackground, linkColor, boldColor, insideLink = false)
+    }
+
+    private fun AnnotatedString.Builder.appendInline(
+        text: String,
+        base: TextStyle,
+        codeColor: Color,
+        codeBackground: Color,
+        linkColor: Color,
+        boldColor: Color,
+        insideLink: Boolean,
+    ) {
         var i = 0
         val n = text.length
+        fun recurse(inner: String) = appendInline(inner, base, codeColor, codeBackground, linkColor, boldColor, insideLink)
+        fun linkStyle() = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None))
+        fun emitLink(url: String, label: String) {
+            // Labels keep bold/code/italic, but not nested links — a bare-URL label would recurse forever.
+            withLink(LinkAnnotation.Url(url = url, styles = linkStyle())) {
+                appendInline(label, base, codeColor, codeBackground, linkColor, boldColor, insideLink = true)
+            }
+        }
         while (i < n) {
             val c = text[i]
             when {
@@ -165,10 +191,19 @@ object InlineMarkdown {
                         append(c); i++
                     }
                 }
+                text.startsWith("~~", i) -> {
+                    val end = text.indexOf("~~", i + 2)
+                    if (end > i) {
+                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { recurse(text.substring(i + 2, end)) }
+                        i = end + 2
+                    } else {
+                        append("~~"); i += 2
+                    }
+                }
                 text.startsWith("**", i) -> {
                     val end = text.indexOf("**", i + 2)
                     if (end > i) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = boldColor)) { append(text.substring(i + 2, end)) }
+                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = boldColor)) { recurse(text.substring(i + 2, end)) }
                         i = end + 2
                     } else {
                         append("**"); i += 2
@@ -177,22 +212,43 @@ object InlineMarkdown {
                 c == '*' || (c == '_' && (i == 0 || !text[i - 1].isLetterOrDigit())) -> {
                     val end = text.indexOf(c, i + 1)
                     if (end > i + 1 && (end + 1 >= n || !text[end + 1].isLetterOrDigit() || c == '*')) {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(text.substring(i + 1, end)) }
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { recurse(text.substring(i + 1, end)) }
                         i = end + 1
                     } else {
                         append(c); i++
                     }
                 }
-                c == '[' -> {
-                    val m = linkRegex.find(text, i)
-                    if (m != null && m.range.first == i) {
-                        withLink(
-                            LinkAnnotation.Url(
-                                url = m.groupValues[2],
-                                styles = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None)),
-                            ),
-                        ) { append(m.groupValues[1]) }
-                        i = m.range.last + 1
+                c == '[' && !insideLink -> {
+                    val link = parseMarkdownLink(text, i)
+                    if (link != null) {
+                        emitLink(link.url, link.label)
+                        i = link.end
+                    } else {
+                        append(c); i++
+                    }
+                }
+                c == '<' && !insideLink -> {
+                    val html = htmlAnchor.matchAt(text, i)
+                    if (html != null) {
+                        emitLink(html.groupValues[1].trim(), html.groupValues[2])
+                        i = html.range.last + 1
+                    } else {
+                        val auto = autolink.matchAt(text, i)
+                        if (auto != null) {
+                            val url = auto.groupValues[1]
+                            emitLink(url, url)
+                            i = auto.range.last + 1
+                        } else {
+                            append(c); i++
+                        }
+                    }
+                }
+                !insideLink && (c == 'h' || c == 'H') && (text.startsWith("http://", i, ignoreCase = true) || text.startsWith("https://", i, ignoreCase = true)) -> {
+                    val raw = bareUrl.matchAt(text, i)?.value
+                    if (raw != null) {
+                        val url = trimTrailingUrlPunctuation(raw)
+                        emitLink(url, url)
+                        i += url.length
                     } else {
                         append(c); i++
                     }
@@ -203,6 +259,78 @@ object InlineMarkdown {
             }
         }
     }
+
+    /**
+     * CommonMark inline link at [start]: `[label](destination)`, optional space before `(`, `<>` around the
+     * destination, optional quoted title. Label may contain `#` (the usual `[PR #66](…)` shape).
+     */
+    internal fun parseMarkdownLink(text: String, start: Int): InlineLink? {
+        if (start >= text.length || text[start] != '[') return null
+        val close = findBalanced(text, start, '[', ']') ?: return null
+        val label = text.substring(start + 1, close)
+        if (label.isEmpty()) return null
+        var i = close + 1
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length || text[i] != '(') return null
+        i++
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i >= text.length) return null
+        val url: String
+        if (text[i] == '<') {
+            val gt = text.indexOf('>', i + 1)
+            if (gt < 0) return null
+            url = text.substring(i + 1, gt).trim()
+            i = gt + 1
+        } else {
+            val from = i
+            while (i < text.length && text[i] != ')' && !text[i].isWhitespace()) i++
+            url = text.substring(from, i)
+        }
+        if (url.isEmpty()) return null
+        while (i < text.length && text[i].isWhitespace()) i++
+        if (i < text.length && (text[i] == '"' || text[i] == '\'')) {
+            val q = text[i]
+            val endTitle = text.indexOf(q, i + 1)
+            if (endTitle < 0) return null
+            i = endTitle + 1
+            while (i < text.length && text[i].isWhitespace()) i++
+        }
+        if (i >= text.length || text[i] != ')') return null
+        return InlineLink(label, url, i + 1)
+    }
+
+    /** Matching closer for [open]/[close], skipping `\[` escapes and nested pairs. */
+    private fun findBalanced(text: String, start: Int, open: Char, close: Char): Int? {
+        var depth = 0
+        var i = start
+        while (i < text.length) {
+            when (text[i]) {
+                '\\' -> i += 2
+                open -> {
+                    depth++
+                    i++
+                }
+                close -> {
+                    depth--
+                    if (depth == 0) return i
+                    i++
+                }
+                else -> i++
+            }
+        }
+        return null
+    }
+
+    /** GFM autolink: drop a trailing sentence mark that is almost never part of the URL. */
+    private fun trimTrailingUrlPunctuation(url: String): String {
+        var end = url.length
+        while (end > 0 && url[end - 1] in ".,;:!?") end--
+        // A closing paren is trailing punctuation unless the URL itself opened one (wikipedia-style /Foo_(bar)).
+        if (end > 0 && url[end - 1] == ')' && url.count { it == '(' } < url.count { it == ')' }) end--
+        return url.substring(0, end).ifEmpty { url }
+    }
+
+    data class InlineLink(val label: String, val url: String, val end: Int)
 }
 
 /**

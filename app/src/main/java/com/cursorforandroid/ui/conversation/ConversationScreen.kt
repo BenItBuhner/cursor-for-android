@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.agents.RenameChatDialog
@@ -60,7 +61,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.RunningGlyph
+import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
@@ -102,6 +103,14 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val incoming = share ?: return@LaunchedEffect
+        val target = incoming.target as? ShareTarget.Chat ?: return@LaunchedEffect
+        if (target.agentId != agentId) return@LaunchedEffect
+        viewModel.applyShare(incoming.text, incoming.attachments, incoming.warning)
+        graph.share.consume(incoming.generation)
+    }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -158,7 +167,7 @@ fun ConversationScreen(
             trailing = {
                 // The pull request lives here and nowhere else in the chat: its own button beside the menu, in the same
                 // green glyph the list rows use for it. It is the one thing a reader most often leaves the chat for, and
-                // the header stays in reach however long the transcript gets; the run footers only name the branch.
+                // the header stays in reach however long the transcript gets. The subtitle already names the branch.
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
                 }
@@ -197,16 +206,15 @@ fun ConversationScreen(
                 if (showWorking) {
                     item("working") {
                         // A dropped connection is not the run's problem: the agent keeps working while the stream is
-                        // re-established, so the glyph keeps stepping and only the caption says what is going on.
+                        // re-established, so the caption keeps shimmering and only its wording says what is going on.
+                        // The caption is the whole indicator, as in the web chat: no glyph beside it.
                         val caption = when {
                             conversation.runStatus == RunStatus.CREATING -> "Starting…"
                             conversation.isReconnecting -> "Reconnecting…"
                             else -> "Working…"
                         }
-                        Row(paneWidth, verticalAlignment = Alignment.CenterVertically) {
-                            RunningGlyph(size = 16.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(caption, style = type.base, color = colors.textTertiary)
+                        Box(paneWidth) {
+                            ShimmerText(caption, style = type.base)
                         }
                     }
                 }
@@ -283,6 +291,8 @@ fun ConversationScreen(
                 plusMenu = plusMenu,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
+                onAddAttachments = viewModel::addAttachments,
+                onAttachmentError = viewModel::showMessage,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
@@ -306,6 +316,8 @@ fun ConversationScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = picker.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
             // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
             // (started elsewhere), or no longer offered. It reads as the label when there is one.
             noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),

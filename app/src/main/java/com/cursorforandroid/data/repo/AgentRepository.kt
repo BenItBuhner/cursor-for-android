@@ -19,6 +19,8 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
@@ -83,6 +85,8 @@ data class LaunchRequest(
     val agentId: String? = null,
     /** Sent inline as `mcpServers[]`; only the enabled ones go out. */
     val mcpServers: List<McpServer> = emptyList(),
+    /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
+    val env: DeviceTarget = DeviceTarget.Cloud,
 ) {
     /**
      * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
@@ -99,6 +103,20 @@ data class LaunchRequest(
 
     private companion object {
         const val PROVISIONAL_NAME_LENGTH = 60
+    }
+}
+
+/**
+ * `env` on Create An Agent. Default cloud with a repository omits the field (the repo is the target); no-repo
+ * cloud still sends `{ type: cloud }` so the VM is empty rather than local. Pool and machine always go out.
+ */
+fun DeviceTarget.toEnvDto(hasRepo: Boolean): AgentEnvDto? = when (type) {
+    EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
+    EnvType.MACHINE -> AgentEnvDto(type = "machine", name = apiName)
+    EnvType.CLOUD, EnvType.UNKNOWN -> when {
+        apiName != null -> AgentEnvDto(type = "cloud", name = apiName)
+        hasRepo -> null
+        else -> AgentEnvDto(type = "cloud")
     }
 }
 
@@ -125,6 +143,8 @@ class AgentRepository(
      * public list can omit it; a real session always has one.
      */
     private val account: ComposerLifecycleApi? = null,
+    /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
+    private val demoSources: Map<String, AgentSource> = emptyMap(),
 ) {
     private val restoreMutex = Mutex()
 
@@ -303,7 +323,9 @@ class AgentRepository(
             val pinned = prefs.localAgentState.first().pinnedIds
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
-                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
+                    .let { if (backend.isDemo) it.withSources(demoSources) else it }
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             if (landed) {
                 lastRefreshedAt = AppClock.now()
@@ -390,6 +412,28 @@ class AgentRepository(
     private fun AgentListState.withLegacy(legacy: Map<String, V0AgentDto>): AgentListState =
         copy(agents = agents.map { a -> legacy[a.id]?.let(a::withLegacy) ?: a })
 
+    /** Rows whose source [sources] names take it; the others keep what they had (a row is never made to forget its source). */
+    private fun AgentListState.withSources(sources: Map<String, AgentSource>): AgentListState {
+        if (sources.isEmpty()) return this
+        var changed = false
+        val next = agents.map { a ->
+            val source = sources[a.id]
+            if (source == null || source == a.source) a else a.copy(source = source).also { changed = true }
+        }
+        return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * Folds in where each agent was started from, as the account's list reports it (see [AgentSource]). The public
+     * list this repository draws its rows from never says, so this is the one way a row learns its source; once
+     * learned it is kept across refreshes and on disk with the row, like the model. The account list is read after
+     * every completed fetch (by the pin sync), so a new row's source lands a moment after the row itself.
+     */
+    fun applySources(sources: Map<String, AgentSource>) {
+        if (sources.isEmpty()) return
+        _state.update { it.withSources(sources) }
+    }
+
     /**
      * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
      * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
@@ -438,8 +482,8 @@ class AgentRepository(
             name = request.provisionalName,
             lifecycle = AgentLifecycle.ACTIVE,
             runStatus = RunStatus.CREATING,
-            envType = EnvType.CLOUD,
-            envName = null,
+            envType = request.env.type.takeIf { it != EnvType.UNKNOWN } ?: EnvType.CLOUD,
+            envName = request.env.name,
             url = "https://cursor.com/agents/$id",
             createdAtMillis = now,
             updatedAtMillis = now,
@@ -450,6 +494,8 @@ class AgentRepository(
             modelDisplayName = modelDisplayName,
             modelId = request.modelId,
             modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+            // What the account will record for a chat started with an API key, this app's included.
+            source = AgentSource.API,
         )
         // A retry of a launch whose reply was lost finds the row from the first attempt: it stays as it is.
         if (agent(id) == null) {
@@ -484,7 +530,7 @@ class AgentRepository(
                         agentId = request.agentId,
                         model = modelRef(request.modelId, request.modelParams),
                         name = request.name,
-                        env = if (request.repoUrl == null) AgentEnvDto(type = "cloud") else null,
+                        env = request.env.toEnvDto(hasRepo = request.repoUrl != null),
                         repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
                         autoCreatePR = request.autoCreatePr.takeIf { it },
                         mcpServers = request.mcpServers.toInlineServers(),
@@ -504,6 +550,7 @@ class AgentRepository(
                 modelDisplayName = modelDisplayName,
                 modelId = request.modelId,
                 modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+                source = AgentSource.API,
             )
             pendingLaunches -= agent.id
             upsert(agent)

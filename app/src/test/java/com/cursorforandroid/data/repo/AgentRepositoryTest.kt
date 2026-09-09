@@ -16,6 +16,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
@@ -152,6 +153,31 @@ class AgentRepositoryTest {
 
         // ...and the disk now holds the fresh list for the next start.
         awaitUntil { cache.read()?.value?.map { it.name }?.toSet() == setOf("From last time (renamed)", "Started elsewhere") }
+    }
+
+    @Test
+    fun `where a chat was started is folded in from the account's list, kept across refreshes and written to disk`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-slack", "From Slack", "run-1")
+        api.addIdleAgent("bc-web", "From the web", "run-2", createdAt = "2026-04-14T10:00:00.000Z")
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.state.value.agents.map { it.source }).containsExactly(null, null)
+
+        // The account list says; a row it does not name keeps what it had.
+        repo.applySources(mapOf("bc-slack" to AgentSource.SLACK, "bc-elsewhere" to AgentSource.API))
+        assertThat(repo.state.value.agents.first { it.id == "bc-slack" }.source).isEqualTo(AgentSource.SLACK)
+        assertThat(repo.state.value.agents.first { it.id == "bc-web" }.source).isNull()
+
+        // The public list never carries the source, so the next refresh must not forget it.
+        repo.refresh()
+        assertThat(repo.state.value.agents.first { it.id == "bc-slack" }.source).isEqualTo(AgentSource.SLACK)
+        awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-slack" }?.source == AgentSource.SLACK }
+
+        // Nothing to say changes nothing (and publishes nothing).
+        val before = repo.state.value
+        repo.applySources(emptyMap())
+        repo.applySources(mapOf("bc-slack" to AgentSource.SLACK))
+        assertThat(repo.state.value).isSameInstanceAs(before)
     }
 
     @Test

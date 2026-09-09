@@ -193,6 +193,14 @@ class ConversationViewModelTest {
     }
 
     @Test
+    fun `a share is drafted into the follow-up composer`() {
+        val vm = open(IDLE)
+        vm.setDraft("Already writing")
+        vm.applyShare("shared screenshot notes", emptyList())
+        assertThat(vm.draftText.value).isEqualTo("Already writing\n\nshared screenshot notes")
+    }
+
+    @Test
     fun `plan mode is not asked for until toggled, then shows on the chip`() {
         val vm = open(IDLE)
         assertThat(vm.picker().planMode).isNull()

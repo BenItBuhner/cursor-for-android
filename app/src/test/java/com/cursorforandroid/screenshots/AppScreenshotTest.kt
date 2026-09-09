@@ -30,6 +30,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -152,6 +153,14 @@ class AppScreenshotTest {
         compose.waitForIdle()
         capture("02_home")
 
+        // Device picker: Cloud is the default; My machines and team pools sit under it. This phone is never a row.
+        compose.onNodeWithText("Cloud").performClick()
+        waitForText("My machines")
+        waitForText("bennett")
+        capture("24_device_picker")
+        Espresso.pressBack()
+        compose.waitForIdle()
+
         // The composer's "+" menu (Multitask / Files / Skills / MCP Servers) and its Skills page.
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         waitForText("Orchestrate multiple subagents in parallel")
@@ -176,9 +185,30 @@ class AppScreenshotTest {
         waitForText("Archived")
         capture("05_status_filter")
         Espresso.pressBack()
-        compose.waitForIdle()
+        waitForText("Grouping")
+        // Source: where each chat was started (the account's word), as on cursor.com/agents; Environment: where it runs.
+        compose.onNodeWithText("Source").performClick()
+        waitForText("Grok Bot")
+        capture("25_source_filter")
         Espresso.pressBack()
+        waitForText("Grouping")
+        compose.onNodeWithText("Environment").performClick()
+        waitForText("Team pool")
+        capture("26_environment_filter")
+        Espresso.pressBack()
+        waitForText("Grouping")
+        // The Source filter at work: only the chats started from Slack, the CLI and Grok Bot are left in the sidebar.
+        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = setOf(SourceFilter.Slack, SourceFilter.Cli, SourceFilter.GrokBot)) } }
+        waitForText("CLI +2")
+        Espresso.pressBack() // dismiss the sheet
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithText("Codex-Poly-Bot Scaling").fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodesWithText("Zen browser flawless parity").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
+        capture("27_sidebar_source_filtered")
+        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = SourceFilter.entries.toSet()) } }
+        waitForText("Codex-Poly-Bot Scaling")
         Espresso.pressBack() // close the drawer
         compose.waitForIdle()
 

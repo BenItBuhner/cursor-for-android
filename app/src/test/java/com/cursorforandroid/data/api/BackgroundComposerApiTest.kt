@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.PullRequestState
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -37,17 +38,17 @@ class BackgroundComposerApiTest {
     fun tearDown() = server.shutdown()
 
     @Test
-    fun `reads the account's pinned ids and pull request states with the status and pinned state requested`() = runBlocking<Unit> {
+    fun `reads the account's pinned ids, pull request states and sources with the status, pinned state and hidden sources requested`() = runBlocking<Unit> {
         server.enqueue(session("session-1"))
         server.enqueue(
             MockResponse().setBody(
                 """{"composers":[
-                     {"bcId":"bc-1","name":"x","isArchived":false,"prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN"},
-                     {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT"},
-                     {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED"},
-                     {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4},
-                     {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true},
-                     {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false},
+                     {"bcId":"bc-1","name":"x","isArchived":false,"prUrl":"https://github.com/acme/app/pull/1","isPrMerged":false,"prStatus":"PR_STATUS_OPEN","source":"BACKGROUND_COMPOSER_SOURCE_WEBSITE"},
+                     {"bcId":"bc-2","prUrl":"https://github.com/acme/app/pull/2","isPrMerged":false,"prStatus":"PR_STATUS_DRAFT","source":"BACKGROUND_COMPOSER_SOURCE_SLACK"},
+                     {"bcId":"bc-3","prUrl":"https://gitlab.com/acme/app/-/merge_requests/3","isPrMerged":true,"prStatus":"PR_STATUS_MERGED","source":"BACKGROUND_COMPOSER_SOURCE_GITLAB"},
+                     {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4,"source":21},
+                     {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true,"source":"BACKGROUND_COMPOSER_SOURCE_GROK_BOT"},
+                     {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false,"source":"BACKGROUND_COMPOSER_SOURCE_TELEPATHY"},
                      {"bcId":"bc-7","name":"no pr","isArchived":true}
                    ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
             ),
@@ -68,6 +69,16 @@ class BackgroundComposerApiTest {
             // No status yet, but the merge flag is set: merged it is. Neither flag nor status: nothing to say.
             "https://github.com/acme/app/pull/5", PullRequestState.Merged,
         )
+        // By name or by number; a source this build does not know is still one; a record without one (the proto's
+        // zero value is left out of the JSON) says nothing.
+        assertThat(list.sources).containsExactly(
+            "bc-1", AgentSource.WEBSITE,
+            "bc-2", AgentSource.SLACK,
+            "bc-3", AgentSource.GITLAB,
+            "bc-4", AgentSource.SDK,
+            "bc-5", AgentSource.GROK_BOT,
+            "bc-6", AgentSource.UNKNOWN,
+        )
         server.takeRequest() // the exchange
         val request = server.takeRequest()
         assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/ListBackgroundComposers")
@@ -80,6 +91,8 @@ class BackgroundComposerApiTest {
         assertThat(body["includeStatus"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo(BackgroundComposerApi.LIST_WINDOW.toString())
+        // SDK agents are left out of the list unless asked for, as cursor.com/agents leaves them out until its Source filter says SDK.
+        assertThat(body["includeHiddenSources"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("BACKGROUND_COMPOSER_SOURCE_SDK")
     }
 
     @Test

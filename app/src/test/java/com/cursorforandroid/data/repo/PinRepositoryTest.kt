@@ -58,7 +58,7 @@ class PinRepositoryTest {
         override suspend fun list(): AccountList {
             failing?.let { throw it }
             listCalls++
-            return AccountList(PinnedIds(server.toSet(), loaded), pullRequests.toMap(), composers.toList())
+            return AccountList(PinnedIds(server.toSet(), loaded), pullRequests.toMap(), composers = composers.toList())
         }
 
         override suspend fun pin(ids: Collection<String>) {

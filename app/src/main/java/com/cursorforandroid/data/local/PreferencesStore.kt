@@ -14,6 +14,8 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
@@ -61,6 +63,8 @@ class PreferencesStore(context: Context) {
         val lastRef = stringPreferencesKey("last_ref")
         val lastModel = stringPreferencesKey("last_model")
         val lastModelParams = stringPreferencesKey("last_model_params")
+        val lastEnvType = stringPreferencesKey("last_env_type")
+        val lastEnvName = stringPreferencesKey("last_env_name")
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
@@ -73,6 +77,7 @@ class PreferencesStore(context: Context) {
         val pinSync = booleanPreferencesKey("pin_sync")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
+        val pinnedModels = stringPreferencesKey("pinned_model_ids")
     }
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
@@ -133,6 +138,18 @@ class PreferencesStore(context: Context) {
     /** Replaces the pinned set wholesale, for adopting the account's pins from the server. */
     suspend fun setPinnedIds(agentIds: Set<String>) = store.edit { it[Keys.pinned] = agentIds }
 
+    /** Model ids the user pinned in the picker, most recently pinned first, so they stay at the top of the list. */
+    val pinnedModelIds: Flow<List<String>> = store.data.map { p ->
+        p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+    }
+
+    /** Pins [modelId] to the front of the list, or drops it when it is already pinned. */
+    suspend fun togglePinnedModel(modelId: String) = store.edit { p ->
+        val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+        val next = if (modelId in current) current - modelId else listOf(modelId) + current
+        if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+    }
+
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
     val recentSkills: Flow<List<String>> = store.data.map { p ->
         p[Keys.recentSkills]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
@@ -164,7 +181,7 @@ class PreferencesStore(context: Context) {
     val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
 
     private fun Preferences.listPreferences(): ListPreferences =
-        this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
+        this[Keys.listPrefs]?.let { ListPreferences.decode(CursorJson, it) } ?: ListPreferences()
 
     val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
         LocalAgentState(
@@ -191,12 +208,14 @@ class PreferencesStore(context: Context) {
         val repoUrl: String?,
         /** Branch launched from last time; blank is the repository's default branch, null means no launch yet. */
         val ref: String?,
-        /** Model launched with last time; null is "Default" (Cursor's configured model) once [modelChosen] is set. */
+        /** Model launched with last time; null is an older "no model" choice once [modelChosen] is set. */
         val modelId: String?,
         val modelParams: Map<String, String>,
         val autoCreatePr: Boolean,
         /** False until a launch has recorded a model choice, so a null [modelId] can be told apart from "never asked". */
         val modelChosen: Boolean,
+        /** Where the last launch ran; [DeviceTarget.Cloud] until a launch has recorded a device. */
+        val env: DeviceTarget,
     )
 
     val composerDefaults: Flow<ComposerDefaults> = store.data.map { p ->
@@ -207,6 +226,7 @@ class PreferencesStore(context: Context) {
             modelParams = p[Keys.lastModelParams]?.let { decodeStringMap(it) } ?: emptyMap(),
             autoCreatePr = p[Keys.autoCreatePr] ?: false,
             modelChosen = p.contains(Keys.lastModel),
+            env = storedDevice(p[Keys.lastEnvType], p[Keys.lastEnvName]),
         )
     }
 
@@ -268,13 +288,22 @@ class PreferencesStore(context: Context) {
     }
 
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
-    suspend fun setComposerDefaults(repoUrl: String?, ref: String?, modelId: String?, params: Map<String, String>, autoCreatePr: Boolean) =
+    suspend fun setComposerDefaults(
+        repoUrl: String?,
+        ref: String?,
+        modelId: String?,
+        params: Map<String, String>,
+        autoCreatePr: Boolean,
+        env: DeviceTarget = DeviceTarget.Cloud,
+    ) =
         store.edit { p ->
             if (repoUrl == null) p.remove(Keys.lastRepo) else p[Keys.lastRepo] = repoUrl
             if (ref == null) p.remove(Keys.lastRef) else p[Keys.lastRef] = ref
             p[Keys.lastModel] = modelId ?: ""
             p[Keys.lastModelParams] = encodeStringMap(params)
             p[Keys.autoCreatePr] = autoCreatePr
+            p[Keys.lastEnvType] = env.type.name
+            if (env.name == null) p.remove(Keys.lastEnvName) else p[Keys.lastEnvName] = env.name
         }
 
     suspend fun clearSession() = store.edit { p ->
@@ -307,5 +336,10 @@ class PreferencesStore(context: Context) {
 
     private companion object {
         const val MAX_RECENT_SKILLS = 8
+
+        fun storedDevice(typeName: String?, name: String?): DeviceTarget {
+            val type = EnvType.entries.firstOrNull { it.name == typeName } ?: EnvType.CLOUD
+            return DeviceTarget.of(if (type == EnvType.UNKNOWN) EnvType.CLOUD else type, name)
+        }
     }
 }

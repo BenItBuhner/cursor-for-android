@@ -8,12 +8,12 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
-import com.cursorforandroid.data.api.GitHubApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -29,15 +29,16 @@ import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
-import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
@@ -49,6 +50,8 @@ class AppGraph(context: Context) {
     val caches = AppCaches(JsonDiskCache(File(context.applicationContext.cacheDir, "cursor")))
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     val attachments = AttachmentStore(context)
+    /** Text and images arriving from the system share sheet, drafted into a composer once a destination is picked. */
+    val share = ShareInbox(context)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
     val mcpServers = McpServerStore(keyStore)
 
@@ -75,30 +78,37 @@ class AppGraph(context: Context) {
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
         profile = AccountApi(accountRpc, sessionTokens),
     )
-    /** The account's agent list, pins, archive and rename: what the desktop Agents window and the iOS app show. */
+    /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
     private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
-    val agents = AgentRepository(session, prefs, attachments, caches.agents, account = accountAgents)
+    val agents = AgentRepository(
+        session,
+        prefs,
+        attachments,
+        caches.agents,
+        demoSources = DemoData.sources,
+        account = accountAgents,
+    )
     private val accountPullRequests = CursorPullRequestSource(accountAgents)
-    /**
-     * Where the agents' pull requests stand: the account's word first (the public API names a PR but never says if it
-     * is open, merged or closed), GitHub when the account has none.
-     */
+    /** Where the agents' pull requests stand, on the account's word: the public API names a PR but never says if it is open, merged or closed. */
     val pullRequests = PullRequestRepository(
-        gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
+        account = accountPullRequests,
         demo = DemoPullRequests,
         isDemo = { session.isDemo },
-        readToken = { keyStore.gitHubToken() },
-        writeToken = { keyStore.setGitHubToken(it) },
         cache = caches.pullRequests,
-        account = accountPullRequests,
     )
-    /** Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the PR states. */
+    /**
+     * Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the
+     * PR states and where each chat was started from (the Source filter).
+     */
     val pins = PinRepository(
         session = session,
         prefs = prefs,
         agents = agents,
         api = accountAgents,
-        onList = { list -> pullRequests.seed(list.pullRequests) },
+        onList = { list ->
+            agents.applySources(list.sources)
+            pullRequests.seed(list.pullRequests)
+        },
     )
     val catalog = CatalogRepository(session, caches.catalog)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
@@ -112,6 +122,7 @@ class AppGraph(context: Context) {
         cache = caches.conversations,
         traceCache = caches.traces,
         isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
+        onOpened = { agentId -> LiveNotifications.cancelFinished(context, agentId) },
     )
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     val launcher = ChatLauncher(conversations)
@@ -154,6 +165,7 @@ class AppGraph(context: Context) {
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
+            share.clear()
             caches.clear()
         }
     }

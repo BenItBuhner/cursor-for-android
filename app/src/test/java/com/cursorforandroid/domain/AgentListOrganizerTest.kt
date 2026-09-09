@@ -23,6 +23,7 @@ class AgentListOrganizerTest {
         branch: String? = null,
         pr: String? = null,
         env: EnvType = EnvType.CLOUD,
+        source: AgentSource? = null,
     ) = Agent(
         id = id,
         name = name,
@@ -37,6 +38,7 @@ class AgentListOrganizerTest {
         repoUrl = repo,
         startingRef = "main",
         branches = if (branch != null || pr != null) listOf(GitBranch("github.com/acme/app", branch, pr)) else emptyList(),
+        source = source,
     )
 
     @Test
@@ -219,17 +221,108 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `source filter uses environment type and locally launched agents`() {
+    fun `environment filter uses the environment type, unreported counting as cloud`() {
         val agents = listOf(
             agent("cloud"),
             agent("machine", env = EnvType.MACHINE),
-            agent("mine"),
+            agent("pool", env = EnvType.POOL),
+            agent("unknown", env = EnvType.UNKNOWN),
+        )
+        fun ids(vararg environments: EnvironmentFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(environments = environments.toSet()), LocalAgentState(), nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(EnvironmentFilter.Machine)).containsExactly("machine")
+        assertThat(ids(EnvironmentFilter.Pool)).containsExactly("pool")
+        assertThat(ids(EnvironmentFilter.Cloud)).containsExactly("cloud", "unknown")
+        assertThat(ids()).isEmpty()
+    }
+
+    @Test
+    fun `source filter uses where the account says the chat was started, this device's launches first`() {
+        val agents = listOf(
+            agent("web", source = AgentSource.WEBSITE),
+            agent("slack", source = AgentSource.SLACK),
+            agent("api", source = AgentSource.API),
+            agent("mine", source = AgentSource.API),
+            agent("sdk", source = AgentSource.SDK),
+            agent("grok", source = AgentSource.GROK_BOT),
+            agent("subagent", source = AgentSource.AS_SUBAGENT_FROM_CLOUD),
+            agent("unasked", source = null),
         )
         val local = LocalAgentState(launchedHereIds = setOf("mine"))
-        fun ids(prefs: ListPreferences) = AgentListOrganizer.organize(agents, prefs, local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
-        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Machine)))).containsExactly("machine")
-        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Cloud)))).containsExactly("cloud")
-        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Cloud, SourceFilter.ThisDevice)))).containsExactly("cloud", "mine")
+        fun ids(vararg sources: SourceFilter) =
+            AgentListOrganizer.organize(agents, ListPreferences(sources = sources.toSet()), local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        assertThat(ids(SourceFilter.Web)).containsExactly("web")
+        assertThat(ids(SourceFilter.Slack)).containsExactly("slack")
+        // A chat launched here is the account's API chat too, but shows under "This device" and not under "API".
+        assertThat(ids(SourceFilter.Api)).containsExactly("api")
+        assertThat(ids(SourceFilter.ThisDevice)).containsExactly("mine")
+        assertThat(ids(SourceFilter.Sdk, SourceFilter.GrokBot)).containsExactly("sdk", "grok")
+        // Cursor's internals and a chat the account has not been asked about yet are "Other".
+        assertThat(ids(SourceFilter.Other)).containsExactly("subagent", "unasked")
+        assertThat(ids()).isEmpty()
+        assertThat(ids(*SourceFilter.entries.toTypedArray())).hasSize(agents.size)
+    }
+
+    @Test
+    fun `every source the account can report lands in one filter entry`() {
+        // The apps
+        assertThat(SourceFilter.of(AgentSource.EDITOR)).isEqualTo(SourceFilter.Desktop)
+        assertThat(SourceFilter.of(AgentSource.LOCAL)).isEqualTo(SourceFilter.Desktop)
+        assertThat(SourceFilter.of(AgentSource.WEBSITE)).isEqualTo(SourceFilter.Web)
+        assertThat(SourceFilter.of(AgentSource.IOS_APP)).isEqualTo(SourceFilter.Mobile)
+        assertThat(SourceFilter.of(AgentSource.CLI)).isEqualTo(SourceFilter.Cli)
+        // The integrations
+        assertThat(SourceFilter.of(AgentSource.TEAMS)).isEqualTo(SourceFilter.Teams)
+        assertThat(SourceFilter.of(AgentSource.LINEAR)).isEqualTo(SourceFilter.Linear)
+        assertThat(SourceFilter.of(AgentSource.JIRA)).isEqualTo(SourceFilter.Jira)
+        for (scm in listOf(AgentSource.GITHUB, AgentSource.GITLAB, AgentSource.BITBUCKET, AgentSource.ORIGIN)) {
+            assertThat(SourceFilter.of(scm)).isEqualTo(SourceFilter.SourceControl)
+        }
+        // Programmatic and Cursor's bots
+        assertThat(SourceFilter.of(AgentSource.AUTOMATIONS)).isEqualTo(SourceFilter.Automations)
+        assertThat(SourceFilter.of(AgentSource.BUGBOT_AUTOFIX)).isEqualTo(SourceFilter.Bugbot)
+        assertThat(SourceFilter.of(AgentSource.GITHUB_CI_AUTOFIX)).isEqualTo(SourceFilter.Bugbot)
+        assertThat(SourceFilter.of(AgentSource.UNSPECIFIED)).isEqualTo(SourceFilter.Other)
+        assertThat(SourceFilter.of(AgentSource.UNKNOWN)).isEqualTo(SourceFilter.Other)
+        // Nothing the proto names is left without a home (the `when` is exhaustive, so this guards the enum itself).
+        assertThat(AgentSource.entries.map { SourceFilter.of(it) }.toSet()).containsAtLeastElementsIn(SourceFilter.entries - SourceFilter.ThisDevice)
+    }
+
+    @Test
+    fun `sources are read as the account service spells them`() {
+        assertThat(AgentSource.parse("BACKGROUND_COMPOSER_SOURCE_SLACK")).isEqualTo(AgentSource.SLACK)
+        assertThat(AgentSource.parse("grok_bot")).isEqualTo(AgentSource.GROK_BOT)
+        assertThat(AgentSource.parse("21")).isEqualTo(AgentSource.SDK)
+        assertThat(AgentSource.parse("0")).isEqualTo(AgentSource.UNSPECIFIED)
+        // A value this build has not heard of is still an answer; nothing at all is not.
+        assertThat(AgentSource.parse("BACKGROUND_COMPOSER_SOURCE_HOLOGRAM")).isEqualTo(AgentSource.UNKNOWN)
+        assertThat(AgentSource.parse("99")).isEqualTo(AgentSource.UNKNOWN)
+        assertThat(AgentSource.parse(null)).isNull()
+        assertThat(AgentSource.parse(" ")).isNull()
+        assertThat(AgentSource.SDK.wireName).isEqualTo("BACKGROUND_COMPOSER_SOURCE_SDK")
+    }
+
+    @Test
+    fun `source filter saved before the Environment filter existed moves its environments over`() {
+        // Every entry checked, as the default was: everything stays on.
+        val all = ListPreferences.decode(CursorJson, """{"sources":["Cloud","Pool","Machine","ThisDevice"]}""")
+        assertThat(all).isEqualTo(ListPreferences())
+        assertThat(all.isDefault).isTrue()
+
+        // My machine and this device's chats hidden: the machines stay hidden (now under Environment), this device's too.
+        val narrowed = ListPreferences.decode(CursorJson, """{"groupBy":"Repo","sources":["Cloud","Pool"]}""")
+        assertThat(narrowed.groupBy).isEqualTo(GroupBy.Repo)
+        assertThat(narrowed.environments).containsExactly(EnvironmentFilter.Cloud, EnvironmentFilter.Pool)
+        assertThat(narrowed.sources).containsExactlyElementsIn(SourceFilter.entries - SourceFilter.ThisDevice)
+
+        // A record from this version is read as it is, unknown names dropped rather than failing everything.
+        val current = ListPreferences.decode(CursorJson, """{"sources":["Slack","ThisDevice","Telegram"],"environments":["Machine","Orbit"]}""")
+        assertThat(current.sources).containsExactly(SourceFilter.Slack, SourceFilter.ThisDevice)
+        assertThat(current.environments).containsExactly(EnvironmentFilter.Machine)
+
+        val roundTrip = ListPreferences(sources = setOf(SourceFilter.Api, SourceFilter.GrokBot), environments = setOf(EnvironmentFilter.Pool))
+        assertThat(ListPreferences.decode(CursorJson, CursorJson.encodeToString(ListPreferences.serializer(), roundTrip))).isEqualTo(roundTrip)
+        assertThat(ListPreferences.decode(CursorJson, "not json")).isEqualTo(ListPreferences())
     }
 
     @Test
@@ -271,11 +364,16 @@ class AgentListOrganizerTest {
         val prefs = ListPreferences()
         assertThat(prefs.summaryFor(FilterKind.Repo)).isEqualTo("All")
         assertThat(prefs.summaryFor(FilterKind.Status)).isEqualTo("Read +3")
-        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("Open +4")
+        // Every entry checked reads "All", whatever the filter; the default Status leaves Archived out.
+        assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("All")
         assertThat(prefs.copy(git = setOf(GitFilter.Merged, GitFilter.Closed)).summaryFor(FilterKind.Git)).isEqualTo("Merged +1")
-        assertThat(prefs.summaryFor(FilterKind.Source)).isEqualTo("Cloud +3")
+        assertThat(prefs.summaryFor(FilterKind.Source)).isEqualTo("All")
+        assertThat(prefs.copy(sources = setOf(SourceFilter.Slack, SourceFilter.Api, SourceFilter.Sdk)).summaryFor(FilterKind.Source)).isEqualTo("Slack +2")
+        assertThat(prefs.summaryFor(FilterKind.Environment)).isEqualTo("All")
+        assertThat(prefs.copy(environments = setOf(EnvironmentFilter.Machine)).summaryFor(FilterKind.Environment)).isEqualTo("My machine")
         assertThat(prefs.copy(repos = setOf("acme/app")).summaryFor(FilterKind.Repo)).isEqualTo("app")
         assertThat(prefs.copy(statuses = emptySet()).summaryFor(FilterKind.Status)).isEqualTo("None")
+        assertThat(prefs.copy(statuses = StatusFilter.entries.toSet()).summaryFor(FilterKind.Status)).isEqualTo("All")
     }
 
     @Test

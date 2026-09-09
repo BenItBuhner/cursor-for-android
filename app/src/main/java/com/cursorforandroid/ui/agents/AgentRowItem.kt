@@ -76,6 +76,8 @@ fun AgentRowItem(
     actions: AgentRowActions,
     modifier: Modifier = Modifier,
     nowMillis: Long = AppClock.now(),
+    /** The share picker only opens a chat; the pin / archive / delete menu stays on the sidebar. */
+    showMenu: Boolean = true,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -95,7 +97,7 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = { menuOpen = true },
+                    onLongClick = if (showMenu) ({ menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),

@@ -12,28 +12,20 @@ import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.Subagent
-import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
-import com.cursorforandroid.domain.ToolKind
-import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 
 object TimelineBuilder {
 
     /**
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
-     * ("Worked 3m 5s" + branches) is placed right before the next user message, and after the final assistant
+     * ("Worked 3m 5s") is placed right before the next user message, and after the final assistant
      * message when that run has finished.
      *
      * The transcript only carries text. When a run's stream has been replayed (or is being followed live), its
@@ -110,7 +102,6 @@ object TimelineBuilder {
         is AssistantMessage -> copy(id = id)
         is SummaryRow -> copy(id = id)
         is ActivityGroup -> copy(id = id)
-        is SubagentsCard -> copy(id = id)
         is NoticeCard -> copy(id = id)
         is SystemNotification -> copy(id = id)
         is RunFooter -> copy(id = id)
@@ -124,63 +115,14 @@ object TimelineBuilder {
         branches = run.git.toBranches(),
     )
 
-    fun toolCall(dto: SseToolCallDto): ToolCall {
-        val kind = ToolNames.kindOf(dto.name)
-        return ToolCall(
-            callId = dto.callId,
-            name = dto.name,
-            kind = kind,
-            status = dto.status,
-            summary = summarizeArgs(kind, dto.args),
-            args = dto.args,
-            result = dto.result,
-        )
-    }
-
-    private val ARG_KEYS = listOf(
-        "path", "target_file", "file", "relative_workspace_path", "target_directory", "pattern", "query", "search_term",
-        "command", "description", "url", "glob_pattern", "name", "prompt",
-    )
-
-    fun summarizeArgs(kind: ToolKind, args: JsonElement?): String {
-        val obj = args as? JsonObject ?: return prettyToolFallback(kind)
-        for (key in ARG_KEYS) {
-            val value = (obj[key] as? JsonPrimitive)?.contentOrNull?.trim()
-            if (!value.isNullOrEmpty()) return value.lines().first().take(140)
-        }
-        return prettyToolFallback(kind)
-    }
-
-    private fun prettyToolFallback(kind: ToolKind) = when (kind) {
-        ToolKind.Read -> "file"
-        ToolKind.List -> "directory"
-        ToolKind.Search -> "codebase"
-        ToolKind.Edit -> "file"
-        ToolKind.Shell -> "command"
-        ToolKind.Web -> "web"
-        ToolKind.Task -> "subagent"
-        ToolKind.Mcp -> "MCP tool"
-        ToolKind.Other -> "tool"
-    }
-
-    fun subagent(dto: SseToolCallDto): Subagent {
-        val obj = dto.args as? JsonObject
-        val kind = (obj?.get("subagent_type") as? JsonPrimitive)?.contentOrNull ?: "Agent"
-        val title = (obj?.get("description") as? JsonPrimitive)?.contentOrNull
-            ?: (obj?.get("prompt") as? JsonPrimitive)?.contentOrNull?.lines()?.first()?.take(80)
-            ?: "Subagent"
-        return Subagent(
-            id = dto.callId,
-            title = title,
-            kind = kind.replaceFirstChar { it.uppercase() }.let { if (it == "Explore") "Explorer" else it },
-            status = if (dto.status == "running") "Running" else "Done",
-        )
-    }
+    /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording. */
+    fun toolCall(dto: SseToolCallDto): ToolCall = ToolCallMapper.from(dto)
 
     /**
      * Accumulates the SSE events of one run into timeline items. The agent's reasoning and tool calls between two
-     * messages collect, in order, into one [ActivityGroup]. [timed] measures how long each thought streamed for
-     * ("thought for 3s"); turn it off when the events are a replay rather than happening now.
+     * messages collect, in order, into one [ActivityGroup] — a subagent it delegates to is a tool call like any other,
+     * as it is on the desktop. [timed] measures how long each thought streamed for ("Thought 3s"); turn it off when
+     * the events are a replay rather than happening now.
      *
      * A stream [RunStreamEvent.Error] is about the connection, not the run — the run keeps going on the server while
      * the client reconnects — so it adds nothing to the items. Its message is kept: when the run then ends in
@@ -196,6 +138,8 @@ object TimelineBuilder {
         private var thinkingStartedAt: Long? = null
         private var assistantText = StringBuilder()
         private var streamError: RunStreamEvent.Error? = null
+        /** The agent's to-do list as of its last update, so the next update can say what changed. */
+        private var todos: List<ToolCallMapper.Todo>? = null
         var status: RunStatus = RunStatus.RUNNING
             private set
         var finished: Boolean = false
@@ -233,17 +177,8 @@ object TimelineBuilder {
             }
         }
 
-        /**
-         * Index of the group still collecting steps: the latest one, unless a message or notice has closed it since.
-         * Subagent cards sit after the group they were delegated from and leave it open, so the agent's own work
-         * between two replies stays one row however often it delegates.
-         */
-        private fun openGroupIndex(): Int {
-            val idx = items.indexOfLast { it is ActivityGroup }
-            if (idx < 0) return -1
-            for (i in idx + 1 until items.size) if (items[i] !is SubagentsCard) return -1
-            return idx
-        }
+        /** Index of the group still collecting steps: the latest one, unless a message or notice has closed it since. */
+        private fun openGroupIndex(): Int = if (items.lastOrNull() is ActivityGroup) items.lastIndex else -1
 
         /** Replaces the last step of the open group, which is what a streaming thought always is. */
         private fun replaceLastStep(idx: Int, group: ActivityGroup, step: ActivityStep) {
@@ -282,20 +217,8 @@ object TimelineBuilder {
 
         private fun applyTool(dto: SseToolCallDto) {
             closeThinking()
-            val kind = ToolNames.kindOf(dto.name)
-            if (kind == ToolKind.Task) {
-                val sub = subagent(dto)
-                val idx = items.indexOfLast { it is SubagentsCard }
-                val card = items.getOrNull(idx) as? SubagentsCard
-                if (card != null && (idx == items.lastIndex || card.subagents.any { it.id == sub.id })) {
-                    val list = if (card.subagents.any { it.id == sub.id }) card.subagents.map { if (it.id == sub.id) sub else it } else card.subagents + sub
-                    items[idx] = card.copy(subagents = list)
-                } else {
-                    items += SubagentsCard(nextId("subs"), listOf(sub))
-                }
-                return
-            }
-            val call = toolCall(dto)
+            val call = ToolCallMapper.from(dto, todos)
+            if (!call.isRunning) ToolCallMapper.todos(dto)?.let { todos = it }
             // A status update lands on the call it reports on, wherever that is; a new call joins the open group.
             val idx = items.indexOfLast { it is ActivityGroup && it.calls.any { c -> c.callId == call.callId } }
             if (idx >= 0) {
@@ -307,14 +230,13 @@ object TimelineBuilder {
         }
 
         /**
-         * The run is over, so nothing in it is still happening: text and thinking stop streaming, and a tool call or
-         * subagent the stream never reported the end of (its `completed` event was lost with the connection, or the
-         * run was cut short) stops spinning. A run that finished did finish its tools; any other ending interrupted them.
+         * The run is over, so nothing in it is still happening: text and thinking stop streaming, and a tool call the
+         * stream never reported the end of (its `completed` event was lost with the connection, or the run was cut
+         * short) stops spinning. A run that finished did finish its tools; any other ending interrupted them.
          */
         private fun closeStreaming(status: RunStatus) {
             closeThinking()
             val toolStatus = if (status == RunStatus.FINISHED) ToolCall.STATUS_COMPLETED else ToolCall.STATUS_INTERRUPTED
-            val subagentStatus = if (status == RunStatus.FINISHED) "Done" else "Stopped"
             items.replaceAll {
                 when (it) {
                     is AssistantMessage -> it.copy(isStreaming = false)
@@ -327,7 +249,6 @@ object TimelineBuilder {
                             }
                         },
                     )
-                    is SubagentsCard -> if (it.subagents.any { s -> s.status == "Running" }) it.copy(subagents = it.subagents.map { s -> if (s.status == "Running") s.copy(status = subagentStatus) else s }) else it
                     else -> it
                 }
             }
