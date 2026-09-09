@@ -64,6 +64,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -449,7 +451,19 @@ private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, onAspect: (Flo
 
     DisposableEffect(url) {
         val playbackUrl = url ?: return@DisposableEffect onDispose { }
-        val exo = ExoPlayer.Builder(context).build().apply {
+        // Audio focus so a recording ducks the user's music instead of playing over it and pauses when another app
+        // takes over, and becoming-noisy so unplugging headphones stops it rather than putting it on the speaker.
+        // The lifecycle pause below covers leaving the screen, not an interruption while it is still in front.
+        val exo = ExoPlayer.Builder(context)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build(),
+                true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build().apply {
             setMediaItem(MediaItem.fromUri(playbackUrl))
             addListener(object : Player.Listener {
                 override fun onPlayerError(e: PlaybackException) {
