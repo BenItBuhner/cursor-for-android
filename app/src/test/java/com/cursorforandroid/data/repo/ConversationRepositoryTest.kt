@@ -815,6 +815,33 @@ class ConversationRepositoryTest {
     }
 
     /**
+     * The run list is paged until it covers the transcript's prompts. A transcript that failed has none to cover,
+     * so the first page must not pass for the whole list: the older turns would lose their footers, traces and
+     * images, on screen and on disk, and the ones left would pair with the wrong prompts.
+     */
+    @Test
+    fun `a transcript that fails does not cut a long chat's run list down to one page`() = runBlocking<Unit> {
+        val turns = Array(60) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        api.addFinishedAgent("bc-1", "Agent", *turns)
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 60 }
+        awaitUntil { cache.read("bc-1")?.value?.runs?.size == 60 }
+
+        api.failConversation = CursorApiException(500, "internal_error", "Server error.")
+        val before = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        assertThat(state(conversations).items.count { it is RunFooter }).isEqualTo(60)
+        assertThat(state(conversations).items.filterIsInstance<UserMessage>()).hasSize(60)
+        assertThat(cache.read("bc-1")!!.value.runs).hasSize(60)
+    }
+
+    /**
      * A streamed event may only cost what the live run itself costs. The turns that have settled keep the very
      * items they had — so the derivation stays proportional to the run rather than to the whole chat, the list can
      * reuse the rows, and the reply keeps one id while it grows, which is what a markdown parse cache keys on.

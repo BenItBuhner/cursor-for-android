@@ -119,6 +119,9 @@ class ConversationRepository(
     /** What the stream of the run being followed has told so far. */
     private data class LiveTrace(val runId: String, val items: List<TimelineItem>)
 
+    /** A run list fetched page by page, and whether the paging ran out of cursor rather than out of budget. */
+    private class FetchedRuns(val items: List<RunDto>, val exhausted: Boolean)
+
     /**
      * A built timeline with nothing yet from the run being followed, and the inputs it was built from. Every
      * mutation replaces the collection it changes, so identity is all it takes to tell whether the build still
@@ -494,13 +497,20 @@ class ConversationRepository(
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
                 val prompts = convResult.getOrNull()?.messages?.count { it.type == USER_MESSAGE } ?: 0
-                val runResult = runPage.await().mapCatching { runsCovering(api, agentId, it, prompts) }
+                val known = synchronized(e) { e.runs.size }
+                // A transcript that failed has no prompts to pair, so paging would stop at the first page and that
+                // page would then pass for the whole list. Page at least as deep as what is already shown instead.
+                val target = if (convResult.isSuccess) prompts else maxOf(prompts, known)
+                val runResult = runPage.await().mapCatching { runsCovering(api, agentId, it, target) }
                 val onDevice = stored.await()
                 // Each endpoint answers for itself: what one of them could not read is left as it was rather than
                 // reported as absent, so a timeout on the run list does not strip the footers and traces off an
                 // otherwise healthy transcript — nor write that shape to disk.
                 val transcript = convResult.getOrNull()?.messages
-                val fetchedRuns = runResult.getOrNull()
+                // Without the transcript the runs replace the list only when the fetch is provably at least as
+                // complete as it: shorter would strip the footers, traces and images off the older turns, on screen
+                // and on disk, and pair what is left with the wrong prompts.
+                val fetchedRuns = runResult.getOrNull()?.takeIf { convResult.isSuccess || it.exhausted || it.items.size >= known }?.items
                 val transcriptFailed = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
                 val fetched = convResult.isSuccess || fetchedRuns?.isNotEmpty() == true
                 // The newest run once the inputs are merged: usually the server's, but a follow-up sent from here
@@ -575,9 +585,9 @@ class ConversationRepository(
      * Further pages are fetched until the list covers the prompts, within a bound: a chat longer than that has
      * older turns whose logs expired long ago, and the join is only ever asked about what is on screen.
      */
-    private suspend fun runsCovering(api: CursorApi, agentId: String, first: ListRunsResponseDto, prompts: Int): List<RunDto> {
+    private suspend fun runsCovering(api: CursorApi, agentId: String, first: ListRunsResponseDto, prompts: Int): FetchedRuns {
         var cursor = first.nextCursor
-        if (first.items.size >= prompts || cursor == null) return first.items
+        if (first.items.size >= prompts || cursor == null) return FetchedRuns(first.items, cursor == null)
         val all = first.items.toMutableList()
         var pages = 1
         while (all.size < prompts && cursor != null && pages < MAX_RUN_PAGES) {
@@ -587,7 +597,7 @@ class ConversationRepository(
             cursor = page.nextCursor
             pages++
         }
-        return all
+        return FetchedRuns(all, cursor == null)
     }
 
     /**
@@ -1151,7 +1161,7 @@ class ConversationRepository(
                     val conversation = async { api.conversationV0(agent.id) }
                     val runs = async { api.listRuns(agent.id, limit = RUN_PAGE_SIZE) }
                     val transcript = conversation.await().messages
-                    val runList = runsCovering(api, agent.id, runs.await(), transcript.count { it.type == USER_MESSAGE })
+                    val runList = runsCovering(api, agent.id, runs.await(), transcript.count { it.type == USER_MESSAGE }).items
                     val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
