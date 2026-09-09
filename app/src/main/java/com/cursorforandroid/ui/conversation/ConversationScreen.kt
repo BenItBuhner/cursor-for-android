@@ -285,6 +285,8 @@ fun ConversationScreen(
                 plusMenu = plusMenu,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
+                onAddAttachments = viewModel::addAttachments,
+                onAttachmentError = viewModel::showMessage,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
