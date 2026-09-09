@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -105,11 +106,17 @@ fun ComposerBox(
     val slashToken = if (focused) SlashTokens.at(field) else null
     var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
     val recentSkills = plusMenu?.recentSkills.orEmpty()
+    // The popover's rows keep the click handler they were composed with, so the handler reads the token and catalog
+    // as they are when the row is tapped, not as they were when the row first appeared (typing "/", then "g", then
+    // "o" composes the row once, under the "/" token; completing that token would leave the "go" in place).
+    val currentToken by rememberUpdatedState(slashToken)
+    val currentCommands by rememberUpdatedState(commands)
+    val currentMenu by rememberUpdatedState(plusMenu)
 
     fun complete(entry: SlashCommand) {
-        val token = slashToken ?: return
+        val token = currentToken ?: return
         // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
-        if (commands.byName(entry.name) == null) plusMenu?.onSkillUsed?.invoke(entry.name)
+        if (currentCommands.byName(entry.name) == null) currentMenu?.onSkillUsed?.invoke(entry.name)
         val next = SlashTokens.complete(field, token, entry.name)
         field = next
         if (next.text != value) onValueChange(next.text)
@@ -153,7 +160,7 @@ fun ComposerBox(
                 token = slashToken?.takeIf { it != dismissedToken },
                 catalog = commands,
                 recent = recentSkills,
-                onPick = ::complete,
+                onPick = { complete(it) },
                 onDismiss = { dismissedToken = slashToken },
             )
         }
