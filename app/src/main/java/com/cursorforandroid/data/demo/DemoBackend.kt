@@ -18,8 +18,12 @@ import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.ListArtifactsResponseDto
 import com.cursorforandroid.data.api.dto.ListModelsResponseDto
+import com.cursorforandroid.data.api.dto.ListPoolsResponseDto
 import com.cursorforandroid.data.api.dto.ListRepositoriesResponseDto
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
+import com.cursorforandroid.data.api.dto.ListWorkersResponseDto
+import com.cursorforandroid.data.api.dto.PoolDto
+import com.cursorforandroid.data.api.dto.WorkerDto
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.ModelParamDto
 import com.cursorforandroid.data.api.dto.ModelParameterDefinitionDto
@@ -238,6 +242,39 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
     override suspend fun repositories(): ListRepositoriesResponseDto = io {
         delay(400)
         ListRepositoriesResponseDto(store.v0.values.mapNotNull { it.source?.repository }.distinct().map { RepositoryDto(it) })
+    }
+
+    override suspend fun listWorkers(
+        status: String?,
+        scope: String?,
+        limit: Int,
+        nextPageToken: String?,
+    ): ListWorkersResponseDto = io {
+        delay(80)
+        if (scope == "team_pool") return@io ListWorkersResponseDto()
+        ListWorkersResponseDto(
+            workers = listOf(
+                WorkerDto(
+                    id = "pw_bennett",
+                    name = "bennett",
+                    displayName = "bennett",
+                    isInUse = true,
+                    repoOwner = "bennett",
+                    repoName = "codex-poly-bot",
+                    repoUrl = "https://github.com/bennett/codex-poly-bot",
+                    scope = "personal",
+                ),
+            ),
+        )
+    }
+
+    override suspend fun listPools(scope: String?): ListPoolsResponseDto = io {
+        delay(80)
+        ListPoolsResponseDto(
+            pools = listOf(
+                PoolDto(name = "gpu", connectedWorkerCount = 2, inUseWorkerCount = 1),
+            ),
+        )
     }
 
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto = io {
