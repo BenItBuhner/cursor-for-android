@@ -66,6 +66,26 @@ class SseRunStreamerRetryTest {
         assertThat(waits).containsExactly(1_000L)
     }
 
+    /**
+     * A `retry:` is the server saying how long to wait before reconnecting. It is a floor rather than the whole
+     * schedule: successive failures still back off, and a rate limit that names a longer delay still wins.
+     */
+    @Test
+    fun `a retry field the stream sent is waited out on every reconnect after it`() {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream")
+                .setBody("retry: 5000\nid: e-8\nevent: heartbeat\ndata: {}\n\n"),
+        )
+        server.enqueue(MockResponse().setResponseCode(500))
+        server.enqueue(finishedStream())
+
+        collect()
+
+        // The first wait would have been 1 s and the second 2 s; the stream asked for 5 s and outlived the
+        // connection that carried it.
+        assertThat(waits).containsExactly(5_000L, 5_000L).inOrder()
+    }
+
     @Test
     fun `an implausible delay is honoured only as far as the cap, and a 500 without one keeps the backoff`() {
         server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "86400"))

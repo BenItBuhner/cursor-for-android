@@ -80,14 +80,30 @@ interface RunStreamer {
     fun stream(agentId: String, runId: String, lastEventId: String? = null): Flow<RunStreamEvent>
 }
 
-/** A raw SSE frame: `event:`, `id:` and joined `data:` lines. */
-data class SseFrame(val event: String, val id: String?, val data: String)
+/**
+ * A raw SSE frame: `event:`, `id:`, `retry:` and joined `data:` lines. [resetId] is the spec's empty `id:`, which
+ * drops the resume position rather than setting it to an empty one, and [retryMillis] a digits-only `retry:`.
+ */
+data class SseFrame(
+    val event: String,
+    val id: String?,
+    val data: String,
+    val resetId: Boolean = false,
+    val retryMillis: Long? = null,
+)
 
-/** Minimal, spec-compliant Server-Sent Events parser over an okio [BufferedSource]. */
+/**
+ * Server-Sent Events parser over an okio [BufferedSource], for streams framed the way this endpoint frames them:
+ * LF or CRLF line endings. A bare CR, which the specification also allows as a line ending, is not recognised.
+ */
 object SseParser {
     /** A line longer than this, or a frame whose data is, is not one of ours; the connection is given up on. */
     private const val MAX_LINE_BYTES = 1L shl 20
     private const val MAX_DATA_CHARS = 4 shl 20
+
+    /** What a `retry:` is honoured within: below a second it is a reconnect loop, past a minute the caller decides. */
+    private const val MIN_RETRY_MS = 1_000L
+    private const val MAX_RETRY_MS = 60_000L
 
     /**
      * The next complete frame, or null when there is not going to be one: the stream ended (whatever it had
@@ -98,6 +114,8 @@ object SseParser {
     fun readFrame(source: BufferedSource): SseFrame? {
         var event = "message"
         var id: String? = null
+        var resetId = false
+        var retry: Long? = null
         val data = StringBuilder()
         var sawField = false
         while (true) {
@@ -107,7 +125,7 @@ object SseParser {
                 return null
             }
             if (line.isEmpty()) {
-                if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"))
+                if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"), resetId, retry)
                 continue
             }
             if (line.startsWith(":")) continue
@@ -120,7 +138,16 @@ object SseParser {
                 "event" -> event = value
                 // Past the cap the frame is left short, so it fails to decode and is skipped rather than kept whole.
                 "data" -> if (data.length <= MAX_DATA_CHARS) data.append(value).append('\n')
-                "id" -> id = value
+                // An empty value says the stream has no resume position rather than that it is the empty string; a
+                // value with a NUL in it is not an id at all and is ignored, leaving the position as it was.
+                "id" -> if (!value.contains('\u0000')) {
+                    id = value.ifEmpty { null }
+                    resetId = value.isEmpty()
+                }
+                // The reconnection time the server asks for: ASCII digits only, and only as far as it is worth honouring.
+                "retry" -> if (value.isNotEmpty() && value.all { it in '0'..'9' }) {
+                    retry = value.toLongOrNull()?.coerceIn(MIN_RETRY_MS, MAX_RETRY_MS)
+                }
             }
         }
     }
@@ -176,11 +203,18 @@ class SseRunStreamer(
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
         var lastId = lastEventId
         var attempt = 0
+        /** The reconnection time the server last asked for, which outlives the connection that carried it. */
+        var serverRetryMs: Long? = null
         while (currentCoroutineContext().isActive) {
             val outcome = connectOnce(agentId, runId, lastId) { frame ->
+                frame.retryMillis?.let { serverRetryMs = it }
+                // A stream that says it has no resume position has to be believed even when the frame saying so is
+                // one this client cannot read: the pass then ends and the caller rebuilds from nothing.
+                if (frame.resetId) lastId = null
                 // Only a frame this client actually read may move the resume position: reconnecting past one it
                 // could not decode would skip whatever the frame was carrying for good.
-                when (val parsed = SseParser.parse(frame)) {
+                val parsed = SseParser.parse(frame)
+                when (parsed) {
                     is SseParser.Parsed.Delivered -> {
                         frame.id?.let { lastId = it }
                         parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
@@ -188,6 +222,7 @@ class SseRunStreamer(
                     SseParser.Parsed.Ignored -> frame.id?.let { lastId = it }
                     SseParser.Parsed.Undecodable -> Unit
                 }
+                parsed
             }
             when (outcome) {
                 is Outcome.Terminal -> return@flow
@@ -211,7 +246,7 @@ class SseRunStreamer(
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
-                    waiter(backoffMillis(attempt, outcome.retryAfterMs))
+                    waiter(backoffMillis(attempt, outcome.retryAfterMs, serverRetryMs))
                 }
             }
         }
@@ -232,7 +267,7 @@ class SseRunStreamer(
         agentId: String,
         runId: String,
         lastId: String?,
-        onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> Unit,
+        onFrame: suspend FlowCollector<RunStreamEvent>.(SseFrame) -> SseParser.Parsed,
     ): Outcome {
         val request = Request.Builder()
             .url(urlFor(agentId, runId))
@@ -274,15 +309,22 @@ class SseRunStreamer(
                 try {
                     while (true) {
                         val frame = SseParser.readFrame(source) ?: break
-                        onFrame(frame)
+                        val delivered = (onFrame(frame) as? SseParser.Parsed.Delivered)?.event
                         when (frame.event) {
                             // The server's word on why it is stopping. Not part of the run: the caller checks the
                             // run record and, unless the log is gone for good, comes back with `Last-Event-ID`.
                             "error" -> {
-                                val error = SseParser.toEvent(frame) as? RunStreamEvent.Error
+                                val error = delivered as? RunStreamEvent.Error
                                 return Outcome.Stopped(error?.code ?: "stream_error", error?.message?.ifBlank { null } ?: "The run's stream reported an error.")
                             }
-                            "result" -> sawResult = true
+                            // Only a result this client could read ends the run. One it could not is a frame it
+                            // never received: the resume position stayed where it was, so another connection asks
+                            // the server to send it again rather than the pass declaring the run finished without it.
+                            "result" -> if (delivered is RunStreamEvent.Result) {
+                                sawResult = true
+                            } else {
+                                return Outcome.Retry("the run's result could not be read")
+                            }
                             "done" -> return if (sawResult) Outcome.Terminal else Outcome.Stopped("stream_closed", "The stream ended before the run did.")
                         }
                     }
@@ -297,9 +339,11 @@ class SseRunStreamer(
         }
     }
 
-    private fun backoffMillis(attempt: Int, retryAfterMs: Long?): Long {
+    /** The schedule this client keeps, never shorter than the reconnection time the server asked for in a `retry:`. */
+    private fun backoffMillis(attempt: Int, retryAfterMs: Long?, serverRetryMs: Long?): Long {
         val exponential = (1000L shl (attempt - 1).coerceAtMost(4)).coerceAtMost(15_000L)
-        return retryAfterMs?.coerceIn(exponential, MAX_RETRY_AFTER_MS) ?: exponential
+        val floor = maxOf(exponential, serverRetryMs ?: 0L)
+        return retryAfterMs?.coerceIn(floor, MAX_RETRY_AFTER_MS) ?: floor
     }
 
     /**
