@@ -27,12 +27,13 @@ class GitHubReleasesClientTest {
 
     private val server = MockWebServer()
     private lateinit var client: GitHubReleasesClient
+    private var now = 1_788_900_000_000L // 2026-09-08T20:40:00Z
 
     @Before
     fun setUp() {
         server.start()
         val http = OkHttpClient.Builder().readTimeout(2, TimeUnit.SECONDS).build()
-        client = GitHubReleasesClient(http, GitHubFixtures.OWNER_REPO, apiBaseUrl = server.url("/").toString())
+        client = GitHubReleasesClient(http, GitHubFixtures.OWNER_REPO, apiBaseUrl = server.url("/").toString(), now = { now })
     }
 
     @After
@@ -47,7 +48,7 @@ class GitHubReleasesClientTest {
         assertThat(first.releases.map { it.tagName }).containsExactly("v0.3.0-rc.1", "v0.3.0", "screenshots-2026-09", "v0.2.0", "v0.1.1", "v0.1.0").inOrder()
         assertThat(first.etag).isEqualTo("W/\"abc\"")
         val request = server.takeRequest()
-        assertThat(request.path).isEqualTo("/repos/BenItBuhner/cursor-for-android/releases?per_page=20")
+        assertThat(request.path).isEqualTo("/repos/BenItBuhner/cursor-for-android/releases?per_page=100")
         assertThat(request.getHeader("Accept")).isEqualTo("application/vnd.github+json")
         assertThat(request.getHeader("X-GitHub-Api-Version")).isEqualTo("2022-11-28")
         assertThat(request.getHeader("If-None-Match")).isNull()
@@ -64,11 +65,111 @@ class GitHubReleasesClientTest {
         assertThat(rateLimited).isInstanceOf(UpdateCheckException::class.java)
         assertThat(rateLimited!!.message).contains("Try again in an hour")
 
+        // The wait has to pass before the next request is allowed out, so the clock moves on for the cases below.
+        now += 60 * 60 * 1000L
         server.enqueue(MockResponse().setResponseCode(404))
         assertThat(runCatching { client.listReleases(null) }.exceptionOrNull()!!.message).contains("No releases found")
 
         server.enqueue(MockResponse().setResponseCode(200).setBody("<html>not json</html>"))
         assertThat(runCatching { client.listReleases(null) }.exceptionOrNull()!!.message).contains("couldn't read")
+    }
+
+    @Test
+    fun `the reset GitHub reports is waited out instead of asked over`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("X-RateLimit-Remaining", "0")
+                .setHeader("X-RateLimit-Reset", ((now + 25 * 60_000L) / 1000L).toString()),
+        )
+        val limited = runCatching { client.listReleases(null) }.exceptionOrNull() as UpdateCheckException
+        assertThat(limited.message).contains("Try again in 25 minutes")
+        assertThat(limited.retryAfterMillis).isEqualTo(25 * 60_000L)
+
+        // Nothing is enqueued: another check inside the window must not reach the network at all.
+        now += 24 * 60_000L
+        val again = runCatching { client.listReleases(null) }.exceptionOrNull() as UpdateCheckException
+        assertThat(again.message).contains("Try again in a minute")
+        assertThat(server.requestCount).isEqualTo(1)
+
+        now += 60_000L
+        server.enqueue(MockResponse().setBody(GitHubFixtures.releasesJson))
+        assertThat(client.listReleases(null)).isInstanceOf(GitHubReleasesClient.ReleasesFetch.Changed::class.java)
+        assertThat(server.requestCount).isEqualTo(2)
+    }
+
+    @Test
+    fun `a secondary limit's Retry-After is honoured the same way`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "120"))
+        val limited = runCatching { client.listReleases(null) }.exceptionOrNull() as UpdateCheckException
+        assertThat(limited.retryAfterMillis).isEqualTo(120_000L)
+        assertThat(limited.message).contains("Try again in 2 minutes")
+    }
+
+    // ---- pagination ---------------------------------------------------------------------------------------------
+
+    /** [tags] as a release list page; every entry carries an APK so only the channel decides eligibility. */
+    private fun page(vararg tags: Pair<String, Boolean>): String = tags.joinToString(",", "[", "]") { (tag, prerelease) ->
+        val version = tag.removePrefix("v")
+        """{"tag_name":"$tag","prerelease":$prerelease,"assets":[
+            {"name":"cursor-for-android-$version.apk","size":1,"browser_download_url":"https://x/$tag.apk"}]}"""
+    }
+
+    private fun nextLink(path: String) = """<${server.url(path)}>; rel="next", <${server.url(path)}>; rel="last""""
+
+    /** The stable channel: a release counts when it is not a pre-release. */
+    private val stableIsEligible: (List<GitHubReleaseDto>) -> Boolean =
+        { seen -> seen.mapNotNull(ReleaseCatalog::toRelease).any { !it.isPreRelease } }
+
+    @Test
+    fun `a stable release on the second page is reached past a first page of pre-releases`() = runBlocking {
+        val preReleases = (1..20).map { "v0.3.0-rc.$it" to true }.toTypedArray()
+        server.enqueue(MockResponse().setHeader("ETag", "W/\"p1\"").setHeader("Link", nextLink("/page2")).setBody(page(*preReleases)))
+        server.enqueue(MockResponse().setHeader("ETag", "W/\"p2\"").setBody(page("v0.2.0" to false)))
+
+        val fetch = client.listReleases(etag = null, hasEligible = stableIsEligible) as GitHubReleasesClient.ReleasesFetch.Changed
+
+        assertThat(fetch.releases).hasSize(21)
+        assertThat(fetch.releases.last().tagName).isEqualTo("v0.2.0")
+        // The kept ETag is the first page's: that is the one a later conditional request can be made with.
+        assertThat(fetch.etag).isEqualTo("W/\"p1\"")
+        assertThat(server.takeRequest().path).isEqualTo("/repos/${GitHubFixtures.OWNER_REPO}/releases?per_page=100")
+        val second = server.takeRequest()
+        assertThat(second.path).isEqualTo("/page2")
+        // Only the first page is conditional; the pages behind it are new to us.
+        assertThat(second.getHeader("If-None-Match")).isNull()
+    }
+
+    @Test
+    fun `an eligible first page is the only page read, and a spent page budget stops the walk`() = runBlocking {
+        server.enqueue(MockResponse().setHeader("Link", nextLink("/page2")).setBody(page("v0.2.0" to false)))
+        client.listReleases(etag = null, hasEligible = stableIsEligible)
+        assertThat(server.requestCount).isEqualTo(1)
+
+        // Nothing installable anywhere: three pages, then it gives up rather than walking the repository.
+        repeat(4) { server.enqueue(MockResponse().setHeader("Link", nextLink("/page${it + 2}")).setBody(page("v0.3.0-rc.${it + 1}" to true))) }
+        val fetch = client.listReleases(etag = null, hasEligible = stableIsEligible) as GitHubReleasesClient.ReleasesFetch.Changed
+        assertThat(server.requestCount).isEqualTo(4)
+        assertThat(fetch.releases).hasSize(3)
+    }
+
+    @Test
+    fun `a next link pointing somewhere else is not followed`() = runBlocking {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Link", """<https://evil.example/releases?page=2>; rel="next"""")
+                .setBody(page("v0.3.0-rc.1" to true)),
+        )
+        val fetch = client.listReleases(etag = null, hasEligible = stableIsEligible) as GitHubReleasesClient.ReleasesFetch.Changed
+        assertThat(server.requestCount).isEqualTo(1)
+        assertThat(fetch.releases).hasSize(1)
+    }
+
+    @Test
+    fun `a 304 for the first page ends the fetch without paging`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(304).setHeader("Link", nextLink("/page2")))
+        assertThat(client.listReleases(etag = "W/\"p1\"", hasEligible = stableIsEligible))
+            .isEqualTo(GitHubReleasesClient.ReleasesFetch.Unchanged)
+        assertThat(server.requestCount).isEqualTo(1)
     }
 
     @Test

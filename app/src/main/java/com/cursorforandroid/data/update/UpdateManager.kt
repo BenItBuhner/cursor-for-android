@@ -232,14 +232,12 @@ class UpdateManager(
         try {
             // A 304 only means "the list you saw is unchanged"; the decision made from it must be for the same channel.
             val etag = previous?.etag?.takeIf { previous.includePreReleases == includePre }
-            val fetch = client.listReleases(etag)
+            // Eligibility is only knowable after mapping, so the client keeps paging while this says no.
+            val fetch = client.listReleases(etag) { seen -> newestOf(seen, includePre) != null }
             val checkedAt = now()
             val (candidate, newEtag) = when (fetch) {
                 GitHubReleasesClient.ReleasesFetch.Unchanged -> previous?.candidate to etag
-                is GitHubReleasesClient.ReleasesFetch.Changed -> {
-                    val releases = fetch.releases.mapNotNull(ReleaseCatalog::toRelease)
-                    ReleaseCatalog.newest(releases, platform.installedVersionCode, includePre) to fetch.etag
-                }
+                is GitHubReleasesClient.ReleasesFetch.Changed -> newestOf(fetch.releases, includePre) to fetch.etag
             }
             // A candidate from a 304 was newer than the build that made the decision; it may not be newer than this one.
             val offered = candidate?.takeIf { it.versionCode > platform.installedVersionCode }
@@ -397,6 +395,9 @@ class UpdateManager(
         val candidate = cached.candidate?.takeIf { it.versionCode > platform.installedVersionCode && (includePre || !it.isPreRelease) }
         _state.value = stateFor(candidate, cached.checkedAtMs)
     }
+
+    private fun newestOf(releases: List<GitHubReleaseDto>, includePreReleases: Boolean): AppRelease? =
+        ReleaseCatalog.newest(releases.mapNotNull(ReleaseCatalog::toRelease), platform.installedVersionCode, includePreReleases)
 
     private fun stateFor(candidate: AppRelease?, checkedAtMs: Long): UpdateState {
         if (candidate == null) return UpdateState.UpToDate(checkedAtMs)

@@ -271,6 +271,27 @@ class UpdateManagerTest {
     }
 
     @Test
+    fun `a stable release only reachable on a later page is still found`() = runBlocking {
+        fun releaseList(vararg tags: Pair<String, Boolean>) = tags.joinToString(",", "[", "]") { (tag, prerelease) ->
+            val version = tag.removePrefix("v")
+            """{"tag_name":"$tag","prerelease":$prerelease,"assets":[
+                {"name":"cursor-for-android-$version.apk","size":1,"browser_download_url":"${server.url("/download")}/$tag/x.apk"}]}"""
+        }
+        val firstPage = releaseList(*(1..20).map { "v0.3.0-rc.$it" to true }.toTypedArray())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path!!.startsWith("/repos/${GitHubFixtures.OWNER_REPO}/releases") ->
+                    MockResponse().setHeader("Link", """<${server.url("/page2")}>; rel="next"""").setBody(firstPage)
+                request.path == "/page2" -> MockResponse().setBody(releaseList("v0.2.0" to false))
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        // The stable channel would otherwise be told it is up to date: twenty release candidates fill page one.
+        val available = manager().check() as UpdateState.Available
+        assertThat(available.release.tagName).isEqualTo("v0.2.0")
+    }
+
+    @Test
     fun `a build that is current reads as up to date, and a failed check says why`() = runBlocking {
         platform.installedVersionCode = 20099
         platform.installedVersionName = "0.2.0"
