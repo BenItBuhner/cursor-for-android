@@ -47,11 +47,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import com.cursorforandroid.domain.BuiltInSkills
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpServerForm
 import com.cursorforandroid.domain.McpTransport
-import com.cursorforandroid.domain.Skill
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -85,6 +85,8 @@ fun ComposerPlusMenu(
     prompt: String,
     onPromptChange: (String) -> Unit,
     actions: ComposerMenuActions,
+    /** What the Skills page lists: the composer's `/` catalog, the same one its popover completes from. */
+    commands: SlashCatalog = SlashCatalog.BUILT_IN,
 ) {
     val colors = CursorTheme.colors
     var page by remember(expanded) { mutableStateOf(MenuPage.Root) }
@@ -126,10 +128,12 @@ fun ComposerPlusMenu(
                     )
                     MenuPage.Skills -> SkillsPage(
                         prompt = prompt,
+                        catalog = commands,
                         recent = actions.recentSkills,
                         onBack = { page = MenuPage.Root },
                         onSelect = { skill ->
-                            if (BuiltInSkills.byName(skill.name) == null) actions.onSkillUsed(skill.name)
+                            // A name the catalog does not list — typed, or picked before — is remembered for next time.
+                            if (commands.byName(skill.name) == null) actions.onSkillUsed(skill.name)
                             toggleCommand(skill.name)
                         },
                     )
@@ -178,11 +182,12 @@ private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () 
 }
 
 @Composable
-private fun SkillsPage(prompt: String, recent: List<String>, onBack: () -> Unit, onSelect: (Skill) -> Unit) {
+private fun SkillsPage(prompt: String, catalog: SlashCatalog, recent: List<String>, onBack: () -> Unit, onSelect: (SlashCommand) -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var query by remember { mutableStateOf("") }
-    val results = remember(query, recent) { BuiltInSkills.search(query, recent) }
+    // The page is about skills; the commands (`/goal`, `/multitask`) have their own rows and the `/` popover.
+    val results = remember(query, recent, catalog) { catalog.search(query, recent).filter { it.kind == SlashCommand.Kind.Skill } }
 
     PageHeader("Skills", onBack)
     MenuSearchField(query, onValueChange = { query = it }, placeholder = "Search or type a skill name")
@@ -196,7 +201,7 @@ private fun SkillsPage(prompt: String, recent: List<String>, onBack: () -> Unit,
             MenuRow(
                 icon = null,
                 label = skill.command,
-                subtitle = skill.description,
+                subtitle = skill.summary,
                 onClick = { onSelect(skill) },
                 trailing = { if (on) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(16.dp)) },
             )

@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
@@ -26,8 +27,28 @@ class AppCaches(private val root: JsonDiskCache) {
     val traces = TraceCache(root.child("traces"))
     val catalog = CatalogCache(root.child("catalog"))
     val pullRequests = PullRequestCache(root.child("pullrequests"))
+    val slashCommands = SlashCommandCache(root.child("slashcommands"))
 
     suspend fun clear() = root.clear()
+}
+
+/**
+ * The `/` catalog the account service last listed for a repository or an agent, one file per scope, so the composer's
+ * popover has its project and plugin skills before the network answers (and while it does not).
+ */
+class SlashCommandCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
+    suspend fun read(scopeKey: String): JsonDiskCache.Entry<SlashCatalog>? = cache.read(scopeKey, SlashCatalog.serializer(), VERSION)
+
+    suspend fun write(scopeKey: String, catalog: SlashCatalog) {
+        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog)) cache.prune(maxEntries)
+    }
+
+    suspend fun clear() = cache.clear()
+
+    private companion object {
+        const val VERSION = 1
+        const val MAX_ENTRIES = 100
+    }
 }
 
 @Serializable
