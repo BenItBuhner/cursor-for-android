@@ -55,19 +55,40 @@ object MarkdownParser {
     private val bulletRegex = Regex("^\\s*[-*+]\\s+(.*)$")
     private val orderedRegex = Regex("^\\s*\\d+[.)]\\s+(.*)$")
 
-    fun parse(markdown: String): List<MdBlock> {
-        val lines = markdown.replace("\r\n", "\n").lines()
+    fun parse(markdown: String): List<MdBlock> = parseWithStarts(markdown).blocks
+
+    /** Blocks plus, for each, the offset of the line its construct started on; see [IncrementalMarkdown]. */
+    class Parsed internal constructor(val blocks: List<MdBlock>, val starts: IntArray)
+
+    fun parseWithStarts(markdown: String): Parsed {
+        val lines = markdown.lines()
+        val lineStart = IntArray(lines.size)
+        var at = 0
+        for (index in lines.indices) {
+            lineStart[index] = at
+            at += lines[index].length
+            if (at < markdown.length) at += if (markdown.startsWith("\r\n", at)) 2 else 1
+        }
         val blocks = mutableListOf<MdBlock>()
+        val starts = mutableListOf<Int>()
         val paragraph = StringBuilder()
+        var paragraphStart = 0
+        fun emit(block: MdBlock, start: Int) {
+            blocks += block
+            starts += start
+        }
         fun flushParagraph() {
             if (paragraph.isNotBlank()) {
                 // Media tags sit in running text; each becomes its own block so it can be laid out as a figure.
                 MediaMarkup.split(paragraph.toString().trim()).forEach { segment ->
-                    blocks += when (segment) {
-                        is MediaSegment.Text -> MdBlock.Paragraph(segment.text)
-                        is MediaSegment.Image -> MdBlock.Image(segment.src, segment.alt)
-                        is MediaSegment.Video -> MdBlock.Video(segment.src, segment.poster)
-                    }
+                    emit(
+                        when (segment) {
+                            is MediaSegment.Text -> MdBlock.Paragraph(segment.text)
+                            is MediaSegment.Image -> MdBlock.Image(segment.src, segment.alt)
+                            is MediaSegment.Video -> MdBlock.Video(segment.src, segment.poster)
+                        },
+                        paragraphStart,
+                    )
                 }
             }
             paragraph.setLength(0)
@@ -78,6 +99,7 @@ object MarkdownParser {
             when {
                 line.trimStart().startsWith("```") -> {
                     flushParagraph()
+                    val start = lineStart[i]
                     val lang = line.trim().removePrefix("```").trim().ifEmpty { null }
                     val code = StringBuilder()
                     i++
@@ -85,30 +107,32 @@ object MarkdownParser {
                         code.append(lines[i]).append('\n')
                         i++
                     }
-                    blocks += MdBlock.Code(lang, code.toString().trimEnd('\n'))
+                    emit(MdBlock.Code(lang, code.toString().trimEnd('\n')), start)
                 }
                 line.isBlank() -> flushParagraph()
                 headingRegex.matches(line) -> {
                     flushParagraph()
                     val m = headingRegex.find(line)!!
-                    blocks += MdBlock.Heading(m.groupValues[1].length, m.groupValues[2].trim())
+                    emit(MdBlock.Heading(m.groupValues[1].length, m.groupValues[2].trim()), lineStart[i])
                 }
                 line.trim() == "---" || line.trim() == "***" -> {
                     flushParagraph()
-                    blocks += MdBlock.Rule
+                    emit(MdBlock.Rule, lineStart[i])
                 }
                 line.trimStart().startsWith(">") -> {
                     flushParagraph()
+                    val start = lineStart[i]
                     val quote = StringBuilder()
                     while (i < lines.size && lines[i].trimStart().startsWith(">")) {
                         quote.append(lines[i].trimStart().removePrefix(">").trim()).append(' ')
                         i++
                     }
-                    blocks += MdBlock.Quote(quote.toString().trim())
+                    emit(MdBlock.Quote(quote.toString().trim()), start)
                     continue
                 }
                 bulletRegex.matches(line) || orderedRegex.matches(line) -> {
                     flushParagraph()
+                    val start = lineStart[i]
                     val ordered = orderedRegex.matches(line)
                     val regex = if (ordered) orderedRegex else bulletRegex
                     val items = mutableListOf<String>()
@@ -122,18 +146,59 @@ object MarkdownParser {
                         }
                         items += item.toString()
                     }
-                    blocks += MdBlock.Bullets(items, ordered)
+                    emit(MdBlock.Bullets(items, ordered), start)
                     continue
                 }
                 else -> {
-                    if (paragraph.isNotEmpty()) paragraph.append(' ')
+                    if (paragraph.isEmpty()) paragraphStart = lineStart[i] else paragraph.append(' ')
                     paragraph.append(line.trim())
                 }
             }
             i++
         }
         flushParagraph()
-        return blocks
+        return Parsed(blocks, starts.toIntArray())
+    }
+}
+
+/**
+ * The parse of a message that is still being written. A streamed reply only ever gains text at the end, so every
+ * block above the one being written is final: this keeps those and re-reads only the open tail, instead of parsing
+ * the whole reply from character zero on every delta.
+ *
+ * Not thread safe; one instance belongs to one [MarkdownText].
+ */
+class IncrementalMarkdown {
+    private var source: String? = null
+    private var blocks: List<MdBlock> = emptyList()
+    private var settled: List<MdBlock> = emptyList()
+    /**
+     * The prefix of the source [settled] was parsed from. It stops one block short of the open one: the line still
+     * being written can join the block above it (a `-` becoming `- item`, a `#` becoming a heading), so the last
+     * two blocks are always read again.
+     */
+    private var settledText: String = ""
+
+    fun parse(markdown: String): List<MdBlock> {
+        val previous = source
+        if (previous != null && (previous === markdown || previous == markdown)) return blocks
+        if (!markdown.startsWith(settledText)) {
+            settled = emptyList()
+            settledText = ""
+        }
+        val tail = if (settledText.isEmpty()) markdown else markdown.substring(settledText.length)
+        val parsed = MarkdownParser.parseWithStarts(tail)
+        val all = if (settled.isEmpty()) parsed.blocks else settled + parsed.blocks
+        val open = parsed.starts.lastOrNull() ?: 0
+        val openFrom = parsed.starts.lastOrNull { it < open } ?: 0
+        if (openFrom > 0) {
+            val complete = parsed.starts.count { it < openFrom }
+            settled = all.subList(0, settled.size + complete).toList()
+            settledText = markdown.substring(0, settledText.length + openFrom)
+        }
+        source = markdown
+        blocks = all
+        return all
     }
 }
 
@@ -215,8 +280,10 @@ object InlineMarkdown {
                     }
                 }
                 c == '[' -> {
-                    val m = linkRegex.find(text, i)
-                    if (m != null && m.range.first == i) {
+                    // matchAt, not find: find scans forward to the end of the text for a match that is then thrown
+                    // away unless it started here, which is quadratic in a paragraph full of "[INFO]"-style brackets.
+                    val m = linkRegex.matchAt(text, i)
+                    if (m != null) {
                         val target = linkTarget(m.groupValues[2])
                         if (target == null) {
                             append(m.groupValues[1])
@@ -257,16 +324,16 @@ fun MarkdownText(
     streaming: Boolean = false,
 ) {
     val colors = CursorTheme.colors
+    val parser = remember { IncrementalMarkdown() }
     val blocks = remember(markdown, streaming) {
-        val source = if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown
-        // Keyed on content plus occurrence so a media block keeps its loaded state while text streams in above it.
-        val seen = HashMap<MdBlock, Int>()
-        MarkdownParser.parse(source).map { block -> block to (seen[block] ?: 0).also { seen[block] = it + 1 } }
+        parser.parse(if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown)
     }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        blocks.forEach { (block, occurrence) ->
-            key(block, occurrence) {
+        // Keyed on position rather than content: streaming only appends, so every block but the last keeps its
+        // index, and a code block being written keeps the horizontal scroll the reader put it at.
+        blocks.forEachIndexed { index, block ->
+            key(index, block::class) {
                 when (block) {
                     is MdBlock.Paragraph -> InlineText(block.text, style, color)
                     is MdBlock.Heading -> {

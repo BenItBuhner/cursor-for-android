@@ -55,6 +55,19 @@ class InlineMarkdownTest {
     }
 
     @Test
+    fun `a bracket-heavy paragraph is scanned once, not once per bracket`() {
+        // A pasted build log: thousands of "[" that are not links. `find` searched to the end of the text for each
+        // of them and threw the result away, which is quadratic; `matchAt` looks only where the bracket is.
+        val log = (1..12_000).joinToString("\n") { "[INFO] building module $it of 12000, nothing to do here" }
+        val started = System.nanoTime()
+        val rendered = render(log)
+        val elapsedMillis = (System.nanoTime() - started) / 1_000_000
+        assertThat(rendered.text).isEqualTo(log)
+        assertThat(rendered.getLinkAnnotations(0, log.length)).isEmpty()
+        assertThat(elapsedMillis).isLessThan(2_000)
+    }
+
+    @Test
     fun `a uri handler that cannot open the address does not throw out of the click`() {
         val handler = object : UriHandler {
             override fun openUri(uri: String): Unit = throw IllegalArgumentException("Can't open $uri.")
