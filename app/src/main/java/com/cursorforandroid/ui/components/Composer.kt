@@ -46,7 +46,7 @@ import kotlinx.coroutines.delay
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
- * model selector next to the "+". The text is the largest thing in the box and the round buttons the smallest
+ * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
@@ -144,12 +144,13 @@ fun ComposerBox(
                 }
                 Spacer(Modifier.width(10.dp))
             }
-            // The model chip takes what it needs and ellipsises only when the trailing buttons would otherwise be pushed out.
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            // Leftover width (and optional extras) stay on the left so the model chip can sit next to send.
+            // The chip takes what it needs and ellipsises only when send would otherwise be pushed out.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+                footerExtra?.invoke(this)
                 if (modelLabel != null) {
                     SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
                 }
-                footerExtra?.invoke(this)
             }
             Spacer(Modifier.width(8.dp))
             when {
