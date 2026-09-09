@@ -20,6 +20,7 @@ import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,9 +35,11 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
+import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
@@ -61,7 +64,7 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
  * Same shell as the official app: the New Chat pane is home; the sidebar is a permanent column on wide screens and
  * an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered by [CursorNavHost].
  */
-@OptIn(ExperimentalMaterial3WindowSizeClassApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 fun AppNavHost(
     graph: AppGraph,
@@ -76,6 +79,31 @@ fun AppNavHost(
     // rather than the cast bringing the app down.
     val activity = LocalContext.current.findActivity()
     val wide = if (activity == null) false else calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
+    AppShell(
+        graph = graph,
+        user = user,
+        isDemo = isDemo,
+        wide = wide,
+        deepLinkAgentId = deepLinkAgentId,
+        onDeepLinkConsumed = onDeepLinkConsumed,
+        newChatRequested = newChatRequested,
+        onNewChatConsumed = onNewChatConsumed,
+    )
+}
+
+/** [AppNavHost] with the layout decision handed in, so a test can flip it without a configuration change. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AppShell(
+    graph: AppGraph,
+    user: CursorUser,
+    isDemo: Boolean,
+    wide: Boolean,
+    deepLinkAgentId: String?,
+    onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
+) {
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
@@ -204,28 +232,49 @@ fun AppNavHost(
     }
     val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
 
-    @Composable
-    fun detailHost(modifier: Modifier) {
-        CursorNavHost(stack = stack, modifier = modifier) { screen ->
-            when (screen) {
-                Screen.Home -> HomeScreen(
-                    graph = graph,
-                    listState = listState,
-                    onOpenSidebar = openSidebar,
-                    onOpenAgent = rowActions.onOpen,
-                    onLaunchOpen = ::openAgent,
-                )
-                Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
-                is Screen.Agent -> ConversationScreen(
-                    graph = graph,
-                    agentId = screen.id,
-                    onOpenSidebar = if (wide) openSidebar else null,
-                    onBack = onBack,
-                    onDeleted = { navigateTop(Screen.Home) },
-                )
+    // The pane is composed under the Row on a wide window and under the drawer on a narrow one, so a rotation that
+    // flips between them would tear the whole navigation stack down and build it again from nothing: its view models,
+    // its saved state, its scroll positions and whatever a screen has open — the full-screen image viewer above all.
+    // Moving the content instead keeps the subtree itself alive across the swap. What the screens read changes from
+    // one recomposition to the next, so it is passed in rather than captured when the movable content is created.
+    val detailHost = remember {
+        movableContentOf<Modifier, DetailPane> { modifier, pane ->
+            CursorNavHost(stack = stack, modifier = modifier) { screen ->
+                when (screen) {
+                    Screen.Home -> HomeScreen(
+                        graph = graph,
+                        listState = pane.listState,
+                        onOpenSidebar = pane.openSidebar,
+                        onOpenAgent = pane.onOpenAgent,
+                        onLaunchOpen = ::openAgent,
+                    )
+                    Screen.Settings -> SettingsScreen(
+                        graph = graph,
+                        user = pane.user,
+                        isDemo = pane.isDemo,
+                        onOpenSidebar = pane.openSidebar,
+                        onBack = pane.onBack,
+                    )
+                    is Screen.Agent -> ConversationScreen(
+                        graph = graph,
+                        agentId = screen.id,
+                        onOpenSidebar = if (pane.wide) pane.openSidebar else null,
+                        onBack = pane.onBack,
+                        onDeleted = { navigateTop(Screen.Home) },
+                    )
+                }
             }
         }
     }
+    val pane = DetailPane(
+        listState = listState,
+        user = user,
+        isDemo = isDemo,
+        wide = wide,
+        openSidebar = openSidebar,
+        onBack = onBack,
+        onOpenAgent = rowActions.onOpen,
+    )
 
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
@@ -233,7 +282,7 @@ fun AppNavHost(
                 sidebar(inDrawer = false, modifier = Modifier.width(CursorDimens.sidebarWidth).fillMaxHeight())
                 Box(Modifier.fillMaxHeight().width(1.dp).background(colors.strokeSubtle))
             }
-            detailHost(Modifier.weight(1f).fillMaxHeight())
+            detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
         }
     } else {
         ModalNavigationDrawer(
@@ -252,7 +301,7 @@ fun AppNavHost(
                 }
             },
         ) {
-            detailHost(Modifier.fillMaxSize())
+            detailHost(Modifier.fillMaxSize(), pane)
         }
     }
 
@@ -260,3 +309,14 @@ fun AppNavHost(
         CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
     }
 }
+
+/** What the detail pane's screens read from the shell around them; see the movable content in [AppShell]. */
+private class DetailPane(
+    val listState: AgentListUiState,
+    val user: CursorUser,
+    val isDemo: Boolean,
+    val wide: Boolean,
+    val openSidebar: (() -> Unit)?,
+    val onBack: (() -> Unit)?,
+    val onOpenAgent: (AgentRow) -> Unit,
+)
