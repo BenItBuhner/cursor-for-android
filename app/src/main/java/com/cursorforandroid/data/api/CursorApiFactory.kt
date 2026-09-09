@@ -122,7 +122,9 @@ object CursorApiFactory {
 
     /**
      * For the browser login's `/auth/poll` and the dashboard RPC that mints the key: no stored credential may ride
-     * along, and nothing is logged, because the poll carries the verifier that redeems the login.
+     * along, and nothing is logged on any build, not even on debug — the poll carries the verifier that redeems the
+     * login, in its body, and in the query string of the GET an older backend falls back to, which even
+     * [HttpLoggingInterceptor.Level.BASIC] would write to logcat as part of the request line.
      */
     fun loginClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)

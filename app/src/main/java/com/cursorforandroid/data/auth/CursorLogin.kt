@@ -43,6 +43,9 @@ class CursorLoginException(message: String, cause: Throwable? = null) : IOExcept
  *
  * 1. [startHandshake] derives a PKCE pair and the `cursor.com/loginDeepControl` URL the user opens in a browser.
  * 2. [awaitTokens] polls `POST /auth/poll` with the verifier until the page has confirmed the login (`404` = pending).
+ *    That is the primary form; a backend that has no such route falls back, once, to `GET /auth/poll?uuid&verifier`,
+ *    which carries the verifier in the query string. Nothing may log the URLs of this client — see
+ *    [com.cursorforandroid.data.api.CursorApiFactory.loginClient], which has no logging interceptor on any build.
  * 3. [mintApiKey] spends the short-lived session token once on `DashboardService/CreateUserApiKey`; the returned
  *    key is the only credential the app keeps, and it is an ordinary key the Cloud Agents API already accepts.
  *
