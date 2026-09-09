@@ -39,6 +39,7 @@ import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import java.io.File
 
@@ -154,6 +155,7 @@ class AppGraph(
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
             // flight can land after the wipe below re-creates the directories it deleted.
             caches.invalidate()
+            AttachmentImages.clear()
             runMonitor.stop()
             liveRuns.resetAll()
             conversations.resetAll()

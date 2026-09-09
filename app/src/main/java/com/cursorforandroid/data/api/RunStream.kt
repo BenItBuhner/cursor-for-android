@@ -20,8 +20,11 @@ import kotlinx.coroutines.isActive
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okio.BufferedSource
 import java.io.IOException
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 
 /** Events emitted by `GET /v1/agents/{id}/runs/{runId}/stream`. */
 sealed interface RunStreamEvent {
@@ -165,6 +168,9 @@ class SseRunStreamer(
     private val apiKeyProvider: () -> String?,
     private val urlFor: (agentId: String, runId: String) -> String = CursorEndpoints::streamUrl,
     private val maxAttempts: Int = MAX_ATTEMPTS,
+    private val now: () -> Long = System::currentTimeMillis,
+    /** Seam for tests: the wait between attempts, so a honoured `Retry-After` is asserted without spending it. */
+    private val waiter: suspend (Long) -> Unit = { delay(it) },
 ) : RunStreamer {
 
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
@@ -205,7 +211,7 @@ class SseRunStreamer(
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }
-                    delay(backoffMillis(attempt))
+                    waiter(backoffMillis(attempt, outcome.retryAfterMs))
                 }
             }
         }
@@ -214,8 +220,8 @@ class SseRunStreamer(
     private sealed interface Outcome {
         /** The run's `result` (and `done`) came through. */
         data object Terminal : Outcome
-        /** Transport trouble; worth another connection right away. */
-        data class Retry(val reason: String) : Outcome
+        /** Transport trouble; worth another connection right away. [retryAfterMs] is what the server asked for, if it did. */
+        data class Retry(val reason: String, val retryAfterMs: Long? = null) : Outcome
         /** The server ended the stream on purpose: an in-band `error` frame, a `410`, a `4xx`. */
         data class Stopped(val code: String, val message: String) : Outcome
         /** `400 invalid_last_event_id`: only a connection without a `Last-Event-ID` can help. */
@@ -259,7 +265,7 @@ class SseRunStreamer(
                         } else {
                             Outcome.Stopped(error?.code ?: "http_400", error?.message?.ifBlank { null } ?: "Stream request failed (400)")
                         }
-                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}")
+                        408, 429, in 500..599 -> Outcome.Retry("HTTP ${resp.code}", resp.retryAfterMillis())
                         else -> Outcome.Stopped(error?.code ?: "http_${resp.code}", error?.message?.ifBlank { null } ?: "Stream request failed (${resp.code})")
                     }
                 }
@@ -291,7 +297,23 @@ class SseRunStreamer(
         }
     }
 
-    private fun backoffMillis(attempt: Int): Long = (1000L shl (attempt - 1).coerceAtMost(4)).coerceAtMost(15_000L)
+    private fun backoffMillis(attempt: Int, retryAfterMs: Long?): Long {
+        val exponential = (1000L shl (attempt - 1).coerceAtMost(4)).coerceAtMost(15_000L)
+        return retryAfterMs?.coerceIn(exponential, MAX_RETRY_AFTER_MS) ?: exponential
+    }
+
+    /**
+     * `Retry-After` in either form RFC 9110 allows, from the response itself: the shared
+     * [Throwable.retryAfterMillis] only reads Retrofit's `HttpException`, and a rejected stream request never
+     * becomes one. A rate limit that names a time was previously answered a second later, three more times.
+     */
+    private fun Response.retryAfterMillis(): Long? {
+        val header = header("Retry-After")?.trim()?.ifEmpty { null } ?: return null
+        header.toLongOrNull()?.let { return (it * 1000).coerceAtLeast(0L) }
+        val at = runCatching { ZonedDateTime.parse(header, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() }
+            .getOrNull() ?: return null
+        return (at - now()).coerceAtLeast(0L)
+    }
 
     private companion object {
         /**
@@ -299,5 +321,8 @@ class SseRunStreamer(
          * takes with the run record in hand rather than blindly reconnecting to a run that may have finished.
          */
         const val MAX_ATTEMPTS = 4
+
+        /** A `Retry-After` beyond this is honoured only this far; the caller decides what to do about the rest. */
+        const val MAX_RETRY_AFTER_MS = 60_000L
     }
 }
