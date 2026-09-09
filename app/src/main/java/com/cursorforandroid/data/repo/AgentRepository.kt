@@ -17,6 +17,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
@@ -118,6 +119,8 @@ class AgentRepository(
     private val cache: AgentListCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val persistDelayMs: Long = PERSIST_DELAY_MS,
+    /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
+    private val demoSources: Map<String, AgentSource> = emptyMap(),
 ) {
     private val restoreMutex = Mutex()
 
@@ -296,7 +299,9 @@ class AgentRepository(
             val pinned = prefs.localAgentState.first().pinnedIds
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
-                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s).copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
+                    .let { if (backend.isDemo) it.withSources(demoSources) else it }
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             if (landed) {
                 lastRefreshedAt = AppClock.now()
@@ -383,6 +388,28 @@ class AgentRepository(
     private fun AgentListState.withLegacy(legacy: Map<String, V0AgentDto>): AgentListState =
         copy(agents = agents.map { a -> legacy[a.id]?.let(a::withLegacy) ?: a })
 
+    /** Rows whose source [sources] names take it; the others keep what they had (a row is never made to forget its source). */
+    private fun AgentListState.withSources(sources: Map<String, AgentSource>): AgentListState {
+        if (sources.isEmpty()) return this
+        var changed = false
+        val next = agents.map { a ->
+            val source = sources[a.id]
+            if (source == null || source == a.source) a else a.copy(source = source).also { changed = true }
+        }
+        return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * Folds in where each agent was started from, as the account's list reports it (see [AgentSource]). The public
+     * list this repository draws its rows from never says, so this is the one way a row learns its source; once
+     * learned it is kept across refreshes and on disk with the row, like the model. The account list is read after
+     * every completed fetch (by the pin sync), so a new row's source lands a moment after the row itself.
+     */
+    fun applySources(sources: Map<String, AgentSource>) {
+        if (sources.isEmpty()) return
+        _state.update { it.withSources(sources) }
+    }
+
     /**
      * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
      * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
@@ -443,6 +470,8 @@ class AgentRepository(
             modelDisplayName = modelDisplayName,
             modelId = request.modelId,
             modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+            // What the account will record for a chat started with an API key, this app's included.
+            source = AgentSource.API,
         )
         // A retry of a launch whose reply was lost finds the row from the first attempt: it stays as it is.
         if (agent(id) == null) {
@@ -497,6 +526,7 @@ class AgentRepository(
                 modelDisplayName = modelDisplayName,
                 modelId = request.modelId,
                 modelParams = if (request.modelId != null) request.modelParams else emptyList(),
+                source = AgentSource.API,
             )
             pendingLaunches -= agent.id
             upsert(agent)

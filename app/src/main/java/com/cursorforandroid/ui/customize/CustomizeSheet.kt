@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cursorforandroid.domain.EnvironmentFilter
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
 import com.cursorforandroid.domain.GroupBy
@@ -69,7 +70,7 @@ import kotlinx.coroutines.launch
 
 /**
  * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: grouping, sort, the
- * Repo / Status / Git / Source filters and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
+ * Repo / Status / Git / Source / Environment filters and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -152,7 +153,11 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                                 PageNote("Pull request states are read from GitHub. Some of these repositories are private: add a GitHub token under Settings › GitHub to see where their pull requests stand.")
                             }
                         }
-                        FilterKind.Source -> ChecklistPage(SourceFilter.entries.map { it.label to (it in state.prefs.sources) }) { viewModel.toggleSource(SourceFilter.entries[it]) }
+                        FilterKind.Source -> {
+                            ChecklistPage(SourceFilter.entries.map { it.label to (it in state.prefs.sources) }) { viewModel.toggleSource(SourceFilter.entries[it]) }
+                            PageNote("Where each chat was started, as your Cursor account records it. Chats started from this app count as \"This device\"; the account sees them as API.")
+                        }
+                        FilterKind.Environment -> ChecklistPage(EnvironmentFilter.entries.map { it.label to (it in state.prefs.environments) }) { viewModel.toggleEnvironment(EnvironmentFilter.entries[it]) }
                     }
                 }
             }
@@ -172,7 +177,8 @@ private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen:
     DrillRow(CursorIcons.Repo, "Repo", prefs.summaryFor(FilterKind.Repo)) { onOpen(FilterKind.Repo) }
     DrillRow(CursorIcons.Sparkle, "Status", prefs.summaryFor(FilterKind.Status)) { onOpen(FilterKind.Status) }
     DrillRow(CursorIcons.GitBranch, "Git", prefs.summaryFor(FilterKind.Git)) { onOpen(FilterKind.Git) }
-    DrillRow(CursorIcons.Cloud, "Source", prefs.summaryFor(FilterKind.Source)) { onOpen(FilterKind.Source) }
+    DrillRow(CursorIcons.Globe, "Source", prefs.summaryFor(FilterKind.Source)) { onOpen(FilterKind.Source) }
+    DrillRow(CursorIcons.Cloud, "Environment", prefs.summaryFor(FilterKind.Environment)) { onOpen(FilterKind.Environment) }
 
     SectionLabel("Metadata")
     ToggleRow(CursorIcons.Folder, "Workspace", prefs.showWorkspace, viewModel::setShowWorkspace)

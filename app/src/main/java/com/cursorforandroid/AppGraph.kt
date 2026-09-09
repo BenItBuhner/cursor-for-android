@@ -14,6 +14,7 @@ import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -75,8 +76,8 @@ class AppGraph(context: Context) {
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
         profile = AccountApi(accountRpc, sessionTokens),
     )
-    val agents = AgentRepository(session, prefs, attachments, caches.agents)
-    /** The account's agent list, pins and pull request statuses: what the desktop Agents window and the iOS app show. */
+    val agents = AgentRepository(session, prefs, attachments, caches.agents, demoSources = DemoData.sources)
+    /** The account's agent list, pins, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
     private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
     private val accountPullRequests = CursorPullRequestSource(accountAgents)
     /**
@@ -92,13 +93,19 @@ class AppGraph(context: Context) {
         cache = caches.pullRequests,
         account = accountPullRequests,
     )
-    /** Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the PR states. */
+    /**
+     * Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the
+     * PR states and where each chat was started from (the Source filter).
+     */
     val pins = PinRepository(
         session = session,
         prefs = prefs,
         agents = agents,
         api = accountAgents,
-        onList = { list -> pullRequests.seed(list.pullRequests) },
+        onList = { list ->
+            agents.applySources(list.sources)
+            pullRequests.seed(list.pullRequests)
+        },
     )
     val catalog = CatalogRepository(session, caches.catalog)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
