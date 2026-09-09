@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -251,7 +250,7 @@ private fun McpServersPage(
 
 @Composable
 private fun PageHeader(title: String, onBack: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.headerHeight).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
         Spacer(Modifier.width(2.dp))
         Text(title, style = CursorTheme.typography.title, color = CursorTheme.colors.textPrimary)
@@ -303,7 +302,7 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .background(colors.fillFaint, CursorTheme.shapes.base)
-            .height(30.dp)
+            .heightIn(min = 30.dp)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -367,7 +366,7 @@ fun McpServerSheet(
 
     CursorSheet(onDismiss = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().imePadding().padding(bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (server == null) "New MCP server" else "Edit MCP server", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
                 if (onDelete != null) {
                     Text("Delete", style = type.base, color = colors.red, modifier = Modifier.pressable(onDelete, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 4.dp))
