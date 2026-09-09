@@ -12,11 +12,12 @@ import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.SubagentsCard
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
+import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.domain.WorkHeader
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -206,8 +207,11 @@ class TimelineBuilderTest {
         val thinking = work.thoughts.single()
         assertThat(thinking.isStreaming).isFalse()
         assertThat(thinking.durationSeconds).isNull()
-        // With no time to report, the row is the tool summary alone; the thought is there once the row is opened.
-        assertThat(work.detail).isEqualTo("1 file")
+        // With no time to report, the thought's row is the bare verb; the read that follows is a line of its own.
+        assertThat(work.thoughtAction).isEqualTo("Thought")
+        assertThat(work.thoughtDetails).isNull()
+        assertThat(work.isWorkGrouped).isFalse()
+        assertThat(work.header).isEqualTo(WorkHeader("Explored", "README.md"))
         assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall").inOrder()
     }
 
@@ -244,12 +248,19 @@ class TimelineBuilderTest {
         assertThat(first.calls.map { it.callId }).containsExactly("c1", "c2", "c3", "c4").inOrder()
         assertThat(first.calls.map { it.status }).doesNotContain("running")
         assertThat(first.isBusy).isFalse()
-        assertThat(first.verb).isEqualTo("Explored")
-        assertThat(first.detail).isEqualTo("3 files, 1 search · thought for 7s")
+        // The thought before the first tool call is its own row; the work behind it is summed up the desktop's way,
+        // the edit first, then what was explored, the second thought among the steps.
+        assertThat(first.leadingThoughts.map { it.text }).containsExactly("Where does the picker live?")
+        assertThat(first.thoughtAction).isEqualTo("Thought")
+        assertThat(first.thoughtDetails).isEqualTo("2s")
+        assertThat(first.work.map { it::class.simpleName }).containsExactly("ToolCall", "ToolCall", "ThinkingBlock", "ToolCall", "ToolCall").inOrder()
+        assertThat(first.isWorkGrouped).isTrue()
+        assertThat(first.header).isEqualTo(WorkHeader("Edited", "HomeScreen.kt, explored 2 files, 1 search"))
 
         val second = items[2] as ActivityGroup
         assertThat(second.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall").inOrder()
-        assertThat(second.detail).isEqualTo("1 search · thought for 1s")
+        assertThat(second.thoughtDetails).isEqualTo("1s")
+        assertThat(second.header).isEqualTo(WorkHeader("Explored", "1 search"))
     }
 
     @Test
@@ -259,30 +270,38 @@ class TimelineBuilderTest {
 
         live.apply(RunStreamEvent.Thinking("Let me see."))
         with(live.group()) {
-            assertThat(verb).isEqualTo("Thinking")
-            assertThat(detail).isNull()
+            assertThat(thoughtAction).isEqualTo("Thinking")
+            assertThat(thoughtDetails).isNull()
+            assertThat(isLeadingThoughtStreaming).isTrue()
             assertThat(isThinking).isTrue()
             assertThat(isBusy).isTrue()
+            assertThat(work).isEmpty()
         }
 
         clock += 3_000
         live.apply(tool("c1", "read_file", "running", "path" to "README.md"))
         with(live.group()) {
-            assertThat(verb).isEqualTo("Exploring")
-            // The thinking time waits for the row to go quiet, so the counts hold still while the agent works.
-            assertThat(detail).isEqualTo("1 file")
+            // The thought closed when the tool started; the read is a line of its own, still going.
+            assertThat(thoughtAction).isEqualTo("Thought")
+            assertThat(thoughtDetails).isEqualTo("3s")
+            assertThat(isWorkGrouped).isFalse()
+            assertThat(isWorkBusy).isTrue()
+            assertThat(header).isEqualTo(WorkHeader("Exploring", "README.md"))
             assertThat(runningCall?.callId).isEqualTo("c1")
+            assertThat(runningCall?.action).isEqualTo("Reading")
         }
 
         live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
         assertThat(live.group().isBusy).isFalse()
-        assertThat(live.group().detail).isEqualTo("1 file · thought for 3s")
+        assertThat(live.group().calls.single().action).isEqualTo("Read")
 
         live.apply(RunStreamEvent.Thinking("And the build file."))
         with(live.group()) {
-            assertThat(verb).isEqualTo("Exploring")
-            assertThat(detail).isEqualTo("1 file")
+            // A thought after a tool call joins the work, which is now worth a row of its own.
+            assertThat(isWorkGrouped).isTrue()
+            assertThat(header).isEqualTo(WorkHeader("Exploring", "README.md"))
             assertThat(isThinking).isTrue()
+            assertThat(isLeadingThoughtStreaming).isFalse()
             assertThat(isRunning).isFalse()
         }
 
@@ -290,8 +309,9 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Assistant("Both read."))
         with(live.group()) {
             assertThat(isBusy).isFalse()
-            assertThat(verb).isEqualTo("Explored")
-            assertThat(detail).isEqualTo("1 file · thought for 5s")
+            assertThat(header).isEqualTo(WorkHeader("Explored", "README.md"))
+            // The leading thought's time is its own; the later thought is read among the steps.
+            assertThat(thoughtDetails).isEqualTo("3s")
         }
     }
 
@@ -303,38 +323,40 @@ class TimelineBuilderTest {
         clock += 4_000
         live.apply(RunStreamEvent.Assistant("Go with the sheet."))
         with(live.group()) {
-            assertThat(verb).isEqualTo("Thought")
-            assertThat(detail).isEqualTo("for 4s")
-            assertThat(headline).isNull()
+            assertThat(thoughtAction).isEqualTo("Thought")
+            assertThat(thoughtDetails).isEqualTo("4s")
+            assertThat(work).isEmpty()
+            assertThat(isWorkGrouped).isFalse()
         }
 
         val replayed = TimelineBuilder.LiveRun("run-2", timed = false)
         replayed.apply(RunStreamEvent.Thinking("Replayed."))
         replayed.apply(RunStreamEvent.Assistant("Reply."))
-        assertThat(replayed.group().verb).isEqualTo("Thought")
-        assertThat(replayed.group().detail).isNull()
+        assertThat(replayed.group().thoughtAction).isEqualTo("Thought")
+        assertThat(replayed.group().thoughtDetails).isNull()
     }
 
     @Test
-    fun `delegating to subagents does not split the stretch of work around it`() {
+    fun `delegating to subagents is a tool call among the others, as it is on the desktop`() {
         val live = TimelineBuilder.LiveRun("run-1", timed = false)
         live.apply(RunStreamEvent.Thinking("Split the survey."))
         live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
-        live.apply(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey the cloud layer"))
+        live.apply(tool("s1", "task_v2", "running", "description" to "Survey the cloud layer", "prompt" to "Map the cloud layer."))
         live.apply(tool("c2", "grep", "completed", "pattern" to "TODO"))
         live.apply(RunStreamEvent.Thinking("Meanwhile, the build."))
         live.apply(tool("c3", "run_terminal_cmd", "completed", "command" to "./gradlew build"))
-        live.apply(tool("s1", "task", "completed", "subagent_type" to "explore", "description" to "Survey the cloud layer"))
-        live.apply(tool("s2", "task", "running", "subagent_type" to "explore", "description" to "Survey the API"))
+        live.apply(tool("s1", "task_v2", "completed", "description" to "Survey the cloud layer", "prompt" to "Map the cloud layer."))
+        live.apply(tool("s2", "task_v2", "running", "description" to "Survey the API", "prompt" to "Map the API."))
         live.apply(RunStreamEvent.Assistant("Here is what I found."))
 
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "SubagentsCard", "AssistantMessage").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage").inOrder()
         val work = items[0] as ActivityGroup
-        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall", "ThinkingBlock", "ToolCall").inOrder()
-        assertThat(work.detail).isEqualTo("1 file, 1 search, 1 command")
-        val card = items[1] as SubagentsCard
-        assertThat(card.subagents.map { it.title to it.status }).containsExactly("Survey the cloud layer" to "Done", "Survey the API" to "Running").inOrder()
+        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall", "ToolCall", "ThinkingBlock", "ToolCall", "ToolCall").inOrder()
+        assertThat(work.header).isEqualTo(WorkHeader("Exploring", "README.md, 1 search, ran 1 command, 2 agents"))
+        val tasks = work.calls.filter { it.kind == ToolKind.Task }
+        assertThat(tasks.map { it.action to it.summary }).containsExactly("Completed task" to "Survey the cloud layer", "Working on task" to "Survey the API").inOrder()
+        assertThat(tasks.map { it.detail }).containsExactly("Map the cloud layer.", "Map the API.").inOrder()
     }
 
     @Test
@@ -369,26 +391,28 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Result("run-9", RunStatus.FINISHED, "Hello world.", 42_000, RunGitDto(listOf(RunGitBranchDto("github.com/o/r", "cursor/x", null)))))
 
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "SubagentsCard", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
 
         val work = items.filterIsInstance<ActivityGroup>().single()
-        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall").inOrder()
+        assertThat(work.steps.map { it::class.simpleName }).containsExactly("ThinkingBlock", "ToolCall", "ToolCall", "ToolCall").inOrder()
         val thinking = work.thoughts.single()
         assertThat(thinking.text).isEqualTo("Let me look at the repo.")
         assertThat(thinking.isStreaming).isFalse()
         assertThat(thinking.durationSeconds).isEqualTo(3L)
+        assertThat(work.thoughtDetails).isEqualTo("3s")
 
-        assertThat(work.calls.map { it.callId }).containsExactly("c1", "c2").inOrder()
+        assertThat(work.calls.map { it.callId }).containsExactly("c1", "c2", "s1").inOrder()
         assertThat(work.calls.first().status).isEqualTo("completed")
-        assertThat(work.fileCount).isEqualTo(1)
-        assertThat(work.searchCount).isEqualTo(1)
-        assertThat(work.headline).isEqualTo("1 file, 1 search")
-        assertThat(work.verb).isEqualTo("Explored")
-        assertThat(work.detail).isEqualTo("1 file, 1 search · thought for 3s")
+        assertThat(work.summary.files).containsExactly("README.md")
+        assertThat(work.summary.searches).isEqualTo(1)
+        assertThat(work.summary.taskCalls).isEqualTo(1)
+        assertThat(work.header).isEqualTo(WorkHeader("Explored", "README.md, 1 search, 1 agent"))
 
-        val subs = items.filterIsInstance<SubagentsCard>().single()
-        assertThat(subs.subagents.single().status).isEqualTo("Done")
-        assertThat(subs.subagents.single().kind).isEqualTo("Explorer")
+        // The subagent's `completed` arrived after the reply had begun, and still landed on its call.
+        val task = work.calls.last()
+        assertThat(task.kind).isEqualTo(ToolKind.Task)
+        assertThat(task.action).isEqualTo("Completed task")
+        assertThat(task.summary).isEqualTo("Survey cloud layer")
 
         val assistant = items.filterIsInstance<AssistantMessage>().single()
         assertThat(assistant.markdown).isEqualTo("Hello world.")
@@ -441,19 +465,19 @@ class TimelineBuilderTest {
         live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "All green.", 30_000, null))
         val tools = live.group()
         assertThat(tools.isBusy).isFalse()
-        assertThat(tools.calls.map { it.status }).containsExactly("completed", "completed").inOrder()
-        assertThat(tools.verb).isEqualTo("Explored")
-        assertThat(live.snapshot().filterIsInstance<SubagentsCard>().single().subagents.single().status).isEqualTo("Done")
+        assertThat(tools.calls.map { it.status }).containsExactly("completed", "completed", "completed").inOrder()
+        assertThat(tools.header.action).isEqualTo("Explored")
+        assertThat(tools.calls.last().action).isEqualTo("Completed task")
 
         // A run that did not finish interrupted whatever was still running.
         val cut = TimelineBuilder.LiveRun("run-2", timed = false)
         cut.apply(tool("c1", "run_terminal_cmd", "running", "command" to "sleep 100"))
         cut.apply(tool("s1", "task", "running", "subagent_type" to "explore", "description" to "Survey"))
         cut.apply(RunStreamEvent.Result("run-2", RunStatus.CANCELLED, null, 3_000, null))
-        val interrupted = cut.group().calls.single()
-        assertThat(interrupted.isRunning).isFalse()
-        assertThat(interrupted.status).isEqualTo(ToolCall.STATUS_INTERRUPTED)
-        assertThat(cut.snapshot().filterIsInstance<SubagentsCard>().single().subagents.single().status).isEqualTo("Stopped")
+        val interrupted = cut.group().calls
+        assertThat(interrupted.none { it.isRunning }).isTrue()
+        assertThat(interrupted.map { it.status }).containsExactly(ToolCall.STATUS_INTERRUPTED, ToolCall.STATUS_INTERRUPTED)
+        assertThat(interrupted.map { it.action }).containsExactly("Ran", "Completed task").inOrder()
         assertThat(cut.snapshot().filterIsInstance<NoticeCard>().single().title).isEqualTo("Run cancelled")
     }
 

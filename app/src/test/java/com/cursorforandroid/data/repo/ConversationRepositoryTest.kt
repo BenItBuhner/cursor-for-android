@@ -563,10 +563,11 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.items.count { it is ActivityGroup } == 2 }
         awaitUntil { traces.read("bc-1").keys == setOf("run-1", "run-2") }
         assertThat(streamer.connections).containsExactly("run-1", "run-2")
-        // Payloads are not what the disk keeps; the summaries the cards render are.
+        // Payloads are not what the disk keeps; the summaries the lines render, and the paths behind them, are.
         val saved = traces.read("bc-1").getValue("run-2").items.filterIsInstance<ActivityGroup>().single().calls
-        assertThat(saved.map { it.summary }).containsExactly("app/src/Composer.kt", "app/src/Composer.kt")
-        assertThat(saved.all { it.args == null }).isTrue()
+        assertThat(saved.map { it.summary }).containsExactly("Composer.kt", "Composer.kt")
+        assertThat(saved.map { it.detail }).containsExactly("app/src/Composer.kt", "app/src/Composer.kt")
+        assertThat(saved.all { it.args == null && it.result == null }).isTrue()
 
         // A later process opens the chat: both traces come from disk and no stream is opened for either run.
         val next = repository()
