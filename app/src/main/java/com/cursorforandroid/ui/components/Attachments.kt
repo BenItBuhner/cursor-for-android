@@ -1,8 +1,11 @@
 package com.cursorforandroid.ui.components
 
+import android.content.ContentResolver
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +35,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.UUID
 
 /** An image the user attached to the composer, kept with a small decoded thumbnail for the strip. */
@@ -100,15 +105,54 @@ fun rememberImagePicker(
     }
 }
 
+private const val TooLargeMessage = "Images must be 15 MB or smaller."
+
 private fun loadAttachment(context: Context, uri: Uri): Result<PendingAttachment> = runCatching {
     val resolver = context.contentResolver
     val mime = resolver.getType(uri)?.lowercase() ?: "image/jpeg"
     if (!PromptImage.isSupported(mime)) error("Unsupported image type ($mime). Use PNG, JPEG, GIF or WebP.")
-    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Couldn't read the selected image.")
-    if (bytes.size > PromptImage.MAX_BYTES) error("Images must be 15 MB or smaller.")
+    val bytes = readBoundedBytes(declaredSize(resolver, uri)) { resolver.openInputStream(uri) }
     // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
     val image = AttachmentImages.prepare(bytes, mime)
     PendingAttachment(id = uri.toString() + "@" + System.nanoTime(), image = image, thumbnail = thumbnailOf(image))
+}
+
+/** What the provider says the selection weighs, or -1 when it will not say — which a picker is free to do. */
+private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
+    val queried = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getLong(column) else -1L
+        }
+    }.getOrNull() ?: -1L
+    if (queried >= 0) return queried
+    return runCatching { resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } }
+        .getOrNull()
+        ?.takeIf { it != AssetFileDescriptor.UNKNOWN_LENGTH } ?: -1L
+}
+
+/**
+ * The selection's bytes, refused before they are all in memory when there are more than [PromptImage.MAX_BYTES] of
+ * them. A declared size is only a hint — a provider may give none at all, and a document provider streaming a
+ * 100 MB original is allowed to be wrong about it — so the copy stops one byte past the cap regardless. Reading the
+ * whole stream first risked an OutOfMemoryError, which `runCatching` does not make safe, in place of the size
+ * message the user is promised.
+ */
+internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): ByteArray {
+    if (declaredSize > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    val stream = open() ?: error("Couldn't read the selected image.")
+    val limit = PromptImage.MAX_BYTES + 1
+    val out = ByteArrayOutputStream(if (declaredSize in 1..PromptImage.MAX_BYTES) declaredSize.toInt() else 256 * 1024)
+    stream.use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (out.size() < limit) {
+            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), limit - out.size()).toInt())
+            if (n < 0) break
+            out.write(buffer, 0, n)
+        }
+    }
+    if (out.size() > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    return out.toByteArray()
 }
 
 /** 40px thumbnails with a remove control, shown above the composer text once something is attached. */
