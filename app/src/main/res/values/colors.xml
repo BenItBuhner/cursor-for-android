@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Cursor canvas (matches web + iOS conversation canvas). -->
-    <color name="cursor_canvas">#141414</color>
+    <!--
+      Window and splash background: CursorLightColors.canvas, with the dark canvas in values-night. This is the only
+      colour drawn before Compose does, so it follows the *system* night mode; CursorTheme repaints the window with
+      the resolved canvas as soon as the stored theme preference is known.
+    -->
+    <color name="cursor_canvas">#F3F3F3</color>
     <!-- Background of the official dark app icon (APP_ICON_25D_DARK.png in the https://cursor.com/brand kit). -->
     <color name="ic_launcher_background">#14120B</color>
 

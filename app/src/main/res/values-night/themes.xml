@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Same as values/themes.xml but for light-coloured status-bar icons over the dark canvas. -->
     <style name="Theme.Cursor" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/cursor_canvas</item>
         <item name="android:statusBarColor">@android:color/transparent</item>

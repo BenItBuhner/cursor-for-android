@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Cursor Dark's canvas (matches web + iOS conversation canvas); see values/colors.xml. -->
+    <color name="cursor_canvas">#141414</color>
+
     <!-- Dark values of CursorColors for the widget's launcher-inflated layouts; see values/colors.xml. -->
     <color name="widget_surface">#181818</color>
     <color name="widget_text_primary">#F0F0F0</color>
