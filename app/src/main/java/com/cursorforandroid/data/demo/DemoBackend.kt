@@ -56,21 +56,30 @@ private fun toolEvent(id: String, name: String, status: String, vararg args: Pai
     SseToolCallDto(callId = id, name = name, status = status, args = buildJsonObject { args.forEach { (k, v) -> put(k, JsonPrimitive(v)) } }),
 )
 
-/** Shared mutable state behind the demo API and streamer. */
+/**
+ * Shared mutable state behind the demo API and streamer.
+ *
+ * Every field is private and every accessor is synchronized, returning copies rather than the collections
+ * themselves. The demo runs against the same repositories as the real backend, which read from Dispatchers.IO while
+ * scripts and user actions write: a refresh iterating the agent map while a launch or a delete restructured it was a
+ * ConcurrentModificationException waiting for the right moment, and a caller holding one of these lists could see it
+ * change under it. Script pacing stays outside the lock, since a delay must never be held while holding it.
+ */
 internal class DemoStore {
     private val now = AppClock.now()
     private val fmt = DateTimeFormatter.ISO_INSTANT
     fun iso(millis: Long = AppClock.now()): String = fmt.format(Instant.ofEpochMilli(millis))
 
-    val seeds = DemoData.seeds.associateBy { it.id }.toMutableMap()
-    val agents: MutableMap<String, AgentDto> = linkedMapOf()
-    val v0: MutableMap<String, V0AgentDto> = linkedMapOf()
-    val runs: MutableMap<String, MutableList<RunDto>> = linkedMapOf()
-    val transcripts: MutableMap<String, MutableList<V0ConversationMessageDto>> = linkedMapOf()
-    val scripts: MutableMap<String, String> = linkedMapOf()
-    val prompts: MutableMap<String, String> = linkedMapOf()
+    private val agents: MutableMap<String, AgentDto> = linkedMapOf()
+    private val v0: MutableMap<String, V0AgentDto> = linkedMapOf()
+    private val runs: MutableMap<String, MutableList<RunDto>> = linkedMapOf()
+    private val transcripts: MutableMap<String, MutableList<V0ConversationMessageDto>> = linkedMapOf()
+    private val scripts: MutableMap<String, String> = linkedMapOf()
+    private val prompts: MutableMap<String, String> = linkedMapOf()
     /** Names of the inline MCP servers a run was created with, so its script can show a tool call against one. */
-    val mcpServers: MutableMap<String, List<String>> = linkedMapOf()
+    private val mcpServers: MutableMap<String, List<String>> = linkedMapOf()
+    /** Runs the user stopped, so the script playing one can find out and stop where it is. */
+    private val cancelled: MutableSet<String> = linkedSetOf()
     /** Each run's retained event log: pre-built for finished seeds, recorded as live scripts play. */
     private val eventLogs: MutableMap<String, MutableList<RunStreamEvent>> = linkedMapOf()
     private var counter = 100
@@ -140,11 +149,110 @@ internal class DemoStore {
     fun latestRun(agentId: String): RunDto? = runs[agentId]?.maxByOrNull { it.createdAt }
 
     @Synchronized
+    fun agent(id: String): AgentDto? = agents[id]
+
+    @Synchronized
+    fun hasAgent(id: String): Boolean = id in agents
+
+    /** Newest activity first, which is the order the list screen shows and the order pages are cut from. */
+    @Synchronized
+    fun agentsByRecency(includeArchived: Boolean): List<AgentDto> =
+        agents.values.filter { includeArchived || it.status != "ARCHIVED" }.sortedByDescending { it.updatedAt }
+
+    @Synchronized
+    fun v0Agents(): List<V0AgentDto> = v0.values.toList()
+
+    /** Null for an agent the demo has never heard of, so callers can answer 404 as the real API would. */
+    @Synchronized
+    fun runsOf(agentId: String): List<RunDto>? = runs[agentId]?.sortedByDescending { it.createdAt }
+
+    @Synchronized
+    fun run(agentId: String, runId: String): RunDto? = runs[agentId]?.firstOrNull { it.id == runId }
+
+    @Synchronized
+    fun transcript(agentId: String): List<V0ConversationMessageDto>? = transcripts[agentId]?.toList()
+
+    @Synchronized
+    fun script(runId: String): String? = scripts[runId]
+
+    @Synchronized
+    fun prompt(runId: String): String = prompts[runId].orEmpty()
+
+    @Synchronized
+    fun mcpServersOf(runId: String): List<String> = mcpServers[runId].orEmpty()
+
+    @Synchronized
+    fun repositoryUrls(): List<String> = v0.values.mapNotNull { it.source?.repository }.distinct()
+
+    @Synchronized
+    fun addAgent(agent: AgentDto, legacy: V0AgentDto, run: RunDto, firstMessage: String, script: String, servers: List<String>) {
+        agents[agent.id] = agent
+        v0[agent.id] = legacy
+        runs[agent.id] = mutableListOf(run)
+        transcripts[agent.id] = mutableListOf(V0ConversationMessageDto(nextId("msg"), "user_message", firstMessage))
+        scripts[run.id] = script
+        prompts[run.id] = firstMessage
+        mcpServers[run.id] = servers
+    }
+
+    @Synchronized
+    fun addRun(agent: AgentDto, run: RunDto, prompt: String, script: String, servers: List<String>?) {
+        runs.getOrPut(agent.id) { mutableListOf() } += run
+        agents[agent.id] = agent.copy(status = "ACTIVE", latestRunId = run.id, updatedAt = run.createdAt)
+        transcripts.getOrPut(agent.id) { mutableListOf() } += V0ConversationMessageDto(nextId("msg"), "user_message", prompt)
+        scripts[run.id] = script
+        prompts[run.id] = prompt
+        // Omitted on a follow-up means "keep the agent's configuration", so inherit the previous run's list.
+        mcpServers[run.id] = servers ?: agent.latestRunId?.let { mcpServers[it] }.orEmpty()
+    }
+
+    @Synchronized
+    fun removeAgent(id: String) {
+        agents.remove(id)
+        v0.remove(id)
+        runs.remove(id)?.forEach { cancelled -= it.id }
+        transcripts.remove(id)
+    }
+
+    @Synchronized
     fun updateRun(agentId: String, runId: String, transform: (RunDto) -> RunDto) {
         val list = runs[agentId] ?: return
         val idx = list.indexOfFirst { it.id == runId }
         if (idx >= 0) list[idx] = transform(list[idx])
         agents[agentId]?.let { agents[agentId] = it.copy(updatedAt = iso()) }
+    }
+
+    /**
+     * Records that the user stopped [runId] and settles it, unless it has settled already. The script playing it
+     * finds out through [isCancelled] and stops; the real backend terminates the stream the same way.
+     */
+    @Synchronized
+    fun cancelRun(agentId: String, runId: String): Boolean {
+        val list = runs[agentId] ?: return false
+        val idx = list.indexOfFirst { it.id == runId }
+        if (idx < 0 || RunStatus.parse(list[idx].status).isTerminal) return false
+        cancelled += runId
+        list[idx] = list[idx].copy(status = "CANCELLED", updatedAt = iso(), durationMs = 0)
+        agents[agentId]?.let { agents[agentId] = it.copy(status = "IDLE", updatedAt = iso()) }
+        return true
+    }
+
+    @Synchronized
+    fun isCancelled(runId: String): Boolean = runId in cancelled
+
+    /**
+     * Settles [runId] as its script's ending describes, and reports whether it was still there to settle. A run the
+     * user cancelled has settled already, and a script that was mid-flight when that happened must not undo it.
+     */
+    @Synchronized
+    fun finishRun(agentId: String, runId: String, transform: (RunDto) -> RunDto): Boolean {
+        if (runId in cancelled) return false
+        val list = runs[agentId] ?: return false
+        val idx = list.indexOfFirst { it.id == runId }
+        if (idx < 0 || RunStatus.parse(list[idx].status).isTerminal) return false
+        list[idx] = transform(list[idx])
+        agents[agentId]?.let { agents[agentId] = it.copy(status = "IDLE", updatedAt = iso()) }
+        return true
     }
 
     @Synchronized
@@ -168,6 +276,21 @@ internal class DemoStore {
         }
     }
 }
+
+/**
+ * One page of [all], the way a keyset cursor works: [cursor] is the id of the last item of the previous page and the
+ * page starts after it, so a traversal never repeats an item even when the list changes between requests. An
+ * unrecognised cursor ends the traversal, which is what a real cursor pointing at a deleted row degrades to.
+ */
+private fun <T> pageOf(all: List<T>, limit: Int, cursor: String?, id: (T) -> String): Pair<List<T>, String?> {
+    val size = limit.coerceIn(1, DEMO_MAX_PAGE_SIZE)
+    val from = cursor?.let { c -> all.indexOfFirst { id(it) == c }.let { if (it < 0) all.size else it + 1 } } ?: 0
+    val items = all.drop(from).take(size)
+    return items to if (from + items.size < all.size) items.lastOrNull()?.let(id) else null
+}
+
+/** What the live API accepts as the largest page, so a caller asking for more is answered the same way. */
+private const val DEMO_MAX_PAGE_SIZE = 100
 
 internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
@@ -237,24 +360,24 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
     override suspend fun repositories(): ListRepositoriesResponseDto = io {
         delay(400)
-        ListRepositoriesResponseDto(store.v0.values.mapNotNull { it.source?.repository }.distinct().map { RepositoryDto(it) })
+        ListRepositoriesResponseDto(store.repositoryUrls().map { RepositoryDto(it) })
     }
 
     override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto = io {
         delay(250)
-        val all = store.agents.values.filter { includeArchived || it.status != "ARCHIVED" }.sortedByDescending { it.updatedAt }
-        ListAgentsResponseDto(items = all.map { it.summary() })
+        val (items, next) = pageOf(store.agentsByRecency(includeArchived), limit, cursor) { it.id }
+        ListAgentsResponseDto(items = items.map { it.summary() }, nextCursor = next)
     }
 
     override suspend fun getAgent(id: String): AgentDto = io {
         delay(100)
-        store.agents[id] ?: throw notFound("agent_not_found")
+        store.agent(id) ?: throw notFound("agent_not_found")
     }
 
     override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto = io {
         delay(500)
         val id = body.agentId ?: store.nextId("bc")
-        if (store.agents.containsKey(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
+        if (store.hasAgent(id)) throw CursorApiException(409, "agent_id_conflict", "An agent with this id already exists.")
         val runId = store.nextId("run")
         val nowIso = store.iso()
         val repo = body.repos?.firstOrNull()
@@ -272,15 +395,14 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
             autoCreatePR = body.autoCreatePR,
         )
         val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = nowIso, updatedAt = nowIso)
-        synchronized(store) {
-            store.agents[id] = agent
-            store.v0[id] = V0AgentDto(id, agent.name, "CREATING", repo?.let { V0SourceDto(it.url, it.startingRef) }, V0TargetDto(url = agent.url, autoCreatePr = body.autoCreatePR), null, nowIso)
-            store.runs[id] = mutableListOf(run)
-            store.transcripts[id] = mutableListOf(V0ConversationMessageDto(store.nextId("msg"), "user_message", body.prompt.text))
-            store.scripts[runId] = scriptFor(body.prompt.text, body.mode)
-            store.prompts[runId] = body.prompt.text
-            store.mcpServers[runId] = body.mcpServers.orEmpty().map { it.name }
-        }
+        store.addAgent(
+            agent = agent,
+            legacy = V0AgentDto(id, agent.name, "CREATING", repo?.let { V0SourceDto(it.url, it.startingRef) }, V0TargetDto(url = agent.url, autoCreatePr = body.autoCreatePR), null, nowIso),
+            run = run,
+            firstMessage = body.prompt.text,
+            script = scriptFor(body.prompt.text, body.mode),
+            servers = body.mcpServers.orEmpty().map { it.name },
+        )
         CreateAgentResponseDto(agent, run)
     }
 
@@ -295,7 +417,7 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
     override suspend fun unarchive(id: String): IdResponseDto = io { delay(150); store.setLifecycle(id, "IDLE"); IdResponseDto(id) }
     override suspend fun delete(id: String): IdResponseDto = io {
         delay(150)
-        synchronized(store) { store.agents.remove(id); store.v0.remove(id); store.runs.remove(id); store.transcripts.remove(id) }
+        store.removeAgent(id)
         IdResponseDto(id)
     }
 
@@ -303,7 +425,7 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
     override suspend fun artifacts(id: String): ListArtifactsResponseDto = io {
         delay(100)
-        if (id !in store.agents) throw notFound("agent_not_found")
+        if (!store.hasAgent(id)) throw notFound("agent_not_found")
         ListArtifactsResponseDto(DemoData.artifacts[id].orEmpty().map { ArtifactDto(it.path, it.sizeBytes, store.iso()) })
     }
 
@@ -316,51 +438,43 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
 
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto = io {
         delay(120)
-        ListRunsResponseDto(items = (store.runs[id] ?: throw notFound("agent_not_found")).sortedByDescending { it.createdAt })
+        val (items, next) = pageOf(store.runsOf(id) ?: throw notFound("agent_not_found"), limit, cursor) { it.id }
+        ListRunsResponseDto(items = items, nextCursor = next)
     }
 
     override suspend fun getRun(id: String, runId: String): RunDto =
-        store.runs[id]?.firstOrNull { it.id == runId } ?: throw notFound("run_not_found")
+        store.run(id, runId) ?: throw notFound("run_not_found")
 
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto = io {
         delay(350)
-        val agent = store.agents[id] ?: throw notFound("agent_not_found")
+        val agent = store.agent(id) ?: throw notFound("agent_not_found")
         if (agent.status == "ARCHIVED") throw CursorApiException(409, "agent_archived", "Agent is archived.")
         store.latestRun(id)?.let { if (it.status == "RUNNING" || it.status == "CREATING") throw CursorApiException(409, "agent_busy", "Agent is busy.") }
-        val runId = store.nextId("run")
         val nowIso = store.iso()
-        val run = RunDto(id = runId, agentId = id, status = "CREATING", createdAt = nowIso, updatedAt = nowIso)
-        synchronized(store) {
-            store.runs.getOrPut(id) { mutableListOf() } += run
-            store.agents[id] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = nowIso)
-            store.transcripts.getOrPut(id) { mutableListOf() } += V0ConversationMessageDto(store.nextId("msg"), "user_message", body.prompt.text)
-            store.scripts[runId] = scriptFor(body.prompt.text, body.mode)
-            store.prompts[runId] = body.prompt.text
-            // Omitted on a follow-up means "keep the agent's configuration", so inherit the previous run's list.
-            store.mcpServers[runId] = body.mcpServers?.map { it.name } ?: agent.latestRunId?.let { store.mcpServers[it] }.orEmpty()
-        }
+        val run = RunDto(id = store.nextId("run"), agentId = id, status = "CREATING", createdAt = nowIso, updatedAt = nowIso)
+        store.addRun(agent, run, body.prompt.text, scriptFor(body.prompt.text, body.mode), body.mcpServers?.map { it.name })
         store.setV0Status(id, "RUNNING")
         CreateRunResponseDto(run)
     }
 
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto = io {
         delay(150)
-        val run = store.runs[id]?.firstOrNull { it.id == runId } ?: throw notFound("run_not_found")
-        if (RunStatus.parse(run.status).isTerminal) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
-        store.updateRun(id, runId) { it.copy(status = "CANCELLED", updatedAt = store.iso(), durationMs = 0) }
-        store.setLifecycle(id, "IDLE")
+        if (store.run(id, runId) == null) throw notFound("run_not_found")
+        // Marking it cancelled and telling its script to stop is one step, so a script cannot finish in between.
+        if (!store.cancelRun(id, runId)) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
         store.setV0Status(id, "CANCELLED")
         IdResponseDto(runId)
     }
 
     override suspend fun listAgentsV0(limit: Int, cursor: String?): V0ListAgentsResponseDto = io {
         delay(200)
-        V0ListAgentsResponseDto(agents = store.v0.values.toList())
+        val (items, next) = pageOf(store.v0Agents(), limit, cursor) { it.id }
+        V0ListAgentsResponseDto(agents = items, nextCursor = next)
     }
 
     override suspend fun conversationV0(id: String): V0ConversationResponseDto = io {
         delay(180)
-        V0ConversationResponseDto(id, store.transcripts[id] ?: throw notFound("agent_not_found"))
+        V0ConversationResponseDto(id, store.transcript(id) ?: throw notFound("agent_not_found"))
     }
 
     private fun notFound(code: String) = CursorApiException(404, code, "Not found.")
@@ -372,9 +486,12 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
  */
 internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
+    /** Raised by the recorder when the user has stopped the run, to unwind whatever the script was in the middle of. */
+    private class Stopped : Exception(null, null, false, false)
+
     override fun stream(agentId: String, runId: String, lastEventId: String?): Flow<RunStreamEvent> = flow {
-        val script = store.scripts[runId] ?: "generic"
-        val run = store.runs[agentId]?.firstOrNull { it.id == runId }
+        val script = store.script(runId) ?: "generic"
+        val run = store.run(agentId, runId)
         if (run != null && RunStatus.parse(run.status).isTerminal) {
             replay(run)
             return@flow
@@ -383,30 +500,44 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
         store.startLog(runId)
         val recorder = object : FlowCollector<RunStreamEvent> {
             override suspend fun emit(value: RunStreamEvent) {
+                // Every script step passes through here, so this is where a cancel takes effect: whatever the script
+                // was going to do next, including its own ending, does not happen.
+                if (store.isCancelled(runId)) throw Stopped()
                 store.record(runId, value)
                 this@flow.emit(value)
             }
         }
-        recorder.emit(RunStreamEvent.Status(runId, RunStatus.RUNNING))
-        store.updateRun(agentId, runId) { it.copy(status = "RUNNING") }
-        store.setV0Status(agentId, "RUNNING")
         val startedAt = AppClock.now()
-        val outcome = when (script) {
-            "cesium" -> recorder.cesium()
-            "codex" -> recorder.codex()
-            "limbs" -> recorder.limbs()
-            "plan" -> recorder.plan(store.prompts[runId].orEmpty())
-            "multitask" -> recorder.multitask(store.prompts[runId].orEmpty(), store.mcpServers[runId].orEmpty())
-            else -> recorder.generic(store.prompts[runId].orEmpty(), store.mcpServers[runId].orEmpty())
+        try {
+            recorder.emit(RunStreamEvent.Status(runId, RunStatus.RUNNING))
+            store.updateRun(agentId, runId) { it.copy(status = "RUNNING") }
+            store.setV0Status(agentId, "RUNNING")
+            val outcome = when (script) {
+                "cesium" -> recorder.cesium()
+                "codex" -> recorder.codex()
+                "limbs" -> recorder.limbs()
+                "plan" -> recorder.plan(store.prompt(runId))
+                "multitask" -> recorder.multitask(store.prompt(runId), store.mcpServersOf(runId))
+                else -> recorder.generic(store.prompt(runId), store.mcpServersOf(runId))
+            }
+            val duration = outcome.reportedDurationMs ?: (AppClock.now() - startedAt)
+            val git = outcome.branch?.let { RunGitDto(listOf(RunGitBranchDto(repoUrl = "github.com/demo/repo", branch = it, prUrl = outcome.prUrl))) }
+            // A cancel that landed between the last event and here has settled the run already; the script's ending
+            // is not allowed to call it finished after that.
+            val settled = store.finishRun(agentId, runId) {
+                it.copy(status = "FINISHED", updatedAt = store.iso(), durationMs = duration, result = outcome.finalText, git = git ?: it.git)
+            }
+            if (!settled) throw Stopped()
+            store.appendAssistant(agentId, outcome.finalText)
+            store.setV0Status(agentId, "FINISHED", branch = outcome.branch, prUrl = outcome.prUrl)
+            recorder.emit(RunStreamEvent.Result(runId, RunStatus.FINISHED, outcome.finalText, duration, git))
+        } catch (_: Stopped) {
+            // The live endpoint ends a cancelled run's stream with its terminal state; the store already says
+            // CANCELLED, so this only reports it, and the log keeps it for a later replay.
+            val result = RunStreamEvent.Result(runId, RunStatus.CANCELLED, null, AppClock.now() - startedAt, null)
+            store.record(runId, result)
+            emit(result)
         }
-        val elapsed = AppClock.now() - startedAt
-        val duration = outcome.reportedDurationMs ?: elapsed
-        val git = outcome.branch?.let { RunGitDto(listOf(RunGitBranchDto(repoUrl = "github.com/demo/repo", branch = it, prUrl = outcome.prUrl))) }
-        store.appendAssistant(agentId, outcome.finalText)
-        store.updateRun(agentId, runId) { it.copy(status = "FINISHED", updatedAt = store.iso(), durationMs = duration, result = outcome.finalText, git = git ?: it.git) }
-        store.setLifecycle(agentId, "IDLE")
-        store.setV0Status(agentId, "FINISHED", branch = outcome.branch, prUrl = outcome.prUrl)
-        recorder.emit(RunStreamEvent.Result(runId, RunStatus.FINISHED, outcome.finalText, duration, git))
         emit(RunStreamEvent.Done)
     }
 
