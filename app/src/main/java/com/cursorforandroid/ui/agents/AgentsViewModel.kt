@@ -138,7 +138,8 @@ class AgentsViewModel(
             query = q,
             isRefreshing = list.isRefreshing,
             hasLoaded = list.hasLoaded,
-            error = list.error ?: device.actionError,
+            // A refused row action is the newer news, and the one the user is waiting on.
+            error = device.actionError ?: list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
             pullRequestsUnreadable = list.agents.any { it.prUrl in device.unreadablePullRequests },
