@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.google.common.truth.Truth.assertThat
@@ -49,7 +50,7 @@ class NewAgentViewModelTest {
 
     private fun loaded(): NewAgentViewModel {
         val vm = NewAgentViewModel(graph)
-        runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos } } }
+        runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos && !it.isLoadingDevices } } }
         return vm
     }
 
@@ -315,5 +316,28 @@ class NewAgentViewModelTest {
         second.launchAndWait()
         // Blank means "the repository's default branch", not "never launched": it must not come back as "main".
         assertThat(loaded().state.value.ref).isEmpty()
+    }
+
+    @Test
+    fun `the device picker defaults to cloud and lists the demo machine and pool`() {
+        val vm = loadedWithAgents()
+        assertThat(vm.state.value.selectedDevice).isEqualTo(DeviceTarget.Cloud)
+        assertThat(vm.state.value.deviceLabel).isEqualTo("Cloud")
+        assertThat(vm.state.value.devices.map { it.target }).containsAtLeast(
+            DeviceTarget.Cloud,
+            DeviceTarget.machine("bennett"),
+            DeviceTarget.pool("gpu"),
+        )
+        assertThat(vm.state.value.devices.none { it.target.label.equals("This device", ignoreCase = true) }).isTrue()
+    }
+
+    @Test
+    fun `the device launched on is restored`() {
+        val first = loaded()
+        first.selectDevice(DeviceTarget.machine("bennett"))
+        first.launchAndWait()
+        val second = loaded()
+        assertThat(second.state.value.selectedDevice).isEqualTo(DeviceTarget.machine("bennett"))
+        assertThat(second.state.value.deviceLabel).isEqualTo("bennett")
     }
 }

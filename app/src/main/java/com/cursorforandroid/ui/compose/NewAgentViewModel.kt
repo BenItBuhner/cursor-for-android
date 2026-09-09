@@ -11,7 +11,10 @@ import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
+import com.cursorforandroid.domain.DeviceOption
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.KnownBranches
+import com.cursorforandroid.domain.KnownDevices
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
@@ -42,6 +45,11 @@ data class NewAgentUiState(
     val selectedVariant: ModelVariant? = null,
     val autoCreatePr: Boolean = false,
     val planMode: Boolean = false,
+    /** Where the next chat runs; Cloud until the user picks a machine or team pool. */
+    val selectedDevice: DeviceTarget = DeviceTarget.Cloud,
+    /** Cloud, then live / harvested machines and pools. Always contains Cloud. */
+    val devices: List<DeviceOption> = listOf(KnownDevices.cloud),
+    val isLoadingDevices: Boolean = false,
     /**
      * True from the tap on Send until the chat is on screen — the moment it takes to pack the draft, not the time the
      * server takes to answer, which the composer no longer waits for.
@@ -57,6 +65,7 @@ data class NewAgentUiState(
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
     /** The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. */
     val modelLabel: String get() = selectedModel?.displayName ?: "Default model"
+    val deviceLabel: String get() = selectedDevice.label
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
 }
@@ -84,6 +93,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
     private var agents: List<Agent> = emptyList()
+    /** Live workers and pools from the fleet endpoints; merged with [agents] for the device picker. */
+    private var liveDevices: List<DeviceOption> = emptyList()
 
     init {
         viewModelScope.launch {
@@ -91,7 +102,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             // every later page, launch or finished run may teach the picker a branch.
             graph.agents.state.collect { s ->
                 agents = s.agents
-                _state.update { it.withBranches() }
+                _state.update { it.withBranches().withDevices() }
             }
         }
         // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
@@ -99,13 +110,14 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             val loaded = graph.prefs.composerDefaults.first()
             defaults = loaded
-            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main") }
+            _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref ?: "main", selectedDevice = loaded.env, isLoadingDevices = true).withDevices() }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
             graph.catalog.restoreFromCache()
             // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
             launch { loadRepositories(loaded.repoUrl) }
             launch { loadModels() }
+            launch { loadDevices() }
         }
     }
 
@@ -131,6 +143,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
         return copy(branches = KnownBranches.forRepository(agents, repo.url))
     }
+
+    private fun NewAgentUiState.withDevices(): NewAgentUiState =
+        copy(devices = KnownDevices.compose(agents, liveDevices, selectedDevice))
 
     private suspend fun loadModels(force: Boolean = false) {
         // The saved list shows right away (the picker spins in its header while it is revalidated).
@@ -192,6 +207,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     }
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
+    fun selectDevice(device: DeviceTarget) = _state.update { it.copy(selectedDevice = device).withDevices() }
 
     fun refreshRepositories() = viewModelScope.launch {
         _state.update { it.copy(isLoadingRepos = true) }
@@ -202,6 +218,16 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     fun refreshModels() = viewModelScope.launch { loadModels(force = true) }
+
+    fun refreshDevices() = viewModelScope.launch { loadDevices() }
+
+    private suspend fun loadDevices() {
+        _state.update { it.copy(isLoadingDevices = true) }
+        liveDevices = graph.catalog.devices.value
+        _state.update { it.withDevices() }
+        liveDevices = graph.catalog.loadDevices().getOrDefault(emptyList())
+        _state.update { it.copy(isLoadingDevices = false).withDevices() }
+    }
 
     /**
      * Sends the draft. The chat opens through [onOpen] as soon as its prompt is on screen — before the server has
@@ -227,6 +253,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
                 mcpServers = graph.mcpServers.enabled(),
+                env = s.selectedDevice,
             )
             // Same draft, same id: retrying after a timeout or a cancel adopts the agent the first attempt may have
             // created instead of launching a duplicate. It is also what the chat is shown under before the server answers.
@@ -245,6 +272,7 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 modelId = request.modelId,
                 params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
                 autoCreatePr = request.autoCreatePr,
+                env = request.env,
             )
             _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
             restoreWaitingIfFree()
@@ -299,7 +327,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             },
             autoCreatePr = request.autoCreatePr,
             planMode = request.planMode,
-        ).withBranches()
+            selectedDevice = request.env,
+        ).withBranches().withDevices()
     }
 
     private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }

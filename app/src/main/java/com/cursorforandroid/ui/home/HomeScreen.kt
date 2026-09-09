@@ -97,6 +97,7 @@ fun HomeScreen(
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
     var branchSheet by remember { mutableStateOf(false) }
+    var deviceSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
@@ -138,7 +139,7 @@ fun HomeScreen(
                             // A blank ref leaves the starting point to the repository's default branch.
                             SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
                         }
-                        SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
+                        SelectorChip(state.deviceLabel, onClick = { deviceSheet = true }, icon = deviceIcon(state.selectedDevice))
                     }
                     ComposerBox(
                         value = state.prompt,
@@ -201,6 +202,16 @@ fun HomeScreen(
             selected = state.ref,
             onSelect = viewModel::setRef,
             onDismiss = { branchSheet = false },
+        )
+    }
+    if (deviceSheet) {
+        DeviceSheet(
+            devices = state.devices,
+            selected = state.selectedDevice,
+            loading = state.isLoadingDevices,
+            onSelect = viewModel::selectDevice,
+            onRefresh = viewModel::refreshDevices,
+            onDismiss = { deviceSheet = false },
         )
     }
     if (modelSheet) {
