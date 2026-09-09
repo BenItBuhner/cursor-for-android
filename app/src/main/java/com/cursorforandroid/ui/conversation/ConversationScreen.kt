@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.ComposerBox
@@ -104,6 +105,14 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val incoming = share ?: return@LaunchedEffect
+        val target = incoming.target as? ShareTarget.Chat ?: return@LaunchedEffect
+        if (target.agentId != agentId) return@LaunchedEffect
+        viewModel.applyShare(incoming.text, incoming.attachments, incoming.warning)
+        graph.share.consume(incoming.generation)
+    }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -285,6 +294,8 @@ fun ConversationScreen(
                 plusMenu = plusMenu,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
+                onAddAttachments = viewModel::addAttachments,
+                onAttachmentError = viewModel::showMessage,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
@@ -308,6 +319,8 @@ fun ConversationScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = picker.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
             // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
             // (started elsewhere), or no longer offered. It reads as the label when there is one.
             noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),
