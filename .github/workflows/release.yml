@@ -6,10 +6,14 @@ name: Release
 #
 # Signing uses these repository secrets (create them with scripts/release-keystore.sh):
 #   RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
-# Without them the build still succeeds but is signed with the debug key, and the release notes say so.
+# All four are required to publish: a runner without them would sign with a throwaway debug key, which no later
+# release can reproduce, so anyone who installed it could never be updated in place again. Optionally pin the
+# expected signer with the RELEASE_CERT_SHA256 repository variable (or secret) - the workflow then refuses to publish
+# an APK signed with anything else.
 #
 # "Run workflow" (workflow_dispatch) rebuilds an existing tag, e.g. after adding the signing secrets; tick "dry run"
-# to only attach the artifacts to the workflow run.
+# to only attach the artifacts to the workflow run. A dry run is the only case where debug signing is allowed, and
+# it never touches the GitHub Release.
 
 on:
   push:
@@ -75,20 +79,31 @@ jobs:
           ./gradlew :app:lintDebug :app:testDebugUnitTest -Papp.skipScreenshotTests=true
           -Papp.versionName="${{ steps.tag.outputs.version }}"
 
+      # Every secret is required, not just the keystore: a partially configured signing config would fall back to the
+      # debug key just as silently. Missing any of them stops the run here unless this is a dry run.
       - name: Prepare signing
         id: signing
         env:
-          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [[ -n "$KEYSTORE_BASE64" ]]; then
+          missing=()
+          for name in RELEASE_KEYSTORE_BASE64 RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -eq 0 ]]; then
             keystore="$RUNNER_TEMP/release.jks"
-            echo "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            [[ -s "$keystore" ]] || { echo "::error::RELEASE_KEYSTORE_BASE64 did not decode into a keystore."; exit 1; }
             echo "RELEASE_KEYSTORE_FILE=${keystore}" >> "$GITHUB_ENV"
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "Signing with the release keystore."
-          else
+          elif [[ "$DRY_RUN" == "true" ]]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::RELEASE_KEYSTORE_BASE64 is not set; the release artifacts will be signed with the debug key. Run scripts/release-keystore.sh and add the secrets, then re-run this workflow for the tag."
+            echo "::warning::${missing[*]} not set; this dry run's artifacts will be signed with the debug key and cannot be published."
+          else
+            echo "::error::${missing[*]} not set. A published release has to carry the production key, or it can never be an in-place update for anyone who installs it. Run scripts/release-keystore.sh --set-secrets, then re-run this workflow for the tag; tick 'dry run' to build debug-signed artifacts instead."
+            exit 1
           fi
 
       - name: Build release APK and AAB
@@ -149,8 +164,40 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      # The last gate before the APK becomes the "latest" download. The artifacts are already attached to this run, so
+      # a failure here still leaves the build to inspect - it just does not become a release.
+      - name: Verify the release certificate
+        env:
+          SIGNED: ${{ steps.signing.outputs.configured }}
+          CERT_SHA256: ${{ steps.package.outputs.cert_sha256 }}
+          EXPECTED_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 || secrets.RELEASE_CERT_SHA256 }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          normalize() { local value="${1//:/}"; tr 'A-Z' 'a-z' <<< "$value"; }
+          if [[ "$DRY_RUN" != "true" && "$SIGNED" != "true" ]]; then
+            echo "::error::Refusing to publish a release that was not signed with the production keystore."
+            exit 1
+          fi
+          if [[ "$SIGNED" == "true" ]]; then
+            if [[ -z "$CERT_SHA256" ]]; then
+              echo "::error::apksigner verified the APK but reported no signer certificate; the release identity cannot be confirmed."
+              exit 1
+            fi
+            if [[ -n "$EXPECTED_CERT_SHA256" ]]; then
+              actual="$(normalize "$CERT_SHA256")"
+              expected="$(normalize "$EXPECTED_CERT_SHA256")"
+              if [[ "$actual" != "$expected" ]]; then
+                echo "::error::The APK is signed with ${actual}, but RELEASE_CERT_SHA256 pins ${expected}. The wrong keystore would end in-app updates for every existing install."
+                exit 1
+              fi
+              echo "Signer matches RELEASE_CERT_SHA256 (${actual})."
+            else
+              echo "::notice::Signed with ${CERT_SHA256}. Set the RELEASE_CERT_SHA256 repository variable to this value to pin it for future releases."
+            fi
+          fi
+
       - name: Publish GitHub Release
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.signing.outputs.configured == 'true' }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}

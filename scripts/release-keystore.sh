@@ -47,10 +47,13 @@ keytool -genkeypair -v \
 
 keystore_base64="$(base64 < "$keystore" | tr -d '\n')"
 
+cert_sha256="$(keytool -list -v -keystore "$keystore" -alias "$alias" -storepass:env KEYSTORE_PASSWORD |
+  sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr 'A-Z' 'a-z')"
+
 echo
 echo "Created $keystore (alias: $alias)."
-echo "Certificate SHA-256 (matches what the Release workflow prints):"
-keytool -list -v -keystore "$keystore" -alias "$alias" -storepass:env KEYSTORE_PASSWORD | sed -n 's/^\s*SHA256: /  /p'
+echo "Certificate SHA-256 (what the Release workflow prints, and what RELEASE_CERT_SHA256 pins):"
+echo "  $cert_sha256"
 
 if $set_secrets; then
   echo
@@ -59,6 +62,10 @@ if $set_secrets; then
   gh secret set RELEASE_KEYSTORE_PASSWORD --body "$KEYSTORE_PASSWORD"
   gh secret set RELEASE_KEY_ALIAS --body "$alias"
   gh secret set RELEASE_KEY_PASSWORD --body "$KEYSTORE_PASSWORD"
+  # Not a secret: it is published in every release's notes. Pinning it makes the workflow refuse to publish an APK
+  # signed with any other key, which is the one mistake no later release can undo.
+  gh variable set RELEASE_CERT_SHA256 --body "$cert_sha256" ||
+    echo "Could not set the RELEASE_CERT_SHA256 variable; add it by hand to pin this certificate." >&2
   echo "Done. Push a tag (e.g. git tag v0.1.0 && git push origin v0.1.0) to publish a signed release."
 else
   cat <<EOF
@@ -69,6 +76,10 @@ Add these repository secrets (Settings > Secrets and variables > Actions), or re
   RELEASE_KEYSTORE_PASSWORD  <the password you just entered>
   RELEASE_KEY_ALIAS          $alias
   RELEASE_KEY_PASSWORD       <the password you just entered>
+
+And this repository *variable* (same page, "Variables" tab), so the workflow only ever publishes this key:
+
+  RELEASE_CERT_SHA256        $cert_sha256
 EOF
 fi
 
