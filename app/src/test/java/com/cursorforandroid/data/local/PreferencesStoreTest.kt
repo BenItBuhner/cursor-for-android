@@ -38,8 +38,7 @@ class PreferencesStoreTest {
         prefs.setCachedUser(CursorUser("key", "a@b.c", "A", "B", 7))
         prefs.setCredentialInfo(CredentialInfo(SignInMethod.Cursor, expiresAtMs = 1L))
         prefs.setPinsMigrated(true)
-        prefs.setPendingPinChange("bc-1", pinned = true)
-        prefs.togglePinned("bc-1")
+        prefs.togglePinnedAwaitingServer("bc-1", recordPending = true)
         prefs.markRead("bc-1", 42L)
         prefs.markLaunchedHere("bc-1")
         // Device-level, so a sign-out leaves it alone.

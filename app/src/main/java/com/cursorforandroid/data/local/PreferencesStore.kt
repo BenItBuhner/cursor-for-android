@@ -153,11 +153,6 @@ class PreferencesStore(context: Context) {
         if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
     }
 
-    suspend fun clearPendingPinChanges(agentIds: Collection<String>) = edit { p ->
-        val next = (p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()) - agentIds
-        if (next.isEmpty()) p.remove(Keys.pendingPins) else p[Keys.pendingPins] = encodePendingPins(next)
-    }
-
     /**
      * Forgets the pending entries the server has just acknowledged, but only where the recorded wish is still the
      * one that was sent: a change made while the call was in flight is a newer wish and stays for the next round.
@@ -263,11 +258,6 @@ class PreferencesStore(context: Context) {
 
     suspend fun pinIfNonePinned(agentIds: Collection<String>) = edit { p ->
         if ((p[Keys.pinned] ?: emptySet()).isEmpty()) p[Keys.pinned] = agentIds.toSet()
-    }
-
-    suspend fun togglePinned(agentId: String) = edit { p ->
-        val current = p[Keys.pinned] ?: emptySet()
-        p[Keys.pinned] = if (agentId in current) current - agentId else current + agentId
     }
 
     /**
