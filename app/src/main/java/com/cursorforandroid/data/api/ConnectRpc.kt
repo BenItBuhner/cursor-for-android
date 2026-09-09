@@ -76,7 +76,7 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         responseSerializer: KSerializer<O>,
     ): O = withContext(Dispatchers.IO) {
         val json = CursorJson.encodeToString(requestSerializer, body)
-        client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).execute().use { response ->
+        client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).await().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw ConnectRpcException(

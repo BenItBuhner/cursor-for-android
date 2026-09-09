@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.update
 
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.data.api.await
 import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.AppVersion
@@ -8,14 +9,11 @@ import com.cursorforandroid.domain.ReleaseAsset
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -23,8 +21,6 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 // ---------------------------------------------------------------------------------------------------------------------
 // GitHub REST shapes (https://docs.github.com/rest/releases/releases#list-releases); only what the updater reads.
@@ -316,21 +312,6 @@ class GitHubReleasesClient(
             else -> "Try again in an hour."
         }
         return UpdateCheckException("GitHub's limit for anonymous requests was reached. $again", waitMillis)
-    }
-
-    private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
-        enqueue(
-            object : Callback {
-                override fun onResponse(call: Call, response: Response) {
-                    continuation.resume(response)
-                }
-
-                override fun onFailure(call: Call, e: IOException) {
-                    if (!continuation.isCancelled) continuation.resumeWithException(e)
-                }
-            },
-        )
-        continuation.invokeOnCancellation { cancel() }
     }
 
     companion object {

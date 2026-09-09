@@ -1,32 +1,51 @@
 package com.cursorforandroid.data.auth
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /** The browser sign-in against a fake api2: PKCE derivation, the poll loop and the key-minting RPC. */
 class CursorLoginTest {
 
     private val server = MockWebServer()
     private val delays = mutableListOf<Long>()
+    private val callsStarted = AtomicInteger()
+    private val callsCanceled = AtomicInteger()
+
+    /** For the calls the sign-in makes: [okhttp3.Call.enqueue] reports both of these on the thread that asked. */
+    private val watcher = object : EventListener() {
+        override fun callStart(call: Call) { callsStarted.incrementAndGet() }
+        override fun canceled(call: Call) { callsCanceled.incrementAndGet() }
+    }
+
     private lateinit var login: CursorLogin
 
     @Before
     fun setUp() {
         server.start()
         login = CursorLogin(
-            client = OkHttpClient(),
+            client = OkHttpClient.Builder().eventListener(watcher).build(),
             websiteUrl = "https://cursor.test",
             apiUrl = server.url("/").toString(),
             sleep = { delays += it },
@@ -183,5 +202,50 @@ class CursorLoginTest {
         assertThat(error).hasMessageThat().contains("permission_denied")
     }
 
+    /**
+     * The poll waits minutes for the browser to confirm, and a blocking socket read does not answer to interruption:
+     * leaving the sign-in screen has to cancel the call itself, or the abandoned attempt keeps a thread and its
+     * connection for as long as the server takes to answer a request nobody wants any more.
+     */
+    @Test
+    fun `a sign-in that is left behind cancels the poll on the wire`() {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val handshake = login.startHandshake()
+        // Its own scope, so a poll that will not let go cannot hold this test open.
+        val scope = CoroutineScope(Dispatchers.IO)
+        try {
+            val poll = scope.launch { login.awaitTokens(handshake) }
+            // The poll is on the wire, and this is a response that never comes.
+            server.takeRequest()
+
+            runBlocking {
+                poll.cancel()
+                withTimeout(CANCEL_LIMIT_MS) { poll.join() }
+            }
+            assertThat(callsCanceled.get()).isEqualTo(1)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** Minting leaves a key on the account, so a sign-in that has already been given up on must not ask for one. */
+    @Test
+    fun `a sign-in already abandoned does not mint a key`() = runBlocking<Unit> {
+        val minting = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            cancel()
+            login.mintApiKey("session-token", "Cursor for Android (Pixel)", expiresAtMs = null)
+        }
+
+        minting.join()
+
+        assertThat(callsStarted.get()).isEqualTo(0)
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
     private fun pending() = MockResponse().setResponseCode(404).setHeader("Content-Type", "text/plain").setBody("Not found")
+
+    private companion object {
+        /** Only ever reached by a cancellation that did not take; the call it waits on is cancelled at once.  */
+        const val CANCEL_LIMIT_MS = 10_000L
+    }
 }

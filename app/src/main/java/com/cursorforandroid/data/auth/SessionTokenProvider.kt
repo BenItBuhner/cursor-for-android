@@ -2,6 +2,7 @@ package com.cursorforandroid.data.auth
 
 import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.data.api.await
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -75,7 +76,7 @@ class SessionTokenProvider(
             .post(ConnectRpc.jsonBody("{}"))
             .build()
         val response = try {
-            client.newCall(request).execute()
+            client.newCall(request).await()
         } catch (e: IOException) {
             throw SessionUnavailableException("Couldn't reach Cursor to start a session.", cause = e)
         }

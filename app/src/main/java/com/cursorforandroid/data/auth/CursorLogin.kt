@@ -2,6 +2,7 @@ package com.cursorforandroid.data.auth
 
 import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.data.api.await
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -86,7 +87,7 @@ class CursorLogin(
             val wait = (baseDelayMs * 1.2.pow(attempt)).toLong().coerceAtMost(maxDelayMs)
             attempt++
             val response = try {
-                client.newCall(pollRequest(handshake, useGet)).execute()
+                client.newCall(pollRequest(handshake, useGet)).await()
             } catch (e: IOException) {
                 if (++consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
                     throw CursorLoginException("Couldn't reach Cursor to finish signing in. Check your connection and try again.", e)
@@ -144,8 +145,11 @@ class CursorLogin(
             CreateUserApiKeyRequestDto(name = name, expiresAt = expiresAtMs?.toString()),
         )
         val request = ConnectRpc.request(apiUrl, "aiserver.v1.DashboardService", "CreateUserApiKey", accessToken, body)
+        // Minting leaves a key on the account whether or not anyone is still waiting for it, so a sign-in already
+        // abandoned must not go through with one.
+        currentCoroutineContext().ensureActive()
         val response = try {
-            client.newCall(request).execute()
+            client.newCall(request).await()
         } catch (e: IOException) {
             throw CursorLoginException("Signed in, but the connection dropped before Cursor could issue a key for this app. Try again.", e)
         }
