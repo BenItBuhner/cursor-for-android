@@ -106,6 +106,7 @@ fun Sidebar(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var searching by rememberSaveable { mutableStateOf(false) }
+    var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
     val focusRequester = remember { FocusRequester() }
 
     Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
@@ -167,18 +168,28 @@ fun Sidebar(
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
                 state.sections.forEach { section ->
+                    val expanded = section.key !in collapsedKeys
                     item("hdr-${section.key}") {
-                        GroupLabel(section.title, Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
-                    }
-                    items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
-                        AgentRowItem(
-                            row = row,
-                            selected = row.agent.id == selectedAgentId,
-                            prefs = state.prefs,
-                            actions = callbacks.rowActions,
-                            modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
-                            nowMillis = state.nowMillis,
+                        GroupLabel(
+                            section.title,
+                            Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap),
+                            expanded = expanded,
+                            onToggle = {
+                                collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
+                            },
                         )
+                    }
+                    if (expanded) {
+                        items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                            AgentRowItem(
+                                row = row,
+                                selected = row.agent.id == selectedAgentId,
+                                prefs = state.prefs,
+                                actions = callbacks.rowActions,
+                                modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
+                                nowMillis = state.nowMillis,
+                            )
+                        }
                     }
                 }
             }
@@ -258,11 +269,9 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(user.displayName, style = type.rowMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            // The API key's dashboard label is not identity, so it stays in Settings next to "Manage API keys". Skip the
-            // line when there is no email or the display name already had to fall back to it.
-            val subtitle = if (isDemo) "Demo" else user.email?.takeIf { it != user.displayName }
-            if (subtitle != null) {
-                Text(subtitle, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Demo is the only second line the rail still carries. Email lives in Settings; it is not identity here.
+            if (isDemo) {
+                Text("Demo", style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         FlatIconButton(CursorIcons.More, "Account", onClick = onClick)

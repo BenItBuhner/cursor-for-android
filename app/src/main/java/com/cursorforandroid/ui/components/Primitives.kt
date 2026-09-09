@@ -14,6 +14,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +49,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
@@ -180,11 +183,46 @@ fun HairlineDivider(modifier: Modifier = Modifier, color: Color = CursorTheme.co
     Box(modifier.fillMaxWidth().height(CursorDimens.hairline).background(color))
 }
 
-/** Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case, no chevron. */
+/**
+ * Group label such as "Pinned" / "Today": 12sp at 60 %, sentence case. Clicking the header collapses or expands
+ * the section. A chevron sits just to the right of the title while the header is hovered or focused — down when
+ * open, right when closed — and is gone the moment the pointer and focus leave.
+ */
 @Composable
-fun GroupLabel(text: String, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(text, style = CursorTheme.typography.small, color = CursorTheme.colors.textTertiary, modifier = Modifier.weight(1f))
+fun GroupLabel(
+    text: String,
+    modifier: Modifier = Modifier,
+    expanded: Boolean = true,
+    onToggle: (() -> Unit)? = null,
+) {
+    val colors = CursorTheme.colors
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    val showChevron = onToggle != null && (hovered || focused)
+    val clickable = if (onToggle != null) {
+        Modifier
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClickLabel = if (expanded) "Collapse" else "Expand",
+                onClick = onToggle,
+            )
+            .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+    } else {
+        Modifier
+    }
+    Row(modifier.fillMaxWidth().then(clickable), verticalAlignment = Alignment.CenterVertically) {
+        Text(text, style = CursorTheme.typography.small, color = colors.textTertiary)
+        if (showChevron) {
+            Icon(
+                imageVector = if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight,
+                contentDescription = if (expanded) "Collapse $text" else "Expand $text",
+                tint = colors.iconQuaternary,
+                modifier = Modifier.padding(start = 4.dp).size(14.dp),
+            )
+        }
     }
 }
 

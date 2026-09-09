@@ -28,6 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -97,6 +99,7 @@ fun HomeScreen(
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
     var branchSheet by remember { mutableStateOf(false) }
+    var deviceSheet by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
@@ -108,6 +111,13 @@ fun HomeScreen(
         onError = viewModel::reportError,
     )
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val draft = share ?: return@LaunchedEffect
+        if (draft.target != ShareTarget.NewChat) return@LaunchedEffect
+        viewModel.applyShare(draft.text, draft.attachments, draft.warning)
+        graph.share.consume(draft.generation)
+    }
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         if (onOpenSidebar != null) {
@@ -138,7 +148,7 @@ fun HomeScreen(
                             // A blank ref leaves the starting point to the repository's default branch.
                             SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
                         }
-                        SelectorChip("Cloud", onClick = {}, icon = CursorIcons.Cloud, enabled = false, showChevron = false)
+                        SelectorChip(state.deviceLabel, onClick = { deviceSheet = true }, icon = deviceIcon(state.selectedDevice))
                     }
                     ComposerBox(
                         value = state.prompt,
@@ -187,6 +197,7 @@ fun HomeScreen(
     if (repoSheet) {
         RepositorySheet(
             repos = state.repositories,
+            recent = state.recentRepositories,
             selected = state.selectedRepo,
             noRepo = state.noRepo,
             loading = state.isLoadingRepos,
@@ -205,6 +216,16 @@ fun HomeScreen(
             onDismiss = { branchSheet = false },
         )
     }
+    if (deviceSheet) {
+        DeviceSheet(
+            devices = state.devices,
+            selected = state.selectedDevice,
+            loading = state.isLoadingDevices,
+            onSelect = viewModel::selectDevice,
+            onRefresh = viewModel::refreshDevices,
+            onDismiss = { deviceSheet = false },
+        )
+    }
     if (modelSheet) {
         ModelSheet(
             models = state.models,
@@ -219,6 +240,8 @@ fun HomeScreen(
             onRetry = viewModel::refreshModels,
             onSelect = viewModel::selectModel,
             onDismiss = { modelSheet = false },
+            pinnedIds = state.pinnedModelIds,
+            onTogglePin = viewModel::togglePinnedModel,
         )
     }
 }
@@ -299,6 +322,7 @@ private fun PreviewCard(row: AgentRow) {
 @Composable
 private fun RepositorySheet(
     repos: List<Repository>,
+    recent: List<Repository>,
     selected: Repository?,
     noRepo: Boolean,
     loading: Boolean,
@@ -322,7 +346,10 @@ private fun RepositorySheet(
         SheetSearchField(value = filter, onValueChange = { filter = it }, placeholder = "Filter repositories")
         Spacer(Modifier.height(6.dp))
         // The list keys rows on the URL, so duplicates from the catalogue must go before they reach the LazyColumn.
-        val visible = repos.distinctBy { it.url }.filter { it.slug.contains(filter, ignoreCase = true) }
+        fun matches(repo: Repository) = repo.slug.contains(filter, ignoreCase = true)
+        val recentVisible = recent.distinctBy { it.url }.filter(::matches)
+        val recentSlugs = recent.map { it.slug.lowercase() }.toSet()
+        val restVisible = repos.distinctBy { it.url }.filter { matches(it) && it.slug.lowercase() !in recentSlugs }
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
             item("none") {
                 SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
@@ -336,12 +363,21 @@ private fun RepositorySheet(
                     )
                 }
             }
-            if (visible.isEmpty() && repos.isNotEmpty()) {
+            if (recentVisible.isEmpty() && restVisible.isEmpty() && repos.isNotEmpty()) {
                 item("no-match") {
                     Text("No repositories match \"$filter\"", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
                 }
             }
-            items(visible, key = { it.url }) { repo ->
+            items(recentVisible, key = { "recent:${it.url}" }) { repo ->
+                SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
+            }
+            // Recent activity (last week, at most ten) sits above the catalogue; the hairline is the only mark.
+            if (recentVisible.isNotEmpty() && restVisible.isNotEmpty()) {
+                item("recent-divider") {
+                    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+                }
+            }
+            items(restVisible, key = { it.url }) { repo ->
                 SheetRow(title = repo.shortName, subtitle = repo.slug.substringBeforeLast('/', ""), checked = !noRepo && repo.url == selected?.url, icon = CursorIcons.Repo) { pick(repo) }
             }
         }

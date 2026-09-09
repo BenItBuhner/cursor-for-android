@@ -172,11 +172,15 @@ internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String)
     PendingAttachment(id = id, image = image, thumbnail = thumbnailOf(image))
 }
 
-internal fun loadAttachment(context: Context, uri: Uri): Result<PendingAttachment> {
+/**
+ * Reads one image URI the way the photo picker, the clipboard, and the system share sheet deliver them.
+ * [fallbackMime] is the share intent's type when the resolver has none (a `file://` screenshot, typically).
+ */
+fun loadAttachment(context: Context, uri: Uri, fallbackMime: String? = null): Result<PendingAttachment> {
     val resolver = context.contentResolver
     val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
         ?: return Result.failure(IllegalStateException("Couldn't read the image."))
-    return loadAttachment(bytes, resolver.getType(uri), uri.toString() + "@" + System.nanoTime())
+    return loadAttachment(bytes, resolver.getType(uri) ?: fallbackMime, uri.toString() + "@" + System.nanoTime())
 }
 
 internal fun importAttachments(context: Context, uris: List<Uri>, currentCount: Int): AttachmentImport {
