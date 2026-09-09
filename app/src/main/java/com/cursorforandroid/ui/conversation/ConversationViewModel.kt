@@ -13,6 +13,7 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
+import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -129,6 +130,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     fun addAttachments(items: List<PendingAttachment>) { attachments.value = (attachments.value + items).take(PromptImage.MAX_COUNT) }
     fun removeAttachment(item: PendingAttachment) { attachments.value = attachments.value.filterNot { it.id == item.id } }
     fun showMessage(message: String) { toast.value = message }
+    /** See [com.cursorforandroid.ui.compose.NewAgentViewModel.applyShare]: same merge into this chat's follow-up. */
+    fun applyShare(text: String, items: List<PendingAttachment>, warning: String? = null) {
+        draft.value = ShareDraft.mergeText(draft.value, text)
+        attachments.value = (attachments.value + items).take(PromptImage.MAX_COUNT)
+        if (warning != null) toast.value = warning
+    }
 
     fun send() {
         val text = draft.value.trim()

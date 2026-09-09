@@ -28,6 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -108,6 +110,13 @@ fun HomeScreen(
         onError = viewModel::reportError,
     )
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val draft = share ?: return@LaunchedEffect
+        if (draft.target != ShareTarget.NewChat) return@LaunchedEffect
+        viewModel.applyShare(draft.text, draft.attachments, draft.warning)
+        graph.share.consume(draft.generation)
+    }
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         if (onOpenSidebar != null) {

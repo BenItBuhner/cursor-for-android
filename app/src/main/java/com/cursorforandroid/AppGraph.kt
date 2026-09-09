@@ -35,6 +35,7 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
@@ -49,6 +50,8 @@ class AppGraph(context: Context) {
     val caches = AppCaches(JsonDiskCache(File(context.applicationContext.cacheDir, "cursor")))
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     val attachments = AttachmentStore(context)
+    /** Text and images arriving from the system share sheet, drafted into a composer once a destination is picked. */
+    val share = ShareInbox(context)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
     val mcpServers = McpServerStore(keyStore)
 
@@ -154,6 +157,7 @@ class AppGraph(context: Context) {
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
+            share.clear()
             caches.clear()
         }
     }

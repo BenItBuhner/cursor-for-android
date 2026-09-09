@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -42,8 +43,11 @@ import com.cursorforandroid.ui.agents.SidebarCallbacks
 import com.cursorforandroid.ui.agents.SidebarDestination
 import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
+import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.settings.SettingsScreen
+import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -238,5 +242,33 @@ fun AppNavHost(
 
     if (customizeOpen) {
         CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
+    }
+
+    val shareOffer by graph.share.offer.collectAsStateWithLifecycle()
+    val shareLoading by graph.share.loading.collectAsStateWithLifecycle()
+    val pendingShare = shareOffer
+    when {
+        shareLoading -> {
+            Box(Modifier.fillMaxSize().background(colors.canvas), contentAlignment = Alignment.Center) {
+                SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
+            }
+        }
+        pendingShare != null && pendingShare.target == null -> {
+            ShareDestinationScreen(
+                listState = listState,
+                draft = pendingShare,
+                onNewChat = {
+                    graph.share.setTarget(ShareTarget.NewChat)
+                    navigateTop(Screen.Home)
+                },
+                onPickChat = { row ->
+                    agentsViewModel.markRead(row.agent)
+                    graph.share.setTarget(ShareTarget.Chat(row.agent.id))
+                    openAgent(row.agent.id)
+                },
+                onRefresh = agentsViewModel::refresh,
+                onDismiss = graph.share::clear,
+            )
+        }
     }
 }

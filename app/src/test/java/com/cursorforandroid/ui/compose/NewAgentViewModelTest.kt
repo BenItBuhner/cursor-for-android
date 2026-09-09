@@ -329,6 +329,16 @@ class NewAgentViewModelTest {
     }
 
     @Test
+    fun `a share is drafted into the composer and appended under text already there`() {
+        val vm = loaded()
+        vm.applyShare("From Photos", emptyList())
+        assertThat(vm.state.value.prompt).isEqualTo("From Photos")
+        vm.applyShare("and this URL", emptyList())
+        assertThat(vm.state.value.prompt).isEqualTo("From Photos\n\nand this URL")
+        assertThat(vm.state.value.canLaunch).isTrue()
+    }
+
+    @Test
     fun `the branch launched from is restored, including the default branch`() {
         val first = loaded()
         first.setRef("develop")

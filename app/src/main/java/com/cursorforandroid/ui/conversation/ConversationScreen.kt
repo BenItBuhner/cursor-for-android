@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.ComposerBox
@@ -104,6 +105,14 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    val share by graph.share.offer.collectAsStateWithLifecycle()
+    LaunchedEffect(share?.generation, share?.target) {
+        val incoming = share ?: return@LaunchedEffect
+        val target = incoming.target as? ShareTarget.Chat ?: return@LaunchedEffect
+        if (target.agentId != agentId) return@LaunchedEffect
+        viewModel.applyShare(incoming.text, incoming.attachments, incoming.warning)
+        graph.share.consume(incoming.generation)
+    }
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
