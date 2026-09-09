@@ -22,9 +22,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,12 +78,24 @@ fun ComposerBox(
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
-    focusRequester: FocusRequester? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.xl
-    var focused by remember { mutableStateOf(false) }
+    // Saved alongside the text and the caret, so a composer rebuilt from instance state is left the way the reader
+    // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
+    // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
+    var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
+    var wantsFocus by remember { mutableStateOf(focused) }
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
+    LaunchedEffect(wantsFocus, menuOpen) {
+        if (wantsFocus && !menuOpen) {
+            wantsFocus = false
+            focusRequester.requestFocus()
+        }
+    }
     var cancelOffered by remember { mutableStateOf(false) }
     LaunchedEffect(isSending, onCancelSend != null) {
         cancelOffered = false
@@ -132,7 +146,7 @@ fun ComposerBox(
                 .fillMaxWidth()
                 // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                 .heightIn(min = 22.dp)
-                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                .focusRequester(focusRequester)
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
                 Box {
@@ -146,7 +160,6 @@ fun ComposerBox(
         // an exact constraint here would hold them to 28dp however much taller they asked to be.
         Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
-                var menuOpen by rememberSaveable { mutableStateOf(false) }
                 // The Box is the anchor: the menu drops from the "+" like the web's popover.
                 Box {
                     ComposerRoundButton(CursorIcons.Plus, "Add to prompt", onClick = { menuOpen = true })
@@ -154,7 +167,12 @@ fun ComposerBox(
                         expanded = menuOpen,
                         onDismiss = { menuOpen = false },
                         prompt = value,
-                        onPromptChange = onValueChange,
+                        onPromptChange = { next ->
+                            onValueChange(next)
+                            // The command goes in at the front of the prompt and the caret follows the adopted text
+                            // to the end, which is where the reader carries on writing; the field is handed back with it.
+                            wantsFocus = true
+                        },
                         actions = plusMenu,
                     )
                 }
@@ -195,6 +213,14 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 
 /** How long a send has to be in flight before the busy ring becomes a cancel button. */
 private const val CancelOfferDelayMillis = 2_500L
+
+/**
+ * Saves whether the field had focus, rather than the state it is held in. `rememberSaveable { mutableStateOf(…) }`
+ * puts the holder itself into the saved state, and the field is blurred as the composition comes down — after the
+ * save has been taken but while the holder is still the live one, which turns a focused composer into an unfocused
+ * one on the way back.
+ */
+private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.value }, restore = { mutableStateOf(it) })
 
 /**
  * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 ⌄". Nothing is
