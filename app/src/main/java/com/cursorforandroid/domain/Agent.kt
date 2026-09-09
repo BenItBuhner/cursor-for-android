@@ -27,6 +27,7 @@ enum class RunStatus { CREATING, RUNNING, FINISHED, ERROR, CANCELLED, EXPIRED, U
 }
 
 /** Where the agent's VM lives: Cursor-hosted cloud, a self-hosted team pool, or one of the user's machines. */
+@Serializable
 enum class EnvType { CLOUD, POOL, MACHINE, UNKNOWN;
     companion object {
         fun parse(raw: String?): EnvType = when (raw?.lowercase()) {

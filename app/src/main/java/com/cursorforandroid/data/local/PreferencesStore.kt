@@ -14,6 +14,8 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
@@ -61,6 +63,8 @@ class PreferencesStore(context: Context) {
         val lastRef = stringPreferencesKey("last_ref")
         val lastModel = stringPreferencesKey("last_model")
         val lastModelParams = stringPreferencesKey("last_model_params")
+        val lastEnvType = stringPreferencesKey("last_env_type")
+        val lastEnvName = stringPreferencesKey("last_env_name")
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
         val liveNotifications = booleanPreferencesKey("live_notifications")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
@@ -210,6 +214,8 @@ class PreferencesStore(context: Context) {
         val autoCreatePr: Boolean,
         /** False until a launch has recorded a model choice, so a null [modelId] can be told apart from "never asked". */
         val modelChosen: Boolean,
+        /** Where the last launch ran; [DeviceTarget.Cloud] until a launch has recorded a device. */
+        val env: DeviceTarget,
     )
 
     val composerDefaults: Flow<ComposerDefaults> = store.data.map { p ->
@@ -220,6 +226,7 @@ class PreferencesStore(context: Context) {
             modelParams = p[Keys.lastModelParams]?.let { decodeStringMap(it) } ?: emptyMap(),
             autoCreatePr = p[Keys.autoCreatePr] ?: false,
             modelChosen = p.contains(Keys.lastModel),
+            env = storedDevice(p[Keys.lastEnvType], p[Keys.lastEnvName]),
         )
     }
 
@@ -281,13 +288,22 @@ class PreferencesStore(context: Context) {
     }
 
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
-    suspend fun setComposerDefaults(repoUrl: String?, ref: String?, modelId: String?, params: Map<String, String>, autoCreatePr: Boolean) =
+    suspend fun setComposerDefaults(
+        repoUrl: String?,
+        ref: String?,
+        modelId: String?,
+        params: Map<String, String>,
+        autoCreatePr: Boolean,
+        env: DeviceTarget = DeviceTarget.Cloud,
+    ) =
         store.edit { p ->
             if (repoUrl == null) p.remove(Keys.lastRepo) else p[Keys.lastRepo] = repoUrl
             if (ref == null) p.remove(Keys.lastRef) else p[Keys.lastRef] = ref
             p[Keys.lastModel] = modelId ?: ""
             p[Keys.lastModelParams] = encodeStringMap(params)
             p[Keys.autoCreatePr] = autoCreatePr
+            p[Keys.lastEnvType] = env.type.name
+            if (env.name == null) p.remove(Keys.lastEnvName) else p[Keys.lastEnvName] = env.name
         }
 
     suspend fun clearSession() = store.edit { p ->
@@ -320,5 +336,10 @@ class PreferencesStore(context: Context) {
 
     private companion object {
         const val MAX_RECENT_SKILLS = 8
+
+        fun storedDevice(typeName: String?, name: String?): DeviceTarget {
+            val type = EnvType.entries.firstOrNull { it.name == typeName } ?: EnvType.CLOUD
+            return DeviceTarget.of(if (type == EnvType.UNKNOWN) EnvType.CLOUD else type, name)
+        }
     }
 }
