@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +37,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -89,11 +92,24 @@ fun ComposerBox(
     }
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
-    // The field owns the selection. Text that changes from outside (a slash command from the "+" menu, the draft
-    // being cleared after send) is adopted with the cursor at the end, so typing continues after the command instead
-    // of wherever the cursor happened to be.
-    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
-    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+    // The field owns the text and the selection. Text that changes from outside (a slash command from the "+" menu,
+    // the draft being cleared after send) is adopted with the cursor at the end, so typing continues after the
+    // command instead of wherever the cursor happened to be. Adopting it in an effect rather than during
+    // composition matters: were the hoisted value ever to lag a frame — a debounce, a trim, a length cap, anything
+    // asynchronous between onValueChange and the state that comes back — rewriting mid-composition would drop the
+    // characters typed in between and throw the caret to the end while the user was still typing.
+    var field by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(value, TextRange(value.length)))
+    }
+    // Coming back from process death arrives the other way round: the field carries the restored draft and the
+    // hoisted value is empty, because no view model persists it. Hand it back up rather than wiping it.
+    var restoring by remember { mutableStateOf(true) }
+    LaunchedEffect(value) {
+        val restored = restoring && value.isEmpty() && field.text.isNotEmpty()
+        restoring = false
+        if (restored) onValueChange(field.text)
+        else if (value != field.text) field = TextFieldValue(value, TextRange(value.length))
+    }
 
     Column(
         modifier
@@ -111,6 +127,7 @@ fun ComposerBox(
                 if (next.text != value) onValueChange(next.text)
             },
             textStyle = type.input.copy(color = colors.textPrimary),
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
             cursorBrush = SolidColor(colors.textPrimary),
             minLines = minLines,
             maxLines = 10,
@@ -122,7 +139,7 @@ fun ComposerBox(
                 .onFocusChanged { focused = it.isFocused },
             decorationBox = { inner ->
                 Box {
-                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     inner()
                 }
             },
