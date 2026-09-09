@@ -102,6 +102,7 @@ fun ConversationScreen(
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
+    val commands by viewModel.commands.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val snackbar = remember { SnackbarHostState() }
@@ -283,6 +284,7 @@ fun ConversationScreen(
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
                 plusMenu = plusMenu,
+                commands = commands,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next

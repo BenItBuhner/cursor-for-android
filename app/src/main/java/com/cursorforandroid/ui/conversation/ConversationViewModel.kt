@@ -6,14 +6,18 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.ConversationState
+import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
 import com.cursorforandroid.ui.components.PendingAttachment
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -81,10 +85,30 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val modelPicker: StateFlow<FollowUpModelState> = combine(agent, graph.catalog.models, picker) { a, models, local -> pickerState(a, models, local) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
 
+    /**
+     * What `/` offers the follow-up composer: the agent's skills and the `.cursor/commands` its machine reported, over
+     * the built-ins. The saved (or built-in) list is there at once; the account service's answer replaces it.
+     */
+    val commands: StateFlow<SlashCatalog> = graph.slashCommands.catalog(commandScope(graph.agents.agent(agentId)))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(commandScope(graph.agents.agent(agentId))))
+
     init {
         graph.conversations.attach(agentId)
         viewModelScope.launch { loadModels() }
+        viewModelScope.launch {
+            // The agent's machine reports its skills and commands a moment after it wakes; while the account says the
+            // inventory is pending, ask again a few times rather than leave the popover on the built-ins.
+            var catalog = graph.slashCommands.load(commandScope(agent.value))
+            var retries = 0
+            while (catalog.pending && retries++ < PENDING_RETRIES) {
+                delay(SlashCommandRepository.PENDING_TTL_MS)
+                catalog = graph.slashCommands.load(commandScope(agent.value))
+            }
+        }
     }
+
+    /** The agent's own catalog; the repository and branch, when the row has them, help the server before its machine has reported. */
+    private fun commandScope(agent: Agent?): SlashScope = SlashScope.Agent(agentId, agent?.repoUrl, agent?.startingRef)
 
     override fun onCleared() {
         graph.conversations.detach(agentId)
@@ -184,6 +208,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     fun clearToast() { toast.value = null }
+
+    private companion object {
+        /** Eight more asks at the pending interval: about two minutes, longer than a machine takes to come up. */
+        const val PENDING_RETRIES = 8
+    }
 
     class Factory(private val graph: AppGraph, private val agentId: String) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

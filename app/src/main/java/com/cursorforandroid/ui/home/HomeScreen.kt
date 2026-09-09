@@ -93,6 +93,7 @@ fun HomeScreen(
 ) {
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var repoSheet by remember { mutableStateOf(false) }
@@ -149,6 +150,7 @@ fun HomeScreen(
                         isSending = state.isLaunching,
                         minLines = 3,
                         plusMenu = plusMenu,
+                        commands = commands,
                         attachments = state.attachments,
                         onRemoveAttachment = viewModel::removeAttachment,
                         modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",

@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -21,6 +22,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
@@ -237,6 +239,23 @@ class AppScreenshotTest {
         compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Back").performClick()
+
+        // Typing `/` opens the slash-command popover under the cursor: "/go" narrows it to the goal command and the
+        // demo's plugin skill whose description mentions Google Chat, as on cursor.com/agents. Picking a row completes
+        // the token and closes the popover. Done here, with no capture of this composer to follow: typing leaves the
+        // field focused, and its focus ring would otherwise show in the later home captures.
+        scrollListTo("Ask Cursor to build, fix bugs, explore")
+        val composerField = compose.onAllNodes(hasSetTextAction()).onFirst()
+        composerField.performTextInput("/go")
+        waitForText("Set a goal that Cursor will pursue")
+        waitForText("/chat-sdk")
+        capture("24_composer_slash")
+        compose.onNodeWithText("/goal").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("Set a goal that Cursor will pursue")).fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("/goal ")).fetchSemanticsNodes().isNotEmpty() }
+        composerField.performTextClearance()
+        compose.waitForIdle()
+
         scrollListTo("Hyper-realistic human limbs")
         compose.onAllNodesWithText("Hyper-realistic human limbs").onFirst().performClick()
         waitForText("Follow up")

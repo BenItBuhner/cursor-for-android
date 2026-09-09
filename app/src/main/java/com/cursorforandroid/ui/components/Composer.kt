@@ -38,6 +38,8 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.delay
@@ -48,6 +50,8 @@ import kotlinx.coroutines.delay
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector next to the "+". The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
+ * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
+ * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
@@ -67,6 +71,8 @@ fun ComposerBox(
     onCancelSend: (() -> Unit)? = null,
     /** Shows the "+" button and backs its menu; null hides the button. */
     plusMenu: ComposerMenuActions? = null,
+    /** What `/` offers here — the built-ins, or the chat's own list once the account has answered (see [SlashCommandPopover]). */
+    commands: SlashCatalog = SlashCatalog.BUILT_IN,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
     modelLabel: String? = null,
@@ -94,6 +100,20 @@ fun ComposerBox(
     // of wherever the cursor happened to be.
     var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
     if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+    // The `/` token under the cursor, while the field has focus: what the popover lists completions for. A token the
+    // popover closed on (nothing matched) is not reopened until the cursor moves on to another.
+    val slashToken = if (focused) SlashTokens.at(field) else null
+    var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
+    val recentSkills = plusMenu?.recentSkills.orEmpty()
+
+    fun complete(entry: SlashCommand) {
+        val token = slashToken ?: return
+        // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
+        if (commands.byName(entry.name) == null) plusMenu?.onSkillUsed?.invoke(entry.name)
+        val next = SlashTokens.complete(field, token, entry.name)
+        field = next
+        if (next.text != value) onValueChange(next.text)
+    }
 
     Column(
         modifier
@@ -104,29 +124,39 @@ fun ComposerBox(
         if (attachments.isNotEmpty() && onRemoveAttachment != null) {
             AttachmentStrip(attachments, onRemoveAttachment)
         }
-        BasicTextField(
-            value = field,
-            onValueChange = { next ->
-                field = next
-                if (next.text != value) onValueChange(next.text)
-            },
-            textStyle = type.input.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            minLines = minLines,
-            maxLines = 10,
-            modifier = Modifier
-                .fillMaxWidth()
-                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                .heightIn(min = 22.dp)
-                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                .onFocusChanged { focused = it.isFocused },
-            decorationBox = { inner ->
-                Box {
-                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    inner()
-                }
-            },
-        )
+        // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
+        Box {
+            BasicTextField(
+                value = field,
+                onValueChange = { next ->
+                    field = next
+                    if (next.text != value) onValueChange(next.text)
+                },
+                textStyle = type.input.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                minLines = minLines,
+                maxLines = 10,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                    .heightIn(min = 22.dp)
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                    .onFocusChanged { focused = it.isFocused },
+                decorationBox = { inner ->
+                    Box {
+                        if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        inner()
+                    }
+                },
+            )
+            SlashCommandPopover(
+                token = slashToken?.takeIf { it != dismissedToken },
+                catalog = commands,
+                recent = recentSkills,
+                onPick = ::complete,
+                onDismiss = { dismissedToken = slashToken },
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
@@ -140,6 +170,7 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = onValueChange,
                         actions = plusMenu,
+                        commands = commands,
                     )
                 }
                 Spacer(Modifier.width(10.dp))
