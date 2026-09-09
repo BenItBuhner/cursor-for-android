@@ -80,4 +80,29 @@ class NavStackTest {
         stack.resetTo(Screen.Settings)
         assertThat(stack.screens).containsExactly(Screen.Home, Screen.Settings).inOrder()
     }
+
+    @Test
+    fun `tapping the destination already on top changes nothing`() {
+        val stack = NavStack(Screen.Home)
+        stack.resetTo(Screen.Settings)
+        val settings = stack.top
+        stack.resetTo(Screen.Settings)
+        // A new entry would carry a new id, and the screen's view model and scroll position go with it.
+        assertThat(stack.top.id).isEqualTo(settings.id)
+        assertThat(stack.screens).containsExactly(Screen.Home, Screen.Settings).inOrder()
+
+        stack.resetTo(Screen.Home)
+        assertThat(stack.top.id).isEqualTo(stack.entries.first().id)
+    }
+
+    @Test
+    fun `resetting to a destination below the top pops down to it and keeps it`() {
+        val stack = NavStack(Screen.Home)
+        stack.resetTo(Screen.Settings)
+        val settings = stack.top
+        stack.openAgent("bc-1")
+        stack.resetTo(Screen.Settings)
+        assertThat(stack.screens).containsExactly(Screen.Home, Screen.Settings).inOrder()
+        assertThat(stack.top.id).isEqualTo(settings.id)
+    }
 }

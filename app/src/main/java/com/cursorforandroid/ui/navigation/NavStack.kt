@@ -100,10 +100,14 @@ class NavStack private constructor(initial: List<NavEntry>) {
         return true
     }
 
-    /** Top-level navigation: everything above the root goes, then [screen] sits on the root (or is the root). */
+    /**
+     * Top-level navigation: everything above [screen] goes, and [screen] sits on the root (or is the root). An entry
+     * already showing it is kept rather than replaced, so tapping the destination you are on is a no-op instead of
+     * a rebuild that clears its view model and loses the scroll position.
+     */
     fun resetTo(screen: Screen) {
-        while (list.size > 1) list.removeAt(list.lastIndex)
-        if (list.first().screen != screen) list += NavEntry(newId(), screen)
+        while (list.size > 1 && list.last().screen != screen) list.removeAt(list.lastIndex)
+        if (list.last().screen != screen) list += NavEntry(newId(), screen)
     }
 
     companion object {
