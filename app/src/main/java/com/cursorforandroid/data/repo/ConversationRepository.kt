@@ -673,6 +673,8 @@ class ConversationRepository(
                 recordFinishedRun(run, snapshot, finishedAt)
                 if (snapshot.hasTrace) traces = traces + (run.id to snapshot.items)
             },
+            // With no screen following it, the status would otherwise stay at the last thing the screen saw.
+            transform = { if (activeRunId == run.id) copy(runStatus = snapshot.status) else this },
         )
         persist(e, session.current)
         if (snapshot.hasTrace) writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt, snapshot.startedAtMillis), snapshot.items)
