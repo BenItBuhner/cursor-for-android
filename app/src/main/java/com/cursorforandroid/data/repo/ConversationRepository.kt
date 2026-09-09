@@ -69,6 +69,14 @@ data class ConversationState(
 /** The failure of a [ConversationRepository.launch] that was stopped from the chat before the server had answered. */
 class LaunchCancelledException : RuntimeException("The chat was stopped before it started.")
 
+/** A follow-up shown in the transcript ahead of its request; see [ConversationRepository.stageFollowUp]. */
+class StagedFollowUp internal constructor(
+    internal val localId: String,
+    val text: String,
+    internal val attachments: StagedAttachments,
+    internal val stagedAt: Long,
+)
+
 /**
  * Owns the transcript for each open agent. History comes from `/v0/agents/{id}/conversation` and
  * `/v1/agents/{id}/runs`; anything happening right now arrives through the [LiveRunHub], which shares one SSE
@@ -191,10 +199,12 @@ class ConversationRepository(
             val shown = shownTraces()
             val ordered = allRuns()
             val covered = coveredCount()
-            val items = TimelineBuilder.fromHistory(messages, ordered.take(covered), shown, promptImages).toMutableList()
+            // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
+            val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
+            val items = TimelineBuilder.fromHistory(messages, ordered.take(covered), shown, promptImages, pending).toMutableList()
             ordered.drop(covered).forEach { run ->
                 val prompt = local.firstOrNull { it.run.id == run.id }
-                items += TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages)
+                items += TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending)
             }
             return items.withUniqueIds()
         }
@@ -680,6 +690,8 @@ class ConversationRepository(
                 recordFinishedRun(run, snapshot, finishedAt)
                 if (snapshot.hasTrace) traces = traces + (run.id to snapshot.items)
             },
+            // With no screen following it, the status would otherwise stay at the last thing the screen saw.
+            transform = { if (activeRunId == run.id) copy(runStatus = snapshot.status) else this },
         )
         persist(e, session.current)
         if (snapshot.hasTrace) writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt, snapshot.startedAtMillis), snapshot.items)
@@ -723,12 +735,23 @@ class ConversationRepository(
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
     ): Result<Unit> {
+        if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
+        val staged = stageFollowUp(agentId, text, images)
+        return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
+            .onFailure { discardStaged(agentId, staged, it.userMessage()) }
+    }
+
+    /**
+     * Shows a follow-up in the transcript before its request goes out — as a pending bubble, paired with a placeholder
+     * run so it is built like every other turn (ordered by the run's stamp, its images keyed by the run) until the
+     * server's run takes its place. [sendStaged] sends it; [discardStaged] takes it down again. Split from
+     * [sendFollowUp] so a queued message that is steered can be on screen while the turn it interrupts is still being
+     * cancelled.
+     */
+    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList()): StagedFollowUp {
         val e = entry(agentId)
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val now = AppClock.now()
-        // The prompt shows up right away, paired with a placeholder run so it is built like every other turn — ordered by
-        // the run's stamp, its images keyed by the run — until the server's run takes its place.
         val localId = "$LOCAL_RUN_PREFIX$now"
         val placeholder = e.placeholderRun(localId, now)
         // Written before the request so the bubble shows its images from the first frame, like the text. Storage
@@ -741,46 +764,63 @@ class ConversationRepository(
             },
             transform = { copy(error = null) },
         )
+        return StagedFollowUp(localId, trimmed, staged, now)
+    }
 
-        val result = agents.followUp(
+    /**
+     * Sends a [stageFollowUp]ed prompt. On success the server's run takes the placeholder's place — the bubble is no
+     * longer pending — and its stream starts. On failure the bubble is left as it is, pending, for the caller to try
+     * again or [discardStaged].
+     */
+    suspend fun sendStaged(
+        agentId: String,
+        staged: StagedFollowUp,
+        images: List<PromptImage> = emptyList(),
+        mcpServers: List<McpServer> = emptyList(),
+        planMode: Boolean? = null,
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
+    ): Result<Unit> {
+        val e = entry(agentId)
+        val localId = staged.localId
+        return agents.followUp(
             agentId,
-            trimmed,
+            staged.text,
             images,
             planMode = planMode,
             mcpServers = mcpServers,
             modelId = modelId,
             modelParams = modelParams,
             modelDisplayName = modelDisplayName,
-        )
-        return result.fold(
-            onSuccess = { run ->
-                // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
-                val kept = runCatching { attachments.commit(agentId, run.id, staged) }.getOrDefault(staged.attachments)
-                e.publish(
-                    mutate = {
-                        // A reload that raced the request may already list this run. The local copy stays all the
-                        // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
-                        // for as long as only the run list does; the next load prunes it once both have caught up.
-                        local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
-                        promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
-                        inputsUpdatedAt = maxOf(inputsUpdatedAt, now)
-                    },
-                )
-                startStreaming(e, agentId, run)
-                persist(e, session.current)
-                Result.success(Unit)
+        ).map { run ->
+            // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
+            val kept = runCatching { attachments.commit(agentId, run.id, staged.attachments) }.getOrDefault(staged.attachments.attachments)
+            e.publish(
+                mutate = {
+                    // A reload that raced the request may already list this run. The local copy stays all the
+                    // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
+                    // for as long as only the run list does; the next load prunes it once both have caught up.
+                    local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                    promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
+                    inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
+                },
+            )
+            startStreaming(e, agentId, run)
+            persist(e, session.current)
+        }
+    }
+
+    /** Takes a [stageFollowUp]ed prompt that will not be sent down again, with the reason when there is one to show. */
+    suspend fun discardStaged(agentId: String, staged: StagedFollowUp, error: String? = null) {
+        val e = entry(agentId)
+        attachments.discard(staged.attachments)
+        e.publish(
+            mutate = {
+                local = local.filterNot { it.run.id == staged.localId }
+                promptImages = promptImages - staged.localId
             },
-            onFailure = { t ->
-                attachments.discard(staged)
-                e.publish(
-                    mutate = {
-                        local = local.filterNot { it.run.id == localId }
-                        promptImages = promptImages - localId
-                    },
-                    transform = { copy(error = t.userMessage()) },
-                )
-                Result.failure(t)
-            },
+            transform = { if (error != null) copy(error = error) else this },
         )
     }
 
