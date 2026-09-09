@@ -49,8 +49,9 @@ data class PinSyncState(
  * agents the account can see, so leftovers of another account never travel. Pinned agents the list window no longer
  * includes are fetched by id so a pin is never silently dropped.
  *
- * The same list read says where each agent's pull request stands; every read is handed to [onList] so that goes
- * where it belongs ([PullRequestRepository]) without a second request, whether or not the pins are being synced.
+ * The same list read says where each agent's pull request stands and where each was started from; every read is
+ * handed to [onList] so those go where they belong ([PullRequestRepository], [AgentRepository.applySources]) without
+ * a second request, whether or not the pins are being synced.
  */
 class PinRepository(
     private val session: SessionManager,
@@ -135,8 +136,8 @@ class PinRepository(
             _state.update { it.copy(active = false, isSyncing = false) }
             return Result.success(Unit)
         }
-        // The account list is read either way: it also carries the pull request states (see [onList]). Only the pins
-        // themselves are subject to the setting.
+        // The account list is read either way: it also carries the pull request states and the sources (see [onList]).
+        // Only the pins themselves are subject to the setting.
         val pinsEnabled = prefs.pinSyncEnabled.first()
         _state.update { it.copy(active = pinsEnabled, isSyncing = pinsEnabled) }
         try {

@@ -10,6 +10,7 @@ import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
+import com.cursorforandroid.domain.EnvironmentFilter
 import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
 import com.cursorforandroid.domain.GroupBy
@@ -196,6 +197,7 @@ class AgentsViewModel(
     fun toggleStatus(status: StatusFilter) = updatePrefs { it.copy(statuses = it.statuses.toggle(status)) }
     fun toggleGit(git: GitFilter) = updatePrefs { it.copy(git = it.git.toggle(git)) }
     fun toggleSource(source: SourceFilter) = updatePrefs { it.copy(sources = it.sources.toggle(source)) }
+    fun toggleEnvironment(environment: EnvironmentFilter) = updatePrefs { it.copy(environments = it.environments.toggle(environment)) }
     fun setShowWorkspace(v: Boolean) = updatePrefs { it.copy(showWorkspace = v) }
     fun setShowBranchStatus(v: Boolean) = updatePrefs { it.copy(showBranchStatus = v) }
     fun setShowRuntime(v: Boolean) = updatePrefs { it.copy(showRuntime = v) }
