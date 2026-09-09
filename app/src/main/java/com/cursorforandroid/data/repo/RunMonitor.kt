@@ -166,9 +166,15 @@ class RunMonitor(
             trackers[agent.id] = Tracker(runId, scope.launch { track(agent, runId) })
         }
         _state.update { st ->
+            val published = st.running.map { run -> wanted[run.agentId]?.let { run.withAgent(it) } ?: run }
             st.copy(
-                running = st.running.map { run -> wanted[run.agentId]?.let { run.withAgent(it) } ?: run },
-                hasReconciled = true,
+                running = published,
+                // This pass only *starts* the trackers it wants; each publishes its run once it has read the run
+                // record, which is a network round trip away. So a list that says agents are running while nothing
+                // has been published yet has not been caught up with — it is settling, not idle — and saying
+                // otherwise here is what let the live notification's short idle grace expire before the first run
+                // arrived, taking the foreground service down with it and leaving no notification at all.
+                hasReconciled = st.hasReconciled || published.isNotEmpty() || (running.isEmpty() && trackers.isEmpty()),
             )
         }
     }
@@ -246,7 +252,9 @@ class RunMonitor(
     private fun upsert(run: TrackedRun) {
         _state.update { st ->
             val list = if (st.running.any { it.agentId == run.agentId }) st.running.map { if (it.agentId == run.agentId) run else it } else st.running + run
-            st.copy(running = list.sortedBy { it.startedAtMillis })
+            // A published run is the other way the monitor is caught up with the list: the tracker the reconcile
+            // was waiting for has arrived.
+            st.copy(running = list.sortedBy { it.startedAtMillis }, hasReconciled = true)
         }
     }
 

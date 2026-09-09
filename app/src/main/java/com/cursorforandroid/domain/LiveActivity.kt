@@ -167,7 +167,11 @@ data class DiffStats(val additions: Int, val deletions: Int) {
 data class LiveActivityState(
     /** The runs being followed through their stream: at most the monitor's tracking cap, so a subset when many run. */
     val running: List<TrackedRun> = emptyList(),
-    /** False until the monitor has reconciled against the agent list once; guards against an early shutdown. */
+    /**
+     * False until the monitor has caught up with the agent list: a reconcile has run *and* the runs it wanted are
+     * either published in [running] or gone from the list. Guards against an early shutdown, so it must not be set
+     * while a tracker the reconcile started is still reading its run record.
+     */
     val hasReconciled: Boolean = false,
     /** Running agents in the last reconciled list, including the ones beyond the tracking cap. */
     val runningCount: Int = 0,

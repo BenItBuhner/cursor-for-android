@@ -246,6 +246,55 @@ class LiveRunMonitorTest {
     }
 
     @Test
+    fun `a list that says a run is going is not reconciled until the run is published`() = runBlocking<Unit> {
+        // The tracker reads the run record before it publishes anything, so there is a window where the list says
+        // one agent is running and nothing is being followed yet. The live notification's foreground service reads
+        // this state to decide how long to wait for the first run: called reconciled, the window is indistinguishable
+        // from "nothing is running", the short idle grace runs out, and the service goes down before it ever posts.
+        val recordRead = Job()
+        val release = Job()
+        val slow = RunMonitor(
+            agents,
+            hub,
+            runRecord = { agentId, runId ->
+                recordRead.complete()
+                release.join()
+                api.getRun(agentId, runId)
+            },
+            refreshIntervalMs = 600_000,
+            nowProvider = { now },
+        )
+        try {
+            api.addRunningAgent("bc-1", "Agent", "run-1")
+            agents.refresh()
+            slow.start()
+
+            recordRead.join()
+            with(slow.state.value) {
+                assertThat(runningCount).isEqualTo(1)
+                assertThat(running).isEmpty()
+                assertThat(hasReconciled).isFalse()
+                assertThat(isIdle).isFalse()
+            }
+
+            release.complete()
+            awaitUntil { slow.state.value.running.size == 1 }
+            assertThat(slow.state.value.hasReconciled).isTrue()
+        } finally {
+            release.complete()
+            slow.stop()
+        }
+    }
+
+    @Test
+    fun `an empty list reconciles straight away so nothing waits for a run that is not coming`() = runBlocking<Unit> {
+        agents.refresh()
+        monitor.start()
+        awaitUntil { monitor.state.value.hasReconciled }
+        assertThat(monitor.state.value.isIdle).isTrue()
+    }
+
+    @Test
     fun `tracks at most eight agents like the iOS Live Activity but counts every running one`() = runBlocking {
         repeat(10) { api.addRunningAgent("bc-$it", "Agent $it", "run-$it") }
         agents.refresh()
