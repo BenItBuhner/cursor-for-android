@@ -269,17 +269,23 @@ fun CursorToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier:
 
 /**
  * Leading state glyph of a sidebar row (12px slot). Web semantics: stepping dot grid while running, unread blue
- * dot, error red dot, purple branch glyph for a read agent that pushed a branch, nothing for a plain read agent.
+ * dot, error red dot, nothing for a plain read agent. A read agent that pushed shows what it pushed, as the recent
+ * rows do: the pull-request glyph in the colour of the state GitHub reports ([pullRequestTint] — green open, grey
+ * draft, purple merged, red closed, neutral while the state is not known), else the branch glyph in a neutral tint.
+ * The Cloud Agents API only names a PR, so purple is never a guess: it appears once GitHub has said "merged".
  */
 @Composable
-fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, modifier: Modifier = Modifier) {
+fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Boolean, pullRequest: PullRequestState?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     Box(modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
         when (indicator) {
             AgentIndicator.Running -> RunningGlyph(color = colors.iconSecondary, size = 16.dp)
             AgentIndicator.Unread -> Dot(colors.unreadDot)
             AgentIndicator.Error -> Dot(colors.red)
-            AgentIndicator.Read -> if (hasBranch) Icon(CursorIcons.GitBranch, null, tint = colors.branchGlyph, modifier = Modifier.size(16.dp))
+            AgentIndicator.Read -> when {
+                hasPullRequest -> Icon(CursorIcons.GitPullRequest, pullRequest?.label ?: "Pull request", tint = pullRequestTint(pullRequest), modifier = Modifier.size(16.dp))
+                hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
         }
     }

@@ -3,6 +3,7 @@ package com.cursorforandroid.widget
 import androidx.compose.ui.graphics.Color
 import androidx.glance.color.ColorProvider
 import androidx.glance.unit.ColorProvider
+import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDarkColors
 import com.cursorforandroid.ui.theme.CursorLightColors
@@ -36,7 +37,18 @@ class WidgetPalette private constructor(private val mode: ThemeMode, private val
     val iconQuaternary: ColorProvider = token { it.iconQuaternary }
     val unreadDot: ColorProvider = token { it.unreadDot }
     val red: ColorProvider = token { it.red }
-    val branchGlyph: ColorProvider = token { it.branchGlyph }
+    private val textSecondary: ColorProvider = token { it.textSecondary }
+    private val gitAdded: ColorProvider = token { it.gitAdded }
+    private val purple: ColorProvider = token { it.purple }
+
+    /** The colour a pull request is shown in — the sidebar's `pullRequestTint` (Primitives.kt), token for token. */
+    fun pullRequestTint(state: PullRequestState?): ColorProvider = when (state) {
+        PullRequestState.Open -> gitAdded
+        PullRequestState.Draft -> textTertiary
+        PullRequestState.Merged -> purple
+        PullRequestState.Closed -> red
+        null -> textSecondary
+    }
 
     companion object {
         fun forMode(mode: ThemeMode, oledBlack: Boolean = false): WidgetPalette = WidgetPalette(mode, oledBlack)

@@ -98,6 +98,21 @@ class AppScreenshotTest {
         }
     }
 
+    /**
+     * Builds the app graph, decides the session, then composes the app. The session is decided first on purpose: the
+     * test rule runs effects on an unconfined dispatcher, so `CursorRoot`'s `LaunchedEffect { restoreIfNeeded() }`
+     * would flip the session to signed-out on the IO worker it returns from — while the first composition is still being
+     * applied — and about one run in five Compose never saw that write: the sign-in screen stayed blank and the run's
+     * first `waitForText` timed out. With the session already decided, the sign-in screen is composed on the first pass
+     * (as it is in a process whose session was decided before its activity) and `restoreIfNeeded()` is a no-op.
+     */
+    private fun launchApp(): AppGraph {
+        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        runBlocking { graph.session.restoreIfNeeded() }
+        compose.setContent { App(graph) }
+        return graph
+    }
+
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
@@ -125,8 +140,7 @@ class AppScreenshotTest {
 
     @Test
     fun phoneWalkthrough() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
-        compose.setContent { App(graph) }
+        val graph = launchApp()
 
         // The account sign-in is the one primary action; the pasted-key field sits folded behind "Use an API key instead".
         waitForText("Continue with Cursor")
@@ -244,8 +258,7 @@ class AppScreenshotTest {
 
     @Test
     fun oledBlack() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
-        compose.setContent { App(graph) }
+        val graph = launchApp()
         enterDemo(graph)
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         waitForText("Demo User")
@@ -273,8 +286,7 @@ class AppScreenshotTest {
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
     fun tabletTwoPane() {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
-        compose.setContent { App(graph) }
+        val graph = launchApp()
         enterDemo(graph)
         capture("09_tablet_home")
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()

@@ -10,6 +10,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.WidgetList
 import com.cursorforandroid.domain.WidgetMode
@@ -132,8 +133,12 @@ object WidgetData {
             hasLoaded = true,
             agents = agents,
             prefs = ListPreferences(),
-            // Read with a branch pushed shows the sidebar's purple branch glyph; the rest are unread.
-            local = LocalAgentState(readMarkers = mapOf("bc-preview-5" to nowMillis, "bc-preview-6" to nowMillis)),
+            // Two read rows that pushed — one with an open PR (the pull-request glyph in green), one with a branch
+            // alone (the neutral branch glyph); the rest are unread.
+            local = LocalAgentState(
+                readMarkers = mapOf("bc-preview-5" to nowMillis, "bc-preview-6" to nowMillis),
+                pullRequests = mapOf("https://github.com/techlitnow/cesium/pull/214" to PullRequestState.Open),
+            ),
             theme = theme,
         )
     }
