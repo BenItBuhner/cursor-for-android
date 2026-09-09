@@ -274,11 +274,7 @@ class GitHubReleasesClient(
         }
     }
 
-    /**
-     * Room for [bytes] more plus headroom, so a download cannot be the thing that fills the device.
-     * `File.getUsableSpace` is the `StatFs` the platform would report for the filesystem the cache lives on, without
-     * the Android dependency the tests would then need.
-     */
+    /** Room for [bytes] more plus headroom, so a download cannot be the thing that fills the device. */
     private fun requireSpaceFor(target: File, bytes: Long) {
         if (bytes <= 0) return
         val free = freeSpace(target.parentFile ?: target)
