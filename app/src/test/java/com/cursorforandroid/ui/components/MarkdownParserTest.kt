@@ -157,6 +157,36 @@ class MarkdownParserTest {
     }
 
     @Test
+    fun `swapping the marker at a nested level starts a new list from the number written there`() {
+        val md = """
+            - outer
+              3. a
+              - b
+              7. c
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items).containsExactly(
+            MdItem("outer", depth = 0),
+            MdItem("a", depth = 1, number = 3),
+            // The bullet does not advance the count it interrupts, and the ordered item after it numbers itself.
+            MdItem("b", depth = 1),
+            MdItem("c", depth = 1, number = 7),
+        ).inOrder()
+    }
+
+    @Test
+    fun `a bullet sublist between two ordered ones does not spend the outer numbers`() {
+        val md = """
+            1. one
+               - note
+               - other note
+            2. two
+        """.trimIndent()
+        val bullets = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(bullets.items.map { it.number }).containsExactly(1, null, null, 2).inOrder()
+    }
+
+    @Test
     fun `wrapped text still belongs to the item above it`() {
         val md = """
             - top

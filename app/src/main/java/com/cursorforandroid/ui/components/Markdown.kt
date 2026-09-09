@@ -148,11 +148,13 @@ object MarkdownParser {
                     flushParagraph()
                     val start = lineStart[i]
                     val items = mutableListOf<MdItem>()
-                    // One entry per open level: the column its items start at, and the numeral the next ordered
-                    // item there prints. A sublist keeps the numbers its author wrote instead of restarting the
-                    // outer count, and a level resumed after a sublist carries on from where it left off.
+                    // One entry per open level: the column its items start at, the numeral the next ordered item
+                    // there prints, and whether that level is currently an ordered list. A sublist keeps the
+                    // numbers its author wrote instead of restarting the outer count, and a level resumed after a
+                    // sublist carries on from where it left off.
                     val columns = mutableListOf<Int>()
                     val counters = mutableListOf<Int>()
+                    val ordereds = mutableListOf<Boolean>()
                     var outerOrdered: Boolean? = null
                     while (i < lines.size && isItem(lines[i]) && !ruleRegex.matches(lines[i])) {
                         val ordered = orderedRegex.find(lines[i])
@@ -167,10 +169,17 @@ object MarkdownParser {
                         while (columns.size > 1 && column < columns.last()) {
                             columns.removeAt(columns.lastIndex)
                             counters.removeAt(counters.lastIndex)
+                            ordereds.removeAt(ordereds.lastIndex)
                         }
                         if (columns.isEmpty() || column > columns.last()) {
                             columns += column
                             counters += first
+                            ordereds += ordered != null
+                        } else if (ordereds.last() != (ordered != null)) {
+                            // Swapping the marker at a nested level starts a new list there too: it numbers from
+                            // what the author wrote, and a bullet does not advance the count above it.
+                            counters[counters.lastIndex] = first
+                            ordereds[ordereds.lastIndex] = ordered != null
                         } else {
                             counters[counters.lastIndex]++
                         }
