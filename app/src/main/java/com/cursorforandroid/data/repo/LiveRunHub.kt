@@ -166,8 +166,17 @@ class LiveRunHub(
     fun current(agentId: String, runId: String): Snapshot? = synchronized(entries) { entries[key(agentId, runId)]?.state?.value }
 
     fun resetAll() {
-        val old = synchronized(entries) { entries.values.toList().also { entries.clear() } }
-        old.forEach { it.job?.cancel(); it.releaseJob?.cancel() }
+        // Detached under the lock, before the map is cleared: cancellation is cooperative, so a collector already
+        // inside an event callback is stopped by losing ownership, not by the cancel that follows it.
+        val old = synchronized(entries) {
+            entries.values.map { entry ->
+                val jobs = entry.job to entry.releaseJob
+                entry.job = null
+                entry.releaseJob = null
+                jobs
+            }.also { entries.clear() }
+        }
+        old.forEach { (job, releaseJob) -> job?.cancel(); releaseJob?.cancel() }
     }
 
     private fun key(agentId: String, runId: String) = "$agentId/$runId"
@@ -291,7 +300,7 @@ class LiveRunHub(
                     }
                     is RunStreamEvent.Result -> {
                         live.apply(event)
-                        finish(entry, event, historical, streamed = true)
+                        finish(entry, self, event, historical, streamed = true)
                     }
                     else -> {
                         if (event is RunStreamEvent.Assistant || event is RunStreamEvent.Thinking || event is RunStreamEvent.ToolCall) pass.progressed = true
@@ -325,7 +334,7 @@ class LiveRunHub(
         val result = RunStreamEvent.Result(run.id, status, run.result, run.durationMs, run.git)
         entry.live.apply(result)
         // The record says when the run ended; that, not the moment this connection happened to read it, is the finish.
-        finish(entry, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
+        finish(entry, self, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
         return Record.Over
     }
 
@@ -356,7 +365,7 @@ class LiveRunHub(
         if (!owns(entry, self)) return
         val result = RunStreamEvent.Result(entry.runId, RunStatus.UNKNOWN, text = null, durationMs = null, git = null)
         entry.live.apply(result)
-        finish(entry, result, historical = false, streamed = false)
+        finish(entry, self, result, historical = false, streamed = false)
     }
 
     /**
@@ -369,8 +378,14 @@ class LiveRunHub(
         entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis)
     }
 
-    /** True while this coroutine is still the entry's stream; a cancelled one may not touch anything shared. */
-    private fun owns(entry: Entry, self: Job?): Boolean = synchronized(entries) { entry.job === self }
+    /**
+     * True while this coroutine is still the entry's stream, and the entry still the hub's. A reset detaches the job
+     * and drops the entry, so a pass that is already inside an event callback loses ownership there and then rather
+     * than when its cancel is next observed.
+     */
+    private fun owns(entry: Entry, self: Job?): Boolean = synchronized(entries) {
+        entries[key(entry.agentId, entry.runId)] === entry && entry.job === self
+    }
 
     private fun reconnectDelay(drops: Int): Long = (reconnectBaseMs shl (drops - 1).coerceIn(0, 10)).coerceAtMost(reconnectMaxMs)
 
@@ -396,35 +411,40 @@ class LiveRunHub(
      * to its end after the list picked up a run started elsewhere): marking that row idle and finished would show the
      * running follow-up as done. Only the branches, which are per-agent state, are still worth taking.
      */
-    private fun finish(entry: Entry, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean, finishedAtMillis: Long? = null) {
-        val finishedAt = finishedAtMillis ?: nowProvider()
-        entry.catchUp = 0
-        entry.state.update {
-            it.copy(
-                items = entry.live.snapshot(),
-                status = result.status,
-                finished = true,
-                eventCount = it.eventCount + 1,
-                result = result,
-                // A replay of a run that already finished here keeps the moment it did.
-                finishedAtMillis = it.finishedAtMillis ?: finishedAt,
-                streamed = streamed,
-                reconnecting = false,
-            )
+    private fun finish(entry: Entry, self: Job?, result: RunStreamEvent.Result, historical: Boolean, streamed: Boolean, finishedAtMillis: Long? = null) {
+        synchronized(entries) {
+            // Ownership is rechecked here, under the lock a reset takes: the caller's own check and the row this patches
+            // would otherwise be two steps, with a sign-out free to land between them.
+            if (!owns(entry, self)) return
+            val finishedAt = finishedAtMillis ?: nowProvider()
+            entry.catchUp = 0
+            entry.state.update {
+                it.copy(
+                    items = entry.live.snapshot(),
+                    status = result.status,
+                    finished = true,
+                    eventCount = it.eventCount + 1,
+                    result = result,
+                    // A replay of a run that already finished here keeps the moment it did.
+                    finishedAtMillis = it.finishedAtMillis ?: finishedAt,
+                    streamed = streamed,
+                    reconnecting = false,
+                )
+            }
+            if (historical) return
+            agents.patch(entry.agentId) { a ->
+                if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
+                a.copy(
+                    runStatus = result.status,
+                    lifecycle = AgentLifecycle.IDLE,
+                    durationMs = result.durationMs ?: a.durationMs,
+                    branches = result.git.toBranches().ifEmpty { a.branches },
+                    summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
+                    updatedAtMillis = finishedAt,
+                )
+            }
+            _finishes.tryEmit(entry.state.value)
         }
-        if (historical) return
-        agents.patch(entry.agentId) { a ->
-            if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
-            a.copy(
-                runStatus = result.status,
-                lifecycle = AgentLifecycle.IDLE,
-                durationMs = result.durationMs ?: a.durationMs,
-                branches = result.git.toBranches().ifEmpty { a.branches },
-                summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
-                updatedAtMillis = finishedAt,
-            )
-        }
-        _finishes.tryEmit(entry.state.value)
     }
 
     private companion object {

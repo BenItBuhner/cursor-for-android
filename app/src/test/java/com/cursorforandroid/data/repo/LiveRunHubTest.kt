@@ -22,6 +22,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -50,6 +54,9 @@ class LiveRunHubTest {
     private lateinit var agents: AgentRepository
     private lateinit var hub: LiveRunHub
 
+    /** The grace the hub waits before releasing a pass nobody is collecting any more. */
+    private val releaseGrace = 50L
+
     @Before
     fun setUp() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -58,7 +65,7 @@ class LiveRunHubTest {
         session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
         session.enterDemo()
         agents = AgentRepository(session, prefs, AttachmentStore(context))
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
     }
 
     @After
@@ -317,30 +324,67 @@ class LiveRunHubTest {
     }
 
     /**
+     * A reset is not a cancel: cancellation is cooperative, so a pass suspended inside a record read resumes and
+     * carries on. What it must not do is finish the run into the list the next account starts from.
+     */
+    @Test
+    fun `a pass that resumes after a reset does not settle the run it was following`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val finishes = CopyOnWriteArrayList<LiveRunHub.Snapshot>()
+        scope.launch { hub.finishes.collect { finishes += it } }
+        // The log is gone, so the record is the only source left and the pass settles the run from it.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Previous account")
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        awaitUntil { api.getRunCalls > 0 }
+
+        hub.resetAll()
+        api.getRunGate!!.complete(Unit)
+        delay(200)
+
+        assertThat(finishes).isEmpty()
+        assertThat(agents.agent("bc-1")?.summary).isNotEqualTo("Previous account")
+        assertThat(agents.agent("bc-1")?.isRunning).isTrue()
+        subscription.cancel()
+    }
+
+    /**
      * Cancelling a coroutine does not stop it: a released pass can still be applying events when the next
      * subscriber restarts the stream. Whatever the scheduling, it must not write into the accumulator that
      * replaced its own — the trace would read as the agent saying everything twice.
      */
     @Test
-    fun `resubscribing while the released pass is still winding down never doubles the trace`() = runBlocking {
+    fun `resubscribing while the released pass is still winding down never doubles the trace`() = runTest {
         api.addRunningAgent("bc-1", "Agent", "run-1")
+        // The hub runs on the test scheduler, so the release grace passes on the virtual clock: the pass is provably
+        // released before the next subscriber arrives, rather than probably released after a few milliseconds.
+        val hubScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = hubScope)
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
         streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
 
-        repeat(8) {
-            val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
-            awaitUntil { snapshot()?.items?.isNotEmpty() == true }
+        repeat(8) { pass ->
+            val subscription = hubScope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+            advanceUntilIdle()
+            assertThat(connections()).isEqualTo(pass + 1)
+            assertThat(snapshot()!!.items).isNotEmpty()
             subscription.cancel()
-            delay(55)
+            advanceTimeBy(releaseGrace)
+            advanceUntilIdle()
         }
 
-        val settled = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        val settled = hubScope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        advanceUntilIdle()
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Hello", 1_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { snapshot()?.finished == true }
+        advanceUntilIdle()
+        assertThat(snapshot()!!.finished).isTrue()
 
         val replies = current().items.filterIsInstance<AssistantMessage>()
         assertThat(replies.map { it.markdown }).containsExactly("Hello")
         settled.cancel()
+        hubScope.cancel()
     }
 }

@@ -94,6 +94,9 @@ open class FakeCursorApi : CursorApi {
     @Volatile var conversationGate: CompletableDeferred<Unit>? = null
     /** When set, the agent detail endpoint waits for it before answering. */
     @Volatile var getAgentGate: CompletableDeferred<Unit>? = null
+
+    /** Holds every run-record read until it is completed; the call is counted before it waits. */
+    @Volatile var getRunGate: CompletableDeferred<Unit>? = null
     /** When set, the model list waits for it before answering. */
     @Volatile var modelsGate: CompletableDeferred<Unit>? = null
     /** When set, the repository list waits for it before answering, like the slow endpoint it is. */
@@ -225,6 +228,7 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++
+        getRunGate?.await()
         return runs[runId] ?: throw notFound()
     }
     /**
