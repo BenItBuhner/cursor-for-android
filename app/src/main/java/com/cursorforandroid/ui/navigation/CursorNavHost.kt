@@ -82,6 +82,22 @@ fun CursorNavHost(
         onDispose { if (activity?.isChangingConfigurations != true) stores.clearAll() }
     }
 
+    // At most two entries are composed, so one dropped from the middle of the stack (resetTo over a deeper stack)
+    // never runs the disposal below: it left composition while it was still on the stack. Release those here, where
+    // the stack itself is what is being observed, and leave whatever is still on screen to finish animating out.
+    val entries = stack.entries.toList()
+    LaunchedEffect(entries) {
+        val live = entries.mapTo(HashSet()) { it.id }
+        live += scene.top.id
+        scene.under?.let { live += it.id }
+        stores.ids().forEach { id ->
+            if (id !in live) {
+                stores.clear(id)
+                stateHolder.removeState(id)
+            }
+        }
+    }
+
     val desired = stack.top
     LaunchedEffect(desired) {
         try {
@@ -202,6 +218,9 @@ class NavEntryStores : ViewModel() {
     private val stores = HashMap<String, EntryStoreOwner>()
 
     fun owner(id: String): ViewModelStoreOwner = stores.getOrPut(id) { EntryStoreOwner() }
+
+    /** The entries something is being held for, for the host to compare against the stack. */
+    fun ids(): Set<String> = stores.keys.toSet()
 
     fun clear(id: String) {
         stores.remove(id)?.viewModelStore?.clear()
