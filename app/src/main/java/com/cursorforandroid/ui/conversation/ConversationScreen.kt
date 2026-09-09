@@ -24,14 +24,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +54,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
+import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
@@ -88,7 +87,6 @@ fun ConversationScreen(
     graph: AppGraph,
     agentId: String,
     onBack: (() -> Unit)?,
-    onDeleted: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
 ) {
@@ -120,7 +118,7 @@ fun ConversationScreen(
     val scope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var modelSheet by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -179,6 +177,7 @@ fun ConversationScreen(
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                         MenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
+                        MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
@@ -188,7 +187,6 @@ fun ConversationScreen(
                         } else {
                             MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; viewModel.archive(onDone = { onBack?.invoke() }) }
                         }
-                        MenuItem("Delete", CursorIcons.Trash, tint = colors.red) { menuOpen = false; confirmDelete = true }
                     }
                 }
             },
@@ -348,17 +346,11 @@ fun ConversationScreen(
         )
     }
 
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            containerColor = colors.elevated,
-            titleContentColor = colors.textPrimary,
-            textContentColor = colors.textSecondary,
-            shape = CursorTheme.shapes.xl,
-            title = { Text("Delete chat?", style = type.sectionTitle) },
-            text = { Text("This permanently deletes the agent and its transcript. Archive it instead if you might need it later.", style = type.base) },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; viewModel.delete(onDone = onDeleted) }) { Text("Delete", style = type.baseMedium, color = colors.red) } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
+    if (renameOpen) {
+        RenameChatDialog(
+            initialName = agent?.name.orEmpty(),
+            onConfirm = { name -> renameOpen = false; viewModel.rename(name) },
+            onDismiss = { renameOpen = false },
         )
     }
 }

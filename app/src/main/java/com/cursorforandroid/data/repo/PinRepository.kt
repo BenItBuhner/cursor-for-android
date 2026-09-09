@@ -49,9 +49,11 @@ data class PinSyncState(
  * agents the account can see, so leftovers of another account never travel. Pinned agents the list window no longer
  * includes are fetched by id so a pin is never silently dropped.
  *
- * The same list read says where each agent's pull request stands and where each was started from; every read is
- * handed to [onList] so those go where they belong ([PullRequestRepository], [AgentRepository.applySources]) without
- * a second request, whether or not the pins are being synced.
+ * The same list read says where each agent's pull request stands, where each was started from, and what the
+ * official apps call it / whether they have archived it; names and archive flags are folded into [agents] here,
+ * and every read is handed to [onList] so the pull request states and sources go where they belong
+ * ([PullRequestRepository], [AgentRepository.applySources]) without a second request, whether or not the pins are
+ * being synced.
  */
 class PinRepository(
     private val session: SessionManager,
@@ -154,6 +156,7 @@ class PinRepository(
             }
 
             val list = api.list()
+            agents.applyAccountSnapshots(list.composers)
             runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned

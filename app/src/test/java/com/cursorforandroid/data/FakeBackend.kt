@@ -227,8 +227,14 @@ open class FakeCursorApi : CursorApi {
         runs[runId] = run
         return CreateAgentResponseDto(agent, run)
     }
-    override suspend fun archive(id: String) = IdResponseDto(id)
-    override suspend fun unarchive(id: String) = IdResponseDto(id)
+    override suspend fun archive(id: String): IdResponseDto {
+        agents[id]?.let { agents[id] = it.copy(status = "ARCHIVED") }
+        return IdResponseDto(id)
+    }
+    override suspend fun unarchive(id: String): IdResponseDto {
+        agents[id]?.let { agents[id] = it.copy(status = "IDLE") }
+        return IdResponseDto(id)
+    }
     override suspend fun delete(id: String) = IdResponseDto(id)
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
