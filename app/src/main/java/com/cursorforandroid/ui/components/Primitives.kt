@@ -226,7 +226,7 @@ fun GroupLabel(
     }
 }
 
-/** Capsule pill with 12px text — "Branch", "Open", branch names. A label, never a control. */
+/** Capsule pill with 12px text — "Branch", "Open", "Working". A label, never a control. */
 @Composable
 fun Pill(
     text: String,

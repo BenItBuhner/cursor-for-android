@@ -1,5 +1,9 @@
 package com.cursorforandroid.ui.components
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -88,5 +92,77 @@ class MarkdownParserTest {
         val blocks = MarkdownParser.parse("- Before: <img src=\"a.png\">\n- After: <img src=\"b.png\">")
         val bullets = blocks.single() as MdBlock.Bullets
         assertThat(bullets.items).containsExactly("Before: <img src=\"a.png\">", "After: <img src=\"b.png\">").inOrder()
+    }
+}
+
+class InlineMarkdownTest {
+
+    private fun render(text: String) = InlineMarkdown.render(
+        text = text,
+        base = TextStyle(fontSize = 14.sp),
+        codeColor = Color.Black,
+        codeBackground = Color.LightGray,
+        linkColor = Color.Blue,
+        boldColor = Color.Black,
+    )
+
+    private fun urlsIn(text: String): List<String> {
+        val rendered = render(text)
+        return rendered.getLinkAnnotations(0, rendered.length).map { it.item }.filterIsInstance<LinkAnnotation.Url>().map { it.url }
+    }
+
+    @Test
+    fun `a PR link with a hash in the label becomes the label and a url, not raw markup`() {
+        // The shape an agent writes after opening a pull request — the bug in the conversation screenshot.
+        val md = "Opened [PR #66](https://github.com/BenItBuhner/cursor-for-android/pull/66) against `main`."
+        val rendered = render(md)
+        assertThat(rendered.text).isEqualTo("Opened PR #66 against  main .")
+        assertThat(rendered.text).doesNotContain("](")
+        val links = rendered.getLinkAnnotations(0, rendered.length).map { it.item }.filterIsInstance<LinkAnnotation.Url>()
+        assertThat(links.map { it.url }).containsExactly("https://github.com/BenItBuhner/cursor-for-android/pull/66")
+    }
+
+    @Test
+    fun `bold wrapping a link still renders the link, not the markdown`() {
+        val rendered = render("**[PR #66](https://github.com/o/r/pull/66)** against `main`")
+        assertThat(rendered.text).doesNotContain("](")
+        assertThat(rendered.text).contains("PR #66")
+        assertThat(urlsIn("**[PR #66](https://github.com/o/r/pull/66)**")).containsExactly("https://github.com/o/r/pull/66")
+    }
+
+    @Test
+    fun `italic wrapping a link still renders the link`() {
+        assertThat(urlsIn("See *[the docs](https://cursor.com)* for more.")).containsExactly("https://cursor.com")
+        assertThat(render("See *[the docs](https://cursor.com)* for more.").text).isEqualTo("See the docs for more.")
+    }
+
+    @Test
+    fun `link labels keep their own bold and code`() {
+        val rendered = render("[**PR** `#66`](https://example.com/x)")
+        assertThat(rendered.text).isEqualTo("PR  #66 ")
+        assertThat(urlsIn("[**PR** `#66`](https://example.com/x)")).containsExactly("https://example.com/x")
+    }
+
+    @Test
+    fun `titles, angle brackets and a space before the destination still parse`() {
+        assertThat(InlineMarkdown.parseMarkdownLink("[x](https://a.test \"Hi\")", 0)?.url).isEqualTo("https://a.test")
+        assertThat(InlineMarkdown.parseMarkdownLink("[x](<https://a.test>)", 0)?.url).isEqualTo("https://a.test")
+        assertThat(InlineMarkdown.parseMarkdownLink("[x] (https://a.test)", 0)?.url).isEqualTo("https://a.test")
+    }
+
+    @Test
+    fun `autolinks, bare urls and html anchors become links`() {
+        assertThat(urlsIn("See <https://cursor.com/docs>.")).containsExactly("https://cursor.com/docs")
+        assertThat(urlsIn("See https://cursor.com/docs.")).containsExactly("https://cursor.com/docs")
+        assertThat(render("See https://cursor.com/docs.").text).isEqualTo("See https://cursor.com/docs.")
+        assertThat(urlsIn("<a href=\"https://x.test/p\">PR #1</a>")).containsExactly("https://x.test/p")
+        assertThat(render("<a href=\"https://x.test/p\">PR #1</a>").text).isEqualTo("PR #1")
+    }
+
+    @Test
+    fun `strikethrough wraps nested markup`() {
+        val rendered = render("~~old [link](https://x.test)~~")
+        assertThat(rendered.text).isEqualTo("old link")
+        assertThat(urlsIn("~~old [link](https://x.test)~~")).containsExactly("https://x.test")
     }
 }
