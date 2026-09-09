@@ -7,8 +7,9 @@ import androidx.compose.ui.unit.dp
 
 /**
  * Cursor's radius scale (`--cursor-radius-*` in the desktop build): xs 2, sm 4, base 6, lg 8, xl 12, 2xl 14, full.
- * Composer and human messages use xl (`--conversation-surface-border-radius`), cards and selected sidebar rows
- * use lg, chips and buttons use base, badges use sm.
+ * Human messages use xl (`--conversation-surface-border-radius`), cards and selected sidebar rows use lg, chips and
+ * buttons use base, badges use sm. The composer is the one surface off this scale: its corners follow the round
+ * buttons in its footer ([CursorDimens.composerRadius]).
  */
 @Immutable
 data class CursorShapes(
@@ -75,6 +76,14 @@ object CursorDimens {
     /** Composer box: 640px max, 12px padding. */
     val composerMaxWidth = 640.dp
     val composerPadding = 12.dp
+    /**
+     * Composer corner radius, concentric with the round buttons in its footer. Each disc sits [composerPadding] in
+     * from the side and, once the footer's 2dp of centring is added to the 10dp bottom padding, [composerPadding]
+     * up from the bottom, so its centre is `roundButton / 2 + composerPadding` from both edges. A corner arc of
+     * that radius shares the disc's centre: a constant 12dp ring of surface between the disc and the edge, and no
+     * tight corner fighting the circle. The web's 12px radius reads as a pinched corner against a 24px disc.
+     */
+    val composerRadius = roundButton / 2 + composerPadding
     /** Recent-chat preview card, radius 8. */
     val previewCardWidth = 124.dp
     val previewCardHeight = 80.dp
