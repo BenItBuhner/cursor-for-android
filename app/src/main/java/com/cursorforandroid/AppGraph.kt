@@ -8,7 +8,6 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
-import com.cursorforandroid.data.api.GitHubApiFactory
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
@@ -29,7 +28,6 @@ import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
-import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
@@ -79,18 +77,12 @@ class AppGraph(context: Context) {
     /** The account's agent list, pins and pull request statuses: what the desktop Agents window and the iOS app show. */
     private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
     private val accountPullRequests = CursorPullRequestSource(accountAgents)
-    /**
-     * Where the agents' pull requests stand: the account's word first (the public API names a PR but never says if it
-     * is open, merged or closed), GitHub when the account has none.
-     */
+    /** Where the agents' pull requests stand, on the account's word: the public API names a PR but never says if it is open, merged or closed. */
     val pullRequests = PullRequestRepository(
-        gitHub = GitHubPullRequestSource(GitHubApiFactory.retrofit(GitHubApiFactory.okHttp { keyStore.gitHubToken() })),
+        account = accountPullRequests,
         demo = DemoPullRequests,
         isDemo = { session.isDemo },
-        readToken = { keyStore.gitHubToken() },
-        writeToken = { keyStore.setGitHubToken(it) },
         cache = caches.pullRequests,
-        account = accountPullRequests,
     )
     /** Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the PR states. */
     val pins = PinRepository(
