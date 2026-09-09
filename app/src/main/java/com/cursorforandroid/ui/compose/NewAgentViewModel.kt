@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
@@ -19,12 +20,18 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.PendingAttachment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class NewAgentUiState(
@@ -65,7 +72,11 @@ data class NewAgentUiState(
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
 }
 
-class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
+class NewAgentViewModel(
+    private val graph: AppGraph,
+    /** How long typing settles before the draft is written to disk; shortened in tests. */
+    private val draftSaveDelayMs: Long = DRAFT_SAVE_DELAY_MS,
+) : ViewModel() {
 
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
@@ -89,6 +100,11 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     /** The agent list as last published; the branch picker's contents are derived from it (see [KnownBranches]). */
     private var agents: List<Agent> = emptyList()
 
+    /** Where each attachment's bytes already are on disk, by attachment id, so a save rewrites none of them. */
+    @Volatile private var savedImages: Map<String, DraftStore.Image> = emptyMap()
+    /** One writer at a time, so a save that was already under way cannot land on top of a clear. */
+    private val draftMutex = Mutex()
+
     init {
         viewModelScope.launch {
             // The list is already on screen (restored from disk, then refreshed) by the time the composer shows, and
@@ -101,7 +117,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
         viewModelScope.launch { graph.launcher.failures.collect { takeBack(it) } }
         viewModelScope.launch {
-            val loaded = graph.prefs.composerDefaults.first()
+            // What was left unsent takes precedence over the last launch's choices: the repository and model it was
+            // written against are resolved by the loaders below, exactly as remembered ones are.
+            val loaded = restore() ?: graph.prefs.composerDefaults.first()
             defaults = loaded
             _state.update { it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty()) }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
@@ -110,8 +128,93 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
             // Independent endpoints, and /v1/repositories alone can take tens of seconds: never queue one behind the other.
             launch { loadRepositories(loaded.repoUrl) }
             launch { loadModels() }
+            // Only once the draft is back does what is on screen start standing for it.
+            launch(Dispatchers.Default) {
+                // Once typing settles: writing a file per keystroke would be an odd way to make the app steadier.
+                _state.map { it.draftFields() }.distinctUntilChanged().collectLatest {
+                    delay(draftSaveDelayMs)
+                    save()
+                }
+            }
         }
     }
+
+    /**
+     * The draft left over from a process that was killed, as the defaults to open on. Its images come back with it;
+     * so does the nonce it was going to go out under, so sending it now still adopts anything the interrupted attempt
+     * managed to create.
+     */
+    private suspend fun restore(): ComposerDefaults? {
+        val draft = graph.drafts.read() ?: return null
+        val images = draft.images.mapNotNull { stored -> graph.drafts.readImage(stored)?.let { stored to it } }
+        // Decodes a bitmap per image, so not on the main thread.
+        val attachments = withContext(Dispatchers.IO) { images.map { (stored, image) -> stored to PendingAttachment.of(image) } }
+        savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
+        if (draft.nonce.isNotBlank()) launchNonce = draft.nonce
+        _state.update {
+            it.copy(
+                prompt = draft.prompt,
+                attachments = attachments.map { (_, attachment) -> attachment },
+                noRepo = draft.noRepo,
+                planMode = draft.planMode,
+            )
+        }
+        return ComposerDefaults(
+            repoUrl = draft.repoUrl,
+            ref = draft.ref,
+            modelId = draft.modelId,
+            modelParams = draft.modelParams,
+            autoCreatePr = draft.autoCreatePr,
+            modelChosen = draft.modelChosen,
+        )
+    }
+
+    /** What is on screen, as the draft it would be restored from; an empty composer has no draft to keep. */
+    private suspend fun save() = draftMutex.withLock {
+        val s = _state.value
+        if (s.prompt.isBlank() && s.attachments.isEmpty()) {
+            if (savedImages.isNotEmpty() || graph.drafts.read() != null) {
+                savedImages = emptyMap()
+                graph.drafts.clear()
+            }
+            return@withLock
+        }
+        val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(a.image))?.let { a.id to it } }
+        savedImages = stored.toMap()
+        graph.drafts.write(
+            DraftStore.Draft(
+                prompt = s.prompt,
+                images = stored.map { it.second },
+                repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
+                noRepo = s.noRepo,
+                ref = s.ref,
+                modelId = s.selectedModel?.id,
+                modelParams = s.selectedVariant?.params?.associate { it.id to it.value } ?: emptyMap(),
+                modelChosen = modelSelectionResolved,
+                autoCreatePr = s.autoCreatePr,
+                planMode = s.planMode,
+                nonce = launchNonce,
+            ),
+        )
+    }
+
+    private suspend fun forgetDraft() = draftMutex.withLock {
+        savedImages = emptyMap()
+        graph.drafts.clear()
+    }
+
+    /** Everything the draft is written from: what is on screen changes constantly, this only when the draft does. */
+    private fun NewAgentUiState.draftFields(): List<Any?> = listOf(
+        prompt,
+        attachments.map { it.id },
+        selectedRepo?.url,
+        noRepo,
+        ref,
+        selectedModel?.id,
+        selectedVariant?.params?.map { it.id to it.value },
+        autoCreatePr,
+        planMode,
+    )
 
     private suspend fun loadRepositories(preferredUrl: String?) {
         _state.update { it.copy(isLoadingRepos = true) }
@@ -250,6 +353,8 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
                 autoCreatePr = request.autoCreatePr,
             )
             _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
+            // The draft is the launcher's now; what is kept on disk is whatever is written next.
+            forgetDraft()
             restoreWaitingIfFree()
         }
     }
@@ -316,5 +421,9 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T = NewAgentViewModel(graph) as T
+    }
+
+    private companion object {
+        const val DRAFT_SAVE_DELAY_MS = 400L
     }
 }

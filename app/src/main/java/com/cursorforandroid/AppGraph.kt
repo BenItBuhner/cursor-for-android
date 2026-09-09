@@ -18,6 +18,7 @@ import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
+import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -57,6 +58,8 @@ class AppGraph(
     val caches = AppCaches(JsonDiskCache(File(context.applicationContext.cacheDir, "cursor")))
     /** Images attached to prompts, kept on-device because the transcript API never returns them. */
     val attachments = AttachmentStore(context)
+    /** The New Chat composer's unsent draft, so a process death does not lose what was typed. */
+    val drafts = DraftStore(context)
     /** MCP servers defined in the app; enabled ones are sent inline with every prompt. */
     val mcpServers = McpServerStore(keyStore)
 
@@ -165,6 +168,7 @@ class AppGraph(
             artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
+            drafts.clear()
             caches.clear()
         }
     }
