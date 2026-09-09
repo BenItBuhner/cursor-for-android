@@ -45,8 +45,17 @@ interface UpdatePlatform {
      *
      * [onSessionCreated] runs with the new session's id before it is committed, so a caller can record what the
      * verdict will be about while there is still no verdict to miss.
+     *
+     * [canCommit] is asked once the bytes are staged and again immediately before the commit, because staging a
+     * release takes seconds during which what the decision was made from can change. False abandons the staged
+     * session and returns false; nothing has been committed and no verdict will arrive.
      */
-    suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit)
+    suspend fun install(
+        apk: File,
+        release: AppRelease,
+        canCommit: suspend () -> Boolean,
+        onSessionCreated: suspend (Int) -> Unit,
+    ): Boolean
 
     /** Abandons install sessions this app still owns, e.g. one whose confirmation was never answered. */
     fun abandonSessions()

@@ -544,6 +544,48 @@ class UpdateManagerTest {
     }
 
     @Test
+    fun `an install the app decided on is abandoned when the window closes while the APK is being staged`() = runBlocking {
+        val manager = manager()
+        manager.check()
+        manager.download()
+        val release = manager.state.value.release!!
+
+        // Off screen and idle when the window was decided, and the user is back by the time the bytes are down.
+        // Copying a release into the session is the slow part, and the old check was over before it began.
+        platform.staging = { platform.visible = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
+
+        // A run that starts while the APK is being staged is the other half of the same contract.
+        platform.visible = false
+        platform.staging = { agentsRunning = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.abandoned).isEqualTo(2)
+
+        // And the last look, after the session has been recorded and with nothing left between it and the commit.
+        agentsRunning = false
+        platform.staging = null
+        platform.beforeCommit = { platform.visible = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.abandoned).isEqualTo(3)
+        assertThat(cache.readPending()).isNull()
+        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+
+        // With the window still open at the commit, the same install goes through.
+        platform.visible = false
+        platform.beforeCommit = null
+        manager.onAppStopped()
+        assertThat(platform.installs).hasSize(1)
+        assertThat(cache.readPending()!!.commitIssued).isTrue()
+    }
+
+    @Test
     fun `the foreground check runs at most every six hours`() = runBlocking {
         val manager = manager()
         manager.onAppStarted()

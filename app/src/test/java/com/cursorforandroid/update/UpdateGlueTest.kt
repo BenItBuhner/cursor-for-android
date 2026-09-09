@@ -71,7 +71,7 @@ class UpdateGlueTest {
         val installer = app.packageManager.packageInstaller
         val recorded = mutableListOf<Int>()
 
-        platform.install(apk, release) { recorded += it }
+        assertThat(platform.install(apk, release, canCommit = { true }) { recorded += it }).isTrue()
 
         val session = installer.allSessions.single()
         // Recorded before the commit: the callback can start a process that has nothing else to go on.
@@ -91,6 +91,27 @@ class UpdateGlueTest {
         platform.abandonSessions()
         assertThat(installer.mySessions).isEmpty()
         assertThat(platform.isSessionActive(session.sessionId)).isFalse()
+    }
+
+    @Test
+    fun `an install whose window closes while the APK is staged commits nothing and leaves no session behind`() = runBlocking {
+        val apk = File(app.cacheDir, "9000099.apk").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val platform = AndroidUpdatePlatform(app)
+        val installer = app.packageManager.packageInstaller
+        val recorded = mutableListOf<Int>()
+
+        // Closed by the time the bytes are down: nothing is committed and nothing is recorded, because there is no
+        // verdict for a record to be about.
+        assertThat(platform.install(apk, release, canCommit = { false }) { recorded += it }).isFalse()
+        assertThat(recorded).isEmpty()
+        assertThat(installer.mySessions).isEmpty()
+
+        // Closed in the moment between the record and the commit — the last look before the point of no return.
+        var asked = 0
+        assertThat(platform.install(apk, release, canCommit = { asked++ == 0 }) { recorded += it }).isFalse()
+        assertThat(asked).isEqualTo(2)
+        assertThat(recorded).hasSize(1)
+        assertThat(installer.mySessions).isEmpty()
     }
 
     @Test

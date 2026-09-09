@@ -417,14 +417,28 @@ class UpdateManager(
             pendingConfirmation = null
             _state.value = UpdateState.Installing(release)
             var recorded: PendingInstall? = null
-            withContext(Dispatchers.IO) {
-                platform.install(apk, release) { sessionId ->
+            val committed = withContext(Dispatchers.IO) {
+                platform.install(
+                    apk,
+                    release,
+                    // Staging the APK is the slow part, and the window the decision was made in can close during
+                    // it. A user-initiated install has no window to lose.
+                    canCommit = { !background || installWindowOpen() },
+                ) { sessionId ->
                     // On disk before the session is committed: the verdict can arrive in a process that has nothing
                     // in memory about this install, including one the verdict itself started.
                     val record = PendingInstall(sessionId, release, now())
                     recorded = record
                     cache.writePending(record)
                 }
+            }
+            if (!committed) {
+                // The gate closed while the bytes were being staged; the session is abandoned and nothing was
+                // committed, so there is no verdict to wait for and the download is simply still ready.
+                prefs.setPendingUpdateVersionCode(null)
+                cache.clearPending()
+                _state.value = UpdateState.Downloaded(release, apk)
+                return _state.value
             }
             // Reached only when the commit did not replace this process on the spot: from here the record says a
             // verdict is genuinely owed, and the watchdog gives up on it if none arrives.
@@ -449,10 +463,12 @@ class UpdateManager(
      * the last look before the point of no return.
      */
     private suspend fun awaitInstallWindow(): Boolean {
-        if (platform.isAppVisible() || agentsRunning()) return false
+        if (!installWindowOpen()) return false
         delay(backgroundIdleMs)
-        return !platform.isAppVisible() && !agentsRunning()
+        return installWindowOpen()
     }
+
+    private fun installWindowOpen(): Boolean = !platform.isAppVisible() && !agentsRunning()
 
     /**
      * Gives a committed session [PENDING_INSTALL_TTL_MS] to produce a verdict. `PackageInstaller` is not obliged to

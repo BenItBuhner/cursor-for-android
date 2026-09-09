@@ -47,20 +47,37 @@ class FakeUpdatePlatform(
     override fun installedSigningSha256s() = signatures
     override fun inspect(apk: File): ApkInfo? = inspection(apk)
 
+    /** Runs where the real platform copies the APK into the session and fsyncs it: seconds, on a large release. */
+    var staging: (suspend () -> Unit)? = null
+
     /** Runs between the session being recorded and the commit — the window a process death leaves a session in. */
     var beforeCommit: (suspend () -> Unit)? = null
 
     /** Sessions the installer still has in hand: committed here, until they are abandoned. */
     private val active = CopyOnWriteArrayList<Int>()
 
-    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
+    override suspend fun install(
+        apk: File,
+        release: AppRelease,
+        canCommit: suspend () -> Boolean,
+        onSessionCreated: suspend (Int) -> Unit,
+    ): Boolean {
         installError?.let { throw it }
         val sessionId = nextSessionId++
         sessions += sessionId
+        staging?.invoke()
+        if (!canCommit()) return abandon()
         onSessionCreated(sessionId)
         beforeCommit?.invoke()
+        if (!canCommit()) return abandon()
         active += sessionId
         installs += apk to release
+        return true
+    }
+
+    private fun abandon(): Boolean {
+        abandoned++
+        return false
     }
 
     override fun abandonSessions() {

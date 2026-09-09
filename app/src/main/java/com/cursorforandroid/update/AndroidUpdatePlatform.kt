@@ -66,7 +66,12 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
      * "Install unknown apps" is allowed the update applies quietly. When any of that does not hold, the system
      * answers the commit with `STATUS_PENDING_USER_ACTION` and a confirmation to show.
      */
-    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
+    override suspend fun install(
+        apk: File,
+        release: AppRelease,
+        canCommit: suspend () -> Boolean,
+        onSessionCreated: suspend (Int) -> Unit,
+    ): Boolean {
         val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(applicationId)
@@ -80,7 +85,11 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
                     apk.inputStream().use { it.copyTo(out) }
                     session.fsync(out)
                 }
+                // Copying a release into the session takes seconds, so the answer that allowed this install may no
+                // longer hold; asked again here, and once more with nothing left in between.
+                if (!canCommit()) return abandon(installer, sessionId)
                 onSessionCreated(sessionId)
+                if (!canCommit()) return abandon(installer, sessionId)
                 // The commit below can replace this process before anything after it runs.
                 session.commit(UpdateInstallReceiver.statusReceiver(context, sessionId, release).intentSender)
             }
@@ -88,6 +97,12 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
             runCatching { installer.abandonSession(sessionId) }
             throw t
         }
+        return true
+    }
+
+    private fun abandon(installer: PackageInstaller, sessionId: Int): Boolean {
+        runCatching { installer.abandonSession(sessionId) }
+        return false
     }
 
     override fun abandonSessions() {
