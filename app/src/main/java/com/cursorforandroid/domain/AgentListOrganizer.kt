@@ -88,13 +88,12 @@ object AgentListOrganizer {
         }
         if (!gitOk) return false
 
-        val envOk = when (agent.envType) {
-            EnvType.CLOUD, EnvType.UNKNOWN -> SourceFilter.Cloud in prefs.sources
-            EnvType.POOL -> SourceFilter.Pool in prefs.sources
-            EnvType.MACHINE -> SourceFilter.Machine in prefs.sources
-        }
-        val deviceOk = !row.launchedFromThisDevice || SourceFilter.ThisDevice in prefs.sources
-        return envOk && deviceOk
+        // A chat launched from this app is the account's API chat like any other; the launch this device remembers
+        // is what makes it "This device" rather than "API".
+        val source = if (row.launchedFromThisDevice) SourceFilter.ThisDevice else SourceFilter.of(agent.source)
+        if (source !in prefs.sources) return false
+
+        return EnvironmentFilter.of(agent.envType) in prefs.environments
     }
 
     fun matchesQuery(agent: Agent, query: String): Boolean {

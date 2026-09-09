@@ -192,13 +192,16 @@ class FollowUpRepositoryTest {
         awaitUntil { prompts("bc-1").any { it.text == "Actually, stop and do this" && it.isPending } }
         awaitUntil { api.cancelled == listOf("run-1") }
         awaitUntil { api.runRequests.isNotEmpty() }
-        delay(200)
-        // Refused as busy, it stays pending on screen — and nothing behind it moves.
+        // Refused as busy, the row takes the server's word again; the message stays pending on screen and nothing
+        // behind it moves.
+        awaitUntil { agents.agent("bc-1")?.runStatus == RunStatus.RUNNING }
+        delay(100)
         assertThat(prompts("bc-1").single { it.text == "Actually, stop and do this" }.isPending).isTrue()
         assertThat(sent()).doesNotContain("First")
 
         // The turn is over: the steered message is the next thing the server hears, ahead of the other.
         api.busyCreateRun = false
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "CANCELLED")
         agents.patch("bc-1") { it.copy(runStatus = RunStatus.CANCELLED) }
         awaitUntil { api.runs.values.any { it.id.startsWith("run-followup") } }
         assertThat(sent().last()).isEqualTo("Actually, stop and do this")

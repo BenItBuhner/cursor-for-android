@@ -181,7 +181,7 @@ class PreferencesStore(context: Context) {
     val listPreferences: Flow<ListPreferences> = store.data.map { it.listPreferences() }
 
     private fun Preferences.listPreferences(): ListPreferences =
-        this[Keys.listPrefs]?.let { runCatching { CursorJson.decodeFromString(ListPreferences.serializer(), it) }.getOrNull() } ?: ListPreferences()
+        this[Keys.listPrefs]?.let { ListPreferences.decode(CursorJson, it) } ?: ListPreferences()
 
     val localAgentState: Flow<LocalAgentState> = store.data.map { p ->
         LocalAgentState(

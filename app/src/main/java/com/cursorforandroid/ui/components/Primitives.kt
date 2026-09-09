@@ -403,7 +403,15 @@ fun ShimmerText(
     style: TextStyle = CursorTheme.typography.base,
     color: Color = CursorTheme.colors.textTertiary,
     highlight: Color = CursorTheme.colors.textPrimary,
+    active: Boolean = true,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
 ) {
+    // A tool line's verb shimmers only while the call runs; at rest it is plain text in [color].
+    if (!active) {
+        Text(text, style = style, color = color, maxLines = maxLines, overflow = overflow, modifier = modifier)
+        return
+    }
     val phase by produceState(0f) {
         while (true) withInfiniteAnimationFrameMillis { value = (it % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS.toFloat() }
     }
@@ -414,6 +422,8 @@ fun ShimmerText(
         text,
         style = style,
         color = highlight,
+        maxLines = maxLines,
+        overflow = overflow,
         modifier = modifier
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithContent {
