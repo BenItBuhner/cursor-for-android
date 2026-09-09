@@ -51,7 +51,12 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
         val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
         val info = runCatching { packageManager.getPackageArchiveInfo(apk.path, flags) }.getOrNull() ?: return null
         val packageName = info.packageName ?: return null
-        return ApkInfo(packageName, PackageInfoCompat.getLongVersionCode(info), info.signingCertificates()?.asList().digests())
+        return ApkInfo(
+            packageName,
+            PackageInfoCompat.getLongVersionCode(info),
+            info.signingCertificates()?.asList().digests(),
+            info.versionName,
+        )
     }
 
     /**
@@ -60,7 +65,7 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
      * "Install unknown apps" is allowed the update applies quietly. When any of that does not hold, the system
      * answers the commit with `STATUS_PENDING_USER_ACTION` and a confirmation to show.
      */
-    override fun install(apk: File, release: AppRelease) {
+    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
         val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(applicationId)
@@ -74,6 +79,8 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
                     apk.inputStream().use { it.copyTo(out) }
                     session.fsync(out)
                 }
+                // The commit below can replace this process before anything after it runs.
+                onSessionCreated(sessionId)
                 session.commit(UpdateInstallReceiver.statusReceiver(context, sessionId, release).intentSender)
             }
         } catch (t: Throwable) {
@@ -90,7 +97,7 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
     override fun startConfirmation(intent: Intent): Boolean =
         runCatching { context.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
 
-    override fun notifyReadyToInstall(release: AppRelease) = UpdateNotifications.postReadyToInstall(context, release)
+    override fun notifyReadyToInstall(release: AppRelease): Boolean = UpdateNotifications.postReadyToInstall(context, release)
 
     override fun cancelNotifications() = UpdateNotifications.cancel(context)
 

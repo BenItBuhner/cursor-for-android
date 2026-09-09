@@ -17,12 +17,20 @@ class FakeUpdatePlatform(
     var visible = false
     var signatures: Set<String> = setOf(GitHubFixtures.RELEASE_CERT_SHA256)
 
-    /** What a downloaded file parses as. By default the file name (its versionCode) decides, as the manager names them. */
-    var inspection: (File) -> ApkInfo? = { file -> ApkInfo(applicationId, file.nameWithoutExtension.toLong(), signatures) }
+    /**
+     * What a downloaded file parses as. By default the file name (its versionCode) decides, as the manager names them,
+     * and the version name is the one the scheme derives that code from.
+     */
+    var inspection: (File) -> ApkInfo? = { file ->
+        val code = file.name.removeSuffix(".part").removeSuffix(".apk").toLong()
+        ApkInfo(applicationId, code, signatures, GitHubFixtures.versionNameFor(code))
+    }
 
     // The manager appends from its own scope while tests assert; copy-on-write keeps the reads race-free.
     val installs = CopyOnWriteArrayList<Pair<File, AppRelease>>()
+    val sessions = CopyOnWriteArrayList<Int>()
     var installError: Throwable? = null
+    var nextSessionId = 1000
 
     @Volatile
     var abandoned = 0
@@ -39,8 +47,11 @@ class FakeUpdatePlatform(
     override fun installedSigningSha256s() = signatures
     override fun inspect(apk: File): ApkInfo? = inspection(apk)
 
-    override fun install(apk: File, release: AppRelease) {
+    override suspend fun install(apk: File, release: AppRelease, onSessionCreated: suspend (Int) -> Unit) {
         installError?.let { throw it }
+        val sessionId = nextSessionId++
+        sessions += sessionId
+        onSessionCreated(sessionId)
         installs += apk to release
     }
 
@@ -53,8 +64,13 @@ class FakeUpdatePlatform(
         return confirmationStarts
     }
 
-    override fun notifyReadyToInstall(release: AppRelease) {
+    /** False stands for a notification the system dropped: no permission, or notifications switched off. */
+    var notificationsPost = true
+
+    override fun notifyReadyToInstall(release: AppRelease): Boolean {
+        if (!notificationsPost) return false
         notified += release
+        return true
     }
 
     override fun cancelNotifications() {

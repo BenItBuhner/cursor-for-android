@@ -32,6 +32,12 @@ object GitHubFixtures {
         {"name":"$name","size":$size,"content_type":"$contentType","browser_download_url":"$downloads/$tag/$name"${digest?.let { ""","digest":"sha256:$it"""" } ?: ""}}
     """.trimIndent()
 
+    /** The version name each fixture release's versionCode stands for, as an APK built from it would declare it. */
+    private val VERSION_NAMES = mapOf(10099L to "0.1.0", 20099L to "0.2.0", 30051L to "0.3.0-rc.1")
+
+    /** Null for a code no fixture release has, which stands for an archive that declares no version name. */
+    fun versionNameFor(versionCode: Long): String? = VERSION_NAMES[versionCode]
+
     val releasesJson: String get() = releasesJson()
 
     /** [downloads] is the base the asset URLs hang off; [apk020Sha256] and [apk020Size] describe the stable APK served there. */
