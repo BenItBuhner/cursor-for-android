@@ -4,6 +4,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.ComposerLifecycleApi
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
@@ -38,6 +40,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -74,8 +77,18 @@ class AgentRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(persistDelayMs: Long = 10) =
-        AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs)
+    private fun repository(persistDelayMs: Long = 10, account: ComposerLifecycleApi? = null) =
+        AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs, account)
+
+    private class FakeLifecycleApi : ComposerLifecycleApi {
+        val archives = CopyOnWriteArrayList<String>()
+        val unarchives = CopyOnWriteArrayList<String>()
+        val renames = CopyOnWriteArrayList<Pair<String, String>>()
+        @Volatile var failing: Throwable? = null
+        override suspend fun archive(id: String) { failing?.let { throw it }; archives += id }
+        override suspend fun unarchive(id: String) { failing?.let { throw it }; unarchives += id }
+        override suspend fun rename(id: String, name: String) { failing?.let { throw it }; renames += id to name }
+    }
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
@@ -486,6 +499,68 @@ class AgentRepositoryTest {
         assertThat(streamer.connections.toList()).containsExactly("run-live")
         assertThat(repo.state.value.agents.first { it.id == "bc-stale" }.isRunning).isFalse()
         monitor.stop()
+    }
+
+    @Test
+    fun `archive writes the account flag and the public lifecycle`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        val account = FakeLifecycleApi()
+        val repo = repository(account = account)
+        repo.refresh()
+        assertThat(repo.archive("bc-1").isSuccess).isTrue()
+        assertThat(account.archives).containsExactly("bc-1")
+        assertThat(repo.state.value.agents.single().lifecycle).isEqualTo(AgentLifecycle.ARCHIVED)
+        assertThat(api.agents.getValue("bc-1").status).isEqualTo("ARCHIVED")
+    }
+
+    @Test
+    fun `an account archive that fails still lands when the public write succeeds`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        val account = FakeLifecycleApi().apply { failing = IOException("account down") }
+        val repo = repository(account = account)
+        repo.refresh()
+        assertThat(repo.archive("bc-1").isSuccess).isTrue()
+        assertThat(repo.state.value.agents.single().lifecycle).isEqualTo(AgentLifecycle.ARCHIVED)
+    }
+
+    @Test
+    fun `rename goes through the account service and updates the row`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Old title", "run-1")
+        val account = FakeLifecycleApi()
+        val repo = repository(account = account)
+        repo.refresh()
+        assertThat(repo.rename("bc-1", "  Billing fix  ").isSuccess).isTrue()
+        assertThat(account.renames).containsExactly("bc-1" to "Billing fix")
+        assertThat(repo.state.value.agents.single().name).isEqualTo("Billing fix")
+    }
+
+    @Test
+    fun `a blank rename is rejected without a network call`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Old title", "run-1")
+        val account = FakeLifecycleApi()
+        val repo = repository(account = account)
+        repo.refresh()
+        assertThat(repo.rename("bc-1", "   ").isFailure).isTrue()
+        assertThat(account.renames).isEmpty()
+        assertThat(repo.state.value.agents.single().name).isEqualTo("Old title")
+    }
+
+    @Test
+    fun `account snapshots overlay a rename and an archive the public list missed`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Old title", "run-1")
+        api.addIdleAgent("bc-2", "Still open", "run-2")
+        val repo = repository()
+        repo.refresh()
+        repo.applyAccountSnapshots(
+            listOf(
+                ComposerSnapshot("bc-1", name = "Renamed elsewhere", archived = true),
+                ComposerSnapshot("bc-2", name = "Still open", archived = false),
+            ),
+        )
+        val byId = repo.state.value.agents.associateBy { it.id }
+        assertThat(byId.getValue("bc-1").name).isEqualTo("Renamed elsewhere")
+        assertThat(byId.getValue("bc-1").lifecycle).isEqualTo(AgentLifecycle.ARCHIVED)
+        assertThat(byId.getValue("bc-2").lifecycle).isEqualTo(AgentLifecycle.IDLE)
     }
 
     @Test

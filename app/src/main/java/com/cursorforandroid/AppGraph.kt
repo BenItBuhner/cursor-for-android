@@ -80,9 +80,16 @@ class AppGraph(context: Context) {
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
         profile = AccountApi(accountRpc, sessionTokens),
     )
-    val agents = AgentRepository(session, prefs, attachments, caches.agents, demoSources = DemoData.sources)
-    /** The account's agent list, pins, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
+    /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
     private val accountAgents = BackgroundComposerApi(accountRpc, sessionTokens)
+    val agents = AgentRepository(
+        session,
+        prefs,
+        attachments,
+        caches.agents,
+        demoSources = DemoData.sources,
+        account = accountAgents,
+    )
     private val accountPullRequests = CursorPullRequestSource(accountAgents)
     /** Where the agents' pull requests stand, on the account's word: the public API names a PR but never says if it is open, merged or closed. */
     val pullRequests = PullRequestRepository(

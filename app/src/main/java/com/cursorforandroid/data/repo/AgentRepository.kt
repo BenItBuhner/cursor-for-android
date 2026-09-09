@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ComposerLifecycleApi
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
@@ -136,6 +138,11 @@ class AgentRepository(
     private val cache: AgentListCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val persistDelayMs: Long = PERSIST_DELAY_MS,
+    /**
+     * The account-level archive / rename the first-party apps use. Optional so unit tests that only exercise the
+     * public list can omit it; a real session always has one.
+     */
+    private val account: ComposerLifecycleApi? = null,
     /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
     private val demoSources: Map<String, AgentSource> = emptyMap(),
 ) {
@@ -613,14 +620,77 @@ class AgentRepository(
         agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE)) }
     }
 
-    suspend fun archive(agentId: String): Result<Unit> = runCatching {
-        session.current.api.archive(agentId)
-        agent(agentId)?.let { upsert(it.copy(lifecycle = AgentLifecycle.ARCHIVED)) }
+    suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
+
+    suspend fun unarchive(agentId: String): Result<Unit> = setArchived(agentId, archived = false)
+
+    /**
+     * Writes the archive flag the official apps share ([ComposerLifecycleApi]) and the public v1 lifecycle, then
+     * updates the row. Either write landing is enough for this device; both failing is the only failure. Demo
+     * mode only has the in-memory public API.
+     */
+    private suspend fun setArchived(agentId: String, archived: Boolean): Result<Unit> = runCatching {
+        var wrote = false
+        var lastError: Throwable? = null
+        if (!session.isDemo && account != null) {
+            try {
+                if (archived) account.archive(agentId) else account.unarchive(agentId)
+                wrote = true
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                lastError = t
+            }
+        }
+        try {
+            if (archived) session.current.api.archive(agentId) else session.current.api.unarchive(agentId)
+            wrote = true
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            lastError = t
+        }
+        if (!wrote) throw lastError ?: IllegalStateException(if (archived) "Couldn't archive this chat." else "Couldn't unarchive this chat.")
+        agent(agentId)?.let { upsert(it.copy(lifecycle = if (archived) AgentLifecycle.ARCHIVED else AgentLifecycle.IDLE)) }
     }
 
-    suspend fun unarchive(agentId: String): Result<Unit> = runCatching {
-        session.current.api.unarchive(agentId)
-        agent(agentId)?.let { upsert(it.copy(lifecycle = AgentLifecycle.IDLE)) }
+    /**
+     * Renames the chat the way the official apps do (`RenameBackgroundComposer`). The public Cloud Agents API has
+     * no rename; demo mode only updates the in-memory row.
+     */
+    suspend fun rename(agentId: String, name: String): Result<Unit> = runCatching {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) throw IllegalArgumentException("Give the chat a name.")
+        if (trimmed.length > MAX_NAME_LENGTH) throw IllegalArgumentException("Name must be $MAX_NAME_LENGTH characters or less.")
+        val current = agent(agentId)
+        if (current?.name == trimmed) return@runCatching
+        if (!session.isDemo) {
+            val api = account ?: throw IllegalStateException("Can't rename this chat from here.")
+            api.rename(agentId, trimmed)
+        }
+        current?.let { upsert(it.copy(name = trimmed)) }
+    }
+
+    /**
+     * Folds the account list's name and archive flag onto the rows already shown. Official apps rename and archive
+     * here, and a v1 list that has not caught up (or never will — the public archive is a different write) would
+     * otherwise keep the old title or leave a chat sitting in the open list.
+     */
+    fun applyAccountSnapshots(composers: List<ComposerSnapshot>) {
+        if (composers.isEmpty()) return
+        val byId = composers.associateBy { it.id }
+        _state.update { s ->
+            s.copy(
+                agents = s.agents.map { agent ->
+                    val snap = byId[agent.id] ?: return@map agent
+                    val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
+                    val lifecycle = when (snap.archived) {
+                        true -> AgentLifecycle.ARCHIVED
+                        false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
+                        null -> agent.lifecycle
+                    }
+                    if (name == agent.name && lifecycle == agent.lifecycle) agent else agent.copy(name = name, lifecycle = lifecycle)
+                },
+            )
+        }
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
@@ -654,5 +724,7 @@ class AgentRepository(
         /** A row that reads finished but was active this recently may still be going; its record settles it. */
         const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
         const val AGENT_ID_CONFLICT = "agent_id_conflict"
+        /** Same cap as `POST /v1/agents` `name` and the official rename field. */
+        const val MAX_NAME_LENGTH = 100
     }
 }

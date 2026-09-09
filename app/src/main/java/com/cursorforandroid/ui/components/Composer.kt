@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
@@ -63,12 +64,14 @@ import kotlinx.coroutines.withContext
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
- * radius 12, 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
+ * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
+ * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
+ * bottom corners, so the box wraps them evenly instead of pinching in behind them.
  *
  * While [isSending] the send slot shows a busy ring; once the request has been in flight for a moment it turns into
  * a Stop button that calls [onCancelSend] (when given), so a launch that drags on can be abandoned without a
@@ -107,7 +110,7 @@ fun ComposerBox(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val shape = CursorTheme.shapes.xl
+    val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
     var focused by remember { mutableStateOf(false) }
     var cancelOffered by remember { mutableStateOf(false) }
     LaunchedEffect(isSending, onCancelSend != null) {

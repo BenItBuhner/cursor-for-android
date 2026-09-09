@@ -149,10 +149,7 @@ fun AppNavHost(
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
-        onDelete = { row ->
-            agentsViewModel.delete(row.agent.id)
-            if ((stack.top.screen as? Screen.Agent)?.id == row.agent.id) navigateTop(Screen.Home)
-        },
+        onRename = { row, name -> agentsViewModel.rename(row.agent.id, name) },
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -213,7 +210,6 @@ fun AppNavHost(
                     agentId = screen.id,
                     onOpenSidebar = if (wide) openSidebar else null,
                     onBack = onBack,
-                    onDeleted = { navigateTop(Screen.Home) },
                 )
             }
         }
