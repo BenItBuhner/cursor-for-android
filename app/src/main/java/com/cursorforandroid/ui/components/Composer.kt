@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.placeCursorAtEnd
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -52,6 +53,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +68,8 @@ import kotlinx.coroutines.withContext
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
  * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
+ * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
+ * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
  * bottom corners, so the box wraps them evenly instead of pinching in behind them.
  *
@@ -90,6 +95,8 @@ fun ComposerBox(
     onCancelSend: (() -> Unit)? = null,
     /** Shows the "+" button and backs its menu; null hides the button. */
     plusMenu: ComposerMenuActions? = null,
+    /** What `/` offers here — the built-ins, or the chat's own list once the account has answered (see [SlashCommandPopover]). */
+    commands: SlashCatalog = SlashCatalog.BUILT_IN,
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: ((PendingAttachment) -> Unit)? = null,
     /** Clipboard / IME image paste; null leaves the field text-only. */
@@ -129,6 +136,31 @@ fun ComposerBox(
         onAddAttachments = onAddAttachments,
         onAttachmentError = onAttachmentError,
     )
+    // The `/` token under the cursor, while the field has focus: what the popover lists completions for. A token the
+    // popover closed on (nothing matched) is not reopened until the cursor moves on to another. The state's text and
+    // selection are snapshot state, so the token follows every keystroke and cursor move.
+    val slashToken = if (focused) SlashTokens.at(field.text.toString(), field.selection) else null
+    var dismissedToken by remember { mutableStateOf<SlashToken?>(null) }
+    val recentSkills = plusMenu?.recentSkills.orEmpty()
+    // The popover's rows keep the click handler they were composed with, so the handler reads the token and catalog
+    // as they are when the row is tapped, not as they were when the row first appeared (typing "/", then "g", then
+    // "o" composes the row once, under the "/" token; completing that token would leave the "go" in place).
+    val currentToken by rememberUpdatedState(slashToken)
+    val currentCommands by rememberUpdatedState(commands)
+    val currentMenu by rememberUpdatedState(plusMenu)
+
+    fun complete(entry: SlashCommand) {
+        val token = currentToken ?: return
+        // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
+        if (currentCommands.byName(entry.name) == null) currentMenu?.onSkillUsed?.invoke(entry.name)
+        val next = SlashTokens.complete(field.text.toString(), token, entry.name)
+        field.edit {
+            replace(0, length, next.text)
+            if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
+        }
+        // An edit made here does not pass through the input transformation, so the owner is told directly.
+        if (next.text != value) onValueChange(next.text)
+    }
 
     Column(
         modifier
@@ -139,29 +171,39 @@ fun ComposerBox(
         if (attachments.isNotEmpty() && onRemoveAttachment != null) {
             AttachmentStrip(attachments, onRemoveAttachment)
         }
-        BasicTextField(
-            state = field,
-            textStyle = type.input.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.textPrimary),
-            lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
-            inputTransformation = InputTransformation {
-                val next = toString()
-                if (next != value) onValueChange(next)
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                // One line of `input` at the default font scale, so the box does not shrink under a small system font.
-                .heightIn(min = 22.dp)
-                .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
-                .onFocusChanged { focused = it.isFocused },
-            decorator = { inner ->
-                Box {
-                    if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    inner()
-                }
-            },
-        )
+        // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
+        Box {
+            BasicTextField(
+                state = field,
+                textStyle = type.input.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                inputTransformation = InputTransformation {
+                    val next = toString()
+                    if (next != value) onValueChange(next)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // One line of `input` at the default font scale, so the box does not shrink under a small system font.
+                    .heightIn(min = 22.dp)
+                    .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
+                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                    .onFocusChanged { focused = it.isFocused },
+                decorator = { inner ->
+                    Box {
+                        if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        inner()
+                    }
+                },
+            )
+            SlashCommandPopover(
+                token = slashToken?.takeIf { it != dismissedToken },
+                catalog = commands,
+                recent = recentSkills,
+                onPick = { complete(it) },
+                onDismiss = { dismissedToken = slashToken },
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
@@ -175,6 +217,7 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = onValueChange,
                         actions = plusMenu,
+                        commands = commands,
                     )
                 }
                 Spacer(Modifier.width(10.dp))

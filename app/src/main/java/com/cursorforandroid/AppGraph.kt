@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
@@ -36,6 +37,7 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -115,6 +117,8 @@ class AppGraph(context: Context) {
         },
     )
     val catalog = CatalogRepository(session, caches.catalog)
+    /** The composers' `/` catalogs — `/goal`, the built-in skills, and the project, plugin and synced ones the account lists per repository or agent. */
+    val slashCommands = SlashCommandRepository(session, DashboardSlashCommandApi(accountRpc, sessionTokens), caches.slashCommands)
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
     val liveRuns = LiveRunHub(session, agents)
     val conversations = ConversationRepository(
@@ -178,6 +182,7 @@ class AppGraph(context: Context) {
             // reset explicitly or the previous account's agents would show.
             agents.reset()
             catalog.reset()
+            slashCommands.reset()
             pullRequests.reset()
             artifacts.resetAll()
             media.clearCaches()

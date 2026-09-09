@@ -9,6 +9,7 @@ import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
 import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
 import com.cursorforandroid.domain.DeviceOption
@@ -21,14 +22,22 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
+import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -73,6 +82,8 @@ data class NewAgentUiState(
     val pinnedModelIds: List<String> = emptyList(),
 ) {
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
+    /** The `/` catalog this composer needs: the repository's at its branch, or the repository-less one. */
+    val commandScope: SlashScope get() = selectedRepo?.takeIf { !noRepo }?.let { SlashScope.Repo(it.url, ref.trim()) } ?: SlashScope.None
     /** The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. */
     val modelLabel: String get() = selectedModel?.displayName ?: "Model"
     val deviceLabel: String get() = selectedDevice.label
@@ -84,6 +95,21 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
 
     private val _state = MutableStateFlow(NewAgentUiState())
     val state: StateFlow<NewAgentUiState> = _state.asStateFlow()
+
+    /**
+     * What `/` offers for the selected repository and branch. The catalog follows the selection: the saved (or
+     * built-in) list is there at once, the account service's answer replaces it, and switching repositories switches
+     * lists. Shared while the composer is on screen; nothing is fetched for a pane nobody is looking at.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val commands: StateFlow<SlashCatalog> = _state.map { it.commandScope }.distinctUntilChanged()
+        .flatMapLatest { scope ->
+            channelFlow {
+                launch { graph.slashCommands.load(scope) }
+                graph.slashCommands.catalog(scope).collect { send(it) }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(_state.value.commandScope))
 
     /** The last launch's choices, applied the first time the model list arrives (which may be after a retry). */
     private var defaults: ComposerDefaults? = null

@@ -103,6 +103,7 @@ fun ConversationScreen(
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
+    val commands by viewModel.commands.collectAsStateWithLifecycle()
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val share by graph.share.offer.collectAsStateWithLifecycle()
@@ -311,6 +312,7 @@ fun ConversationScreen(
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
                 plusMenu = plusMenu,
+                commands = commands,
                 attachments = attachments,
                 onRemoveAttachment = viewModel::removeAttachment,
                 onAddAttachments = viewModel::addAttachments,
