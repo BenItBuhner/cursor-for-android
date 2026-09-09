@@ -92,23 +92,20 @@ fun ComposerBox(
     }
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
-    // The field owns the text and the selection. Text that changes from outside (a slash command from the "+" menu,
-    // the draft being cleared after send) is adopted with the cursor at the end, so typing continues after the
-    // command instead of wherever the cursor happened to be. Adopting it in an effect rather than during
-    // composition matters: were the hoisted value ever to lag a frame — a debounce, a trim, a length cap, anything
-    // asynchronous between onValueChange and the state that comes back — rewriting mid-composition would drop the
-    // characters typed in between and throw the caret to the end while the user was still typing.
+    // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
+    // directly would mean rewriting the field whenever they disagree, which is wrong while they are meant to: the
+    // owner may answer onValueChange a frame late — a debounce, a trim, a length cap, a flow — and the rewrite would
+    // put the stale text back and throw the caret to the end mid-word. So what is tracked is the last value that came
+    // from outside, and only a change in that is adopted, with the cursor at the end so typing continues after a
+    // slash command from the "+" menu instead of wherever the cursor happened to be. Both are saved: the field keeps
+    // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
     var field by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(value, TextRange(value.length)))
     }
-    // Coming back from process death arrives the other way round: the field carries the restored draft and the
-    // hoisted value is empty, because no view model persists it. Hand it back up rather than wiping it.
-    var restoring by remember { mutableStateOf(true) }
-    LaunchedEffect(value) {
-        val restored = restoring && value.isEmpty() && field.text.isNotEmpty()
-        restoring = false
-        if (restored) onValueChange(field.text)
-        else if (value != field.text) field = TextFieldValue(value, TextRange(value.length))
+    var adopted by rememberSaveable { mutableStateOf(value) }
+    if (value != adopted) {
+        adopted = value
+        if (value != field.text) field = TextFieldValue(value, TextRange(value.length))
     }
 
     Column(
