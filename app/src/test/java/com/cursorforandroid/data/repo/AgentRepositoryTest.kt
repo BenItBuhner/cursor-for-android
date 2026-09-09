@@ -420,14 +420,23 @@ class AgentRepositoryTest {
 
         repo.reset()
         assertThat(repo.state.value).isEqualTo(AgentListState())
+
+        // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
+        // run-status pass and the bookkeeping that says a fetch completed. None of it belongs to this session.
         api.v0Gate!!.complete(Unit)
         refresh.join()
         assertThat(repo.state.value).isEqualTo(AgentListState())
+        assertThat(repo.lastRefreshedAt).isEqualTo(0L)
+        // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
+        assertThat(repo.refreshCompleted.value).isEqualTo(0L)
+        // Nor may the old list have reached the disk for the next account to restore.
+        assertThat(cache.read()).isNull()
 
         // The next refresh belongs to the new session and lands normally.
         repo.refresh()
         assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
         assertThat(repo.state.value.isRefreshing).isFalse()
+        assertThat(repo.refreshCompleted.value).isEqualTo(1L)
     }
 
     @Test
