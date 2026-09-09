@@ -56,6 +56,8 @@ class LiveNotificationService : Service() {
         // The only reason to follow runs from the background is the notification. Without one the service would hold
         // a dataSync budget open and keep up to eight streams alive to produce nothing the user can see.
         if (!LiveNotifications.canShowLive(this)) {
+            // Giving up is still a foreground start that has to be answered first: see [keepForegroundPromise].
+            keepForegroundPromise()
             shutdown(force = true)
             return START_NOT_STICKY
         }
@@ -74,10 +76,18 @@ class LiveNotificationService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun enterForeground(): Boolean {
+    /**
+     * Answers the `startForeground()` that [start]'s `startForegroundService()` promised the platform.
+     *
+     * Every way out of [onStartCommand] has to come through here, including the ones that only want to stop:
+     * a service brought down while that promise is outstanding does not just stop, it takes the process with it
+     * (`ForegroundServiceDidNotStartInTimeException`), so bailing out without answering *is* the crash. Answering
+     * it costs one notification that is removed in the same breath, and that the paths which bail out could not
+     * have shown anyway.
+     */
+    private fun keepForegroundPromise(): Boolean {
         if (inForeground) return true
-        val monitor = graph.runMonitor
-        val initial = monitor.state.value.takeIf { it.running.isNotEmpty() }
+        val initial = graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }
             ?.let { LiveNotificationRenderer.live(this, it) }
             ?: LiveNotificationRenderer.connecting(this)
         try {
@@ -85,10 +95,18 @@ class LiveNotificationService : Service() {
             ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type)
         } catch (_: Exception) {
             // ForegroundServiceStartNotAllowedException (background start) or a missing permission: give up quietly.
+            // The promise dies with the start that was refused, so there is nothing left to answer.
             stopSelf()
             return false
         }
         inForeground = true
+        return true
+    }
+
+    private fun enterForeground(): Boolean {
+        if (inForeground) return true
+        val monitor = graph.runMonitor
+        if (!keepForegroundPromise()) return false
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
         scope.launch { monitor.finished.collect { onRunFinished(it) } }
         monitor.start()

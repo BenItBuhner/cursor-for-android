@@ -121,7 +121,11 @@ class LiveNotificationServiceTest {
         val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
         val service = controller.get()
 
-        assertThat(shadowOf(service).lastForegroundNotification).isNull()
+        // The start is answered before it is abandoned, then withdrawn again, so nothing is held: see
+        // `a start that can show nothing still answers the foreground promise`.
+        assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
+        assertThat(shadowOf(service).isForegroundStopped).isTrue()
+        assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
         assertThat(shadowOf(service).isStoppedBySelf).isTrue()
         assertThat(graph.runMonitor.isRunning).isFalse()
         controller.destroy()
@@ -145,9 +149,38 @@ class LiveNotificationServiceTest {
 
         controller.startCommand(0, 1)
         val service = controller.get()
-        assertThat(shadowOf(service).lastForegroundNotification).isNull()
+        assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
+        assertThat(shadowOf(service).isForegroundStopped).isTrue()
+        assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
         assertThat(shadowOf(service).isStoppedBySelf).isTrue()
         assertThat(graph.runMonitor.isRunning).isFalse()
+        controller.destroy()
+    }
+
+    /**
+     * `startForegroundService()` promises the platform a `startForeground()`, and a service brought down with that
+     * promise outstanding is not merely stopped: the process is killed with
+     * `ForegroundServiceDidNotStartInTimeException`. So the paths that give up have to answer it on the way out.
+     * Reaching one of them is ordinary — the live channel or the app's notifications can be switched off between
+     * the check that starts the service and the start command arriving — and it used to crash the app.
+     */
+    @Test
+    fun `a start that can show nothing still answers the foreground promise`() {
+        shadowOf(app).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
+        val service = controller.get()
+
+        // The id is what carries the evidence: `stopForeground(STOP_FOREGROUND_REMOVE)` clears the recorded
+        // notification but keeps the id it was posted under, and it is only ever set by `startForeground`.
+        // `isForegroundStopped` cannot stand in for it — the shadow records that on the call alone, whether or
+        // not the service had ever entered the foreground, which is how this crash went unnoticed.
+        assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
+        // Answered and then taken straight back down, which is the whole point: nothing is left holding a
+        // dataSync budget or a notification the user cannot see.
+        assertThat(shadowOf(service).isForegroundStopped).isTrue()
+        assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
+        assertThat(shadowOf(service).isStoppedBySelf).isTrue()
+        assertThat(app.appGraph.runMonitor.isRunning).isFalse()
         controller.destroy()
     }
 
