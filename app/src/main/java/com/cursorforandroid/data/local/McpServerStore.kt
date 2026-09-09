@@ -36,18 +36,18 @@ class McpServerStore(
     @Volatile private var loaded = false
     private val replay = mutableListOf<(List<McpServer>) -> List<McpServer>>()
 
-    init {
-        scope.launch { loadOnce() }
-    }
+    /** Declared here so the state it fills is already built: an unconfined [scope] runs it before this returns. */
+    private val initialLoad = scope.launch { loadOnce() }
 
     val servers: StateFlow<List<McpServer>> = state.asStateFlow()
 
     /**
      * The servers that go out with the next prompt. A prompt must not silently lose them, so on the vanishing chance
-     * the initial read has not landed yet this waits for it instead of answering empty.
+     * the initial read has not landed yet this awaits it instead of answering empty — suspending, because the caller
+     * is the send lambda on the main thread and opening the encrypted store there is tens of milliseconds of jank.
      */
-    fun enabled(): List<McpServer> {
-        loadOnce()
+    suspend fun enabled(): List<McpServer> {
+        initialLoad.join()
         return state.value.filter { it.enabled }
     }
 

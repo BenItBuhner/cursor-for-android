@@ -8,7 +8,10 @@ import com.cursorforandroid.domain.McpTransport
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -40,7 +43,7 @@ class McpServerStoreTest {
         store.save(linear)
         store.save(github)
         store.setEnabled("1", false)
-        assertThat(store.enabled()).containsExactly(github)
+        assertThat(runBlocking { store.enabled() }).containsExactly(github)
 
         // Replacing by id keeps the position; a fresh store reads the same list back from the encrypted prefs.
         store.save(github.copy(command = "bunx"))
@@ -66,6 +69,28 @@ class McpServerStoreTest {
         assertThat(store.servers.value).isEmpty()
         advanceUntilIdle()
         assertThat(store.servers.value.map { it.name }).containsExactly("linear")
+    }
+
+    /**
+     * The prompt's servers are asked for from the send lambda, on the main thread, so the read cannot happen there.
+     * The store is given a scheduler of its own here: letting the caller's run to a standstill must not be enough
+     * to answer, because the answer is the store's read, and it must not come back empty either.
+     */
+    @Test
+    fun `the servers a prompt carries wait for the store's own read`() = runTest {
+        val secure = secureStore()
+        store(secure).save(McpServer(id = "1", name = "linear", url = "https://mcp.linear.app/mcp"))
+
+        val storeScheduler = TestCoroutineScheduler()
+        val store = McpServerStore(secure, CoroutineScope(StandardTestDispatcher(storeScheduler)))
+
+        val enabled = async { store.enabled() }
+        advanceUntilIdle()
+        assertThat(enabled.isCompleted).isFalse()
+
+        storeScheduler.advanceUntilIdle()
+        advanceUntilIdle()
+        assertThat(enabled.await().map { it.name }).containsExactly("linear")
     }
 
     @Test
