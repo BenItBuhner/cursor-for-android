@@ -24,6 +24,7 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -105,6 +106,8 @@ class ConversationRepository(
     private val prefetchLimit: Int = PREFETCH_LIMIT,
     private val prefetchSpacingMs: Long = PREFETCH_SPACING_MS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** Where one agent's own work runs; a seam for tests that need to hold it up and see what the caller did meanwhile. */
+    private val entryDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -145,7 +148,7 @@ class ConversationRepository(
      * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
      */
     private inner class Entry(val agentId: String) {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val scope = CoroutineScope(SupervisorJob() + entryDispatcher)
         val state = MutableStateFlow(ConversationState(agentId))
         /** The legacy transcript as the server returned it (or as the disk remembered it). */
         var messages: List<V0ConversationMessageDto> = emptyList()
@@ -192,6 +195,12 @@ class ConversationRepository(
          * log behind a screen nobody is looking at.
          */
         @Volatile var paused = false
+        /**
+         * Bumped by every [pause] and [detach]. [resume] and [revalidate] hand their work to [scope] rather than
+         * doing it under the entry's monitor, so the screen can have stopped again by the time it runs; the count
+         * taken when they were called is what tells them the entry has moved on since.
+         */
+        @Volatile var stops = 0
         /** The terminal runs whose traces [pause] turned away, replayed by [resume]. */
         var deferredTraceRuns: List<RunDto> = emptyList()
         var lastUsedAt = AppClock.now()
@@ -369,6 +378,7 @@ class ConversationRepository(
         synchronized(e) {
             e.attached = (e.attached - 1).coerceAtLeast(0)
             if (e.attached == 0) {
+                e.stops++
                 e.paused = false
                 e.deferredTraceRuns = emptyList()
                 e.loadJob?.cancel()
@@ -441,6 +451,7 @@ class ConversationRepository(
         val e = synchronized(entries) { entries[agentId] } ?: return
         synchronized(e) {
             if (e.attached == 0) return
+            e.stops++
             e.paused = true
             e.traceJob?.cancel()
             e.traceJob = null
@@ -452,9 +463,14 @@ class ConversationRepository(
      * The screen is back. A run still going is followed again straight away rather than waiting on [revalidate],
      * which skips the fetch when the history was read moments ago — after a short absence that would otherwise
      * leave the chat paused with a run streaming behind it.
+     *
+     * The caller is the composition, so nothing of this is done on its thread: the entry's monitor is held by the
+     * background load and the live stream while they rebuild the timeline, and waiting for it there is a stall on
+     * the main thread. What the screen coming back means for the entry is settled on [Entry.scope] instead.
      */
-    fun resume(agentId: String) {
-        val e = synchronized(entries) { entries[agentId] } ?: return
+    fun resume(agentId: String) = offload(agentId) { e -> resumeNow(e) }
+
+    private fun resumeNow(e: Entry) {
         val (run, deferred) = synchronized(e) {
             if (e.attached == 0) return
             e.paused = false
@@ -464,8 +480,19 @@ class ConversationRepository(
             active to deferred
         }
         if (run != null) startStreaming(e, e.agentId, run)
-        if (deferred.isNotEmpty()) loadTraces(e, agentId, deferred)
-        revalidate(agentId)
+        if (deferred.isNotEmpty()) loadTraces(e, e.agentId, deferred)
+        revalidateNow(e)
+    }
+
+    /**
+     * Runs [work] for the agent's entry on that entry's own scope. The count of stops taken here is checked again
+     * before [work] runs: the screen can have stopped, or the last one left, while this was waiting to be dispatched,
+     * and the entry must not be brought back up behind it.
+     */
+    private fun offload(agentId: String, work: (Entry) -> Unit) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        val seen = e.stops
+        e.scope.launch { if (e.stops == seen) work(e) }
     }
 
     fun reload(agentId: String) {
@@ -480,15 +507,17 @@ class ConversationRepository(
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
-     * moments ago (the first open), is left alone.
+     * moments ago (the first open), is left alone. Called from the composition, so it is settled off that thread for
+     * the same reason [resume] is.
      */
-    fun revalidate(agentId: String) {
-        val e = synchronized(entries) { entries[agentId] } ?: return
+    fun revalidate(agentId: String) = offload(agentId) { e -> revalidateNow(e) }
+
+    private fun revalidateNow(e: Entry) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.loadJob?.isActive == true || e.launching) return
             if (AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
-            e.loadJob = e.scope.launch { load(e, agentId) }
+            e.loadJob = e.scope.launch { load(e, e.agentId) }
         }
     }
 

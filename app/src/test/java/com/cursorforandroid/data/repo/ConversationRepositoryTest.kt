@@ -32,6 +32,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -47,6 +48,9 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -1096,5 +1100,55 @@ class ConversationRepositoryTest {
         // Refresh still reaches the flow the screen is collecting rather than a replacement nobody watches.
         conversations.reload("bc-1")
         awaitUntil { screen.value.items.filterIsInstance<UserMessage>().map { it.text } == listOf("Prompt 1") }
+    }
+
+    /**
+     * [ConversationRepository.resume] and [ConversationRepository.revalidate] are called from the composition, and
+     * the entry's monitor is held by the load and the live stream while they rebuild the timeline. Neither may do
+     * its work on the caller's thread: with the entry's own thread occupied, both must still return, and what they
+     * asked for must happen once it is free.
+     */
+    @Test
+    fun `resuming and revalidating hand their work to the entry rather than doing it on the caller's thread`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val entryThread = Executors.newSingleThreadExecutor()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+            entryDispatcher = entryThread.asCoroutineDispatcher(),
+        )
+        try {
+            conversations.attach("bc-1")
+            awaitUntil { conversations.state("bc-1").value.isStreaming }
+            conversations.pause("bc-1")
+            awaitUntil { !conversations.state("bc-1").value.isStreaming }
+            streamer.reset("run-1")
+
+            // The entry's thread is taken, standing in for the load that holds its monitor across a timeline rebuild.
+            val busy = CountDownLatch(1)
+            val occupied = CountDownLatch(1)
+            entryThread.execute {
+                occupied.countDown()
+                busy.await()
+            }
+            assertThat(occupied.await(5, TimeUnit.SECONDS)).isTrue()
+
+            now += 60_000
+            val fetches = api.conversationCalls
+            // Both return while the entry is unreachable, and neither has done anything yet.
+            withTimeout(1_000) { launch(Dispatchers.Default) { conversations.resume("bc-1") }.join() }
+            withTimeout(1_000) { launch(Dispatchers.Default) { conversations.revalidate("bc-1") }.join() }
+            assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+            assertThat(api.conversationCalls).isEqualTo(fetches)
+
+            // Released: the run is followed again and the history is fetched, as the resume asked.
+            busy.countDown()
+            awaitUntil { conversations.state("bc-1").value.isStreaming }
+            awaitUntil { api.conversationCalls > fetches }
+        } finally {
+            entryThread.shutdownNow()
+        }
     }
 }
