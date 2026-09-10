@@ -13,8 +13,12 @@ import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
@@ -483,6 +487,77 @@ class FollowUpRepositoryTest {
         awaitUntil { sent() == listOf("Queued before the restart") }
         assertThat(api.runRequests.single().prompt.images).hasSize(1)
         awaitUntil { store.read("bc-1")?.queue?.isEmpty() == true }
+    }
+
+    /**
+     * The follow-up POST carries no idempotency key. A send marker on disk before the request means a restore must
+     * ask whether the server took it, not send again by itself.
+     */
+    @Test
+    fun `a follow-up mid-send is flagged on restore and not sent again`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        api.createRunGate = CompletableDeferred()
+        val first = repository(persist = true)
+        first.state("bc-1").first { it.restored }
+        first.enqueue("bc-1", "Maybe already")
+        awaitUntil { store.read("bc-1")?.queue?.single()?.sendStartedAtMillis != null }
+
+        first.resetAll()
+        val second = repository(persist = true)
+        val restored = second.state("bc-1").first { it.restored }
+        assertThat(restored.queue.single().needsConfirmation).isTrue()
+        assertThat(sent()).isEmpty()
+
+        api.createRunGate?.complete(Unit)
+        delay(300)
+        assertThat(sent()).isEmpty()
+    }
+
+    @Test
+    fun `a follow-up the server already took is dropped on restore`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val sendStarted = AppClock.now()
+        val runAt = java.time.Instant.ofEpochMilli(sendStarted + 5_000).toString()
+        api.runs["run-fu"] = RunDto(id = "run-fu", agentId = "bc-1", status = "RUNNING", createdAt = runAt, updatedAt = runAt)
+        api.transcripts["bc-1"] = listOf(V0ConversationMessageDto("run-fu-u", "user_message", "Already there"))
+        store.write(
+            "bc-1",
+            FollowUpDraft.EMPTY,
+            listOf(
+                QueuedFollowUp(
+                    id = "queued-test",
+                    text = "Already there",
+                    queuedAtMillis = sendStarted - 1_000,
+                    sendStartedAtMillis = sendStarted,
+                ),
+            ),
+        )
+
+        val followUps = repository(persist = true)
+        val restored = followUps.state("bc-1").first { it.restored }
+        assertThat(restored.queue).isEmpty()
+        assertThat(sent()).isEmpty()
+    }
+
+    @Test
+    fun `a failed head leaves the dispatcher inactive until retry`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        api.failCreateRun = true
+        val followUps = repository()
+        val stuck = followUps.enqueue("bc-1", "Stuck")
+        followUps.enqueue("bc-1", "Second")
+
+        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
+        delay(300)
+        assertThat(api.runRequests).hasSize(1)
+
+        api.failCreateRun = false
+        followUps.retry("bc-1", stuck.id)
+        awaitUntil { sent() == listOf("Stuck") }
+        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
     }
 
     @Test

@@ -192,7 +192,9 @@ class FollowUpRepository(
     fun retry(agentId: String, id: String) {
         val e = entry(agentId)
         synchronized(e) {
-            e.update { copy(queue = queue.map { if (it.id == id) it.copy(error = null) else it }) }
+            e.update {
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null) else it })
+            }
             e.ensureDispatcher()
         }
     }
@@ -251,6 +253,9 @@ class FollowUpRepository(
             isIdle(e.agentId).first { it }
             // The account this steer belongs to has been signed out; the message is not the next one's to send.
             if (generation.get() != startedIn) return
+            val startedAt = AppClock.now()
+            e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(sendStartedAtMillis = startedAt) else it }) }
+            e.scheduleSave()
             val result = conversations.sendStaged(
                 e.agentId,
                 staged,
@@ -335,10 +340,34 @@ class FollowUpRepository(
                         restored = true,
                     )
                 }
-                if (e.state.value.queue.isNotEmpty()) e.ensureDispatcher()
+                reconcileInflight(e, startedIn)
+                if (e.state.value.queue.any { it.error == null && !it.needsConfirmation }) e.ensureDispatcher()
             }
             // Whatever changed while the file was being read is now written on top of it (a no-op when nothing did).
             e.scheduleSave()
+        }
+    }
+
+    /**
+     * A send marker on disk means the request may have got through before the process died. Ask the server before
+     * anything goes out again; drop the item when the answer is yes, flag it when the answer is no or unknown.
+     */
+    private suspend fun reconcileInflight(e: Entry, startedIn: Int) {
+        val pending = synchronized(e) { e.state.value.queue.filter { it.sendStartedAtMillis != null } }
+        for (item in pending) {
+            if (generation.get() != startedIn) return
+            val since = item.sendStartedAtMillis ?: continue
+            val text = item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }
+            val sent = conversations.wasSentSince(e.agentId, text, since)
+            synchronized(e) {
+                if (generation.get() != startedIn) return
+                when {
+                    sent.getOrNull() == true -> e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                    else -> e.update {
+                        copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, needsConfirmation = true) else it })
+                    }
+                }
+            }
         }
     }
 
@@ -399,14 +428,19 @@ class FollowUpRepository(
             while (isActive) {
                 val done = synchronized(e) {
                     val s = e.state.value
-                    if (s.restored && s.queue.isEmpty()) { e.dispatcher = null; true } else false
+                    if (s.restored && (s.queue.isEmpty() || s.queue.all { it.error != null || it.needsConfirmation })) {
+                        e.dispatcher = null
+                        true
+                    } else {
+                        false
+                    }
                 }
                 if (done) break
                 // The head can go once it is restored, free of a failure, not already out, and the agent is free.
                 // A steered message at the head is on its own way out (see [sendNow]); the rest wait behind it.
                 val ready = combine(e.state, isIdle(e.agentId)) { s, idle ->
                     val head = s.queue.firstOrNull()
-                    s.restored && idle && head != null && head.error == null && !head.isSending && !head.isSteered
+                    s.restored && idle && head != null && head.error == null && !head.isSending && !head.isSteered && !head.needsConfirmation
                 }
                 ready.first { it }
                 // Claiming the head and marking it sending are one step, under the monitor every other queue
@@ -414,10 +448,14 @@ class FollowUpRepository(
                 // claim, or arrives to a message that already reads as in flight and leaves it alone.
                 val head = synchronized(e) {
                     val h = e.state.value.queue.firstOrNull()
-                    if (h == null || h.error != null || h.isSending || h.isSteered) return@synchronized null
-                    e.update { copy(queue = queue.map { if (it.id == h.id) it.copy(isSending = true) else it }) }
-                    h
+                    if (h == null || h.error != null || h.isSending || h.isSteered || h.needsConfirmation) return@synchronized null
+                    val startedAt = AppClock.now()
+                    e.update {
+                        copy(queue = queue.map { if (it.id == h.id) it.copy(isSending = true, sendStartedAtMillis = startedAt) else it })
+                    }
+                    h.copy(isSending = true, sendStartedAtMillis = startedAt)
                 } ?: continue
+                e.scheduleSave()
                 dispatch(e, head, startedIn)
             }
         } finally {
@@ -448,10 +486,16 @@ class FollowUpRepository(
                 if (t is CancellationException) throw t
                 if (t.toCursorError()?.code == AGENT_BUSY) {
                     // The message waits its turn again.
-                    e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false) else it }) }
+                    e.update {
+                        copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null) else it })
+                    }
                     awaitBusyTurn(e.agentId)
                 } else {
-                    e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, error = t.userMessage()) else it }) }
+                    e.update {
+                        copy(queue = queue.map {
+                            if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage()) else it
+                        })
+                    }
                 }
             },
         )
