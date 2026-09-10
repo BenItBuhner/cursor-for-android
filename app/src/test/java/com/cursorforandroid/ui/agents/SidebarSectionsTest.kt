@@ -10,13 +10,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performMouseInput
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.common.truth.Truth.assertThat
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentLifecycle
@@ -102,6 +107,59 @@ class SidebarSectionsTest {
         compose.onNodeWithText("Yesterday").performMouseInput { exit(Offset(-1f, -1f)) }
         compose.onNodeWithContentDescription("Expand Yesterday").assertDoesNotExist()
     }
+
+    @Test
+    fun `search keeps typed characters at the end while the organized list state lags`() {
+        var listState by mutableStateOf(searchListState())
+        val reported = mutableListOf<String>()
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Sidebar(
+                    state = listState,
+                    user = CursorUser("key", "a@b.com", "Demo", "User", 1),
+                    isDemo = true,
+                    selectedAgentId = null,
+                    selectedDestination = null,
+                    onQueryChange = { reported += it },
+                    callbacks = SidebarCallbacks(
+                        onNewChat = {},
+                        onSettings = {},
+                        onCustomize = {},
+                        onToggleSidebar = null,
+                        onRefresh = {},
+                        rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
+                    ),
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("Search chats").performClick()
+        val field = compose.onAllNodes(hasSetTextAction()).onFirst()
+        // One character, then a list recomposition that still carries the old (empty) query — the combine that
+        // organises the sidebar runs off the main thread, so this is what a keystroke actually looks like.
+        field.performTextInput("c")
+        listState = listState.copy(nowMillis = listState.nowMillis + 1)
+        compose.waitForIdle()
+        field.performTextInput("e")
+        listState = listState.copy(nowMillis = listState.nowMillis + 1)
+        compose.waitForIdle()
+        field.performTextInput("s")
+        compose.waitForIdle()
+
+        assertThat(reported.last()).isEqualTo("ces")
+        compose.onNode(hasSetTextAction() and hasText("ces")).assertExists()
+        // A cursor that jumped to the start would have built "sec" (or "esc") instead.
+        assertThat(reported).doesNotContain("sec")
+        assertThat(reported).doesNotContain("esc")
+    }
+
+    private fun searchListState() = AgentListUiState(
+        sections = listOf(
+            AgentSection("date:Today", "Today", listOf(row("today", "Morning standup"))),
+        ),
+        hasLoaded = true,
+        query = "",
+    )
 
     private fun showSidebar(isDemo: Boolean = true) {
         compose.setContent {
