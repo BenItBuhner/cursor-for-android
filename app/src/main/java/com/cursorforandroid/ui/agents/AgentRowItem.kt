@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.agents
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -40,16 +41,21 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.ProjectGlyph
+import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -68,7 +74,12 @@ data class AgentRowActions(
 
 /**
  * Sidebar row in the web's proportions: selection is a 6 % fill inset from both edges with radius 6, the state glyph
- * sits in a fixed slot so titles align whether or not a row has one, trailing metadata is at 36 %.
+ * sits in a fixed slot so titles align whether or not a row has one, trailing metadata is at 36 %. A chat nested
+ * under another ([depth] > 0) is drawn a step to the right per level, selection fill included, as the Agents
+ * Window indents a Project's workers and side chats; a Project's own row shows its icon and colour where a plain
+ * chat shows its state dot or its branch, the unread / error state riding on the icon as a badge (running, archived
+ * and snoozed still take the slot). A row with children carries their count and a chevron at the
+ * trailing edge ([childrenExpanded]), with the working glyph beside the count while a hidden child is running.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -81,6 +92,11 @@ fun AgentRowItem(
     nowMillis: Long = AppClock.now(),
     /** The share picker only opens a chat; the pin / archive / delete menu stays on the sidebar. */
     showMenu: Boolean = true,
+    /** How many parents the row sits under in the sidebar's tree; 0 for a chat of its own. */
+    depth: Int = 0,
+    /** Whether the row's children are listed beneath it; null for a row without children, which has no toggle. */
+    childrenExpanded: Boolean? = null,
+    onToggleChildren: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -91,7 +107,7 @@ fun AgentRowItem(
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
-    Box(modifier.fillMaxWidth().padding(horizontal = CursorDimens.selectionInset)) {
+    Box(modifier.fillMaxWidth().padding(start = CursorDimens.selectionInset + CursorDimens.sidebarIndent * depth.coerceIn(0, MAX_INDENT_DEPTH), end = CursorDimens.selectionInset)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -107,7 +123,14 @@ fun AgentRowItem(
                 .padding(start = 8.dp, end = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
+            // A Project is told by its look, with unread and error as a badge on it; a turn going, an archive or a
+            // snooze still take the slot, as they do on every row.
+            when {
+                agent.isProject && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
+                agent.isProject && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
+                agent.isProject && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
+                else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
+            }
             Spacer(Modifier.width(10.dp))
             Text(
                 agent.name,
@@ -128,6 +151,10 @@ fun AgentRowItem(
             if (prefs.showBranchStatus && agent.envType == EnvType.MACHINE) {
                 Spacer(Modifier.width(8.dp))
                 Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            }
+            if (childrenExpanded != null) {
+                Spacer(Modifier.width(6.dp))
+                ChildrenToggle(row, expanded = childrenExpanded, onToggle = onToggleChildren)
             }
         }
         ChatOverflowMenu(
@@ -153,6 +180,36 @@ fun AgentRowItem(
         }
     }
 }
+
+/**
+ * The count of chats nested under a row and the chevron that shows or hides them — the tree's disclosure, drawn
+ * at the trailing edge where the web puts a row's metadata. While collapsed and a hidden chat is working, the
+ * working glyph sits beside the count so the activity is not lost with the rows.
+ */
+@Composable
+private fun ChildrenToggle(row: AgentRow, expanded: Boolean, onToggle: () -> Unit) {
+    val colors = CursorTheme.colors
+    val name = row.agent.name
+    Row(
+        Modifier
+            .clip(CursorTheme.shapes.base)
+            .clickable(onClick = onToggle)
+            .semantics { contentDescription = if (expanded) "Hide chats under $name" else "Show chats under $name" }
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (!expanded && row.hasRunningDescendant) {
+            RunningGlyph(color = colors.iconTertiary, size = 12.dp)
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(row.descendants().size.toString(), style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
+        Spacer(Modifier.width(2.dp))
+        Icon(if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+    }
+}
+
+/** Levels past this share the last indent: a deeper tree is still readable at the sidebar's width. */
+private const val MAX_INDENT_DEPTH = 3
 
 /** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row. */
 @Composable

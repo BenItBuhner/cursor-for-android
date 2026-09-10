@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -332,6 +333,26 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
             }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
             AgentIndicator.Snoozed -> Icon(CursorIcons.Clock, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * The leading glyph of a Cursor Project's row: the Project's icon in the Project's colour, as the Agents Window
+ * draws it — the default lightning in the secondary icon tone when the Project has not been given a look (see
+ * [CursorIcons.project] and `CursorColors.projectTone`). A Project is told by its look rather than by what it
+ * pushed, so the icon stays while the row is unread or in error; that state rides on it as a small [badge] in the
+ * unread blue or the error red, haloed in the sidebar colour so it reads against the icon.
+ */
+@Composable
+fun ProjectGlyph(appearance: ProjectAppearance?, badge: Color? = null, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    Box(modifier.size(CursorDimens.glyph)) {
+        Icon(CursorIcons.project(appearance?.icon), "Project", tint = colors.projectTone(appearance?.colorId), modifier = Modifier.size(16.dp).align(Alignment.Center))
+        if (badge != null) {
+            Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(8.dp).background(colors.sidebar, CircleShape).padding(1.5.dp)) {
+                Dot(badge, size = 5.dp)
+            }
         }
     }
 }

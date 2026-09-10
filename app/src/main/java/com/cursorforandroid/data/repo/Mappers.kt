@@ -109,7 +109,8 @@ internal const val LOCAL_ACTIVITY_GRACE_MS = 5 * 60_000L
 
 /**
  * Builds the list-row model from the v1 summary alone, carrying over what only richer sources knew (repo, branch,
- * summary, model, duration, where the chat was started) from the row it replaces — which may have been restored from disk and be hours old.
+ * summary, model, duration, where the chat was started, its place among Projects) from the row it replaces — which
+ * may have been restored from disk and be hours old.
  * The remembered run status is subject to [carriedRunStatus]; the activity time to [reconcileUpdatedAt].
  */
 fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
@@ -138,6 +139,9 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         modelParams = previous?.modelParams.orEmpty(),
         durationMs = previous?.durationMs,
         source = previous?.source,
+        isProject = previous?.isProject ?: false,
+        projectAppearance = previous?.projectAppearance,
+        parent = previous?.parent,
     )
 }
 
@@ -209,6 +213,9 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         modelParams = previous?.modelParams.orEmpty(),
         durationMs = latestRun?.durationMs ?: previous?.durationMs,
         source = previous?.source,
+        isProject = previous?.isProject ?: false,
+        projectAppearance = previous?.projectAppearance,
+        parent = previous?.parent,
     )
 }
 

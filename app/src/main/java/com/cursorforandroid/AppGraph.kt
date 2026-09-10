@@ -92,6 +92,7 @@ class AppGraph(context: Context) {
         attachments,
         caches.agents,
         demoSources = DemoData.sources,
+        demoComposers = DemoData.composers,
         account = accountAgents,
     )
     private val accountPullRequests = CursorPullRequestSource(accountAgents)

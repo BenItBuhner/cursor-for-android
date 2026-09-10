@@ -19,13 +19,28 @@ data class AgentRow(
     val isSnoozed: Boolean = false,
     /** When the snooze began; used so later updates do not jump the chat up the list. */
     val snoozedAtMillis: Long? = null,
-)
+    /**
+     * The chats the sidebar nests under this one — the workers a Project's coordinator delegated to, side chats,
+     * cloud subagents — in the list's order, each with children of its own; empty for a chat on its own (see
+     * [AgentListOrganizer.nest]).
+     */
+    val children: List<AgentRow> = emptyList(),
+) {
+    /** This row's children, their children and so on, depth first — what a collapsed parent stands for. */
+    fun descendants(): List<AgentRow> = children.flatMap { listOf(it) + it.descendants() }
+
+    /** A turn is going somewhere in the subtree: the working glyph on the collapsed parent's count. */
+    val hasRunningDescendant: Boolean get() = children.any { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
+}
 
 data class AgentSection(
     val key: String,
     val title: String,
     val rows: List<AgentRow>,
 )
+
+/** One line of the sidebar's tree: the row and how many parents it sits under (0 for a chat of its own). */
+data class NestedRow(val row: AgentRow, val depth: Int)
 
 /**
  * What this device knows about agents beyond the public API: pins, read markers, which agents were launched here,
@@ -162,15 +177,18 @@ object AgentListOrganizer {
             .filter { matchesQuery(it, query) }
             .map { toRow(it, local, nowMillis) }
             .filter { matchesFilters(it, prefs) }
-        val sorted = sort(rows, prefs.sortOrder)
+        val sorted = nest(sort(rows, prefs.sortOrder))
 
-        val pinned = sorted.filter { it.isPinned }
-        val rest = sorted.filterNot { it.isPinned }
+        // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
+        val projects = sorted.filter { it.agent.isProjectRoot }
+        val pinned = sorted.filter { it.isPinned && !it.agent.isProjectRoot }
+        val rest = sorted.filterNot { it.isPinned || it.agent.isProjectRoot }
         val sections = mutableListOf<AgentSection>()
-        if (pinned.isNotEmpty()) sections += AgentSection("pinned", "Pinned", pinned)
+        if (projects.isNotEmpty()) sections += AgentSection(PROJECTS_KEY, "Projects", projects)
+        if (pinned.isNotEmpty()) sections += AgentSection(PINNED_KEY, "Pinned", pinned)
 
         when (prefs.groupBy) {
-            GroupBy.None -> if (rest.isNotEmpty()) sections += AgentSection("all", if (pinned.isEmpty()) "Agents" else "Others", rest)
+            GroupBy.None -> if (rest.isNotEmpty()) sections += AgentSection("all", if (pinned.isEmpty() && projects.isEmpty()) "Agents" else "Others", rest)
             GroupBy.Date -> sections += groupByDate(rest, nowMillis, zone)
             GroupBy.Repo -> sections += rest
                 .groupBy { it.agent.repoSlug ?: "" }
@@ -198,9 +216,52 @@ object AgentListOrganizer {
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
 
-    /** [recentRows] for sections already organized without a search query: every row once, newest first. */
+    /** [recentRows] for sections already organized without a search query: every row once, nested ones included, newest first. */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
-        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+        sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+
+    /**
+     * Nests each row under its parent chat when the parent is listed too (see [Agent.parent]), the way the Agents
+     * Window hangs a Project's workers, side chats and subagents under the chat they belong to. A row whose parent
+     * is not in [rows] — filtered out, archived, or beyond the listing window — stands on its own, as does a pinned
+     * row: a pin is the user's word that the chat belongs in the Pinned group, not under something. Returns the
+     * top-level rows in [rows]' order, each with its children in that order too (and theirs, and so on). A cycle
+     * in the parent links is never expected; should the account report one, its rows stand on their own rather
+     * than vanish.
+     */
+    fun nest(rows: List<AgentRow>): List<AgentRow> {
+        val ids = rows.mapTo(HashSet()) { it.agent.id }
+        fun parentOf(row: AgentRow): String? = row.agent.parent?.id?.takeIf { !row.isPinned && it in ids && it != row.agent.id }
+        val childrenOf = rows.filter { parentOf(it) != null }.groupBy { parentOf(it)!! }
+        if (childrenOf.isEmpty()) return rows
+        val placed = HashSet<String>()
+        fun build(row: AgentRow): AgentRow {
+            placed += row.agent.id
+            val children = buildList { childrenOf[row.agent.id].orEmpty().forEach { if (it.agent.id !in placed) add(build(it)) } }
+            return if (children.isEmpty()) row else row.copy(children = children)
+        }
+        val top = buildList { rows.forEach { if (parentOf(it) == null) add(build(it)) } }
+        val stranded = buildList { rows.forEach { if (it.agent.id !in placed) add(build(it)) } }
+        return top + stranded
+    }
+
+    /**
+     * A section's rows as the sidebar lists them: each top-level row, then — while its id is in [expandedIds] — its
+     * children beneath it one level deeper, and theirs in turn. A parent not in [expandedIds] stands for its subtree.
+     */
+    fun flatten(rows: List<AgentRow>, expandedIds: Set<String>): List<NestedRow> = buildList {
+        fun place(row: AgentRow, depth: Int) {
+            add(NestedRow(row, depth))
+            if (row.agent.id in expandedIds) row.children.forEach { place(it, depth + 1) }
+        }
+        rows.forEach { place(it, 0) }
+    }
+
+    /** The section key of the Projects group: the Project chats, ahead of everything else. */
+    const val PROJECTS_KEY = "projects"
+
+    /** The section key of the Pinned group. */
+    const val PINNED_KEY = "pinned"
 
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"

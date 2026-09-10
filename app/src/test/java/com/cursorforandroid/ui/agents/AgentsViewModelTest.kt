@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.SortOrder
@@ -65,10 +66,15 @@ class AgentsViewModelTest {
         val loaded = vm.loaded()
         assertThat(loaded.recentRows.map { it.agent.id }).isEqualTo(AgentListOrganizer.recentRows(loaded.sections).map { it.agent.id })
         assertThat(loaded.recentRows.map { it.agent.updatedAtMillis }).isInOrder(reverseOrder<Long>())
-        // The demo pins its three showcase chats: the sidebar lifts them out into a Pinned group, the recent list
-        // leaves them in their place by recency.
-        assertThat(loaded.sections.first().title).isEqualTo("Pinned")
-        assertThat(loaded.sections.first().rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
+        // The demo's Project leads, its workers and side chat folded under it; the demo pins its three showcase
+        // chats, which the sidebar lifts out into a Pinned group. The recent list leaves all of them in their place
+        // by recency, the folded chats included.
+        assertThat(loaded.sections.map { it.title }.take(2)).containsExactly("Projects", "Pinned").inOrder()
+        val project = loaded.sections.first().rows.single()
+        assertThat(project.agent.id).isEqualTo(DemoData.PROJECT_ID)
+        assertThat(project.children.map { it.agent.id }).containsExactly("bc-demo-0019", "bc-demo-0020", "bc-demo-0021").inOrder()
+        assertThat(loaded.sections[1].rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
+        assertThat(loaded.recentRows.map { it.agent.id }).containsAtLeast(DemoData.PROJECT_ID, "bc-demo-0019", "bc-demo-0020", "bc-demo-0021")
         assertThat(loaded.recentRows.first().agent.id).isEqualTo("bc-demo-0004")
         assertThat(loaded.recentRows.count { it.indicator == AgentIndicator.Running }).isEqualTo(3)
         assertThat(loaded.runningCount).isEqualTo(3)
@@ -80,7 +86,7 @@ class AgentsViewModelTest {
         val noRunning = withTimeout(10_000) { vm.uiState.first { StatusFilter.Running !in it.prefs.statuses } }
         assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running }).isTrue()
         assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3)
-        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.map { it.agent.id }.toSet())
+        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }.toSet())
 
         // The sort order arranges the sidebar; the recents stay newest first. Two changes in quick succession — before
         // the first has reached the state — compose, rather than the second being computed from the stale state and

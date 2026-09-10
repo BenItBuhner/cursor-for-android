@@ -25,6 +25,7 @@ import com.google.common.truth.Truth.assertThat
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSection
 import com.cursorforandroid.domain.CursorUser
@@ -67,6 +68,29 @@ class SidebarSectionsTest {
         showSidebar(isDemo = false)
         compose.onNodeWithText("Demo User").assertIsDisplayed()
         compose.onNodeWithText("a@b.com").assertDoesNotExist()
+    }
+
+    @Test
+    fun `a Project's workers stay behind their count until the row's chevron is tapped`() {
+        val project = row("proj", "Billing launch", isProject = true, children = listOf(row("w1", "Webhook worker"), row("w2", "Usage aggregation", children = listOf(row("w3", "Backfill subagent")))))
+        showSidebar(sections = listOf(AgentSection(AgentListOrganizer.PROJECTS_KEY, "Projects", listOf(project)), AgentSection("date:Today", "Today", listOf(row("today", "Morning standup")))))
+        compose.onNodeWithText("Projects").assertIsDisplayed()
+        compose.onNodeWithText("Billing launch").assertIsDisplayed()
+        compose.onNodeWithText("Webhook worker").assertDoesNotExist()
+        // Three chats hang off the Project: the two workers and the subagent one of them spawned.
+        compose.onNodeWithText("3").assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Show chats under Billing launch").performClick()
+        compose.onNodeWithText("Webhook worker").assertIsDisplayed()
+        compose.onNodeWithText("Usage aggregation").assertIsDisplayed()
+        compose.onNodeWithText("Backfill subagent").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Show chats under Usage aggregation").performClick()
+        compose.onNodeWithText("Backfill subagent").assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Hide chats under Billing launch").performClick()
+        compose.onNodeWithText("Webhook worker").assertDoesNotExist()
+        compose.onNodeWithText("Backfill subagent").assertDoesNotExist()
+        compose.onNodeWithText("Morning standup").assertIsDisplayed()
     }
 
     @Test
@@ -161,18 +185,18 @@ class SidebarSectionsTest {
         query = "",
     )
 
-    private fun showSidebar(isDemo: Boolean = true) {
+    private fun showSidebar(
+        isDemo: Boolean = true,
+        sections: List<AgentSection> = listOf(
+            AgentSection("pinned", "Pinned", listOf(row("pin", "Pinned chat", pinned = true))),
+            AgentSection("date:Today", "Today", listOf(row("today", "Morning standup"))),
+            AgentSection("date:Yesterday", "Yesterday", listOf(row("yday", "Old chat"))),
+        ),
+    ) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
-                    state = AgentListUiState(
-                        sections = listOf(
-                            AgentSection("pinned", "Pinned", listOf(row("pin", "Pinned chat", pinned = true))),
-                            AgentSection("date:Today", "Today", listOf(row("today", "Morning standup"))),
-                            AgentSection("date:Yesterday", "Yesterday", listOf(row("yday", "Old chat"))),
-                        ),
-                        hasLoaded = true,
-                    ),
+                    state = AgentListUiState(sections = sections, hasLoaded = true),
                     user = CursorUser("key", "a@b.com", "Demo", "User", 1),
                     isDemo = isDemo,
                     selectedAgentId = null,
@@ -191,7 +215,7 @@ class SidebarSectionsTest {
         }
     }
 
-    private fun row(id: String, name: String, pinned: Boolean = false) = AgentRow(
+    private fun row(id: String, name: String, pinned: Boolean = false, isProject: Boolean = false, children: List<AgentRow> = emptyList()) = AgentRow(
         agent = Agent(
             id = id,
             name = name,
@@ -205,10 +229,12 @@ class SidebarSectionsTest {
             latestRunId = null,
             repoUrl = null,
             startingRef = null,
+            isProject = isProject,
         ),
         indicator = AgentIndicator.Read,
         isPinned = pinned,
         isUnread = false,
         launchedFromThisDevice = false,
+        children = children,
     )
 }

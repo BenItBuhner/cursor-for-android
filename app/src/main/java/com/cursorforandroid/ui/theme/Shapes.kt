@@ -52,6 +52,8 @@ object CursorDimens {
     val sidebarRowGap = 2.dp
     /** Selected row: inset on both sides, radius 6. */
     val selectionInset = 8.dp
+    /** One level of the sidebar's tree: a chat nested under its Project or parent chat starts this much further in. */
+    val sidebarIndent = 18.dp
     /** State glyph slot in a chat row. */
     val glyph = 16.dp
     val unreadDot = 6.dp

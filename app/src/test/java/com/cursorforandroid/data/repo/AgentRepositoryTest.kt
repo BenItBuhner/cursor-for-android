@@ -16,8 +16,11 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -561,6 +564,45 @@ class AgentRepositoryTest {
         assertThat(byId.getValue("bc-1").name).isEqualTo("Renamed elsewhere")
         assertThat(byId.getValue("bc-1").lifecycle).isEqualTo(AgentLifecycle.ARCHIVED)
         assertThat(byId.getValue("bc-2").lifecycle).isEqualTo(AgentLifecycle.IDLE)
+    }
+
+    @Test
+    fun `account snapshots say which chats are Projects and whose children, and a refresh keeps the answer`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Billing launch", "run-1")
+        api.addIdleAgent("bc-2", "Webhook worker", "run-2")
+        api.addIdleAgent("bc-3", "Plain chat", "run-3")
+        val repo = repository()
+        repo.refresh()
+        val appearance = ProjectAppearance("rocket", "purple")
+        repo.applyAccountSnapshots(
+            listOf(
+                ComposerSnapshot("bc-1", isProject = true, projectAppearance = appearance),
+                ComposerSnapshot("bc-2", parent = AgentParent("bc-1", AgentParentKind.PROJECT_WORKER)),
+                ComposerSnapshot("bc-3"),
+            ),
+        )
+        fun agents() = repo.state.value.agents.associateBy { it.id }
+        assertThat(agents().getValue("bc-1").isProject).isTrue()
+        assertThat(agents().getValue("bc-1").isProjectRoot).isTrue()
+        assertThat(agents().getValue("bc-1").projectAppearance).isEqualTo(appearance)
+        assertThat(agents().getValue("bc-2").parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
+        assertThat(agents().getValue("bc-2").isProject).isFalse()
+        assertThat(agents().getValue("bc-3").isProject).isFalse()
+        assertThat(agents().getValue("bc-3").parent).isNull()
+
+        // The public list knows nothing of Projects; a page refresh must not make the rows forget.
+        repo.refresh()
+        assertThat(agents().getValue("bc-1").isProject).isTrue()
+        assertThat(agents().getValue("bc-1").projectAppearance).isEqualTo(appearance)
+        assertThat(agents().getValue("bc-2").parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
+        awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-1" }?.isProject == true }
+        assertThat(cache.read()?.value?.first { it.id == "bc-2" }?.parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
+
+        // The account's later word replaces the earlier one: a Project unmade, a worker released.
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-1"), ComposerSnapshot("bc-2")))
+        assertThat(agents().getValue("bc-1").isProject).isFalse()
+        assertThat(agents().getValue("bc-1").projectAppearance).isNull()
+        assertThat(agents().getValue("bc-2").parent).isNull()
     }
 
     @Test

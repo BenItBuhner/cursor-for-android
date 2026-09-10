@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
@@ -89,7 +90,8 @@ data class SidebarCallbacks(
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
  * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
- * folded into it), Pinned / date groups of 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
+ * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
+ * and subagents sit under it as a tree, closed until its count is tapped. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,6 +115,9 @@ fun Sidebar(
     // inserted on the left, so a search could not be typed. Closing still clears both.
     var query by rememberSaveable { mutableStateOf("") }
     var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
+    // opened: a Project can have dozens of workers, and the row's count says they are there.
+    var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
     val focusRequester = remember { FocusRequester() }
 
     fun setSearchQuery(value: String) {
@@ -193,14 +198,21 @@ fun Sidebar(
                         )
                     }
                     if (expanded) {
-                        items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                        val expandedIds = expandedParents.toSet()
+                        items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                            val id = row.agent.id
                             AgentRowItem(
                                 row = row,
-                                selected = row.agent.id == selectedAgentId,
+                                selected = id == selectedAgentId,
                                 prefs = state.prefs,
                                 actions = callbacks.rowActions,
                                 modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
+                                depth = depth,
+                                childrenExpanded = if (row.children.isEmpty()) null else id in expandedIds,
+                                onToggleChildren = {
+                                    expandedParents = if (id in expandedIds) expandedParents - id else expandedParents + id
+                                },
                             )
                         }
                     }
