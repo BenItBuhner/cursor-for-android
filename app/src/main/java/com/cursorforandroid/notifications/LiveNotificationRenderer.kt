@@ -4,13 +4,15 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.Typeface
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.os.Build
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
-import android.text.style.StyleSpan
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.net.toUri
 import com.cursorforandroid.MainActivity
@@ -28,15 +30,17 @@ import com.cursorforandroid.util.AppClock
 /**
  * Builds the notifications that stand in for the iOS Live Activity.
  *
- * Custom RemoteViews are not used: Android 16 Live Updates refuse them, and the system templates are what
- * sports / delivery / media-adjacent live cards are built from.
+ * Custom RemoteViews are not used: Android 16 Live Updates refuse them. Every live card is therefore one official
+ * template — the same ProgressStyle sports / delivery / navigation use — never a bullet list.
  *
- *  - One running agent: title, current step, a Stop action, and a chronometer. On Android 16 this is a promoted
- *    `ProgressStyle` Live Update whose bar is a start → work → wrap-up journey (tracker, segment colours, milestone
- *    points) rather than an endless indeterminate spinner. Older releases get the same progress as a determinate bar.
- *  - Several running agents: `InboxStyle` — one row per tracked agent (`Title — step`), stopping first, then the
- *    longest-running. The headline counts every running agent; overflow is a summary (`+N more`), not another bullet.
- *    Still a Live Update on Android 16 (`InboxStyle` is an allowed promoted style).
+ *  - The headline is the current step (`Editing Composer.kt`), like a score. The agent title (or a fleet ticker)
+ *    sits underneath. A generated cube poster is the large icon. The card is colorized so it reads as a live
+ *    surface, not a generic status row.
+ *  - One running agent: that step, the title, a Stop action, a chronometer, and a single determinate bar. Android 16
+ *    promotes it as a ProgressStyle Live Update (tracker walking a start → wrap-up bar toward the PR glyph).
+ *  - Several running agents: still one ProgressStyle card. The lead (stopping first, then longest-running) owns the
+ *    headline and the bar; the supporting line is `N agents · Thinking · Running`. The chip is the count. Tap opens
+ *    the lead. Overflow beyond the tracking cap is `+N more` on that same line.
  *  - A finished agent: a dismissible card with "Finished", the title, "+80 −230 · 3 Files" (or the duration when
  *    no tool reported line counts), the final reply, and Review / View PR actions.
  */
@@ -45,21 +49,21 @@ object LiveNotificationRenderer {
     const val LIVE_ID = 0x4C495645
 
     private const val ACCENT = 0xFF81A1C1.toInt()
+    /** Deep polar-night wash so a colorized card is a live surface, not a black row, and the frost bar still reads. */
+    private const val COLORIZED = 0xFF31475C.toInt()
+    private const val POSTER_BG = 0xFF141414.toInt()
     private const val GREEN = 0xFF3FA266.toInt()
     private const val RED = 0xFFE34671.toInt()
     private const val GRAY = 0xFF9A9A9A.toInt()
     private const val ORANGE = 0xFFF1B467.toInt()
     private const val GIT_ADDED = 0xFF70B489.toInt()
     private const val GIT_REMOVED = 0xFFFC6B83.toInt()
-    private const val ROSTER_TITLE_MAX = 36
-    private const val ROSTER_STEP_MAX = 28
+    private const val TICKER_SEP = " \u00B7 "
     private const val SUMMARY_MAX = 320
+    private const val POSTER_DP = 56
 
-    /** Journey bar is 100 units: setup 20, work 60, wrap-up 20. */
+    /** Journey bar is 100 units. Phases pin the ends; the current verb walks the middle. */
     internal const val JOURNEY_MAX = 100
-    internal const val JOURNEY_SETUP = 20
-    internal const val JOURNEY_WORK = 60
-    internal const val JOURNEY_WRAP = 20
 
     fun finishedId(agentId: String): Int = 0x46000000 or (agentId.hashCode() and 0x00FFFFFF)
 
@@ -81,14 +85,15 @@ object LiveNotificationRenderer {
         val running = state.running
         if (running.isEmpty()) return connecting(context)
         // Chosen by how many agents run, not how many are followed: a second agent beyond the tracked one still counts.
-        return if (state.totalRunning == 1) single(context, running.first()) else condensed(context, state)
+        return if (state.totalRunning == 1) single(context, running.first()) else fleet(context, state)
     }
 
     private fun single(context: Context, run: TrackedRun): Notification {
+        val step = headline(context, run)
         val builder = liveBuilder(context)
-            .setContentTitle(run.title)
-            .setContentText(stepText(context, run))
-            .setSubText(phaseLabel(context, run))
+            .setContentTitle(step)
+            .setContentText(run.title)
+            .setShortCriticalText(chipVerb(context, run))
             .setWhen(run.startedAtMillis)
             .setShowWhen(true)
             .setUsesChronometer(true)
@@ -96,36 +101,27 @@ object LiveNotificationRenderer {
         if (run.phase != LivePhase.Stopping) {
             builder.addAction(0, context.getString(R.string.notif_action_stop), stopRun(context, run))
         }
-        if (Build.VERSION.SDK_INT >= 36) {
-            builder.setStyle(journeyStyle(context, run))
-        } else {
-            builder.setProgress(JOURNEY_MAX, journeyProgress(run), false)
-        }
+        applyJourney(builder, context, run)
         return builder.build()
     }
 
-    private fun condensed(context: Context, state: LiveActivityState): Notification {
+    private fun fleet(context: Context, state: LiveActivityState): Notification {
         // Stopping first (a cancel is in flight), then the longest-running — the same order the monitor already
-        // prefers, made explicit so a test-constructed state still reads as a roster rather than insertion order.
+        // prefers, made explicit so a test-constructed state still picks a stable lead.
         val roster = sortedForRoster(state.running)
+        val lead = roster.first()
         val count = state.totalRunning
-        val lines = roster.map { rosterLine(context, it) }
-        val more = moreSummary(context, state.untrackedCount)
-        val inbox = NotificationCompat.InboxStyle()
-            .setBigContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
-        lines.forEach { inbox.addLine(it) }
-        more?.let { inbox.setSummaryText(it) }
-        return liveBuilder(context)
-            .setContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
-            .setContentText(lines.firstOrNull() ?: more)
-            .setStyle(inbox)
-            .setWhen(roster.minOfOrNull { it.startedAtMillis } ?: 0L)
-            .setShowWhen(false)
-            // The chip shows either the chronometer or this text; with several agents the count is the useful one.
-            .setShortCriticalText(context.resources.getQuantityString(R.plurals.notif_chip_agents, count, count))
+        val builder = liveBuilder(context)
+            .setContentTitle(headline(context, lead))
+            .setContentText(fleetSupporting(context, state, lead))
+            .setShortCriticalText(count.toString())
             .setNumber(count)
-            .setContentIntent(openApp(context))
-            .build()
+            .setWhen(roster.minOfOrNull { it.startedAtMillis } ?: 0L)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
+            .setContentIntent(openAgent(context, lead.agentId))
+        applyJourney(builder, context, lead)
+        return builder.build()
     }
 
     fun finished(context: Context, run: TrackedRun): Notification {
@@ -158,30 +154,26 @@ object LiveNotificationRenderer {
 
     // ---- live-update styles -------------------------------------------------------------------------------
 
+    private fun applyJourney(builder: NotificationCompat.Builder, context: Context, run: TrackedRun) {
+        if (Build.VERSION.SDK_INT >= 36) {
+            builder.setStyle(journeyStyle(context, run))
+        } else {
+            builder.setProgress(JOURNEY_MAX, journeyProgress(run), false)
+        }
+    }
+
     /**
-     * Start → work → wrap-up bar for one run. [setStyledByProgress] leaves the unused tail muted, the cube sits at
-     * the current step, and the points mark leaving setup and entering wrap-up — the same anatomy sports and
-     * delivery Live Updates use.
+     * One frost (or amber, while stopping) bar. [setStyledByProgress] mutes the unused tail; the working glyph walks
+     * it; the PR icon is the destination. No setup / wrap-up theatre and no milestone dots — those read as a wizard.
      */
     internal fun journeyStyle(context: Context, run: TrackedRun): NotificationCompat.ProgressStyle =
         NotificationCompat.ProgressStyle()
             .setStyledByProgress(true)
             .setProgress(journeyProgress(run))
-            .setProgressStartIcon(IconCompat.createWithResource(context, R.drawable.ic_stat_agent))
             .setProgressTrackerIcon(IconCompat.createWithResource(context, R.drawable.widget_working))
             .setProgressEndIcon(IconCompat.createWithResource(context, R.drawable.widget_git_pull_request))
             .setProgressSegments(
-                listOf(
-                    NotificationCompat.ProgressStyle.Segment(JOURNEY_SETUP).setColor(GRAY),
-                    NotificationCompat.ProgressStyle.Segment(JOURNEY_WORK).setColor(ACCENT),
-                    NotificationCompat.ProgressStyle.Segment(JOURNEY_WRAP).setColor(if (run.phase == LivePhase.Stopping) ORANGE else GREEN),
-                ),
-            )
-            .setProgressPoints(
-                listOf(
-                    NotificationCompat.ProgressStyle.Point(JOURNEY_SETUP).setColor(ACCENT),
-                    NotificationCompat.ProgressStyle.Point(JOURNEY_SETUP + JOURNEY_WORK).setColor(GREEN),
-                ),
+                listOf(NotificationCompat.ProgressStyle.Segment(JOURNEY_MAX).setColor(barColor(run))),
             )
 
     private fun indeterminateStyle(): NotificationCompat.ProgressStyle =
@@ -189,9 +181,11 @@ object LiveNotificationRenderer {
             .setProgressIndeterminate(true)
             .setProgressSegments(listOf(NotificationCompat.ProgressStyle.Segment(JOURNEY_MAX).setColor(ACCENT)))
 
+    private fun barColor(run: TrackedRun): Int = if (run.phase == LivePhase.Stopping) ORANGE else ACCENT
+
     /**
-     * 0…[JOURNEY_MAX] along the start → work → wrap-up bar. Phases pin the ends; the current tool verb walks the
-     * middle so the tracker actually moves instead of spinning in place.
+     * 0…[JOURNEY_MAX] along the bar. Phases pin the ends; the current tool verb walks the middle so the tracker
+     * actually moves instead of spinning in place.
      */
     internal fun journeyProgress(run: TrackedRun): Int = when (run.phase) {
         LivePhase.Starting -> 10
@@ -224,50 +218,63 @@ object LiveNotificationRenderer {
 
     private fun liveBuilder(context: Context) = NotificationCompat.Builder(context, LiveNotifications.CHANNEL_LIVE)
         .setSmallIcon(R.drawable.ic_stat_agent)
-        .setColor(ACCENT)
+        .setLargeIcon(poster(context))
+        .setColor(COLORIZED)
+        .setColorized(true)
         .setOngoing(true)
         .setOnlyAlertOnce(true)
         .setSilent(true)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setCategory(NotificationCompat.CATEGORY_PROGRESS)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         .setRequestPromotedOngoing(true)
 
-    private fun stepText(context: Context, run: TrackedRun): String = when (run.phase) {
+    /** Current step — the score on the card. Bare verbs keep the ellipsis so they still read as in-flight. */
+    internal fun headline(context: Context, run: TrackedRun): String = when (run.phase) {
         LivePhase.Starting -> context.getString(R.string.notif_status_starting) + "\u2026"
         LivePhase.Stopping -> context.getString(R.string.notif_status_stopping) + "\u2026"
         else -> run.digest.activity.let { if (it.detail.isNullOrBlank()) it.verb + "\u2026" else it.label }
     }
 
-    /** `Title — Editing Composer.kt` with the title weighted and the step muted. */
-    internal fun rosterLine(context: Context, run: TrackedRun): CharSequence {
-        val title = ellipsize(run.title, ROSTER_TITLE_MAX)
-        val step = ellipsize(rosterStep(context, run), ROSTER_STEP_MAX)
-        val line = SpannableStringBuilder()
-        line.append(title)
-        line.setSpan(StyleSpan(Typeface.BOLD), 0, title.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        line.append(" \u2014 ")
-        val stepAt = line.length
-        line.append(step)
-        line.setSpan(ForegroundColorSpan(GRAY), stepAt, line.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        return line
-    }
-
-    private fun rosterStep(context: Context, run: TrackedRun): String = when (run.phase) {
+    /** Status-bar chip: the verb only, short enough for the Live Update pill. */
+    internal fun chipVerb(context: Context, run: TrackedRun): String = when (run.phase) {
         LivePhase.Starting -> context.getString(R.string.notif_status_starting)
         LivePhase.Stopping -> context.getString(R.string.notif_status_stopping)
-        else -> run.digest.activity.let { if (it.detail.isNullOrBlank()) it.verb else it.label }
+        else -> run.digest.activity.verb
     }
 
-    /** Summary footer for running agents beyond the tracking cap; null when every running agent has a row. */
+    /**
+     * `3 agents · Thinking · Running · +2 more` — count, then distinct other verbs, then overflow. The lead's own
+     * verb is the title, so it is not repeated here.
+     */
+    internal fun fleetSupporting(context: Context, state: LiveActivityState, lead: TrackedRun): String {
+        val count = state.totalRunning
+        val leadVerb = tickerVerb(context, lead)
+        val others = sortedForRoster(state.running)
+            .asSequence()
+            .filter { it.agentId != lead.agentId }
+            .map { tickerVerb(context, it) }
+            .filter { it != leadVerb }
+            .distinct()
+            .take(2)
+            .toList()
+        val more = moreSummary(context, state.untrackedCount)
+        return buildList {
+            add(context.resources.getQuantityString(R.plurals.notif_chip_agents, count, count))
+            addAll(others)
+            more?.let { add(it) }
+        }.joinToString(TICKER_SEP)
+    }
+
+    private fun tickerVerb(context: Context, run: TrackedRun): String = when (run.phase) {
+        LivePhase.Starting -> context.getString(R.string.notif_status_starting)
+        LivePhase.Stopping -> context.getString(R.string.notif_status_stopping)
+        else -> run.digest.activity.verb
+    }
+
+    /** Summary fragment for running agents beyond the tracking cap; null when every running agent is on the card. */
     internal fun moreSummary(context: Context, untracked: Int): String? =
         if (untracked <= 0) null else context.resources.getQuantityString(R.plurals.notif_more_agents, untracked, untracked)
-
-    private fun phaseLabel(context: Context, run: TrackedRun): String = when (run.phase) {
-        LivePhase.Starting -> context.getString(R.string.notif_status_starting)
-        LivePhase.Stopping -> context.getString(R.string.notif_status_stopping)
-        LivePhase.Running -> context.getString(R.string.notif_status_running)
-        LivePhase.Finished -> statusLabel(context, run.status)
-    }
 
     fun statusLabel(context: Context, status: RunStatus): String = when (status) {
         RunStatus.FINISHED -> context.getString(R.string.notif_status_finished)
@@ -283,6 +290,24 @@ object LiveNotificationRenderer {
         RunStatus.ERROR -> RED
         RunStatus.CANCELLED, RunStatus.EXPIRED -> GRAY
         else -> ACCENT
+    }
+
+    /** Dark rounded square + the official cube — the album-art slot on the live card. */
+    internal fun poster(context: Context): Bitmap {
+        val size = (POSTER_DP * context.resources.displayMetrics.density).toInt().coerceAtLeast(128)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = POSTER_BG }
+        val radius = size * 0.22f
+        canvas.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), radius, radius, paint)
+        val glyph = ContextCompat.getDrawable(context, R.drawable.ic_stat_agent)?.mutate()
+        if (glyph != null) {
+            glyph.setTint(0xFFFFFFFF.toInt())
+            val inset = (size * 0.22f).toInt()
+            glyph.setBounds(inset, inset, size - inset, size - inset)
+            glyph.draw(canvas)
+        }
+        return bitmap
     }
 
     /** "+80 −230 · 3 Files" with the counts tinted like the app's git decorations; plain text otherwise. */
@@ -318,9 +343,6 @@ object LiveNotificationRenderer {
         }
         return builder
     }
-
-    private fun ellipsize(text: String, max: Int): String =
-        if (text.length <= max) text else text.take(max - 1).trimEnd() + "\u2026"
 
     // ---- intents ------------------------------------------------------------------------------------------
 

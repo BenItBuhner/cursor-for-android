@@ -38,6 +38,9 @@ import java.util.TimeZone
  * `createContentView` / `createBigContentView`) and writes the RemoteViews the shade would apply. This is the
  * closest the walkthrough can get to SystemUI without a device: same layouts, no hand-drawn stand-in.
  *
+ * Live cards are one colorized ProgressStyle (or a determinate bar below API 36): the current step is the title,
+ * the agent title or fleet ticker is the supporting line, and a generated cube poster fills the large-icon slot.
+ *
  * Run with `./gradlew :app:recordRoborazziDebug --tests '*NotificationScreenshotTest*'`.
  */
 @RunWith(AndroidJUnit4::class)

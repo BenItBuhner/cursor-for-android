@@ -30,7 +30,7 @@ class LiveNotificationServiceTest {
     private val manager = shadowOf(app.getSystemService(NotificationManager::class.java))
 
     private fun Notification.title() = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-    private fun Notification.rosterLines() = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() }.orEmpty()
+    private fun Notification.text() = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
 
     /** Pumps the (paused) main looper so the service's Main-dispatched collectors run, until [condition] holds. */
     private fun awaitOnMain(timeoutMs: Long, condition: () -> Boolean) {
@@ -67,19 +67,18 @@ class LiveNotificationServiceTest {
         assertThat(armed.isPersisted).isTrue()
         assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
 
-        // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
-        // tracker has reported, so wait for the steady state rather than the title alone.
+        // The count lands on the supporting line as soon as the list is reconciled; wait for that rather than a
+        // step title that changes as the demo scripts run.
         awaitOnMain(10_000) {
-            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.rosterLines().size == 3 } == true
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.number == 3 && it.text()?.contains("3 agents") == true } == true
         }
         val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
         assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-        val roster = live.rosterLines()
-        assertThat(roster).hasSize(3)
-        assertThat(roster.joinToString("\n")).doesNotContain("more")
-        assertThat(roster.any { it.startsWith("Codex-Poly-Bot Scaling") }).isTrue()
-        assertThat(roster.any { it.startsWith("Cesium Revenue Strategy") }).isTrue()
-        assertThat(roster.any { it.startsWith("Hyper-realistic human limbs") }).isTrue()
+        assertThat(live.number).isEqualTo(3)
+        assertThat(live.text()).contains("3 agents")
+        assertThat(live.extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)).isNull()
+        assertThat(live.getLargeIcon()).isNotNull()
+        assertThat(live.extras.getBoolean(Notification.EXTRA_COLORIZED)).isTrue()
 
         // The scripted runs finish on their own; each gets a card while the live notification shrinks, then goes.
         awaitOnMain(90_000) { manager.allNotifications.count { it.channelId == LiveNotifications.CHANNEL_FINISHED } == 3 }
@@ -117,7 +116,7 @@ class LiveNotificationServiceTest {
         }
         val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
         val service = controller.get()
-        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" }
+        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.number == 3 }
 
         // Android 15 ends a dataSync service six hours after the app was last in front; the runs keep going in the cloud.
         service.onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

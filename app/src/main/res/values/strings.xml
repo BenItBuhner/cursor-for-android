@@ -15,16 +15,12 @@
     <string name="notif_status_failed">Failed</string>
     <string name="notif_status_cancelled">Cancelled</string>
     <string name="notif_status_expired">Expired</string>
-    <plurals name="notif_agents_running">
-        <item quantity="one">%1$d agent running</item>
-        <item quantity="other">%1$d agents running</item>
-    </plurals>
-    <!-- Last line of the condensed card: running agents beyond the eight that get a line of their own. -->
+    <!-- Supporting line of the fleet card, and overflow beyond the eight tracked runs. -->
     <plurals name="notif_more_agents">
         <item quantity="one">+%1$d more</item>
         <item quantity="other">+%1$d more</item>
     </plurals>
-    <!-- Status-bar chip text on Android 16; keep it short. -->
+    <!-- Fleet count on the supporting line (`3 agents · Thinking`). The chip itself is just the number. -->
     <plurals name="notif_chip_agents">
         <item quantity="one">%1$d agent</item>
         <item quantity="other">%1$d agents</item>
