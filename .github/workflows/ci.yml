@@ -39,11 +39,13 @@ jobs:
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
 
-      # assembleRelease exercises R8 / resource shrinking on every change. Without signing secrets (never passed to
-      # CI) the release APK is signed with the debug key, which is what we want for a PR build.
+      # assembleRelease exercises R8 / resource shrinking on every change. The signing secrets are never passed to this
+      # job, so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build now fails outright.
+      # The APK it produces is for verification only - it pins no certificate and cannot be published.
       - name: Lint and build debug + release APKs
         run: >
           ./gradlew :app:lintDebug :app:assembleDebug :app:assembleRelease
+          -Papp.allowUnsignedRelease=true
           -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
       - name: Collect APKs
