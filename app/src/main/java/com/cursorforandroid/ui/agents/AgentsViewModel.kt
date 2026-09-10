@@ -106,11 +106,8 @@ class AgentsViewModel(
 
     private val clock: Flow<Long> = merge(minuteClock, snoozeAlarm)
 
-    init {
-        viewModelScope.launch {
-            snoozeAlarm.collect { graph.prefs.expireSnoozes(it) }
-        }
-    }
+    // Expiry is [LocalAgentState.isSnoozed] against this clock. Do not persist it from a collector here:
+    // writing DataStore while the list flow is on Default races Robolectric's Compose slot table.
 
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
