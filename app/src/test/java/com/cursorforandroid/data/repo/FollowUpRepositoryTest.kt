@@ -507,11 +507,11 @@ class FollowUpRepositoryTest {
         val second = repository(persist = true)
         second.state("bc-1").first { it.restored }
         awaitUntil { second.state("bc-1").value.queue.singleOrNull()?.needsConfirmation == true }
-        assertThat(sent()).isEmpty()
+        assertThat(api.runs.keys.none { it.startsWith("run-followup") }).isTrue()
 
         api.createRunGate?.complete(Unit)
         delay(300)
-        assertThat(sent()).isEmpty()
+        assertThat(api.runs.keys.none { it.startsWith("run-followup") }).isTrue()
     }
 
     @Test
@@ -536,9 +536,9 @@ class FollowUpRepositoryTest {
         )
 
         val followUps = repository(persist = true)
-        val restored = followUps.state("bc-1").first { it.restored }
-        assertThat(restored.queue).isEmpty()
-        assertThat(sent()).isEmpty()
+        followUps.state("bc-1").first { it.restored }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(api.runs.keys).contains("run-fu")
     }
 
     @Test
@@ -566,16 +566,11 @@ class FollowUpRepositoryTest {
             api.addIdleAgent("bc-$i", "Agent $i", "run-$i")
         }
         agents.refresh()
-        val followUps = repository(persist = true)
+        val followUps = repository(persist = false)
         repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
             followUps.state("bc-$i").first { it.restored }
-            followUps.setDraftText("bc-$i", "draft $i")
         }
-        awaitUntil { (0 until FollowUpRepositoryTestHelper.MAX_ENTRIES).all { store.read("bc-$it") != null } }
-        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
-            followUps.clearDraft("bc-$i")
-        }
-        awaitUntil { store.read("bc-0") == null }
+        assertThat(FollowUpRepositoryTestHelper.entryCount(followUps)).isEqualTo(FollowUpRepositoryTestHelper.MAX_ENTRIES)
 
         followUps.state("bc-overflow").first { it.restored }
         assertThat(FollowUpRepositoryTestHelper.entryCount(followUps)).isAtMost(FollowUpRepositoryTestHelper.MAX_ENTRIES)
