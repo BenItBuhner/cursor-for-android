@@ -130,7 +130,7 @@ private fun QueuedFollowUpRow(
                 SpinnerRing(size = 11.dp)
             }
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
                 GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary, onEdit)
                 GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
