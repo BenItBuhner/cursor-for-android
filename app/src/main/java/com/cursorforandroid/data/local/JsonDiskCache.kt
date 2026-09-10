@@ -92,6 +92,15 @@ class JsonDiskCache(
         epoch.endWipe()
     }
 
+    /**
+     * Deletes the entries of this cache alone: not its children, and without the generation bump of [clear], which
+     * is shared with the whole tree and would refuse the writes other caches have under way. For forgetting one
+     * domain (what the account service said) while the account, and everything else on disk, stays.
+     */
+    suspend fun removeAll() = withContext(dispatcher) {
+        entryFiles().forEach { file -> lockFor(file.name.removeSuffix(SUFFIX)).withLock { file.delete() } }
+    }
+
     /** Keys currently stored, most recently written first. */
     suspend fun keys(): List<String> = withContext(dispatcher) {
         entryFiles().sortedByDescending { it.lastModified() }.map { it.name.removeSuffix(SUFFIX) }

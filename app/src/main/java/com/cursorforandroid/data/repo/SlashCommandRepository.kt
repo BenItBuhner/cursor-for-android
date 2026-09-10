@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.NoSlashCommandApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.local.SlashCommandCache
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.util.AppClock
@@ -36,20 +38,39 @@ sealed class SlashScope {
 }
 
 /**
- * The `/` catalogs for the composers: what the account service lists for a repository or an agent (see
- * [SlashCommandApi]), merged over the built-ins, and kept per scope in memory and on disk so the popover has its list
- * the moment `/` is typed and a saved one shows before the network answers. A catalog is revalidated when it is older
- * than [TTL_MS] — or [PENDING_TTL_MS] while the agent's machine has yet to report its inventory. The account service
- * is not reachable under every key (a service account cannot exchange one for a session), so after a failure the
- * calls rest for [BACKOFF_MS] and the composers keep the built-ins; nothing else about the app depends on them.
+ * The `/` catalogs for the composers: what is listed for a repository or an agent, merged over the built-ins, and
+ * kept per scope in memory and on disk so the popover has its list the moment `/` is typed and a saved one shows
+ * before the network answers. Two sources, one at a time by [capabilities]: in Extended mode the account service
+ * ([account], see [SlashCommandApi]), which also knows the team's global commands and what the agent's machine has
+ * reported; otherwise the repository's own contents ([repoContents]: its `.cursor/skills` and `.cursor/commands`, as
+ * far as its host will show them), which is all a documented-API-only app can know. A catalog is revalidated when it
+ * is older than [TTL_MS] — or [PENDING_TTL_MS] while the agent's machine has yet to report its inventory. Neither
+ * source is reachable under every key (a service account cannot exchange one for a session; a private repository
+ * shows nothing to an anonymous reader), so after a failure the calls rest for [BACKOFF_MS] and the composers keep
+ * the built-ins; nothing else about the app depends on them. A catalog is only ever shown under the source that
+ * produced it: the mode changing under a fetch drops its answer, and the graph resets this on every change.
  */
 class SlashCommandRepository(
     private val session: SessionManager,
-    private val api: SlashCommandApi,
+    private val account: SlashCommandApi,
     private val cache: SlashCommandCache? = null,
     private val demo: (SlashScope) -> SlashCatalog = { DemoSlashCommands.catalog(it) },
+    /** What the repository's contents say, for Extended mode off; nothing beyond the built-ins unless the graph supplies a reader. */
+    private val repoContents: SlashCommandApi = NoSlashCommandApi,
+    /** Which source may be asked (Extended mode). The account, for tests of the account path; the graph passes the setting. */
+    private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
 ) {
-    private class Loaded(val catalog: SlashCatalog, val expiresAtMillis: Long, val backend: CursorBackend)
+    /** Where a catalog came from; a catalog is never shown, or read from disk, under the other source. */
+    enum class Source {
+        /** `aiserver.v1.DashboardService`, in Extended mode. Its disk entries keep the keys they always had. */
+        Account,
+        /** The repository's own files, read from its host. */
+        Repository;
+
+        fun cacheKey(scope: SlashScope): String = if (this == Account) scope.key else "repo/${scope.key}"
+    }
+
+    private class Loaded(val catalog: SlashCatalog, val expiresAtMillis: Long, val backend: CursorBackend, val source: Source)
 
     /** A fetched catalog; [complete] is false when the scope's own list could not be had and only the rest is in it. */
     private class Fetched(val catalog: SlashCatalog, val complete: Boolean)
@@ -69,47 +90,55 @@ class SlashCommandRepository(
 
     fun current(scope: SlashScope): SlashCatalog = loaded.value[scope.key]?.catalog ?: SlashCatalog.BUILT_IN
 
+    /** The source the setting allows right now. */
+    private suspend fun source(): Source = if (capabilities().accountSlashCommands) Source.Account else Source.Repository
+
     /**
-     * Publishes the best catalog for [scope] and returns it: the saved copy first, if any, then the account service's
-     * answer unless one fresh enough is already in hand. Never throws — a refused or offline call leaves what is
-     * published as it is, and the built-ins at the very least.
+     * Publishes the best catalog for [scope] and returns it: the saved copy first, if any, then the source's answer
+     * unless one fresh enough is already in hand. Never throws — a refused or offline call leaves what is published
+     * as it is, and the built-ins at the very least.
      */
     suspend fun load(scope: SlashScope, force: Boolean = false): SlashCatalog {
         val backend = session.current
         if (backend.isDemo) {
             val catalog = SlashCatalog.BUILT_IN.mergedWith(demo(scope))
-            publish(scope, catalog, backend)
+            publish(scope, catalog, backend, Source.Account)
             return catalog
         }
+        val source = source()
         return lockFor(scope.key).withLock {
             val now = AppClock.now()
-            val known = loaded.value[scope.key]?.takeIf { it.backend === backend }
+            val known = loaded.value[scope.key]?.takeIf { it.backend === backend && it.source == source }
             if (known != null && !force && now < known.expiresAtMillis) return@withLock known.catalog
 
             if (known == null && cache != null) {
-                cache.read(scope.key)?.let { saved ->
+                cache.read(source.cacheKey(scope))?.let { saved ->
                     val expires = saved.savedAtMillis + ttlOf(saved.value)
-                    if (session.current === backend) loaded.update { it + (scope.key to Loaded(saved.value, expires, backend)) }
+                    if (session.current === backend && source() == source) loaded.update { it + (scope.key to Loaded(saved.value, expires, backend, source)) }
                     if (!force && now < expires) return@withLock saved.value
                 }
             }
 
-            val fetched = fetch(scope, backend, now) ?: return@withLock current(scope)
-            if (session.current !== backend) return@withLock fetched.catalog
-            // A catalog missing the scope's own list is a stand-in until the account service is tried again.
-            publish(scope, fetched.catalog, backend, now + if (fetched.complete) ttlOf(fetched.catalog) else BACKOFF_MS)
-            if (fetched.complete && scope !is SlashScope.None) cache?.write(scope.key, fetched.catalog)
+            // Nothing could be fetched: what is published for this source stands (the saved copy, however old, above).
+            val fetched = fetch(scope, backend, now, source)
+                ?: return@withLock loaded.value[scope.key]?.takeIf { it.backend === backend && it.source == source }?.catalog ?: SlashCatalog.BUILT_IN
+            // A backend switch or a mode change while the call was out: the answer is not this composer's to show.
+            if (session.current !== backend || source() != source) return@withLock fetched.catalog
+            // A catalog missing the scope's own list is a stand-in until the source is tried again.
+            publish(scope, fetched.catalog, backend, source, now + if (fetched.complete) ttlOf(fetched.catalog) else BACKOFF_MS)
+            if (fetched.complete && scope !is SlashScope.None) cache?.write(source.cacheKey(scope), fetched.catalog)
             fetched.catalog
         }
     }
 
     /**
-     * The global commands and the scope's own list, asked for together, over the built-ins. Null when nothing could
-     * be fetched; a scope list that fails while the global one succeeds still yields a catalog (and the other way
-     * round), so one refused call does not cost the other's answer.
+     * The global commands (the account's alone) and the scope's own list, asked for together, over the built-ins.
+     * Null when nothing could be fetched; a scope list that fails while the global one succeeds still yields a catalog
+     * (and the other way round), so one refused call does not cost the other's answer.
      */
-    private suspend fun fetch(scope: SlashScope, backend: CursorBackend, now: Long): Fetched? = coroutineScope {
-        val globalDeferred = async { globalCommands(backend, now) }
+    private suspend fun fetch(scope: SlashScope, backend: CursorBackend, now: Long, source: Source): Fetched? = coroutineScope {
+        val api = if (source == Source.Account) account else repoContents
+        val globalDeferred = async { if (source == Source.Account) globalCommands(backend, now) else emptyList() }
         val scoped = when {
             scope is SlashScope.None -> Result.success(SlashCatalog())
             now - scopedFailedAt < BACKOFF_MS -> Result.failure(IllegalStateException("resting"))
@@ -133,20 +162,21 @@ class SlashCommandRepository(
     private suspend fun globalCommands(backend: CursorBackend, now: Long): List<SlashCommand>? {
         global?.takeIf { globalFor === backend }?.let { return it }
         if (now - globalFailedAt < BACKOFF_MS) return null
-        return runCatching { api.global() }
+        return runCatching { account.global() }
             .onSuccess { global = it; globalFor = backend; globalFailedAt = 0L }
             .onFailure { globalFailedAt = now }
             .getOrNull()
     }
 
-    private fun publish(scope: SlashScope, catalog: SlashCatalog, backend: CursorBackend, expiresAtMillis: Long = Long.MAX_VALUE) {
-        loaded.update { it + (scope.key to Loaded(catalog, expiresAtMillis, backend)) }
+    private fun publish(scope: SlashScope, catalog: SlashCatalog, backend: CursorBackend, source: Source, expiresAtMillis: Long = Long.MAX_VALUE) {
+        loaded.update { it + (scope.key to Loaded(catalog, expiresAtMillis, backend, source)) }
     }
 
     private fun ttlOf(catalog: SlashCatalog): Long = if (catalog.pending) PENDING_TTL_MS else TTL_MS
 
     private suspend fun lockFor(key: String): Mutex = locksGuard.withLock { locks.getOrPut(key) { Mutex() } }
 
+    /** On sign-out, a backend switch, or Extended mode changing: nothing loaded so far belongs to what comes next. */
     fun reset() {
         loaded.value = emptyMap()
         global = null

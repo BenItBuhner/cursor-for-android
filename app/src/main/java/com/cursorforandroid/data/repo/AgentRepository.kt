@@ -20,6 +20,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.McpServer
@@ -156,6 +157,12 @@ class AgentRepository(
     private val account: ComposerLifecycleApi? = null,
     /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
     private val demoSources: Map<String, AgentSource> = emptyMap(),
+    /**
+     * Whether [account] may be called, and whether what the account list said about the rows may be kept (Extended
+     * mode). Everything, for tests of the list itself; the graph passes the setting, under which the default is the
+     * public API alone: archive there only, no rename, and no row remembers a source the account gave it.
+     */
+    private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
 ) {
     private val restoreMutex = Mutex()
 
@@ -293,9 +300,13 @@ class AgentRepository(
             restoredFor = backend
             dropForeignList(backend)
             val entry = cache.read() ?: return
+            // Sources the account list gave the rows were written to disk with them; with Extended mode off (no
+            // account session, so no list read) they are not this install's to show, whichever earlier launch or
+            // build learned them.
+            val rows = if (capabilities().accountSession) entry.value else entry.value.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
-                if (s.agents.isNotEmpty() || s.hasLoaded) s else s.copy(agents = entry.value, hasLoaded = true, isFromCache = true)
+                if (s.agents.isNotEmpty() || s.hasLoaded) s else s.copy(agents = rows, hasLoaded = true, isFromCache = true)
             }
             // A sign-out landed while the file was being read: this disk copy is not the current account's, and the
             // one that is has still to be restored.
@@ -502,6 +513,19 @@ class AgentRepository(
     }
 
     /**
+     * For Extended mode being turned off: the rows forget where the account said they were started. The chats
+     * launched from this device ([launchedHere]) keep their source — this device knows that on its own — and so does
+     * the demo, whose sources are its own dataset's. The disk copy follows with the next persist.
+     */
+    fun forgetAccountSources(launchedHere: Set<String>) {
+        if (session.isDemo) return
+        _state.update { s -> s.copy(agents = s.agents.withoutAccountSources(launchedHere)) }
+    }
+
+    private fun List<Agent>.withoutAccountSources(launchedHere: Set<String>): List<Agent> =
+        map { if (it.source == null || it.id in launchedHere) it else it.copy(source = null) }
+
+    /**
      * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
      * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
      * it started (the listing can lag a creation by a moment), and [pinned] agents, which the listing window may
@@ -703,13 +727,14 @@ class AgentRepository(
     /**
      * Writes the archive flag the official apps share ([ComposerLifecycleApi]) and the public v1 lifecycle, then
      * updates the row. Either write landing is enough for this device; both failing is the only failure. Demo
-     * mode only has the in-memory public API.
+     * mode only has the in-memory public API, and so does Extended mode off — in which case a chat archived here can
+     * stay in the open list on cursor.com, since the two flags are not the same one.
      */
     private suspend fun setArchived(agentId: String, archived: Boolean): Result<Unit> = runCatching {
         val startedIn = token()
         var wrote = false
         var lastError: Throwable? = null
-        if (!session.isDemo && account != null) {
+        if (!session.isDemo && account != null && capabilities().accountLifecycle) {
             try {
                 if (archived) account.archive(agentId) else account.unarchive(agentId)
                 wrote = true
@@ -731,7 +756,7 @@ class AgentRepository(
 
     /**
      * Renames the chat the way the official apps do (`RenameBackgroundComposer`). The public Cloud Agents API has
-     * no rename; demo mode only updates the in-memory row.
+     * no rename, so with Extended mode off there is none here either; demo mode only updates the in-memory row.
      */
     suspend fun rename(agentId: String, name: String): Result<Unit> = runCatching {
         val startedIn = token()
@@ -740,6 +765,7 @@ class AgentRepository(
         if (trimmed.length > MAX_NAME_LENGTH) throw IllegalArgumentException("Name must be $MAX_NAME_LENGTH characters or less.")
         if (agent(agentId)?.name == trimmed) return@runCatching
         if (!session.isDemo) {
+            if (!capabilities().accountLifecycle) throw IllegalStateException(RENAME_NEEDS_EXTENDED_MODE)
             val api = account ?: throw IllegalStateException("Can't rename this chat from here.")
             api.rename(agentId, trimmed)
         }
@@ -794,23 +820,25 @@ class AgentRepository(
         }
     }
 
-    private companion object {
-        const val PAGE_SIZE = 100
+    companion object {
+        private const val PAGE_SIZE = 100
         /** 500 agents per windowed refresh; the newest come first, and older ones wait for a complete listing. */
-        const val MAX_PAGES = 5
+        private const val MAX_PAGES = 5
         /** The safety bound on a complete listing: 3000 agents, past which the app stops asking for more. */
-        const val MAX_DEEP_PAGES = 30
-        const val COMPLETE_LISTING_EVERY_MS = 60 * 60 * 1000L
-        const val PERSIST_DELAY_MS = 1_500L
-        const val RECENT_WINDOW_MS = 5 * 60 * 1000L
+        private const val MAX_DEEP_PAGES = 30
+        private const val COMPLETE_LISTING_EVERY_MS = 60 * 60 * 1000L
+        private const val PERSIST_DELAY_MS = 1_500L
+        private const val RECENT_WINDOW_MS = 5 * 60 * 1000L
         /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */
-        const val MAX_VERIFIED_RUNS = 12
+        private const val MAX_VERIFIED_RUNS = 12
         /** A row without a run-level status is only worth a record read while its activity is this recent. */
-        const val VERIFY_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000L
+        private const val VERIFY_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000L
         /** A row that reads finished but was active this recently may still be going; its record settles it. */
-        const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
-        const val AGENT_ID_CONFLICT = "agent_id_conflict"
+        private const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
+        private const val AGENT_ID_CONFLICT = "agent_id_conflict"
         /** Same cap as `POST /v1/agents` `name` and the official rename field. */
-        const val MAX_NAME_LENGTH = 100
+        private const val MAX_NAME_LENGTH = 100
+        /** Why [rename] refuses with Extended mode off; the screens hide the action, this is for whatever still asks. */
+        const val RENAME_NEEDS_EXTENDED_MODE = "Renaming a chat uses Cursor's account service, which is only used in Extended mode."
     }
 }

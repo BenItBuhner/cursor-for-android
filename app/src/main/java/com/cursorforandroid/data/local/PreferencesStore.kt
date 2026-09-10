@@ -106,6 +106,10 @@ class PreferencesStore(
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
         val pinnedModels = stringPreferencesKey("pinned_model_ids")
+        val extendedMode = booleanPreferencesKey("extended_mode")
+        val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
+        val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
+        val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -162,6 +166,53 @@ class PreferencesStore(
 
     suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = edit { p ->
         if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
+    }
+
+    // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
+
+    /**
+     * Whether the app may call Cursor's undocumented `api2` endpoints (see `domain/Capabilities.kt`). Off by default,
+     * and off for every install that predates the setting: it is never inferred from what the app used to do.
+     */
+    val extendedMode: Flow<Boolean> = data.map { it[Keys.extendedMode] ?: false }
+
+    /** When the user acknowledged what Extended mode involves (epoch millis); null until they have, which is what keeps it off. */
+    val extendedModeAcknowledgedAt: Flow<Long?> = data.map { it[Keys.extendedModeAcknowledgedAt] }
+
+    /** True once a build with the Extended mode setting has run on this install, so the one-time upgrade steps run once. */
+    val extendedModeIntroduced: Flow<Boolean> = data.map { it[Keys.extendedModeIntroduced] ?: false }
+
+    /** True while the notice about features that now need Extended mode has yet to be shown to an upgraded install. */
+    val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }
+
+    suspend fun setExtendedMode(enabled: Boolean) = edit { it[Keys.extendedMode] = enabled }
+
+    suspend fun setExtendedModeAcknowledgedAt(epochMillis: Long) = edit { it[Keys.extendedModeAcknowledgedAt] = epochMillis }
+
+    /** Records that the setting exists on this install now, and whether the upgrade notice is owed. One transaction. */
+    suspend fun setExtendedModeIntroduced(noticePending: Boolean) = edit { p ->
+        p[Keys.extendedModeIntroduced] = true
+        if (noticePending) p[Keys.extendedModeNoticePending] = true else p.remove(Keys.extendedModeNoticePending)
+    }
+
+    suspend fun setExtendedModeNoticePending(pending: Boolean) = edit { p ->
+        if (pending) p[Keys.extendedModeNoticePending] = true else p.remove(Keys.extendedModeNoticePending)
+    }
+
+    /**
+     * Makes the pins this device's own, for when the account can no longer be asked about them: the changes still
+     * waiting for the server are folded into the pinned set (they were applied to it when tapped; this only settles
+     * a set the server's answer may have written over since) and forgotten, and the account's first sync is owed
+     * again, so pins made here while the account was out of reach are pushed up should it come back. One transaction.
+     */
+    suspend fun settlePinsLocally() = edit { p ->
+        val pending = p[Keys.pendingPins]?.let(::decodePendingPins) ?: emptyMap()
+        if (pending.isNotEmpty()) {
+            val current = p[Keys.pinned] ?: emptySet()
+            p[Keys.pinned] = (current + pending.filterValues { it }.keys) - pending.filterValues { !it }.keys
+        }
+        p.remove(Keys.pendingPins)
+        p.remove(Keys.pinsMigrated)
     }
 
     /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */

@@ -19,12 +19,16 @@ import java.util.Base64
 
 /** The session could not be started for the stored key. [code] is the backend's reason when it named one. */
 class SessionUnavailableException(message: String, val code: String? = null, cause: Throwable? = null) : IOException(message, cause) {
-    /** True when trying again later cannot help: the key is rejected or the account's policy forbids this device. */
-    val isPermanent: Boolean get() = code == SIGN_IN_POLICY_VIOLATION || code == KEY_REJECTED
+    /**
+     * True when trying again later cannot help: the key is rejected, the account's policy forbids this device, or
+     * Extended mode is off and nothing on `api2` may be called until it is turned on (which resets the callers).
+     */
+    val isPermanent: Boolean get() = code == SIGN_IN_POLICY_VIOLATION || code == KEY_REJECTED || code == EXTENDED_MODE_OFF
 
     companion object {
         const val SIGN_IN_POLICY_VIOLATION = "sign_in_policy_violation"
         const val KEY_REJECTED = "key_rejected"
+        const val EXTENDED_MODE_OFF = "extended_mode_off"
     }
 }
 
@@ -36,12 +40,18 @@ class SessionUnavailableException(message: String, val code: String? = null, cau
  *
  * The session is held in memory only and re-derived when it nears its expiry (the JWT's `exp`), when a call comes
  * back `401`, or when the key it was derived from changes; the API key stays the one credential at rest.
+ *
+ * The exchange is not part of the documented API, and neither is anything the session is used for, so it is behind
+ * Extended mode: [sessionAllowed] is asked before every hand-out, and while it says no, no session exists and none is
+ * started — this is the one choke point every `api2` RPC goes through, whatever a caller further up forgot to check.
  */
 class SessionTokenProvider(
     private val client: OkHttpClient,
     private val apiKeyProvider: () -> String?,
     private val apiUrl: String = CursorLoginEndpoints.API_URL,
     private val now: () -> Long = AppClock::now,
+    /** Whether the account session may be started or handed out at all: Extended mode. Always, for tests of the exchange itself. */
+    private val sessionAllowed: suspend () -> Boolean = { true },
 ) {
     private class Session(val apiKey: String, val accessToken: String, val expiresAtMs: Long)
 
@@ -50,6 +60,12 @@ class SessionTokenProvider(
 
     /** A session token good for at least [EXPIRY_MARGIN_MS] more, exchanging the stored key for a new one when needed. */
     suspend fun accessToken(): String {
+        if (!sessionAllowed()) {
+            // Nothing minted earlier may be handed out either: a session left over from before the mode was turned off
+            // would let a call through that the setting says may not be made.
+            session = null
+            throw SessionUnavailableException("Extended mode is off, so Cursor's account service isn't used.", SessionUnavailableException.EXTENDED_MODE_OFF)
+        }
         val apiKey = apiKeyProvider()?.takeIf { it.isNotBlank() }
             ?: throw SessionUnavailableException("Not signed in.", SessionUnavailableException.KEY_REJECTED)
         session?.takeIf { it.isFresh(apiKey) }?.let { return it.accessToken }

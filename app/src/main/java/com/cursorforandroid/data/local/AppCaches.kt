@@ -50,6 +50,9 @@ class SlashCommandCache(private val cache: JsonDiskCache, private val maxEntries
 
     suspend fun clear() = cache.clear()
 
+    /** Forgets every catalog without disturbing the other caches; for Extended mode changing. */
+    suspend fun removeAll() = cache.removeAll()
+
     private companion object {
         const val VERSION = 1
         const val MAX_ENTRIES = 100
@@ -71,6 +74,9 @@ class PullRequestCache(private val cache: JsonDiskCache) {
     fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
+
+    /** Forgets the states without disturbing the other caches; for Extended mode changing, when their source changes. */
+    suspend fun removeAll() = cache.removeAll()
 
     private companion object {
         const val KEY = "states"
