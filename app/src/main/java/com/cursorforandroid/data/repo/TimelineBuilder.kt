@@ -159,6 +159,14 @@ object TimelineBuilder {
         private var thinkingPending = false
         /** The agent's to-do list as of its last update, so the next update can say what changed. */
         private var todos: List<ToolCallMapper.Todo>? = null
+
+        /**
+         * Where each tool call's group sits in [items]. A call is reported at least twice — running, then its
+         * outcome — and the update has to find the group it went into; without this, every one of those events walks
+         * the whole transcript, so streaming a run costs more the longer the chat already is. Items are only ever
+         * appended or replaced in place, so an index once taken stays right.
+         */
+        private val callGroup = HashMap<String, Int>()
         var status: RunStatus = RunStatus.RUNNING
             private set
         var finished: Boolean = false
@@ -234,6 +242,7 @@ object TimelineBuilder {
             val idx = openGroupIndex()
             val group = items.getOrNull(idx) as? ActivityGroup
             if (group != null) items[idx] = group.copy(steps = group.steps + step) else items += ActivityGroup(nextId("activity"), listOf(step))
+            if (step is ToolCall) callGroup[step.callId] = items.lastIndex
         }
 
         private fun appendThinking(text: String) {
@@ -269,7 +278,7 @@ object TimelineBuilder {
             val call = ToolCallMapper.from(dto, todos)
             if (!call.isRunning) ToolCallMapper.todos(dto)?.let { todos = it }
             // A status update lands on the call it reports on, wherever that is; a new call joins the open group.
-            val idx = items.indexOfLast { it is ActivityGroup && it.calls.any { c -> c.callId == call.callId } }
+            val idx = callGroup[call.callId] ?: -1
             if (idx >= 0) {
                 val group = items[idx] as ActivityGroup
                 items[idx] = group.copy(steps = group.steps.map { if (it is ToolCall && it.callId == call.callId) call else it })
