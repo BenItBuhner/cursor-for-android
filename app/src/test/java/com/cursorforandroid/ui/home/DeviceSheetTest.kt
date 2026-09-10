@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -100,6 +101,32 @@ class DeviceSheetTest {
         compose.onNodeWithText("Use as a team pool").assertExists()
         compose.onNodeWithText("Use as a machine").performClick()
         assertThat(picked).isEqualTo(DeviceTarget.machine("studio"))
+    }
+
+    @Test
+    fun `the typed filter survives the process being killed`() {
+        val restorer = StateRestorationTester(compose)
+        restorer.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                DeviceSheet(
+                    devices = devices,
+                    selected = DeviceTarget.Cloud,
+                    loading = false,
+                    onSelect = {},
+                    onRefresh = {},
+                    onDismiss = {},
+                )
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Device").fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("gpu")
+        compose.onNodeWithText("2 connected \u00b7 1 in use").assertExists()
+
+        restorer.emulateSavedInstanceStateRestore()
+
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Device").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("2 connected \u00b7 1 in use").assertExists()
+        assertThat(compose.onAllNodes(hasText("bennett")).fetchSemanticsNodes()).isEmpty()
     }
 
     @Test

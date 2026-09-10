@@ -32,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,10 +99,10 @@ fun HomeScreen(
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var repoSheet by remember { mutableStateOf(false) }
-    var branchSheet by remember { mutableStateOf(false) }
-    var deviceSheet by remember { mutableStateOf(false) }
-    var modelSheet by remember { mutableStateOf(false) }
+    var repoSheet by rememberSaveable { mutableStateOf(false) }
+    var branchSheet by rememberSaveable { mutableStateOf(false) }
+    var deviceSheet by rememberSaveable { mutableStateOf(false) }
+    var modelSheet by rememberSaveable { mutableStateOf(false) }
 
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
@@ -335,7 +336,7 @@ private fun RepositorySheet(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var filter by remember { mutableStateOf("") }
+    var filter by rememberSaveable { mutableStateOf("") }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         // Picking a row plays the sheet's hide animation before the selection is applied.
         fun pick(repo: Repository?) {
