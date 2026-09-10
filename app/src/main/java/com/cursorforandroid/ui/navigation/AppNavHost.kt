@@ -184,7 +184,7 @@ internal fun AppShell(
     // a chat or Settings with the drawer shut has nothing the list would keep current.
     val listOnScreen = topScreen == Screen.Home ||
         drawerState.isOpen ||
-        drawerState.targetValue == DrawerValue.Open ||
+        drawerState.fraction > 0f ||
         (wide && !sidebarCollapsed)
     LifecycleStartEffect(listOnScreen) {
         val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
