@@ -157,16 +157,23 @@ data class ActivityGroup(
     val steps: List<ActivityStep>,
 ) : TimelineItem {
     val thoughts: List<ThinkingBlock> get() = steps.filterIsInstance<ThinkingBlock>()
-    val calls: List<ToolCall> get() = steps.filterIsInstance<ToolCall>()
+
+    /**
+     * What the steps add up to is worked out once, on first read, and kept: the group is immutable and replaced
+     * whole on every change, while these are read over and over — by the builder placing a tool call's status
+     * update, and by every recomposition of the row. Delegates are no part of the value's identity, and are not
+     * serialized.
+     */
+    val calls: List<ToolCall> by lazy { steps.filterIsInstance<ToolCall>() }
 
     /** The thoughts before the first tool call: the "Thought 3s" row. */
-    val leadingThoughts: List<ThinkingBlock> get() = steps.takeWhile { it is ThinkingBlock }.filterIsInstance<ThinkingBlock>()
+    val leadingThoughts: List<ThinkingBlock> by lazy { steps.takeWhile { it is ThinkingBlock }.filterIsInstance<ThinkingBlock>() }
 
     /** From the first tool call on: the tool calls and the thoughts between them, behind the summary row. */
-    val work: List<ActivityStep> get() = steps.drop(leadingThoughts.size)
+    val work: List<ActivityStep> by lazy { steps.drop(leadingThoughts.size) }
 
     /** The tool call in progress: the latest one still reported as running, or null. */
-    val runningCall: ToolCall? get() = calls.lastOrNull { it.isRunning }
+    val runningCall: ToolCall? by lazy { calls.lastOrNull { it.isRunning } }
     val isRunning: Boolean get() = runningCall != null
 
     /** Whether the newest step is a thought still being written. */
@@ -206,10 +213,10 @@ data class ActivityGroup(
         }
 
     /** The summary row of the work, in Cursor's words. */
-    val header: WorkHeader get() = WorkHeader.of(this)
+    val header: WorkHeader by lazy { WorkHeader.of(this) }
 
     /** What the work counts up to; the numbers behind the summary row. */
-    val summary: WorkSummary get() = WorkSummary.of(calls)
+    val summary: WorkSummary by lazy { WorkSummary.of(calls) }
 }
 
 /** What a stretch of tool calls adds up to, counted the way Cursor's client counts a step group. */

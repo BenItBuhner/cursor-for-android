@@ -85,10 +85,15 @@ private fun QueuedFollowUpRow(
             .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding, end = CursorDimens.composerPadding - 6.dp)
-            .semantics { contentDescription = if (item.error != null) "Queued follow-up $position of $count, not sent: ${item.error}" else "Queued follow-up $position of $count" },
+            .semantics {
+                contentDescription = when (val note = item.warning) {
+                    null -> "Queued follow-up $position of $count"
+                    else -> "Queued follow-up $position of $count, not sent: $note"
+                }
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (item.error != null) {
+        if (item.warning != null) {
             Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(8.dp))
         } else if (item.images.isNotEmpty()) {
@@ -106,25 +111,29 @@ private fun QueuedFollowUpRow(
             }
             Spacer(Modifier.width(8.dp))
         }
-        Text(
-            item.previewText,
-            style = type.input,
-            color = if (item.isSending) colors.textTertiary else colors.textPrimary,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.previewText,
+                style = type.input,
+                color = if (item.isSending) colors.textTertiary else colors.textPrimary,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+            item.warning?.let { note ->
+                Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
         Spacer(Modifier.width(8.dp))
         if (item.isSending) {
             Box(Modifier.size(Glyph + 10.dp).semantics { contentDescription = "Sending" }, contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 11.dp)
             }
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
                 GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary, onEdit)
-                GlyphButton(CursorIcons.ArrowUp, if (item.error != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
+                GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
             }
         }
     }

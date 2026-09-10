@@ -22,8 +22,8 @@ object RecentRepositories {
      */
     fun partition(repos: List<Repository>, agents: List<Agent>, nowMillis: Long): Partition {
         val lastUsed = lastUsedBySlug(agents)
-        val recent = repos
-            .distinctBy { slug(it.url) ?: it.url }
+        val unique = repos.distinctBy { slug(it.url) ?: it.url }
+        val recent = unique
             .mapNotNull { repo ->
                 val key = slug(repo.url) ?: return@mapNotNull null
                 val used = lastUsed[key] ?: return@mapNotNull null
@@ -34,7 +34,7 @@ object RecentRepositories {
             .take(MAX_RECENT)
             .map { it.first }
         val recentSlugs = recent.mapNotNull { slug(it.url) }.toSet()
-        val rest = repos.filter { repo -> slug(repo.url)?.let { it !in recentSlugs } ?: true }
+        val rest = unique.filter { repo -> slug(repo.url)?.let { it !in recentSlugs } ?: true }
         return Partition(recent, rest)
     }
 

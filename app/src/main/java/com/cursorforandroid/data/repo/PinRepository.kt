@@ -71,7 +71,8 @@ class PinRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val now: () -> Long = AppClock::now,
     private val maxMaterialized: Int = MAX_MATERIALIZED,
-    private val onList: suspend (AccountList) -> Unit = {},
+    /** Handed every account list read, with the agents token taken before the read (see [AgentRepository.token]). */
+    private val onList: suspend (AccountList, Int) -> Unit = { _, _ -> },
     /**
      * Whether the account may be read at all, and whether the pins may follow it (Extended mode). Everything, for
      * tests of the sync itself; the graph passes the setting, under which the default leaves the account alone and
@@ -242,7 +243,7 @@ class PinRepository(
             val list = api.list()
             if (generation.get() != startedIn) return Result.success(Unit)
             agents.applyAccountSnapshots(list.composers, agentsToken)
-            runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
+            runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
             if (server.loaded) {

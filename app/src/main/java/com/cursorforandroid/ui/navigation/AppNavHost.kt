@@ -208,12 +208,17 @@ internal fun AppShell(
     }
 
     val rowActions = AgentRowActions(
-        onOpen = { row -> agentsViewModel.markRead(row.agent); openAgent(row.agent.id) },
+        onOpen = { row ->
+            agentsViewModel.markRead(row.agent)
+            openAgent(row.agent.id)
+        },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
         onRename = if (isDemo || extendedMode) ({ row, name -> agentsViewModel.rename(row.agent.id, name) }) else null,
+        onSnooze = { row, until -> agentsViewModel.snooze(row.agent.id, until) },
+        onUnsnooze = { agentsViewModel.unsnooze(it.agent.id) },
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -273,6 +278,7 @@ internal fun AppShell(
                         onOpenSidebar = pane.openSidebar,
                         onOpenAgent = pane.onOpenAgent,
                         onLaunchOpen = ::openAgent,
+                        rowActions = pane.rowActions,
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -299,6 +305,7 @@ internal fun AppShell(
         openSidebar = openSidebar,
         onBack = onBack,
         onOpenAgent = rowActions.onOpen,
+        rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
     )
 
@@ -363,6 +370,7 @@ private class DetailPane(
     val openSidebar: (() -> Unit)?,
     val onBack: (() -> Unit)?,
     val onOpenAgent: (AgentRow) -> Unit,
+    val rowActions: AgentRowActions,
     /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
     val backEnabled: Boolean,
 )

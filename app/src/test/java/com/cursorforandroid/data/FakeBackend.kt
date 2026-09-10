@@ -64,6 +64,8 @@ open class FakeCursorApi : CursorApi {
     val deleted = CopyOnWriteArrayList<String>()
     /** Answers every follow-up with `409 agent_busy`, the way the server does while a run is still going. */
     @Volatile var busyCreateRun = false
+    /** When set, [createRun] waits for it (after recording the request) before filing anything, like a slow server. */
+    @Volatile var createRunGate: CompletableDeferred<Unit>? = null
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
@@ -275,6 +277,7 @@ open class FakeCursorApi : CursorApi {
      */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
         runRequests += body
+        createRunGate?.await()
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         if (busyCreateRun) throw CursorApiException(409, "agent_busy", "Agent is busy.")
         val agent = agents[id] ?: throw notFound()

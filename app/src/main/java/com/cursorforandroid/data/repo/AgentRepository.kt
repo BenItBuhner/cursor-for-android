@@ -507,9 +507,9 @@ class AgentRepository(
      * learned it is kept across refreshes and on disk with the row, like the model. The account list is read after
      * every completed fetch (by the pin sync), so a new row's source lands a moment after the row itself.
      */
-    fun applySources(sources: Map<String, AgentSource>) {
+    fun applySources(sources: Map<String, AgentSource>, startedIn: Int = token()) {
         if (sources.isEmpty()) return
-        _state.update { it.withSources(sources) }
+        publish(null, startedIn) { it.withSources(sources) }
     }
 
     /**

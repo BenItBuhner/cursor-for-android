@@ -49,6 +49,8 @@ class FollowUpStore(context: Context) {
         val modelId: String? = null,
         val modelParams: List<ModelParam> = emptyList(),
         val modelDisplayName: String? = null,
+        /** Written before the request goes out, so a restore knows a send may have got through; see [QueuedFollowUp]. */
+        val sendStartedAtMillis: Long? = null,
     )
 
     @Serializable
@@ -71,6 +73,7 @@ class FollowUpStore(context: Context) {
                     modelId = q.modelId,
                     modelParams = q.modelParams,
                     modelDisplayName = q.modelDisplayName,
+                    sendStartedAtMillis = q.sendStartedAtMillis,
                 )
             },
             restored = true,
@@ -106,6 +109,7 @@ class FollowUpStore(context: Context) {
                     modelId = q.modelId,
                     modelParams = q.modelParams,
                     modelDisplayName = q.modelDisplayName,
+                    sendStartedAtMillis = q.sendStartedAtMillis,
                 )
             },
         )

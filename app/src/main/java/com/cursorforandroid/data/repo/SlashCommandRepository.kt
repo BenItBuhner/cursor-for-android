@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Which composer a `/` catalog is for: the repository a new chat starts on, or the agent a follow-up goes to. */
 sealed class SlashScope {
@@ -75,15 +77,42 @@ class SlashCommandRepository(
     /** A fetched catalog; [complete] is false when the scope's own list could not be had and only the rest is in it. */
     private class Fetched(val catalog: SlashCatalog, val complete: Boolean)
 
-    private val loaded = MutableStateFlow<Map<String, Loaded>>(emptyMap())
-    private val locks = HashMap<String, Mutex>()
-    private val locksGuard = Mutex()
+    /**
+     * What every scope's load shares, held as one value so a fetch cannot be credited to the wrong backend: writing
+     * the commands and the backend they came from as two stores let a load finishing under one account claim
+     * another's answer.
+     */
+    private data class Shared(
+        /** The global commands, fetched once per backend (they do not depend on the repository). */
+        val globals: List<SlashCommand>? = null,
+        val globalsFor: CursorBackend? = null,
+        val globalFailedAt: Long = 0L,
+        /** When the account service last refused a scope's own list, by scope key: one bad agent rests only itself. */
+        val scopedFailedAt: Map<String, Long> = emptyMap(),
+    )
 
-    /** The global commands, fetched once per backend (they do not depend on the repository); null until they have been. */
-    private var global: List<SlashCommand>? = null
-    private var globalFor: CursorBackend? = null
-    private var globalFailedAt = 0L
-    private var scopedFailedAt = 0L
+    private val loaded = MutableStateFlow<Map<String, Loaded>>(emptyMap())
+    private val locks = ConcurrentHashMap<String, Mutex>()
+
+    @Volatile private var shared = Shared()
+
+    /**
+     * Bumped by [reset]. A catalog is fetched in the caller's scope, so a sign-out cannot cancel a request already
+     * out; what it can do is keep the answer from being published, written or shared under the next account.
+     */
+    private val generation = AtomicInteger()
+
+    /** Serializes the check with the publication it guards, and both with [reset]. */
+    private val publishLock = Any()
+
+    private fun token(): Int = generation.get()
+
+    /** Applies [apply] only while what it would write still belongs to [startedIn] and to [backend]. */
+    private fun publish(startedIn: Int, backend: CursorBackend, apply: () -> Unit): Boolean = synchronized(publishLock) {
+        if (generation.get() != startedIn || session.current !== backend) return false
+        apply()
+        true
+    }
 
     /** The catalog for [scope] as it stands: the built-ins until [load] has published anything better. */
     fun catalog(scope: SlashScope): Flow<SlashCatalog> = loaded.map { it[scope.key]?.catalog ?: SlashCatalog.BUILT_IN }.distinctUntilChanged()
@@ -100,9 +129,13 @@ class SlashCommandRepository(
      */
     suspend fun load(scope: SlashScope, force: Boolean = false): SlashCatalog {
         val backend = session.current
+        val startedIn = token()
+        // Taken before the call goes out: sampled at the write instead, it would pass for current on the far side
+        // of a sign-out that has already finished wiping.
+        val cacheToken = cache?.token() ?: 0
         if (backend.isDemo) {
             val catalog = SlashCatalog.BUILT_IN.mergedWith(demo(scope))
-            publish(scope, catalog, backend, Source.Account)
+            publishCatalog(scope, catalog, backend, startedIn, Source.Account)
             return catalog
         }
         val source = source()
@@ -114,19 +147,18 @@ class SlashCommandRepository(
             if (known == null && cache != null) {
                 cache.read(source.cacheKey(scope))?.let { saved ->
                     val expires = saved.savedAtMillis + ttlOf(saved.value)
-                    if (session.current === backend && source() == source) loaded.update { it + (scope.key to Loaded(saved.value, expires, backend, source)) }
+                    publishCatalog(scope, saved.value, backend, startedIn, source, expires)
                     if (!force && now < expires) return@withLock saved.value
                 }
             }
 
             // Nothing could be fetched: what is published for this source stands (the saved copy, however old, above).
-            val fetched = fetch(scope, backend, now, source)
+            val fetched = fetch(scope, backend, now, startedIn, source)
                 ?: return@withLock loaded.value[scope.key]?.takeIf { it.backend === backend && it.source == source }?.catalog ?: SlashCatalog.BUILT_IN
-            // A backend switch or a mode change while the call was out: the answer is not this composer's to show.
-            if (session.current !== backend || source() != source) return@withLock fetched.catalog
             // A catalog missing the scope's own list is a stand-in until the source is tried again.
-            publish(scope, fetched.catalog, backend, source, now + if (fetched.complete) ttlOf(fetched.catalog) else BACKOFF_MS)
-            if (fetched.complete && scope !is SlashScope.None) cache?.write(source.cacheKey(scope), fetched.catalog)
+            val expires = now + if (fetched.complete) ttlOf(fetched.catalog) else BACKOFF_MS
+            if (!publishCatalog(scope, fetched.catalog, backend, startedIn, source, expires)) return@withLock fetched.catalog
+            if (fetched.complete && scope !is SlashScope.None) cache?.write(source.cacheKey(scope), fetched.catalog, cacheToken)
             fetched.catalog
         }
     }
@@ -136,19 +168,23 @@ class SlashCommandRepository(
      * Null when nothing could be fetched; a scope list that fails while the global one succeeds still yields a catalog
      * (and the other way round), so one refused call does not cost the other's answer.
      */
-    private suspend fun fetch(scope: SlashScope, backend: CursorBackend, now: Long, source: Source): Fetched? = coroutineScope {
+    private suspend fun fetch(scope: SlashScope, backend: CursorBackend, now: Long, startedIn: Int, source: Source): Fetched? = coroutineScope {
         val api = if (source == Source.Account) account else repoContents
-        val globalDeferred = async { if (source == Source.Account) globalCommands(backend, now) else emptyList() }
+        val globalDeferred = async { if (source == Source.Account) globalCommands(backend, now, startedIn) else emptyList() }
         val scoped = when {
             scope is SlashScope.None -> Result.success(SlashCatalog())
-            now - scopedFailedAt < BACKOFF_MS -> Result.failure(IllegalStateException("resting"))
+            now - (shared.scopedFailedAt[scope.key] ?: 0L) < BACKOFF_MS -> Result.failure(IllegalStateException("resting"))
             else -> runCatching {
                 when (scope) {
                     is SlashScope.Repo -> api.forRepository(scope.repoUrl, scope.ref)
                     is SlashScope.Agent -> api.forAgent(scope.agentId, scope.repoUrl, scope.ref)
                     SlashScope.None -> SlashCatalog()
                 }
-            }.onFailure { scopedFailedAt = now }.onSuccess { scopedFailedAt = 0L }
+            }
+                // Only this scope rests: the account service is reachable under some keys and not others, and a
+                // repository nobody can see says nothing about the next one. Keys whose rest is over are dropped.
+                .onFailure { share(startedIn, backend) { copy(scopedFailedAt = scopedFailedAt.filterValues { now - it < BACKOFF_MS } + (scope.key to now)) } }
+                .onSuccess { share(startedIn, backend) { copy(scopedFailedAt = scopedFailedAt - scope.key) } }
         }
         val globals = globalDeferred.await()
         val scopedCatalog = scoped.getOrNull()
@@ -159,30 +195,50 @@ class SlashCommandRepository(
         Fetched(catalog, complete = scopedCatalog != null)
     }
 
-    private suspend fun globalCommands(backend: CursorBackend, now: Long): List<SlashCommand>? {
-        global?.takeIf { globalFor === backend }?.let { return it }
-        if (now - globalFailedAt < BACKOFF_MS) return null
+    private suspend fun globalCommands(backend: CursorBackend, now: Long, startedIn: Int): List<SlashCommand>? {
+        val held = shared
+        held.globals?.takeIf { held.globalsFor === backend }?.let { return it }
+        if (now - held.globalFailedAt < BACKOFF_MS) return null
         return runCatching { account.global() }
-            .onSuccess { global = it; globalFor = backend; globalFailedAt = 0L }
-            .onFailure { globalFailedAt = now }
+            .onSuccess { commands -> share(startedIn, backend) { copy(globals = commands, globalsFor = backend, globalFailedAt = 0L) } }
+            .onFailure { share(startedIn, backend) { copy(globalFailedAt = now) } }
             .getOrNull()
     }
 
-    private fun publish(scope: SlashScope, catalog: SlashCatalog, backend: CursorBackend, source: Source, expiresAtMillis: Long = Long.MAX_VALUE) {
+    /**
+     * Publishes under the generation and backend the load started in, and under its [source]: a mode change while
+     * the call was out resets this repository (see [reset]), so the generation check is what keeps the other mode's
+     * answer from landing.
+     */
+    private fun publishCatalog(
+        scope: SlashScope,
+        catalog: SlashCatalog,
+        backend: CursorBackend,
+        startedIn: Int,
+        source: Source,
+        expiresAtMillis: Long = Long.MAX_VALUE,
+    ): Boolean = publish(startedIn, backend) {
         loaded.update { it + (scope.key to Loaded(catalog, expiresAtMillis, backend, source)) }
+    }
+
+    private fun share(startedIn: Int, backend: CursorBackend, transform: Shared.() -> Shared) {
+        publish(startedIn, backend) { shared = shared.transform() }
     }
 
     private fun ttlOf(catalog: SlashCatalog): Long = if (catalog.pending) PENDING_TTL_MS else TTL_MS
 
-    private suspend fun lockFor(key: String): Mutex = locksGuard.withLock { locks.getOrPut(key) { Mutex() } }
+    private fun lockFor(key: String): Mutex = locks.computeIfAbsent(key) { Mutex() }
 
     /** On sign-out, a backend switch, or Extended mode changing: nothing loaded so far belongs to what comes next. */
     fun reset() {
-        loaded.value = emptyMap()
-        global = null
-        globalFor = null
-        globalFailedAt = 0L
-        scopedFailedAt = 0L
+        synchronized(publishLock) {
+            generation.incrementAndGet()
+            loaded.value = emptyMap()
+            shared = Shared()
+        }
+        // The keys are the signed-out account's agents and repositories; a load still holding one of these is on its
+        // way out and cannot publish anything now.
+        locks.clear()
     }
 
     companion object {

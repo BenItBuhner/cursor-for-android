@@ -138,7 +138,7 @@ class ExtendedModeGatingTest {
     fun `off, the pins are this device's and the account is never listed`() = runBlocking<Unit> {
         val agents = agents()
         val handed = CopyOnWriteArrayList<AccountList>()
-        val pins = PinRepository(session, prefs, agents, account, scope, onList = { handed += it; agents.applySources(it.sources) }, capabilities = capabilities)
+        val pins = PinRepository(session, prefs, agents, account, scope, onList = { list, agentsToken -> handed += list; agents.applySources(list.sources, agentsToken) }, capabilities = capabilities)
         prefs.setPinsMigrated(true)
 
         assertThat(pins.toggle("bc-1").isSuccess).isTrue()
@@ -166,7 +166,7 @@ class ExtendedModeGatingTest {
         extended = true
         val agents = agents()
         val handed = CopyOnWriteArrayList<AccountList>()
-        val pins = PinRepository(session, prefs, agents, account, scope, onList = { handed += it; agents.applySources(it.sources) }, capabilities = capabilities)
+        val pins = PinRepository(session, prefs, agents, account, scope, onList = { list, agentsToken -> handed += list; agents.applySources(list.sources, agentsToken) }, capabilities = capabilities)
         prefs.setPinsMigrated(true)
 
         assertThat(pins.toggle("bc-1").isSuccess).isTrue()

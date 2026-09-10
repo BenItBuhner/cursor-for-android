@@ -80,6 +80,8 @@ fun ShareDestinationScreen(
         onArchive = {},
         onUnarchive = {},
         onRename = { _, _ -> },
+        onSnooze = { _, _ -> },
+        onUnsnooze = {},
     )
 
     // The picker is drawn over the shell, not in its place: without this the drawer's edge drag and whatever

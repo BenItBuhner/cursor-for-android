@@ -70,6 +70,18 @@ class SlashCatalogTest {
     }
 
     @Test
+    fun `each entry appears once in the first group it matches`() {
+        val catalog = SlashCatalog(
+            listOf(
+                SlashCommand("review", "A review skill", origin = Origin.Project),
+                SlashCommand("revamp", "Revamp the docs", origin = Origin.Project),
+            ),
+        )
+        assertThat(catalog.search("rev").map { it.name }).containsExactly("review", "revamp").inOrder()
+        assertThat(catalog.search("review").map { it.name }).containsExactly("review")
+    }
+
+    @Test
     fun `the origin is read off the source path`() {
         assertThat(SlashCommand.originOf("/home/ubuntu/.cursor/skills-cursor/review/SKILL.md")).isEqualTo(Origin.BuiltIn)
         assertThat(SlashCommand.originOf("/home/ubuntu/.cursor/plugins/cache/vercel/skills/chat-sdk/SKILL.md")).isEqualTo(Origin.Plugin)

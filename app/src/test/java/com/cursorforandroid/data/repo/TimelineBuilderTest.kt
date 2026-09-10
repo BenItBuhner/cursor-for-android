@@ -23,6 +23,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
+import kotlin.system.measureTimeMillis
 
 class TimelineBuilderTest {
 
@@ -666,5 +667,45 @@ class TimelineBuilderTest {
         assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
         assertThat((items[2] as AssistantMessage).markdown).isEqualTo("The build failed on a missing dependency.")
         assertThat((items.last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
+    }
+
+    /**
+     * A tool call is reported at least twice and the update has to find the group it went into. Looking for it by
+     * walking the transcript costs the whole chat on every event, so a long chat streams slower and slower; the
+     * budget here is loose enough not to mind a busy machine and far under what that walk takes.
+     */
+    @Test
+    fun `a long chat streams at the cost of its newest work, not of all of it`() {
+        val rounds = 1600
+        val perRound = 20
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        val elapsed = measureTimeMillis {
+            repeat(rounds) { r ->
+                live.apply(RunStreamEvent.Assistant("Round $r."))
+                repeat(perRound) { c ->
+                    live.apply(tool("c-$r-$c", "read_file", "running", "path" to "File$c.kt"))
+                    live.apply(tool("c-$r-$c", "read_file", "completed", "path" to "File$c.kt"))
+                }
+            }
+        }
+        val items = live.snapshot()
+        assertThat(items.filterIsInstance<ActivityGroup>()).hasSize(rounds)
+        // Every update landed on its own call: no group grew past the calls made in its round, and none was lost.
+        assertThat(items.filterIsInstance<ActivityGroup>().map { it.calls.size }.distinct()).containsExactly(perRound)
+        assertThat(items.filterIsInstance<ActivityGroup>().last().calls.none { it.isRunning }).isTrue()
+        assertThat(elapsed).isLessThan(2_500L)
+    }
+
+    @Test
+    fun `what a group adds up to is worked out once`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Thinking("Where does the picker live?"))
+        live.apply(tool("c1", "read_file", "completed", "path" to "ModelSheet.kt"))
+        val group = live.group()
+        assertThat(group.calls).isSameInstanceAs(group.calls)
+        assertThat(group.header).isSameInstanceAs(group.header)
+        assertThat(group.summary).isSameInstanceAs(group.summary)
+        assertThat(group.work).isSameInstanceAs(group.work)
+        assertThat(group.leadingThoughts).isSameInstanceAs(group.leadingThoughts)
     }
 }

@@ -41,6 +41,8 @@ class FinishWatchdogTest {
     private val streamer = FakeRunStreamer()
     private var now = 1_800_000_000_000L
     private var serviceActive = false
+    private var canShowLive = true
+    private var postSucceeds = true
     private val announced = CopyOnWriteArrayList<TrackedRun>()
     private val remembered = mutableSetOf<String>()
 
@@ -70,7 +72,8 @@ class FinishWatchdogTest {
         prefs = prefs,
         runRecord = { agentId, runId -> api.getRun(agentId, runId) },
         isServiceActive = { serviceActive },
-        announce = { announced += it },
+        canShowLive = { canShowLive },
+        announce = { announced += it; postSucceeds },
         nowProvider = { now },
         announced = remembered,
     )
@@ -200,5 +203,45 @@ class FinishWatchdogTest {
         assertThat(announced.map { it.title }).containsExactly("Agent")
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced).hasSize(1)
+    }
+
+    /**
+     * The job is persisted and re-arms itself, so without this a permission taken away while the app is in the
+     * background leaves it checking every five minutes, for ever, to produce a card the system drops.
+     */
+    @Test
+    fun `a card that could not appear is neither worked for nor counted as told`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        finish("run-1", "FINISHED", "Done.", 1_000, "2026-04-13T18:30:01.000Z")
+        val recordReads = api.getRunCalls
+
+        canShowLive = false
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Off)
+        assertThat(api.getRunCalls).isEqualTo(recordReads)
+        assertThat(announced).isEmpty()
+
+        // Notifications are back on, but the system drops this card all the same.
+        canShowLive = true
+        postSucceeds = false
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced).hasSize(1)
+
+        // The next check to find the row running again — a list restored from before the finish — tells it, because
+        // a card that was dropped was never told.
+        postSucceeds = true
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced.map { it.title }).containsExactly("Agent", "Agent")
+    }
+
+    @Test
+    fun `a snoozed chat is not announced when its run finishes`() = runBlocking {
+        api.addRunningAgent("bc-1", "Noisy worker", "run-1")
+        agents.refresh()
+        prefs.snooze("bc-1", Long.MAX_VALUE, nowMillis = now)
+        finish("run-1", "FINISHED", "Done in the background.", 4_000, "2026-04-13T18:30:04.000Z")
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced).isEmpty()
     }
 }

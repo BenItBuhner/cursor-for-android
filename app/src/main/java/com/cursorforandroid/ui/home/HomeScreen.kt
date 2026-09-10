@@ -1,7 +1,10 @@
 package com.cursorforandroid.ui.home
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +30,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +54,10 @@ import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
+import com.cursorforandroid.ui.agents.AgentRowActions
+import com.cursorforandroid.ui.agents.ChatOverflowMenu
+import com.cursorforandroid.ui.agents.RenameChatDialog
+import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorHeader
@@ -92,6 +101,7 @@ fun HomeScreen(
     onOpenSidebar: (() -> Unit)?,
     onOpenAgent: (AgentRow) -> Unit,
     onLaunchOpen: (agentId: String) -> Unit,
+    rowActions: AgentRowActions,
     modifier: Modifier = Modifier,
 ) {
     val viewModel: NewAgentViewModel = viewModel(factory = NewAgentViewModel.Factory(graph))
@@ -192,7 +202,7 @@ fun HomeScreen(
                 }
             }
             items(recent, key = { it.agent.id }) { row ->
-                RecentChatRow(row, onClick = { onOpenAgent(row) }, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
+                RecentChatRow(row, onClick = { onOpenAgent(row) }, actions = rowActions, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth(), nowMillis = listState.nowMillis)
             }
         }
     }
@@ -251,16 +261,43 @@ fun HomeScreen(
 
 /**
  * Recent chat row from cursor.com/agents: a preview card on the left, then the title with the unread dot and a
- * metadata line (state glyph · model · repo · age).
+ * metadata line (state glyph · model · repo · age). Long-press opens the same chat menu as the sidebar.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modifier, nowMillis: Long = AppClock.now()) {
+fun RecentChatRow(
+    row: AgentRow,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    nowMillis: Long = AppClock.now(),
+    actions: AgentRowActions? = null,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent = row.agent
+    val shape = CursorTheme.shapes.xl
+    var menuOpen by remember { mutableStateOf(false) }
+    var renameOpen by remember { mutableStateOf(false) }
+    var snoozeOpen by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    Box(modifier) {
     Row(
-        modifier
-            .pressable(onClick, CursorTheme.shapes.xl)
+        Modifier
+            .fillMaxWidth()
+            .then(
+                if (actions != null) {
+                    Modifier
+                        .clip(shape)
+                        .combinedClickable(
+                            interactionSource = interaction,
+                            indication = ripple(color = colors.base),
+                            onClick = onClick,
+                            onLongClick = { menuOpen = true },
+                        )
+                } else {
+                    Modifier.pressable(onClick, shape)
+                },
+            )
             .padding(horizontal = 6.dp, vertical = CursorDimens.recentRowGap / 2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -281,6 +318,7 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
+                    row.isSnoozed -> Icon(CursorIcons.Clock, "Snoozed", tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                     agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, row.pullRequest?.label ?: "Pull request", tint = pullRequestTint(row.pullRequest), modifier = Modifier.size(14.dp))
                     agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
                     row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
@@ -290,6 +328,30 @@ fun RecentChatRow(row: AgentRow, onClick: () -> Unit, modifier: Modifier = Modif
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
                 workspace?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
                 Text(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis), style = type.small, color = colors.textQuaternary)
+            }
+        }
+    }
+        if (actions != null) {
+            ChatOverflowMenu(
+                row = row,
+                expanded = menuOpen,
+                onDismiss = { menuOpen = false },
+                onRename = { menuOpen = false; renameOpen = true },
+                onSnooze = { menuOpen = false; snoozeOpen = true },
+                actions = actions,
+            )
+            if (renameOpen) {
+                RenameChatDialog(
+                    initialName = agent.name,
+                    onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
+                    onDismiss = { renameOpen = false },
+                )
+            }
+            if (snoozeOpen) {
+                SnoozeChatDialog(
+                    onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
+                    onDismiss = { snoozeOpen = false },
+                )
             }
         }
     }
@@ -304,6 +366,7 @@ private fun PreviewCard(row: AgentRow) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
             when {
                 agent.hasPullRequest -> PullRequestPill(row.pullRequest)
+                row.isSnoozed -> Pill("Snoozed", icon = CursorIcons.Clock)
                 row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
                 row.indicator == AgentIndicator.Error -> Pill("Failed", icon = CursorIcons.Warning, tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)

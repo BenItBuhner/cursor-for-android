@@ -11,6 +11,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -59,10 +60,11 @@ class LiveNotificationSupervisorTest {
         isFromCache = false,
     )
 
-    private fun TestScope.supervise(): Job = launch {
+    private fun TestScope.supervise(now: () -> Long = { currentTime }): Job = launch {
         LiveNotificationSupervisor(
             start = { starts += currentTime; acceptStart },
             stop = { stops++ },
+            now = now,
         ).run(liveDecisions(session, list, enabled, serviceActive))
     }
 
@@ -276,6 +278,53 @@ class LiveNotificationSupervisorTest {
     }
 
     @Test
+    fun `churn in the running set still resets the loss count after a healthy spell`() = runTest {
+        val job = supervise()
+        list.value = fetched("bc-1")
+        runCurrent()
+        serviceActive.value = true
+        runCurrent()
+
+        // The running set changes many times, but the service stays up long enough to count as healthy.
+        tick(30_000)
+        list.value = fetched("bc-1", "bc-2")
+        runCurrent()
+        tick(31_000)
+        list.value = fetched("bc-2", "bc-3")
+        runCurrent()
+
+        serviceActive.value = false
+        runCurrent()
+        val lostAt = currentTime
+        tick(4_999)
+        assertThat(starts.last()).isLessThan(lostAt + LiveNotificationSupervisor.RESTART_BASE_MS)
+        tick(1)
+        assertThat(starts.last()).isEqualTo(lostAt + LiveNotificationSupervisor.RESTART_BASE_MS)
+        job.cancel()
+    }
+
+    @Test
+    fun `signing out clears only the live notifications for agents that were being tracked`() = runTest {
+        var cleared: Set<String>? = null
+        val job = launch {
+            LiveNotificationSupervisor(
+                start = { true },
+                stop = { stops++ },
+                clearPosted = { cleared = it },
+            ).run(
+                flowOf(
+                    LiveDecision.Track(setOf("bc-1", "bc-2"), serviceActive = true),
+                    LiveDecision.SignedOut,
+                ),
+            )
+        }
+        runCurrent()
+        assertThat(cleared).isEqualTo(setOf("bc-1", "bc-2"))
+        assertThat(stops).isEqualTo(1)
+        job.cancel()
+    }
+
+    @Test
     fun `decisions are pure functions of what the app knows`() {
         val signedIn = SessionState.SignedIn(user, isDemo = false)
         assertThat(liveDecision(signedIn, fetched("bc-1"), enabled = true, serviceActive = false, canShowLive = false))
@@ -287,5 +336,9 @@ class LiveNotificationSupervisorTest {
         assertThat(liveDecision(signedIn, fetched(finished = listOf("bc-1")), enabled = true, serviceActive = true)).isEqualTo(LiveDecision.Idle)
         assertThat(liveDecision(signedIn, fetched("bc-1", "bc-2"), enabled = true, serviceActive = true))
             .isEqualTo(LiveDecision.Track(setOf("bc-1", "bc-2"), serviceActive = true))
+        assertThat(liveDecision(signedIn, fetched("bc-1", "bc-2"), enabled = true, serviceActive = true, quietIds = setOf("bc-1")))
+            .isEqualTo(LiveDecision.Track(setOf("bc-2"), serviceActive = true))
+        assertThat(liveDecision(signedIn, fetched("bc-1"), enabled = true, serviceActive = false, quietIds = setOf("bc-1")))
+            .isEqualTo(LiveDecision.Idle)
     }
 }

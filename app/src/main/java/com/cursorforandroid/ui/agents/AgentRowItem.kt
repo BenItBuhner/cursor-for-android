@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -63,6 +64,8 @@ data class AgentRowActions(
     val onUnarchive: (AgentRow) -> Unit,
     /** Null hides "Rename": the public API has no rename, so it is offered only in Extended mode. */
     val onRename: ((AgentRow, String) -> Unit)?,
+    val onSnooze: (AgentRow, Long) -> Unit,
+    val onUnsnooze: (AgentRow) -> Unit,
 )
 
 /**
@@ -86,6 +89,7 @@ fun AgentRowItem(
     val shape = CursorTheme.shapes.base
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var renameOpen by rememberSaveable { mutableStateOf(false) }
+    var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
@@ -128,25 +132,59 @@ fun AgentRowItem(
                 Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-            val clipboard = LocalClipboardManager.current
-            val uriHandler = LocalUriHandler.current
-            MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; actions.onTogglePin(row) }
-            if (actions.onRename != null) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
-            MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; uriHandler.openUri(agent.url) }
-            MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
-            if (agent.isArchived) {
-                MenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; actions.onUnarchive(row) }
-            } else {
-                MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; actions.onArchive(row) }
-            }
-        }
+        ChatOverflowMenu(
+            row = row,
+            expanded = menuOpen,
+            onDismiss = { menuOpen = false },
+            onRename = { menuOpen = false; renameOpen = true },
+            onSnooze = { menuOpen = false; snoozeOpen = true },
+            actions = actions,
+        )
         if (renameOpen) {
             RenameChatDialog(
                 initialName = agent.name,
                 onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
                 onDismiss = { renameOpen = false },
             )
+        }
+        if (snoozeOpen) {
+            SnoozeChatDialog(
+                onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
+                onDismiss = { snoozeOpen = false },
+            )
+        }
+    }
+}
+
+/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row. */
+@Composable
+fun ChatOverflowMenu(
+    row: AgentRow,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onSnooze: () -> Unit,
+    actions: AgentRowActions,
+) {
+    val clipboard = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
+    val agent = row.agent
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = CursorTheme.colors.elevated, shape = CursorTheme.shapes.lg) {
+        MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
+        if (actions.onRename != null) MenuItem("Rename", CursorIcons.Pencil) { onRename() }
+        MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
+        MenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
+        if (!agent.isArchived) {
+            if (row.isSnoozed) {
+                MenuItem("Unsnooze", CursorIcons.Clock) { onDismiss(); actions.onUnsnooze(row) }
+            } else {
+                MenuItem("Snooze", CursorIcons.Clock) { onSnooze() }
+            }
+        }
+        if (agent.isArchived) {
+            MenuItem("Unarchive", CursorIcons.Archive) { onDismiss(); actions.onUnarchive(row) }
+        } else {
+            MenuItem("Archive", CursorIcons.Archive) { onDismiss(); actions.onArchive(row) }
         }
     }
 }

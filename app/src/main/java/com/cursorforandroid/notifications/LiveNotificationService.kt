@@ -20,6 +20,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.domain.LiveActivityState
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -48,6 +50,14 @@ class LiveNotificationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
+
+    /**
+     * The collectors following the runs, or null when nothing is being followed. Kept apart from [inForeground],
+     * which says only that the platform's `startForeground` promise has been answered: a shutdown stops watching
+     * at once, while the destroy it asked for arrives later, and a start delivered in between is handed to this
+     * same instance and has to start the watching over.
+     */
+    private var watch: CoroutineScope? = null
     private var idleJob: Job? = null
     private var latestStartId = 0
 
@@ -68,7 +78,7 @@ class LiveNotificationService : Service() {
             shutdown(keepWatching = false, force = true)
             return START_NOT_STICKY
         }
-        val firstStart = !inForeground
+        val firstStart = watch == null
         if (!enterForeground()) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP_RUN) {
             val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
@@ -77,7 +87,7 @@ class LiveNotificationService : Service() {
         } else if (!firstStart) {
             // Re-issued start (running set changed, or notification permission was just granted): show the current
             // state, or start the wait over if this arrived just as a shutdown was declining to stop the service.
-            val state = graph.runMonitor.state.value
+            val state = audible(graph.runMonitor.state.value)
             if (state.running.isNotEmpty()) post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, state)) else scheduleIdleShutdown(state)
         }
         return START_NOT_STICKY
@@ -94,7 +104,7 @@ class LiveNotificationService : Service() {
      */
     private fun keepForegroundPromise(): Boolean {
         if (inForeground) return true
-        val initial = graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }
+        val initial = audible(graph.runMonitor.state.value).takeIf { it.running.isNotEmpty() }
             ?.let { LiveNotificationRenderer.live(this, it) }
             ?: LiveNotificationRenderer.connecting(this)
         try {
@@ -118,15 +128,25 @@ class LiveNotificationService : Service() {
     }
 
     private fun enterForeground(): Boolean {
-        if (inForeground) return true
-        val monitor = graph.runMonitor
         if (!keepForegroundPromise()) return false
+        if (watch != null) return true
+        val monitor = graph.runMonitor
+        val watching = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+        watch = watching
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
-        scope.launch { monitor.finished.collect { onRunFinished(it) } }
+        watching.launch {
+            monitor.finished.collect { run ->
+                val local = graph.prefs.localAgentState.first()
+                if (local.isSnoozed(run.agentId, AppClock.now())) return@collect
+                onRunFinished(run)
+            }
+        }
         monitor.start()
-        scope.launch {
-            combine(monitor.state, graph.prefs.liveNotifications) { state, enabled -> state to enabled }
-                .collect { (state, enabled) ->
+        watching.launch {
+            combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState) { state, enabled, local ->
+                Triple(audible(state, local.quietIds(AppClock.now())), enabled, local)
+            }
+                .collect { (state, enabled, _) ->
                     when {
                         !enabled -> shutdown(keepWatching = false)
                         state.running.isEmpty() -> scheduleIdleShutdown(state)
@@ -151,6 +171,13 @@ class LiveNotificationService : Service() {
             val current = graph.runMonitor.state.value
             shutdown(keepWatching = !current.hasReconciled || current.totalRunning > 0)
         }
+    }
+
+    private var lastQuietIds: Set<String> = emptySet()
+
+    private fun audible(state: LiveActivityState, quietIds: Set<String> = lastQuietIds): LiveActivityState {
+        lastQuietIds = quietIds
+        return state.withoutQuiet(quietIds)
     }
 
     private fun onRunFinished(run: TrackedRun) {
@@ -189,6 +216,9 @@ class LiveNotificationService : Service() {
         idleJob = null
         if (!force && !stopSelfResult(latestStartId)) return
         graph.runMonitor.stop()
+        watch?.cancel()
+        watch = null
+        inForeground = false
         if (keepWatching) {
             FinishWatchdogJobService.arm(this, FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
         } else {
@@ -212,6 +242,7 @@ class LiveNotificationService : Service() {
     override fun onDestroy() {
         scope.cancel()
         graph.runMonitor.stop()
+        watch = null
         inForeground = false
         _active.value = false
         super.onDestroy()

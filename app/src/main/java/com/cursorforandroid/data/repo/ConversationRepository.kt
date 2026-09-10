@@ -994,6 +994,29 @@ class ConversationRepository(
     }
 
     /**
+     * Whether [text] is the newest prompt the server holds for this chat, filed no earlier than [sinceMillis]. This
+     * is what a follow-up whose send the app did not live to see the end of has to ask before it goes out again: the
+     * runs API takes no idempotency key, so nothing else can tell a message that arrived from one that did not.
+     *
+     * A follow-up the server accepted is, by construction, the last prompt of the chat and the newest run of it. The
+     * run's stamp is the server's and [sinceMillis] this device's, so the two are compared with room for the clocks
+     * disagreeing — being a little generous costs a duplicate that would not have been sent, never a message shown
+     * as sent that was not.
+     *
+     * A failure is not an answer of no: the caller has to tell "it did not arrive" from "nobody could say".
+     */
+    suspend fun wasSentSince(agentId: String, text: String, sinceMillis: Long): Result<Boolean> = runCatching {
+        val api = session.current.api
+        coroutineScope {
+            val conversation = async { api.conversationV0(agentId) }
+            val runs = async { api.listRuns(agentId, limit = RUN_PAGE_SIZE) }
+            val newest = conversation.await().messages.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
+            val newestRunAt = runs.await().items.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
+            newest == text.trim() && newestRunAt >= sinceMillis - CLOCK_SKEW_ALLOWANCE_MS
+        }
+    }
+
+    /**
      * Shows a follow-up in the transcript before its request goes out — as a pending bubble, paired with a placeholder
      * run so it is built like every other turn (ordered by the run's stamp, its images keyed by the run) until the
      * server's run takes its place. [sendStaged] sends it; [discardStaged] takes it down again. Split from
@@ -1314,6 +1337,8 @@ class ConversationRepository(
         /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
         const val MAX_PARALLEL_REPLAYS = 3
         const val RUN_PAGE_SIZE = 50
+        /** Room for device and server clocks to disagree when matching a send marker to a run stamp. */
+        const val CLOCK_SKEW_ALLOWANCE_MS = 60_000L
         /** Pages of runs one load will read to cover the transcript's prompts before giving the join up. */
         const val MAX_RUN_PAGES = 8
         /** A chat opened this recently is not fetched again when the app comes to the foreground. */

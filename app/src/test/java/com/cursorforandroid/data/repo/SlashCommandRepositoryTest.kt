@@ -16,8 +16,15 @@ import com.cursorforandroid.domain.SlashCommand.Kind
 import com.cursorforandroid.domain.SlashCommand.Origin
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -25,6 +32,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -39,12 +47,16 @@ class SlashCommandRepositoryTest {
         var globals: List<SlashCommand> = listOf(SlashCommand("goal", "Set a goal that Cursor will pursue", Kind.Command), SlashCommand("standup", "Standup notes", Kind.Command))
         var failScoped: Throwable? = null
         var failGlobal: Throwable? = null
-        val repoCalls = mutableListOf<Pair<String, String?>>()
+        /** Hold a call open, after it has been recorded, the way a slow account service would. */
+        @Volatile var scopedGate: CompletableDeferred<Unit>? = null
+        @Volatile var globalGate: CompletableDeferred<Unit>? = null
+        val repoCalls = CopyOnWriteArrayList<Pair<String, String?>>()
         val agentCalls = mutableListOf<Triple<String, String?, String?>>()
-        var globalCalls = 0
+        @Volatile var globalCalls = 0
 
         override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog {
             repoCalls += repoUrl to ref
+            scopedGate?.await()
             failScoped?.let { throw it }
             return repoCatalog
         }
@@ -57,12 +69,14 @@ class SlashCommandRepositoryTest {
 
         override suspend fun global(): List<SlashCommand> {
             globalCalls++
+            globalGate?.await()
             failGlobal?.let { throw it }
             return globals
         }
     }
 
     private val api = FakeSlashApi()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var now = 1_800_000_000_000L
     private lateinit var session: SessionManager
     private lateinit var cache: SlashCommandCache
@@ -80,6 +94,7 @@ class SlashCommandRepositoryTest {
 
     @After
     fun tearDown() {
+        scope.cancel()
         AppClock.nowMillis = System::currentTimeMillis
     }
 
@@ -169,15 +184,19 @@ class SlashCommandRepositoryTest {
         assertThat(catalog.byName("review")).isNotNull()
         assertThat(api.repoCalls).hasSize(1)
 
-        // Another scope inside the backoff does not spend a call on the scoped list.
-        repo.load(SlashScope.Repo("https://github.com/acme/api", null))
+        // This repository is left alone inside the backoff, even when the composer asks outright.
+        repo.load(repoScope, force = true)
         assertThat(api.repoCalls).hasSize(1)
+
+        // Another repository is not rested for it: one list the account cannot see says nothing about the next.
+        repo.load(SlashScope.Repo("https://github.com/acme/api", null))
+        assertThat(api.repoCalls).hasSize(2)
 
         // Once the backoff has passed (and the catalog is stale) it is tried again.
         api.failScoped = null
         now += SlashCommandRepository.TTL_MS + 1
         assertThat(repo.load(repoScope).byName("deploy")).isNotNull()
-        assertThat(api.repoCalls).hasSize(2)
+        assertThat(api.repoCalls).hasSize(3)
     }
 
     @Test
@@ -237,5 +256,69 @@ class SlashCommandRepositoryTest {
         repo.load(repoScope)
         assertThat(api.globalCalls).isEqualTo(2)
         assertThat(api.repoCalls).hasSize(2)
+    }
+
+    /**
+     * A catalog carries skill names, their descriptions and the paths they were read from. A fetch that lands after
+     * the sign-out has wiped the caches must not put the signed-out account's back on disk: the claim on the cache
+     * is taken when the load starts, not when it finally comes to write.
+     */
+    @Test
+    fun `a fetch that lands after the caches are wiped saves nothing`() = runBlocking<Unit> {
+        api.scopedGate = CompletableDeferred()
+        val repo = SlashCommandRepository(session, api, cache)
+        val load = scope.async { repo.load(repoScope) }
+        awaitUntil { api.repoCalls.isNotEmpty() }
+
+        cache.clear()
+        api.scopedGate?.complete(Unit)
+        load.await()
+
+        assertThat(cache.read(repoScope.key)).isNull()
+    }
+
+    /**
+     * A load still out when the account changed belongs to nobody: nothing of it is published, and the global
+     * commands it fetched are not the next account's to reuse.
+     */
+    @Test
+    fun `a load in flight across a reset publishes nothing and keeps no global commands`() = runBlocking<Unit> {
+        api.globalGate = CompletableDeferred()
+        val repo = SlashCommandRepository(session, api, cache)
+        val load = scope.async { repo.load(repoScope) }
+        awaitUntil { api.globalCalls == 1 }
+
+        repo.reset()
+        cache.clear()
+        api.globalGate?.complete(Unit)
+        load.await()
+        api.globalGate = null
+
+        assertThat(repo.current(repoScope)).isEqualTo(SlashCatalog.BUILT_IN)
+        assertThat(cache.read(repoScope.key)).isNull()
+        repo.load(SlashScope.None)
+        assertThat(api.globalCalls).isEqualTo(2)
+    }
+
+    @Test
+    fun `reset lets go of the scope keys it was holding a lock for`() = runBlocking<Unit> {
+        val repo = SlashCommandRepository(session, api, cache)
+        repo.load(repoScope)
+        repo.load(SlashScope.Agent("bc-1", null, null))
+        assertThat(lockKeys(repo)).hasSize(2)
+
+        repo.reset()
+
+        assertThat(lockKeys(repo)).isEmpty()
+    }
+
+    /** The per-scope mutexes are an implementation detail with no other way to see them. */
+    private fun lockKeys(repo: SlashCommandRepository): Set<*> {
+        val field = SlashCommandRepository::class.java.getDeclaredField("locks").apply { isAccessible = true }
+        return (field.get(repo) as Map<*, *>).keys
+    }
+
+    private suspend fun awaitUntil(condition: suspend () -> Boolean) = withTimeout(5_000) {
+        while (!condition()) delay(10)
     }
 }

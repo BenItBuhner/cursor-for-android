@@ -76,12 +76,21 @@ class ShareInbox(context: Context) {
     /** Bumped when a new load starts or the inbox is cleared, so a stale read cannot re-offer a dismissed share. */
     private var loadId = 0
 
+    /** Told once the share has been drafted, dismissed or found to hold nothing; see [receive]. */
+    private var onHandled: (() -> Unit)? = null
+
     /**
      * Reads [intent] if it is a share. The same payload already being offered or still loading is ignored (rotation
      * redelivers the intent); an identical share after this one was consumed or dismissed is accepted again.
+     *
+     * [onHandled] runs once this share has been dealt with, for the caller to strike it off the intent it came on:
+     * the in-memory guard here dies with the process, so nothing else stops a redelivered intent being offered
+     * again (see [ShareIntent.clear]).
      */
-    fun receive(intent: Intent?) {
+    fun receive(intent: Intent?, onHandled: () -> Unit = {}) {
         if (intent == null || !ShareIntent.isShare(intent)) return
+        // Set before the guard below: what is worth clearing is the intent the activity is answering with now.
+        this.onHandled = onHandled
         val token = ShareIntent.token(intent)
         if (token == lastToken && (_offer.value != null || _loading.value)) return
         lastToken = token
@@ -92,6 +101,7 @@ class ShareInbox(context: Context) {
             if (id != loadId) return@launch
             if (loaded == null) {
                 _loading.value = false
+                handled()
                 return@launch
             }
             _offer.value = loaded.copy(generation = nextGeneration++)
@@ -104,12 +114,24 @@ class ShareInbox(context: Context) {
     }
 
     fun consume(generation: Long) {
-        _offer.update { current -> if (current?.generation == generation) null else current }
+        var took = false
+        _offer.update { current ->
+            took = current?.generation == generation
+            if (took) null else current
+        }
+        if (took) handled()
     }
 
     fun clear() {
         loadId++
         _offer.value = null
         _loading.value = false
+        handled()
+    }
+
+    private fun handled() {
+        val done = onHandled ?: return
+        onHandled = null
+        done()
     }
 }

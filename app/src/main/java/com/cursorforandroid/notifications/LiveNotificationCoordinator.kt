@@ -17,11 +17,14 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
@@ -51,7 +54,13 @@ object LiveNotificationCoordinator {
                         LiveNotificationService.stop(activity)
                         FinishWatchdogJobService.disarm(activity)
                     },
-                    clearPosted = { runCatching { NotificationManagerCompat.from(activity).cancelAll() } },
+                    clearPosted = { ids ->
+                        runCatching {
+                            val manager = NotificationManagerCompat.from(activity)
+                            manager.cancel(LiveNotificationRenderer.LIVE_ID)
+                            ids.forEach { manager.cancel(LiveNotificationRenderer.finishedId(it)) }
+                        }
+                    },
                 ).run(
                     liveDecisions(
                         graph.session.state,
@@ -59,6 +68,7 @@ object LiveNotificationCoordinator {
                         graph.prefs.liveNotifications,
                         LiveNotificationService.active,
                         canShowLive = { LiveNotifications.canShowLive(activity) },
+                        local = graph.prefs.localAgentState,
                     ),
                 )
             }
@@ -90,8 +100,9 @@ internal fun liveDecision(
     enabled: Boolean,
     serviceActive: Boolean,
     canShowLive: Boolean = true,
+    quietIds: Set<String> = emptySet(),
 ): LiveDecision {
-    val running = list.agents.filter { it.isRunning }.map { it.id }.toSet()
+    val running = list.agents.filter { it.isRunning && it.id !in quietIds }.map { it.id }.toSet()
     return when {
         session is SessionState.SignedOut -> LiveDecision.SignedOut
         // A list restored from disk may still say "running" about runs that finished hours ago; the service only
@@ -114,8 +125,11 @@ internal fun liveDecisions(
      * becomes visible, which is when the user can be coming back from the settings page that changed the answer.
      */
     canShowLive: () -> Boolean = { true },
+    local: Flow<LocalAgentState> = flowOf(LocalAgentState()),
 ): Flow<LiveDecision> =
-    combine(session, list, enabled, serviceActive) { s, l, e, a -> liveDecision(s, l, e, a, canShowLive()) }.distinctUntilChanged()
+    combine(session, list, enabled, serviceActive, local) { s, l, e, a, state ->
+        liveDecision(s, l, e, a, canShowLive(), state.quietIds(AppClock.now()))
+    }.distinctUntilChanged()
 
 /**
  * Turns [LiveDecision]s into start and stop commands, and does not take a refused or lost service for an answer.
@@ -135,13 +149,14 @@ internal fun liveDecisions(
 internal class LiveNotificationSupervisor(
     private val start: () -> Boolean,
     private val stop: () -> Unit,
-    /** Takes down what is already in the shade; only a sign-out goes that far. */
-    private val clearPosted: () -> Unit = {},
+    /** Takes down live and finished cards for these agents; only a sign-out goes that far. */
+    private val clearPosted: (Set<String>) -> Unit = {},
     private val startGraceMs: Long = START_GRACE_MS,
     private val maxStartAttempts: Int = MAX_START_ATTEMPTS,
     private val restartBaseMs: Long = RESTART_BASE_MS,
     private val restartMaxMs: Long = RESTART_MAX_MS,
     private val healthyAfterMs: Long = HEALTHY_AFTER_MS,
+    private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     /** Times in a row the service went down with agents still running, since it last stayed up for [healthyAfterMs]. */
     private var losses = 0
@@ -149,10 +164,19 @@ internal class LiveNotificationSupervisor(
     /** Whether the service has been seen up for the current run of agents (so a `serviceActive = false` is a loss, not a first start). */
     private var seenUp = false
 
+    /** When the service last reported up; used so churn in the running set does not cancel the healthy-again clock. */
+    private var lastUpAtMillis = 0L
+
+    /** Agents the last [LiveDecision.Track] was for; what a sign-out clears from the shade. */
+    private var trackedIds: Set<String> = emptySet()
+
     suspend fun run(decisions: Flow<LiveDecision>) {
         decisions.collectLatest { decision ->
             when (decision) {
-                is LiveDecision.Track -> if (decision.serviceActive) keepUp() else bringUp()
+                is LiveDecision.Track -> {
+                    trackedIds = decision.runningIds
+                    if (decision.serviceActive) keepUp() else bringUp()
+                }
                 LiveDecision.Blocked -> {
                     settle()
                     stop()
@@ -161,7 +185,7 @@ internal class LiveNotificationSupervisor(
                 LiveDecision.SignedOut -> {
                     settle()
                     stop()
-                    clearPosted()
+                    clearPosted(trackedIds)
                 }
             }
         }
@@ -174,15 +198,14 @@ internal class LiveNotificationSupervisor(
 
     private suspend fun keepUp() {
         seenUp = true
+        lastUpAtMillis = now()
         start()
-        delay(healthyAfterMs)
-        losses = 0
     }
 
     private suspend fun bringUp() {
         if (seenUp) {
             seenUp = false
-            losses++
+            losses = if (now() - lastUpAtMillis >= healthyAfterMs) 1 else losses + 1
             delay((restartBaseMs shl (losses - 1).coerceIn(0, 20)).coerceAtMost(restartMaxMs))
         }
         var attempt = 0
