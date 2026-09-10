@@ -93,7 +93,22 @@ class FollowUpRepository(
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
     private fun entry(agentId: String): Entry = synchronized(entries) {
+        evictIdleEntries()
         entries.getOrPut(agentId) { Entry(agentId).also { restore(it) } }
+    }
+
+    /** Drops empty entries nobody is using, like [ConversationRepository.evictIdleEntries]. */
+    private fun evictIdleEntries() {
+        if (entries.size < MAX_ENTRIES) return
+        entries.values.filter { e ->
+            val s = e.state.value
+            s.restored && s.draft.isEmpty && s.queue.isEmpty()
+        }.take(entries.size - MAX_ENTRIES + 1).forEach { victim ->
+            victim.dispatcher?.cancel()
+            victim.saveJob?.cancel()
+            victim.restoreJob?.cancel()
+            entries.remove(victim.agentId)
+        }
     }
 
     fun state(agentId: String): StateFlow<FollowUpComposerState> = entry(agentId).state.asStateFlow()
@@ -502,6 +517,7 @@ class FollowUpRepository(
     }
 
     private companion object {
+        const val MAX_ENTRIES = 24
         const val DRAFT_SAVE_DELAY_MS = 400L
         const val BUSY_RECHECK_MS = 20_000L
         const val AGENT_BUSY = "agent_busy"

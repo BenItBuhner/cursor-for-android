@@ -542,6 +542,46 @@ class FollowUpRepositoryTest {
     }
 
     @Test
+    fun `a failed head leaves the dispatcher inactive until retry`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        api.failCreateRun = true
+        val followUps = repository()
+        val stuck = followUps.enqueue("bc-1", "Stuck")
+        followUps.enqueue("bc-1", "Second")
+
+        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
+        delay(300)
+        assertThat(api.runRequests).hasSize(1)
+
+        api.failCreateRun = false
+        followUps.retry("bc-1", stuck.id)
+        awaitUntil { sent() == listOf("Stuck") }
+        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
+    }
+
+    @Test
+    fun `empty entries are evicted once the cap is reached`() = runBlocking<Unit> {
+        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
+            api.addIdleAgent("bc-$i", "Agent $i", "run-$i")
+        }
+        agents.refresh()
+        val followUps = repository(persist = true)
+        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
+            followUps.state("bc-$i").first { it.restored }
+            followUps.setDraftText("bc-$i", "draft $i")
+        }
+        awaitUntil { (0 until FollowUpRepositoryTestHelper.MAX_ENTRIES).all { store.read("bc-$it") != null } }
+        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
+            followUps.clearDraft("bc-$i")
+        }
+        awaitUntil { store.read("bc-0") == null }
+
+        followUps.state("bc-overflow").first { it.restored }
+        assertThat(FollowUpRepositoryTestHelper.entryCount(followUps)).isAtMost(FollowUpRepositoryTestHelper.MAX_ENTRIES)
+    }
+
+    @Test
     fun `a chat with nothing typed and nothing queued leaves nothing on disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-0")
         agents.refresh()

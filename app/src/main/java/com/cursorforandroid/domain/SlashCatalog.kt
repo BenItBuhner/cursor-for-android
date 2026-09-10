@@ -120,9 +120,16 @@ data class SlashCatalog(
             .map { SlashCommand(it, kind = SlashCommand.Kind.Skill, origin = SlashCommand.Origin.Recent) }
         val all = recentEntries + entries
         if (q.isEmpty()) return all
-        val starts = all.filter { it.name.startsWith(q) }
-        val contains = all.filter { it.name.contains(q) && it !in starts }
-        val described = all.filter { it !in starts && it !in contains && it.description.lowercase().contains(q) }
+        val starts = ArrayList<SlashCommand>()
+        val contains = ArrayList<SlashCommand>()
+        val described = ArrayList<SlashCommand>()
+        for (entry in all) {
+            when {
+                entry.name.startsWith(q) -> starts += entry
+                entry.name.contains(q) -> contains += entry
+                entry.description.contains(q, ignoreCase = true) -> described += entry
+            }
+        }
         val typed = if (starts.isEmpty() && SlashCommands.isValidName(q) && byName(q) == null && q !in recent) {
             listOf(SlashCommand(q, kind = SlashCommand.Kind.Skill, origin = SlashCommand.Origin.Recent))
         } else {
