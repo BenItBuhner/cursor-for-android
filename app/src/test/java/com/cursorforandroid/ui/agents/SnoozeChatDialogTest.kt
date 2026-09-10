@@ -52,7 +52,7 @@ class SnoozeChatDialogTest {
     }
 
     @Test
-    fun `tapping a row reports that duration from now`() {
+    fun `tapping a chip reports that duration from now`() {
         var picked: Long? = null
         val now = 1_800_000_000_000L
         compose.setContent {

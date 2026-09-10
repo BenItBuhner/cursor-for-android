@@ -21,20 +21,11 @@ class SnoozeDurationTest {
     }
 
     @Test
-    fun `the picker is nine choices in three rows of three`() {
-        assertThat(SnoozeDuration.rows.flatten()).containsExactlyElementsIn(SnoozeDuration.entries).inOrder()
-        assertThat(SnoozeDuration.rows.map { it.size }).containsExactly(3, 3, 3)
-        assertThat(SnoozeDuration.rows[0].map { it.label }).containsExactly("5m", "15m", "30m").inOrder()
-        assertThat(SnoozeDuration.rows[1].map { it.label }).containsExactly("1h", "3h", "6h").inOrder()
-        assertThat(SnoozeDuration.rows[2].map { it.label }).containsExactly("12h", "1d", "Forever").inOrder()
-    }
-
-    @Test
-    fun `the list picker groups nearby times`() {
+    fun `the picker groups nearby times`() {
         assertThat(SnoozeDuration.groups.map { it.first }).containsExactly("Soon", "Later", "Longer").inOrder()
         assertThat(SnoozeDuration.groups.flatMap { it.second }).containsExactlyElementsIn(SnoozeDuration.entries).inOrder()
-        assertThat(SnoozeDuration.FiveMinutes.title).isEqualTo("5 minutes")
-        assertThat(SnoozeDuration.OneHour.title).isEqualTo("1 hour")
-        assertThat(SnoozeDuration.Forever.title).isEqualTo("Forever")
+        assertThat(SnoozeDuration.groups[0].second.map { it.title }).containsExactly("5 minutes", "15 minutes", "30 minutes").inOrder()
+        assertThat(SnoozeDuration.groups[1].second.map { it.title }).containsExactly("1 hour", "3 hours", "6 hours", "12 hours").inOrder()
+        assertThat(SnoozeDuration.groups[2].second.map { it.title }).containsExactly("1 day", "Forever").inOrder()
     }
 }
