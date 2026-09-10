@@ -96,7 +96,11 @@ class FollowUpRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(persist: Boolean = false, busyRecheckMs: Long = 20_000) = FollowUpRepository(
+    private fun repository(
+        persist: Boolean = false,
+        busyRecheckMs: Long = 20_000,
+        scope: CoroutineScope = this.scope,
+    ) = FollowUpRepository(
         conversations, agents, hub,
         mcpServers = { mcpCalls.incrementAndGet(); mcpGate?.await(); emptyList() },
         store = store.takeIf { persist },
@@ -396,24 +400,27 @@ class FollowUpRepositoryTest {
 
     @Test
     fun `a failure other than busy holds the queue at that message until it is retried`() = runBlocking<Unit> {
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
         api.addIdleAgent("bc-1", "Agent", "run-0")
         agents.refresh()
         api.failCreateRun = true
-        val followUps = repository()
+        val followUps = repository(scope = testScope)
 
         val first = followUps.enqueue("bc-1", "First")
         followUps.enqueue("bc-1", "Second")
 
-        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
-        delay(200)
+        followUps.state("bc-1").first { it.queue.first().error != null }
         assertThat(api.runRequests).hasSize(1)
         assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First", "Second").inOrder()
         assertThat(followUps.state("bc-1").value.queue[1].error).isNull()
 
         api.failCreateRun = false
         followUps.retry("bc-1", first.id)
-        awaitUntil { sent().count { it == "First" } == 2 }
-        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
+        followUps.state("bc-1").first { sent().count { it == "First" } == 2 && it.queue.map { q -> q.text } == listOf("Second") }
+        } finally {
+            testScope.cancel()
+        }
     }
 
     @Test
@@ -550,21 +557,26 @@ class FollowUpRepositoryTest {
 
     @Test
     fun `a failed head leaves the dispatcher inactive until retry`() = runBlocking<Unit> {
-        api.addIdleAgent("bc-1", "Agent", "run-0")
-        agents.refresh()
-        api.failCreateRun = true
-        val followUps = repository()
-        val stuck = followUps.enqueue("bc-1", "Stuck")
-        followUps.enqueue("bc-1", "Second")
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            api.addIdleAgent("bc-1", "Agent", "run-0")
+            agents.refresh()
+            api.failCreateRun = true
+            val followUps = repository(scope = testScope)
+            val stuck = followUps.enqueue("bc-1", "Stuck")
 
-        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
-        delay(300)
-        assertThat(api.runRequests).hasSize(1)
+            followUps.state("bc-1").first { it.queue.single().error != null }
+            assertThat(api.runRequests).hasSize(1)
+            assertThat(FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1")).isFalse()
 
-        api.failCreateRun = false
-        followUps.retry("bc-1", stuck.id)
-        awaitUntil { sent() == listOf("Stuck") }
-        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
+            followUps.enqueue("bc-1", "Second")
+            api.failCreateRun = false
+            followUps.retry("bc-1", stuck.id)
+            assertThat(FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1")).isTrue()
+            followUps.state("bc-1").first { sent().count { it == "Stuck" } == 2 && it.queue.map { q -> q.text } == listOf("Second") }
+        } finally {
+            testScope.cancel()
+        }
     }
 
     @Test
