@@ -70,7 +70,8 @@ class PinRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val now: () -> Long = AppClock::now,
     private val maxMaterialized: Int = MAX_MATERIALIZED,
-    private val onList: suspend (AccountList) -> Unit = {},
+    /** Handed every account list read, with the agents token taken before the read (see [AgentRepository.token]). */
+    private val onList: suspend (AccountList, Int) -> Unit = { _, _ -> },
 ) {
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
@@ -232,7 +233,7 @@ class PinRepository(
             val list = api.list()
             if (generation.get() != startedIn) return Result.success(Unit)
             agents.applyAccountSnapshots(list.composers, agentsToken)
-            runCatching { onList(list) }.onFailure { if (it is CancellationException) throw it }
+            runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
             if (server.loaded) {

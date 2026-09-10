@@ -179,6 +179,13 @@ class AgentRepositoryTest {
         repo.applySources(emptyMap())
         repo.applySources(mapOf("bc-slack" to AgentSource.SLACK))
         assertThat(repo.state.value).isSameInstanceAs(before)
+
+        // Read for one account and applied to the next: ids collide across a team, so this must not land.
+        val stale = repo.token()
+        repo.reset()
+        repo.refresh()
+        repo.applySources(mapOf("bc-web" to AgentSource.SLACK), stale)
+        assertThat(repo.state.value.agents.first { it.id == "bc-web" }.source).isNull()
     }
 
     @Test

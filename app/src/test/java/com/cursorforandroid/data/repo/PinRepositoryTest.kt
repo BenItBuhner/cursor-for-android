@@ -279,7 +279,7 @@ class PinRepositoryTest {
         pinsApi.pullRequests["https://github.com/acme/app/pull/1"] = PullRequestState.Merged
         pinsApi.server += "bc-2"
         val handed = mutableListOf<AccountList>()
-        val repository = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, onList = { handed += it })
+        val repository = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, onList = { list, _ -> handed += list })
 
         assertThat(repository.sync().isSuccess).isTrue()
         assertThat(handed.single().pullRequests).containsExactly("https://github.com/acme/app/pull/1", PullRequestState.Merged)
@@ -394,7 +394,7 @@ class PinRepositoryTest {
             }
         }
         val handed = CopyOnWriteArrayList<AccountList>()
-        val repository = PinRepository(session, prefs, agents, gated, scope, now = { now }, onList = { handed += it })
+        val repository = PinRepository(session, prefs, agents, gated, scope, now = { now }, onList = { list, _ -> handed += list })
 
         val sync = scope.launch { repository.sync() }
         listed.await()

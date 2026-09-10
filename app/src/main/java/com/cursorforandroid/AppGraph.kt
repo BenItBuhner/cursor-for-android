@@ -158,8 +158,8 @@ class AppGraph(
             prefs = prefs,
             agents = agents,
             api = lazyAccountAgents.value,
-            onList = { list ->
-                agents.applySources(list.sources)
+            onList = { list, agentsToken ->
+                agents.applySources(list.sources, agentsToken)
                 pullRequests.seed(list.pullRequests)
             },
         )
