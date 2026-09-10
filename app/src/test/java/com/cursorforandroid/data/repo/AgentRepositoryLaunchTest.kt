@@ -245,6 +245,30 @@ class AgentRepositoryLaunchTest {
     }
 
     @Test
+    fun `a chat with no repository sends neither repos nor env and still launches`() = runBlocking<Unit> {
+        // Auto-PR left on from an earlier launch: there is no repository for a pull request, so it stays out too.
+        val noRepo = request.copy(repoUrl = null, ref = null, autoCreatePr = true)
+        val id = LaunchIdempotency.agentId(noRepo, "nonce")
+        val provisional = agents.beginLaunch(noRepo.copy(agentId = id), "Auto")!!
+        assertThat(provisional.repoUrl).isNull()
+        assertThat(provisional.envType).isEqualTo(EnvType.CLOUD)
+        assertThat(provisional.autoCreatePr).isFalse()
+
+        val (agent, run) = agents.launch(noRepo.copy(agentId = id), "Auto").getOrThrow()
+
+        val sent = api.createRequests.single()
+        assertThat(sent.repos).isNull()
+        assertThat(sent.env).isNull()
+        assertThat(sent.autoCreatePR).isNull()
+        assertThat(agent.id).isEqualTo(id)
+        assertThat(agent.repoUrl).isNull()
+        assertThat(agent.envType).isEqualTo(EnvType.CLOUD)
+        assertThat(agent.runStatus).isEqualTo(RunStatus.CREATING)
+        assertThat(run?.id).isEqualTo(agent.latestRunId)
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly(id)
+    }
+
+    @Test
     fun `a machine or pool pick is sent as env and stamped on the provisional row`() = runBlocking<Unit> {
         val machine = request.copy(env = DeviceTarget.machine("bennett#/home/bennett/projects/app"))
         val id = LaunchIdempotency.agentId(machine, "nonce")
