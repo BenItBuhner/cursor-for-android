@@ -14,6 +14,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.cursorforandroid.data.repo.LoginProgress
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.share.ShareIntent
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.AppNightMode
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -80,7 +81,7 @@ class MainActivity : ComponentActivity() {
     private fun readRequests(intent: Intent?) {
         DeepLinks.agentId(intent)?.let { pendingAgentId = it }
         if (intent?.action == ACTION_NEW_CHAT) pendingNewChat = true
-        appGraph.share.receive(intent)
+        appGraph.share.receive(intent) { ShareIntent.clear(intent) }
         resumeUpdateIfAsked(intent)
     }
 
