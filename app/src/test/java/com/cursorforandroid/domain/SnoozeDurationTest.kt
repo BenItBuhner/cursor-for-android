@@ -28,4 +28,13 @@ class SnoozeDurationTest {
         assertThat(SnoozeDuration.rows[1].map { it.label }).containsExactly("1h", "3h", "6h").inOrder()
         assertThat(SnoozeDuration.rows[2].map { it.label }).containsExactly("12h", "1d", "Forever").inOrder()
     }
+
+    @Test
+    fun `the list picker groups nearby times`() {
+        assertThat(SnoozeDuration.groups.map { it.first }).containsExactly("Soon", "Later", "Longer").inOrder()
+        assertThat(SnoozeDuration.groups.flatMap { it.second }).containsExactlyElementsIn(SnoozeDuration.entries).inOrder()
+        assertThat(SnoozeDuration.FiveMinutes.title).isEqualTo("5 minutes")
+        assertThat(SnoozeDuration.OneHour.title).isEqualTo("1 hour")
+        assertThat(SnoozeDuration.Forever.title).isEqualTo("Forever")
+    }
 }

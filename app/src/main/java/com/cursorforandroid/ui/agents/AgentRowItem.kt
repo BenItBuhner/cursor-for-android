@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -45,17 +44,13 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
-import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.StateGlyph
-import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -190,59 +185,6 @@ fun ChatOverflowMenu(
             MenuItem("Archive", CursorIcons.Archive) { onDismiss(); actions.onArchive(row) }
         }
     }
-}
-
-/**
- * Duration pad for snoozing a chat: nine choices in a 3×3 grid so the eye can grab a time instead of scrolling
- * a stacked list. A tap on a cell snoozes immediately.
- */
-@Composable
-fun SnoozeChatDialog(
-    onPick: (Long) -> Unit,
-    onDismiss: () -> Unit,
-    nowMillis: Long = AppClock.now(),
-) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    val shape = CursorTheme.shapes.base
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = colors.elevated,
-        titleContentColor = colors.textPrimary,
-        textContentColor = colors.textSecondary,
-        shape = CursorTheme.shapes.xl,
-        title = { Text("Snooze", style = type.sectionTitle) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Hide this chat until then. It comes back on its own.", style = type.small, color = colors.textTertiary)
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SnoozeDuration.rows.forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                            row.forEach { duration ->
-                                Box(
-                                    Modifier
-                                        .weight(1f)
-                                        .height(44.dp)
-                                        .background(colors.fillFaint, shape)
-                                        .pressable({ onPick(duration.untilMillis(nowMillis)) }, shape)
-                                        .semantics { contentDescription = "Snooze ${duration.label}" },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        duration.label,
-                                        style = type.baseMedium,
-                                        color = if (duration == SnoozeDuration.Forever) colors.textSecondary else colors.textPrimary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
-    )
 }
 
 /** Rename field as the official apps expose it: one line, 100 characters, same cap as create. */

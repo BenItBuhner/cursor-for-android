@@ -1,7 +1,8 @@
 package com.cursorforandroid.ui.agents
 
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -31,7 +32,7 @@ import org.robolectric.annotation.GraphicsMode
 class SnoozeChatDialogTest {
 
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
     fun `the picker shows every duration on one screen`() {
@@ -41,13 +42,17 @@ class SnoozeChatDialogTest {
             }
         }
         compose.onNodeWithText("Snooze").assertIsDisplayed()
-        listOf("5m", "15m", "30m", "1h", "3h", "6h", "12h", "1d", "Forever").forEach { label ->
-            compose.onNodeWithText(label).assertIsDisplayed()
-        }
+        compose.onNodeWithText("Soon").assertIsDisplayed()
+        compose.onNodeWithText("Later").assertIsDisplayed()
+        compose.onNodeWithText("Longer").assertIsDisplayed()
+        listOf("5 minutes", "15 minutes", "30 minutes", "1 hour", "3 hours", "6 hours", "12 hours", "1 day", "Forever")
+            .forEach { title ->
+                compose.onNodeWithText(title).assertIsDisplayed()
+            }
     }
 
     @Test
-    fun `tapping a cell reports that duration from now`() {
+    fun `tapping a row reports that duration from now`() {
         var picked: Long? = null
         val now = 1_800_000_000_000L
         compose.setContent {
@@ -55,12 +60,12 @@ class SnoozeChatDialogTest {
                 SnoozeChatDialog(onPick = { picked = it }, onDismiss = {}, nowMillis = now)
             }
         }
-        compose.onNodeWithContentDescription("Snooze 15m").performClick()
+        compose.onNodeWithContentDescription("Snooze 15 minutes").performClick()
         assertThat(picked).isEqualTo(SnoozeDuration.FifteenMinutes.untilMillis(now))
     }
 
     @Test
-    fun `holding a chat row offers Snooze and then the duration pad`() {
+    fun `holding a chat row offers Snooze and then the duration sheet`() {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 AgentRowItem(
@@ -74,7 +79,7 @@ class SnoozeChatDialogTest {
         compose.onNodeWithText("Morning standup").performTouchInput { longClick() }
         compose.onNodeWithText("Snooze").assertIsDisplayed().performClick()
         compose.onNodeWithText("Forever").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Snooze 1h").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Snooze 1 hour").assertIsDisplayed()
     }
 
     private fun row(id: String, name: String) = AgentRow(
