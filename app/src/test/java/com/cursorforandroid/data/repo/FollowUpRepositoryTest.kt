@@ -69,6 +69,13 @@ class FollowUpRepositoryTest {
 
     @Before
     fun setUp() {
+        api.failCreateRun = false
+        api.busyCreateRun = false
+        api.createRunGate = null
+        api.failCancelWith = null
+        api.failCancel = false
+        mcpGate = null
+        mcpCalls.set(0)
         context = ApplicationProvider.getApplicationContext()
         val prefs = PreferencesStore(context)
         val backend = CursorBackend(api, streamer, isDemo = false)
