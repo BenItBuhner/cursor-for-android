@@ -120,6 +120,18 @@ class RecentRepositoriesTest {
     }
 
     @Test
+    fun `two spellings of one unused repository show once in the remainder`() {
+        val catalog = listOf(
+            Repository("https://github.com/acme/app.git"),
+            Repository("github.com/acme/app"),
+            Repository("https://github.com/acme/web"),
+        )
+        val split = RecentRepositories.partition(catalog, emptyList(), now)
+        assertThat(split.recent).isEmpty()
+        assertThat(split.rest.map { it.shortName }).containsExactly("app", "web")
+    }
+
+    @Test
     fun `an empty catalogue or empty agent list pins nothing`() {
         val catalog = repos("acme/app")
         assertThat(RecentRepositories.partition(emptyList(), listOf(agent("a")), now).recent).isEmpty()
