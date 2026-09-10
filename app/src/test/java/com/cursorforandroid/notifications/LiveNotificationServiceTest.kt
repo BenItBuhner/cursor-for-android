@@ -254,6 +254,34 @@ class LiveNotificationServiceTest {
         controller.destroy()
     }
 
+    /**
+     * A stopped service is destroyed later, not there and then, and a start command that arrives in between is
+     * handed to the instance that is on its way out. It has to start following the runs again: a foreground service
+     * that holds its budget open while nothing is being followed shows a notification frozen where it stopped, and
+     * announces no finishes, for as long as the app runs.
+     */
+    @Test
+    fun `a start that arrives while the service is stopping follows the runs again`() {
+        val controller = startTracking()
+        val service = controller.get()
+        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" }
+
+        // Any shutdown will do; this is the one that does not depend on the scripted runs finishing first.
+        service.onTimeout(1, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        assertThat(app.appGraph.runMonitor.isRunning).isFalse()
+
+        // Delivered before onDestroy, as the platform does when the user starts an agent in that window.
+        controller.startCommand(0, 2)
+
+        assertThat(app.appGraph.runMonitor.isRunning).isTrue()
+        assertThat(shadowOf(service).lastForegroundNotificationId).isEqualTo(LiveNotificationRenderer.LIVE_ID)
+        assertThat(LiveNotificationService.active.value).isTrue()
+        // Following again means the finishes are announced again, which is what the service is for.
+        awaitOnMain(90_000) { manager.allNotifications.any { it.channelId == LiveNotifications.CHANNEL_FINISHED } }
+        controller.destroy()
+        FinishWatchdogJobService.disarm(app)
+    }
+
     @Test
     fun `an idle shutdown names the start it is answering, so a newer one is not stopped with it`() {
         val controller = startTracking()

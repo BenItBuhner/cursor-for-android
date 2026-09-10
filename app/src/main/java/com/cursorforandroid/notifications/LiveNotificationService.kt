@@ -48,6 +48,14 @@ class LiveNotificationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
+
+    /**
+     * The collectors following the runs, or null when nothing is being followed. Kept apart from [inForeground],
+     * which says only that the platform's `startForeground` promise has been answered: a shutdown stops watching
+     * at once, while the destroy it asked for arrives later, and a start delivered in between is handed to this
+     * same instance and has to start the watching over.
+     */
+    private var watch: CoroutineScope? = null
     private var idleJob: Job? = null
     private var latestStartId = 0
 
@@ -68,7 +76,7 @@ class LiveNotificationService : Service() {
             shutdown(keepWatching = false, force = true)
             return START_NOT_STICKY
         }
-        val firstStart = !inForeground
+        val firstStart = watch == null
         if (!enterForeground()) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP_RUN) {
             val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
@@ -118,13 +126,15 @@ class LiveNotificationService : Service() {
     }
 
     private fun enterForeground(): Boolean {
-        if (inForeground) return true
-        val monitor = graph.runMonitor
         if (!keepForegroundPromise()) return false
+        if (watch != null) return true
+        val monitor = graph.runMonitor
+        val watching = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+        watch = watching
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
-        scope.launch { monitor.finished.collect { onRunFinished(it) } }
+        watching.launch { monitor.finished.collect { onRunFinished(it) } }
         monitor.start()
-        scope.launch {
+        watching.launch {
             combine(monitor.state, graph.prefs.liveNotifications) { state, enabled -> state to enabled }
                 .collect { (state, enabled) ->
                     when {
@@ -189,6 +199,9 @@ class LiveNotificationService : Service() {
         idleJob = null
         if (!force && !stopSelfResult(latestStartId)) return
         graph.runMonitor.stop()
+        watch?.cancel()
+        watch = null
+        inForeground = false
         if (keepWatching) {
             FinishWatchdogJobService.arm(this, FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
         } else {
@@ -212,6 +225,7 @@ class LiveNotificationService : Service() {
     override fun onDestroy() {
         scope.cancel()
         graph.runMonitor.stop()
+        watch = null
         inForeground = false
         _active.value = false
         super.onDestroy()
