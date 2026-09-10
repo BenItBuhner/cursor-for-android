@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -29,9 +30,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -61,6 +64,7 @@ data class AgentListUiState(
     val nowMillis: Long = AppClock.now(),
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class AgentsViewModel(
     private val graph: AppGraph,
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
@@ -69,14 +73,6 @@ class AgentsViewModel(
 
     private val query = MutableStateFlow("")
 
-    /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
-    private val clock: Flow<Long> = flow {
-        while (true) {
-            emit(AppClock.now())
-            delay(clockTickMs)
-        }
-    }
-
     /**
      * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
      * from the preferences, with the pull request states the account last gave folded in.
@@ -84,6 +80,31 @@ class AgentsViewModel(
     private val local: Flow<LocalAgentState> = combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states ->
         local.copy(pullRequests = states)
     }
+
+    /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
+    private val minuteClock: Flow<Long> = flow {
+        while (true) {
+            emit(AppClock.now())
+            delay(clockTickMs)
+        }
+    }
+
+    /**
+     * Fires the moment a timed snooze lifts, so a 5-minute hide does not sit around until the next minute tick.
+     * Completes while nothing is snoozed on a timer (Forever never wakes on its own).
+     */
+    private val snoozeAlarm: Flow<Long> = local.flatMapLatest { state ->
+        flow {
+            while (true) {
+                val now = AppClock.now()
+                val next = state.nextSnoozeExpiry(now) ?: return@flow
+                delay((next - now).coerceAtLeast(0L))
+                emit(AppClock.now())
+            }
+        }
+    }
+
+    private val clock: Flow<Long> = merge(minuteClock, snoozeAlarm)
 
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
@@ -95,7 +116,7 @@ class AgentsViewModel(
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
-        val rows = list.agents.map { AgentListOrganizer.toRow(it, local) }
+        val rows = list.agents.map { AgentListOrganizer.toRow(it, local, now) }
         AgentListUiState(
             sections = sections,
             recentRows = recentRows,
@@ -206,6 +227,10 @@ class AgentsViewModel(
     fun archive(agentId: String) = viewModelScope.launch { graph.agents.archive(agentId) }
     fun unarchive(agentId: String) = viewModelScope.launch { graph.agents.unarchive(agentId) }
     fun rename(agentId: String, name: String) = viewModelScope.launch { graph.agents.rename(agentId, name) }
+
+    /** Hides the chat on this device until [untilMillis]; `Long.MAX_VALUE` until they unsnooze. */
+    fun snooze(agentId: String, untilMillis: Long) = viewModelScope.launch { graph.prefs.snooze(agentId, untilMillis) }
+    fun unsnooze(agentId: String) = viewModelScope.launch { graph.prefs.unsnooze(agentId) }
 
     fun filterLabel(kind: FilterKind): String = uiState.value.prefs.summaryFor(kind)
 

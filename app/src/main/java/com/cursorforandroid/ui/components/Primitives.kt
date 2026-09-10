@@ -331,6 +331,7 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
                 hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+            AgentIndicator.Snoozed -> Icon(CursorIcons.Clock, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
         }
     }
 }

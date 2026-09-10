@@ -195,6 +195,7 @@ private fun StateGlyph(row: AgentRow, palette: WidgetPalette) {
             row.agent.hasBranch -> Image(ImageProvider(R.drawable.widget_git_branch), "Branch", slot, colorFilter = ColorFilter.tint(palette.iconTertiary))
         }
         AgentIndicator.Archived -> Image(ImageProvider(R.drawable.widget_archive), "Archived", slot, colorFilter = ColorFilter.tint(palette.iconQuaternary))
+        AgentIndicator.Snoozed -> Image(ImageProvider(R.drawable.widget_clock), "Snoozed", slot, colorFilter = ColorFilter.tint(palette.iconQuaternary))
     }
 }
 

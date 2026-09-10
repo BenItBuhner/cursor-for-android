@@ -4,7 +4,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,13 +45,17 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -61,6 +67,8 @@ data class AgentRowActions(
     val onArchive: (AgentRow) -> Unit,
     val onUnarchive: (AgentRow) -> Unit,
     val onRename: (AgentRow, String) -> Unit,
+    val onSnooze: (AgentRow, Long) -> Unit,
+    val onUnsnooze: (AgentRow) -> Unit,
 )
 
 /**
@@ -84,6 +92,7 @@ fun AgentRowItem(
     val shape = CursorTheme.shapes.base
     var menuOpen by remember { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
+    var snoozeOpen by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
@@ -126,19 +135,14 @@ fun AgentRowItem(
                 Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
         }
-        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
-            val clipboard = LocalClipboardManager.current
-            val uriHandler = LocalUriHandler.current
-            MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; actions.onTogglePin(row) }
-            MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
-            MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; uriHandler.openUri(agent.url) }
-            MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
-            if (agent.isArchived) {
-                MenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; actions.onUnarchive(row) }
-            } else {
-                MenuItem("Archive", CursorIcons.Archive) { menuOpen = false; actions.onArchive(row) }
-            }
-        }
+        ChatOverflowMenu(
+            row = row,
+            expanded = menuOpen,
+            onDismiss = { menuOpen = false },
+            onRename = { menuOpen = false; renameOpen = true },
+            onSnooze = { menuOpen = false; snoozeOpen = true },
+            actions = actions,
+        )
         if (renameOpen) {
             RenameChatDialog(
                 initialName = agent.name,
@@ -146,7 +150,99 @@ fun AgentRowItem(
                 onDismiss = { renameOpen = false },
             )
         }
+        if (snoozeOpen) {
+            SnoozeChatDialog(
+                onPick = { until -> snoozeOpen = false; actions.onSnooze(row, until) },
+                onDismiss = { snoozeOpen = false },
+            )
+        }
     }
+}
+
+/** Pin / rename / link / snooze / archive — the long-press menu on a sidebar or recent-chat row. */
+@Composable
+fun ChatOverflowMenu(
+    row: AgentRow,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onSnooze: () -> Unit,
+    actions: AgentRowActions,
+) {
+    val clipboard = LocalClipboardManager.current
+    val uriHandler = LocalUriHandler.current
+    val agent = row.agent
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = CursorTheme.colors.elevated, shape = CursorTheme.shapes.lg) {
+        MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
+        MenuItem("Rename", CursorIcons.Pencil) { onRename() }
+        MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
+        MenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
+        if (!agent.isArchived) {
+            if (row.isSnoozed) {
+                MenuItem("Unsnooze", CursorIcons.Clock) { onDismiss(); actions.onUnsnooze(row) }
+            } else {
+                MenuItem("Snooze", CursorIcons.Clock) { onSnooze() }
+            }
+        }
+        if (agent.isArchived) {
+            MenuItem("Unarchive", CursorIcons.Archive) { onDismiss(); actions.onUnarchive(row) }
+        } else {
+            MenuItem("Archive", CursorIcons.Archive) { onDismiss(); actions.onArchive(row) }
+        }
+    }
+}
+
+/**
+ * Duration pad for snoozing a chat: nine choices in a 3×3 grid so the eye can grab a time instead of scrolling
+ * a stacked list. A tap on a cell snoozes immediately.
+ */
+@Composable
+fun SnoozeChatDialog(
+    onPick: (Long) -> Unit,
+    onDismiss: () -> Unit,
+    nowMillis: Long = AppClock.now(),
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.base
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.elevated,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textSecondary,
+        shape = CursorTheme.shapes.xl,
+        title = { Text("Snooze", style = type.sectionTitle) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Hide this chat until then. It comes back on its own.", style = type.small, color = colors.textTertiary)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SnoozeDuration.rows.forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            row.forEach { duration ->
+                                Box(
+                                    Modifier
+                                        .weight(1f)
+                                        .height(44.dp)
+                                        .background(colors.fillFaint, shape)
+                                        .pressable({ onPick(duration.untilMillis(nowMillis)) }, shape)
+                                        .semantics { contentDescription = "Snooze ${duration.label}" },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        duration.label,
+                                        style = type.baseMedium,
+                                        color = if (duration == SnoozeDuration.Forever) colors.textSecondary else colors.textPrimary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", style = type.baseMedium, color = colors.textSecondary) } },
+    )
 }
 
 /** Rename field as the official apps expose it: one line, 100 characters, same cap as create. */

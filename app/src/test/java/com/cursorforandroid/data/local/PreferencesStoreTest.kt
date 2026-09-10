@@ -27,6 +27,20 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `snooze persists until unsnoozed`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.localAgentState.first().snoozedUntil).isEmpty()
+        prefs.snooze("bc-1", 1_800_000_000_000L)
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-1", 1_800_000_000_000L)
+        prefs.snooze("bc-2", Long.MAX_VALUE)
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-1", 1_800_000_000_000L, "bc-2", Long.MAX_VALUE)
+        prefs.unsnooze("bc-1")
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-2", Long.MAX_VALUE)
+        prefs.unsnooze("bc-2")
+        assertThat(prefs.localAgentState.first().snoozedUntil).isEmpty()
+    }
+
+    @Test
     fun `pinned models persist most-recently-pinned first`() = runBlocking {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.pinnedModelIds.first()).isEmpty()

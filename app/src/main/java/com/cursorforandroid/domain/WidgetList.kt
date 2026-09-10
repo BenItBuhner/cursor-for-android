@@ -52,7 +52,7 @@ object WidgetList {
         // Agents at work, whatever the Status filter says (a "Running" list with Running filtered out would only
         // ever be empty); the Repo / Git / Source filters still apply.
         WidgetMode.Running -> agents
-            .map { AgentListOrganizer.toRow(it, local) }
+            .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
             .sortedByDescending { it.agent.updatedAtMillis }
     }.take(MAX_ROWS)

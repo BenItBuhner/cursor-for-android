@@ -15,6 +15,8 @@ data class AgentRow(
     val launchedFromThisDevice: Boolean,
     /** Where the agent's pull request stands; null for an agent without one, or one whose state is not known (yet). */
     val pullRequest: PullRequestState? = null,
+    /** True while this device is still hiding the chat; independent of archive. */
+    val isSnoozed: Boolean = false,
 )
 
 data class AgentSection(
@@ -25,7 +27,7 @@ data class AgentSection(
 
 /**
  * What this device knows about agents beyond the public API: pins, read markers, which agents were launched here,
- * and where their pull requests stand as last read from GitHub.
+ * snoozes, and where their pull requests stand as last read from GitHub.
  */
 data class LocalAgentState(
     val pinnedIds: Set<String> = emptySet(),
@@ -34,7 +36,18 @@ data class LocalAgentState(
     val launchedHereIds: Set<String> = emptySet(),
     /** prUrl (as the API reports it) -> state; a pull request GitHub would not or has not yet answered for is absent. */
     val pullRequests: Map<String, PullRequestState> = emptyMap(),
-)
+    /** agentId -> epoch millis the snooze lifts; [SnoozeDuration.FOREVER] stays hidden until unsnoozed. */
+    val snoozedUntil: Map<String, Long> = emptyMap(),
+) {
+    fun isSnoozed(agentId: String, nowMillis: Long): Boolean {
+        val until = snoozedUntil[agentId] ?: return false
+        return until == SnoozeDuration.FOREVER || until > nowMillis
+    }
+
+    /** The soonest timed snooze that will expire after [nowMillis], or null when none is pending. */
+    fun nextSnoozeExpiry(nowMillis: Long): Long? =
+        snoozedUntil.values.filter { it in (nowMillis + 1) until SnoozeDuration.FOREVER }.minOrNull()
+}
 
 /**
  * Pure grouping / filtering / sorting of agents. Everything the Customize sheet and the sidebar search field
@@ -43,27 +56,29 @@ data class LocalAgentState(
  */
 object AgentListOrganizer {
 
-    fun indicatorFor(agent: Agent, local: LocalAgentState): AgentIndicator = when {
+    fun indicatorFor(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): AgentIndicator = when {
         agent.isArchived -> AgentIndicator.Archived
+        local.isSnoozed(agent.id, nowMillis) -> AgentIndicator.Snoozed
         agent.isRunning -> AgentIndicator.Running
         agent.isError -> AgentIndicator.Error
-        isUnread(agent, local) -> AgentIndicator.Unread
+        isUnread(agent, local, nowMillis) -> AgentIndicator.Unread
         else -> AgentIndicator.Read
     }
 
-    fun isUnread(agent: Agent, local: LocalAgentState): Boolean {
-        if (agent.isArchived || agent.isRunning) return false
+    fun isUnread(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): Boolean {
+        if (agent.isArchived || agent.isRunning || local.isSnoozed(agent.id, nowMillis)) return false
         val marker = local.readMarkers[agent.id] ?: return true
         return agent.updatedAtMillis > marker
     }
 
-    fun toRow(agent: Agent, local: LocalAgentState): AgentRow = AgentRow(
+    fun toRow(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): AgentRow = AgentRow(
         agent = agent,
-        indicator = indicatorFor(agent, local),
+        indicator = indicatorFor(agent, local, nowMillis),
         isPinned = agent.id in local.pinnedIds,
-        isUnread = isUnread(agent, local),
+        isUnread = isUnread(agent, local, nowMillis),
         launchedFromThisDevice = agent.id in local.launchedHereIds,
         pullRequest = agent.prUrl?.let { local.pullRequests[it] },
+        isSnoozed = local.isSnoozed(agent.id, nowMillis),
     )
 
     fun matchesFilters(row: AgentRow, prefs: ListPreferences): Boolean {
@@ -76,6 +91,7 @@ object AgentListOrganizer {
             AgentIndicator.Error -> StatusFilter.Error in prefs.statuses
             AgentIndicator.Read -> StatusFilter.Read in prefs.statuses
             AgentIndicator.Archived -> StatusFilter.Archived in prefs.statuses
+            AgentIndicator.Snoozed -> StatusFilter.Snoozed in prefs.statuses
         }
         if (!statusOk) return false
 
@@ -121,7 +137,7 @@ object AgentListOrganizer {
     ): List<AgentSection> {
         val rows = agents
             .filter { matchesQuery(it, query) }
-            .map { toRow(it, local) }
+            .map { toRow(it, local, nowMillis) }
             .filter { matchesFilters(it, prefs) }
         val sorted = sort(rows, prefs.sortOrder)
 
@@ -169,6 +185,7 @@ object AgentListOrganizer {
         AgentIndicator.Error -> "Needs attention"
         AgentIndicator.Read -> "Completed"
         AgentIndicator.Archived -> "Archived"
+        AgentIndicator.Snoozed -> "Snoozed"
     }
 
     fun groupByDate(rows: List<AgentRow>, nowMillis: Long, zone: ZoneId): List<AgentSection> {

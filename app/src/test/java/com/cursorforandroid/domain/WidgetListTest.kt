@@ -73,6 +73,16 @@ class WidgetListTest {
     }
 
     @Test
+    fun `a snoozed agent stays off Recent and Running until the timer lifts`() {
+        val agents = listOf(agent("kept"), running("working"), agent("quiet"))
+        val local = LocalAgentState(snoozedUntil = mapOf("quiet" to now + hour, "working" to now + hour))
+        assertThat(rows(WidgetMode.Recent, agents, local = local)).containsExactly("kept")
+        assertThat(rows(WidgetMode.Running, agents, local = local)).isEmpty()
+        assertThat(rows(WidgetMode.Recent, agents, prefs = ListPreferences(statuses = StatusFilter.entries.toSet()), local = local))
+            .contains("quiet")
+    }
+
+    @Test
     fun `an archived agent is never running`() {
         val archived = agent("gone", lifecycle = AgentLifecycle.ARCHIVED, runStatus = RunStatus.RUNNING)
         assertThat(rows(WidgetMode.Running, listOf(archived))).isEmpty()

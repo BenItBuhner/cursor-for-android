@@ -55,6 +55,7 @@ class PreferencesStore(context: Context) {
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
         val launchedHere = stringSetPreferencesKey("launched_here_ids")
+        val snoozedUntil = stringPreferencesKey("snoozed_until")
         val demoMode = booleanPreferencesKey("demo_mode")
         val cachedUser = stringPreferencesKey("cached_user")
         val signInMethod = stringPreferencesKey("sign_in_method")
@@ -188,6 +189,7 @@ class PreferencesStore(context: Context) {
             pinnedIds = p[Keys.pinned] ?: emptySet(),
             readMarkers = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap(),
             launchedHereIds = p[Keys.launchedHere] ?: emptySet(),
+            snoozedUntil = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap(),
         )
     }
 
@@ -262,6 +264,18 @@ class PreferencesStore(context: Context) {
 
     suspend fun markLaunchedHere(agentId: String) = store.edit { p ->
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
+    }
+
+    /** Hides [agentId] on this device until [untilMillis] (`Long.MAX_VALUE` until they unsnooze). */
+    suspend fun snooze(agentId: String, untilMillis: Long) = store.edit { p ->
+        val current = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap()
+        p[Keys.snoozedUntil] = encodeMarkers(current + (agentId to untilMillis))
+    }
+
+    suspend fun unsnooze(agentId: String) = store.edit { p ->
+        val current = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap()
+        val next = current - agentId
+        if (next.isEmpty()) p.remove(Keys.snoozedUntil) else p[Keys.snoozedUntil] = encodeMarkers(next)
     }
 
     suspend fun setDemoMode(enabled: Boolean) = store.edit { it[Keys.demoMode] = enabled }
