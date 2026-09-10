@@ -27,6 +27,9 @@ data class ToolOutput(
         /** Lines of output kept before the rest is elided. */
         const val MAX_OUTPUT_LINES = 40
 
+        /** Roughly a forty-line terminal at a hundred columns. */
+        const val MAX_OUTPUT_CHARS = 4_000
+
         /** What a built call opens onto; the reading of [raw] happened when the call was built (see [from]). */
         fun of(call: ToolCall): ToolOutput = ToolOutput(call.detail, call.output, call.exitCode)
 
@@ -63,9 +66,17 @@ data class ToolOutput(
         }
 
         private fun clip(text: String): String {
-            val lines = text.trimEnd().lines()
-            if (lines.size <= MAX_OUTPUT_LINES) return text.trimEnd()
-            return lines.take(MAX_OUTPUT_LINES).joinToString("\n") + "\n… ${lines.size - MAX_OUTPUT_LINES} more lines"
+            val trimmed = text.trimEnd()
+            val lines = trimmed.lines()
+            var result = if (lines.size <= MAX_OUTPUT_LINES) {
+                trimmed
+            } else {
+                lines.take(MAX_OUTPUT_LINES).joinToString("\n") + "\n… ${lines.size - MAX_OUTPUT_LINES} more lines"
+            }
+            if (result.length <= MAX_OUTPUT_CHARS) return result
+            var cutAt = MAX_OUTPUT_CHARS
+            if (cutAt > 0 && cutAt < result.length && Character.isHighSurrogate(result[cutAt - 1])) cutAt--
+            return result.substring(0, cutAt) + "… ${result.length - cutAt} more characters"
         }
 
         private fun JsonObject.deepString(vararg keys: String): String? {
