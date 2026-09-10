@@ -30,8 +30,8 @@ import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
-import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -178,10 +178,9 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         capture("03_sidebar")
 
-        // Chats filter sheet from the header's filter icon.
+        // Chats filter sheet from the header's filter icon. The root page is 04 (chatsFilterReadAll).
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText("Grouping")
-        capture("04_chats_filter")
         compose.onNodeWithText("Status").performClick()
         waitForText("Archived")
         capture("05_status_filter")
@@ -304,6 +303,29 @@ class AppScreenshotTest {
         // Leave the chat, so nothing of it is still streaming when the next test brings up its own app.
         Espresso.pressBack()
         compose.waitForIdle()
+    }
+
+    @Test
+    fun chatsFilterReadAll() {
+        val graph = launchApp()
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        waitForText("Read All")
+        capture("04_chats_filter")
+
+        compose.onNodeWithText("Read All").performClick()
+        // The count is the UI's word that the write landed. Do not read DataStore from waitUntil:
+        // that blocks the main thread and the mark-all coroutine never finishes.
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasContentDescription("unread", substring = true)).fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitForIdle()
+        Espresso.pressBack()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Grouping").fetchSemanticsNodes().isEmpty() }
+        compose.waitForIdle()
+        capture("28_sidebar_all_read")
     }
 
     @Test
