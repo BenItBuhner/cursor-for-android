@@ -265,6 +265,26 @@ class PreferencesStore(context: Context) {
         }
     }
 
+    /**
+     * Marks every id in [markers] read at the given stamp, in one write. A stamp is ignored when an older one
+     * is already stored for that id, so two overlapping calls compose instead of regressing a chat that was
+     * opened in between.
+     */
+    suspend fun markAllRead(markers: Map<String, Long>) = store.edit { p ->
+        if (markers.isEmpty()) return@edit
+        val current = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap()
+        val next = current.toMutableMap()
+        var changed = false
+        for ((id, updatedAtMillis) in markers) {
+            val existing = next[id] ?: 0L
+            if (updatedAtMillis > existing) {
+                next[id] = updatedAtMillis
+                changed = true
+            }
+        }
+        if (changed) p[Keys.readMarkers] = encodeMarkers(next)
+    }
+
     suspend fun markLaunchedHere(agentId: String) = store.edit { p ->
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
     }

@@ -27,6 +27,16 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `mark all read writes every stamp and does not regress a newer marker`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        prefs.markRead("already", 2_000L)
+        prefs.markAllRead(mapOf("a" to 100L, "b" to 200L, "already" to 1_000L, "skip" to 0L))
+        assertThat(prefs.localAgentState.first().readMarkers).containsExactly("a", 100L, "b", 200L, "already", 2_000L)
+        prefs.markAllRead(emptyMap())
+        assertThat(prefs.localAgentState.first().readMarkers).containsExactly("a", 100L, "b", 200L, "already", 2_000L)
+    }
+
+    @Test
     fun `snooze persists until unsnoozed`() = runBlocking {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.localAgentState.first().snoozedUntil).isEmpty()
