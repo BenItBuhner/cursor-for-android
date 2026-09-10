@@ -9,6 +9,11 @@ import org.junit.Test
 
 class MarkdownParserTest {
 
+    private fun paragraph(text: String) = MdBlock.Paragraph(text)
+    private fun item(text: String) = ListItem(text)
+    private fun bullets(vararg items: String) = MdBlock.Bullets(items.map(::item), ordered = false)
+    private fun numbered(start: Int, vararg items: String) = MdBlock.Bullets(items.map(::item), ordered = true, start = start)
+
     @Test
     fun `parses headings, paragraphs, lists, code fences and quotes`() {
         val md = """
@@ -31,15 +36,12 @@ class MarkdownParserTest {
         val blocks = MarkdownParser.parse(md)
         assertThat(blocks.map { it::class.simpleName }).containsExactly("Heading", "Paragraph", "Bullets", "Bullets", "Code", "Quote", "Rule").inOrder()
         assertThat((blocks[0] as MdBlock.Heading).level).isEqualTo(1)
-        val bullets = blocks[2] as MdBlock.Bullets
-        assertThat(bullets.ordered).isFalse()
-        assertThat(bullets.items).containsExactly("one", "two continued").inOrder()
-        val ordered = blocks[3] as MdBlock.Bullets
-        assertThat(ordered.ordered).isTrue()
+        assertThat(blocks[2]).isEqualTo(bullets("one", "two continued"))
+        assertThat(blocks[3]).isEqualTo(numbered(1, "first", "second"))
         val code = blocks[4] as MdBlock.Code
         assertThat(code.language).isEqualTo("kotlin")
         assertThat(code.code).isEqualTo("val x = 1")
-        assertThat((blocks[5] as MdBlock.Quote).text).isEqualTo("quoted line continues")
+        assertThat(blocks[5]).isEqualTo(MdBlock.Quote(listOf(paragraph("quoted line continues"))))
     }
 
     @Test
@@ -88,10 +90,258 @@ class MarkdownParserTest {
     }
 
     @Test
-    fun `list items keep their raw text so the renderer can split media per item`() {
+    fun `media inside a list item becomes a block of that item`() {
         val blocks = MarkdownParser.parse("- Before: <img src=\"a.png\">\n- After: <img src=\"b.png\">")
-        val bullets = blocks.single() as MdBlock.Bullets
-        assertThat(bullets.items).containsExactly("Before: <img src=\"a.png\">", "After: <img src=\"b.png\">").inOrder()
+        val list = blocks.single() as MdBlock.Bullets
+        assertThat(list.items).containsExactly(
+            ListItem(listOf(paragraph("Before:"), MdBlock.Image("a.png", null))),
+            ListItem(listOf(paragraph("After:"), MdBlock.Image("b.png", null))),
+        ).inOrder()
+    }
+
+    // --- Tables ------------------------------------------------------------------------------------------------------
+
+    @Test
+    fun `a pipe table becomes a table block instead of a paragraph of pipes`() {
+        // The table from the crash-analysis reply that rendered as "| Minute | Buy VWAP | Event | |---|---|---| | 12:15 …".
+        val md = """
+            Stage 5 — The crash
+
+            | Minute | Buy VWAP | Event |
+            |---|---|---|
+            | 12:15 | ${'$'}159 | `0x4b3f…` (MM-3's seller, 810k issuer tokens) starts selling |
+            | 12:19 | ${'$'}108 | **${'$'}492k sell wave** — first big sell > buy minute |
+            | now | ${'$'}0.87 | -99.7% from peak VWAP |
+
+            First hour totals: **${'$'}10.71M bought** by 22,378 wallets.
+        """.trimIndent()
+        val blocks = MarkdownParser.parse(md)
+        assertThat(blocks.map { it::class.simpleName }).containsExactly("Paragraph", "Table", "Paragraph").inOrder()
+        val table = blocks[1] as MdBlock.Table
+        assertThat(table.header).containsExactly("Minute", "Buy VWAP", "Event").inOrder()
+        assertThat(table.alignments).containsExactly(TableAlign.Start, TableAlign.Start, TableAlign.Start)
+        assertThat(table.rows).hasSize(3)
+        assertThat(table.rows[0]).containsExactly("12:15", "\$159", "`0x4b3f…` (MM-3's seller, 810k issuer tokens) starts selling").inOrder()
+        assertThat(table.rows[1][2]).isEqualTo("**\$492k sell wave** — first big sell > buy minute")
+        assertThat((blocks[2] as MdBlock.Paragraph).text).startsWith("First hour totals")
+    }
+
+    @Test
+    fun `table cells honour alignment, escaped pipes, missing outer pipes and uneven rows`() {
+        val md = """
+            Wallet | Source | USD realized
+            :--- | :---: | ---:
+            `0x4b3f…1f2a` | MM-3 \| SAFE_D | 2,407,993
+            0x11c1… | 500,050 from MM-2
+            a | b | c | dropped
+        """.trimIndent()
+        val table = MarkdownParser.parse(md).single() as MdBlock.Table
+        assertThat(table.header).containsExactly("Wallet", "Source", "USD realized").inOrder()
+        assertThat(table.alignments).containsExactly(TableAlign.Start, TableAlign.Center, TableAlign.End).inOrder()
+        assertThat(table.rows).containsExactly(
+            listOf("`0x4b3f…1f2a`", "MM-3 | SAFE_D", "2,407,993"),
+            listOf("0x11c1…", "500,050 from MM-2", ""),
+            listOf("a", "b", "c"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `a table may follow a paragraph directly and ends at a blank line or a line without pipes`() {
+        val blocks = MarkdownParser.parse("Who got the money\n| a | b |\n|---|---|\n| 1 | 2 |\nTrailing sentence.\n| 3 | 4 |")
+        assertThat(blocks.map { it::class.simpleName }).containsExactly("Paragraph", "Table", "Paragraph").inOrder()
+        assertThat((blocks[0] as MdBlock.Paragraph).text).isEqualTo("Who got the money")
+        assertThat((blocks[1] as MdBlock.Table).rows).containsExactly(listOf("1", "2"))
+        // The stray row with no delimiter row under it is just text.
+        assertThat((blocks[2] as MdBlock.Paragraph).text).isEqualTo("Trailing sentence. | 3 | 4 |")
+    }
+
+    @Test
+    fun `a header whose cell count differs from the delimiter row is not a table`() {
+        val blocks = MarkdownParser.parse("| a | b | c |\n|---|---|")
+        assertThat(blocks.single()).isInstanceOf(MdBlock.Paragraph::class.java)
+        assertThat(MarkdownParser.parse("| just | text |").single()).isEqualTo(paragraph("| just | text |"))
+    }
+
+    @Test
+    fun `a single column table and a table with a heading right after it`() {
+        val blocks = MarkdownParser.parse("| Only |\n| - |\n| x |\n## Next")
+        assertThat(blocks).containsExactly(
+            MdBlock.Table(listOf("Only"), listOf(TableAlign.Start), listOf(listOf("x"))),
+            MdBlock.Heading(2, "Next"),
+        ).inOrder()
+    }
+
+    // --- Lists -------------------------------------------------------------------------------------------------------
+
+    @Test
+    fun `nested lists keep their structure`() {
+        val md = """
+            - Parent
+              - Child one
+              - Child two
+                1. Grandchild
+            - Sibling
+        """.trimIndent()
+        val list = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(list.items).hasSize(2)
+        val parent = list.items[0]
+        assertThat(parent.blocks[0]).isEqualTo(paragraph("Parent"))
+        val children = parent.blocks[1] as MdBlock.Bullets
+        assertThat(children.ordered).isFalse()
+        assertThat(children.items[0]).isEqualTo(item("Child one"))
+        assertThat(children.items[1].blocks).containsExactly(paragraph("Child two"), numbered(1, "Grandchild")).inOrder()
+        assertThat(list.items[1]).isEqualTo(item("Sibling"))
+    }
+
+    @Test
+    fun `bullets indented two spaces under a numbered item nest, as they are usually typed`() {
+        val list = MarkdownParser.parse("1. Step\n  - detail\n2. Next").single() as MdBlock.Bullets
+        assertThat(list.ordered).isTrue()
+        assertThat(list.items[0].blocks).containsExactly(paragraph("Step"), bullets("detail")).inOrder()
+        assertThat(list.items[1]).isEqualTo(item("Next"))
+    }
+
+    @Test
+    fun `an ordered list keeps its start number and continues after an unindented code block`() {
+        val md = """
+            3. third
+            4. fourth
+
+            1. Install:
+            ```bash
+            npm install
+            ```
+            2. Run it
+        """.trimIndent()
+        val blocks = MarkdownParser.parse(md)
+        assertThat(blocks.map { it::class.simpleName }).containsExactly("Bullets", "Bullets", "Code", "Bullets").inOrder()
+        assertThat(blocks[0]).isEqualTo(numbered(3, "third", "fourth"))
+        assertThat(blocks[1]).isEqualTo(numbered(1, "Install:"))
+        assertThat(blocks[3]).isEqualTo(numbered(2, "Run it"))
+    }
+
+    @Test
+    fun `a code block indented under a list item belongs to the item`() {
+        val md = """
+            1. Install:
+
+               ```bash
+               npm install
+               ```
+
+            2. Run it
+        """.trimIndent()
+        val list = MarkdownParser.parse(md).single() as MdBlock.Bullets
+        assertThat(list.items).hasSize(2)
+        assertThat(list.items[0].blocks).containsExactly(paragraph("Install:"), MdBlock.Code("bash", "npm install")).inOrder()
+        assertThat(list.items[1]).isEqualTo(item("Run it"))
+    }
+
+    @Test
+    fun `task items carry their checkbox and lose the brackets`() {
+        val list = MarkdownParser.parse("- [x] done\n- [ ] open\n- [x]\n- [not] a task").single() as MdBlock.Bullets
+        assertThat(list.items).containsExactly(
+            ListItem("done", checked = true),
+            ListItem("open", checked = false),
+            ListItem(emptyList(), checked = true),
+            ListItem("[not] a task"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `a numbered line other than 1 does not interrupt a paragraph, a bullet does`() {
+        assertThat(MarkdownParser.parse("Released in\n2019. A good year").single()).isEqualTo(paragraph("Released in 2019. A good year"))
+        assertThat(MarkdownParser.parse("Steps:\n1. one\n2. two")).containsExactly(paragraph("Steps:"), numbered(1, "one", "two")).inOrder()
+        assertThat(MarkdownParser.parse("Items:\n- a\n* b")).containsExactly(paragraph("Items:"), bullets("a", "b")).inOrder()
+    }
+
+    @Test
+    fun `an unindented line right after an item continues the item's paragraph`() {
+        assertThat(MarkdownParser.parse("- first line\nwraps here\n- second")).containsExactly(bullets("first line wraps here", "second"))
+    }
+
+    // --- Other blocks ------------------------------------------------------------------------------------------------
+
+    @Test
+    fun `tilde fences, longer fences and fenced backticks inside them`() {
+        val blocks = MarkdownParser.parse("~~~python\nprint(1)\n~~~\n````md\n```\ninner\n```\n````")
+        assertThat(blocks).containsExactly(
+            MdBlock.Code("python", "print(1)"),
+            MdBlock.Code("md", "```\ninner\n```"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `fence info strings keep only the language`() {
+        assertThat((MarkdownParser.parse("```ts title=\"a.ts\"\nx\n```").single() as MdBlock.Code).language).isEqualTo("ts")
+        assertThat((MarkdownParser.parse("```\nx\n```").single() as MdBlock.Code).language).isNull()
+    }
+
+    @Test
+    fun `every spelling of a thematic break is a rule, a setext underline is a heading`() {
+        assertThat(MarkdownParser.parse("---\n***\n___\n- - -\n-----\n* * *")).containsExactly(MdBlock.Rule, MdBlock.Rule, MdBlock.Rule, MdBlock.Rule, MdBlock.Rule, MdBlock.Rule)
+        assertThat(MarkdownParser.parse("Title\n=====")).containsExactly(MdBlock.Heading(1, "Title"))
+        // `---` under text stays a rule: agents write it as a separator, never as an H2 underline.
+        assertThat(MarkdownParser.parse("Closing line.\n---\n## Next")).containsExactly(paragraph("Closing line."), MdBlock.Rule, MdBlock.Heading(2, "Next")).inOrder()
+    }
+
+    @Test
+    fun `headings drop closing hashes and need a space after the opening ones`() {
+        assertThat(MarkdownParser.parse("## Title ##")).containsExactly(MdBlock.Heading(2, "Title"))
+        assertThat(MarkdownParser.parse("# C#")).containsExactly(MdBlock.Heading(1, "C#"))
+        assertThat(MarkdownParser.parse("#hashtag")).containsExactly(paragraph("#hashtag"))
+        assertThat(MarkdownParser.parse("####### seven")).containsExactly(paragraph("####### seven"))
+    }
+
+    @Test
+    fun `two trailing spaces or a backslash break the line inside a paragraph`() {
+        assertThat(MarkdownParser.parse("first  \nsecond\\\nthird\nfourth")).containsExactly(paragraph("first\nsecond\nthird fourth"))
+    }
+
+    @Test
+    fun `quotes hold blocks and continue lazily`() {
+        val md = """
+            > **Note**
+            > - one
+            > - two
+            still quoted
+            
+            not quoted
+        """.trimIndent()
+        val blocks = MarkdownParser.parse(md)
+        assertThat(blocks).containsExactly(
+            MdBlock.Quote(listOf(paragraph("**Note**"), MdBlock.Bullets(listOf(item("one"), item("two still quoted")), ordered = false))),
+            paragraph("not quoted"),
+        ).inOrder()
+    }
+
+    @Test
+    fun `html wrappers with nothing inside them are dropped`() {
+        val md = """
+            <details>
+            <summary>Full output</summary>
+
+            body text
+
+            </details>
+        """.trimIndent()
+        // The opening wrapper stays in the first paragraph's text; the inline renderer drops the tag itself.
+        assertThat(MarkdownParser.parse(md)).containsExactly(paragraph("<details> <summary>Full output</summary>"), paragraph("body text")).inOrder()
+    }
+
+    @Test
+    fun `windows line endings and tabs are handled`() {
+        assertThat(MarkdownParser.parse("a\r\n\r\nb")).containsExactly(paragraph("a"), paragraph("b")).inOrder()
+        val list = MarkdownParser.parse("- a\n\t- nested").single() as MdBlock.Bullets
+        assertThat(list.items.single().blocks).containsExactly(paragraph("a"), bullets("nested")).inOrder()
+    }
+
+    @Test
+    fun `split table row`() {
+        assertThat(MarkdownParser.splitTableRow("| a | b |")).containsExactly("a", "b").inOrder()
+        assertThat(MarkdownParser.splitTableRow("a | b")).containsExactly("a", "b").inOrder()
+        assertThat(MarkdownParser.splitTableRow("| a \\| b | `c` |")).containsExactly("a | b", "`c`").inOrder()
+        assertThat(MarkdownParser.splitTableRow("|")).containsExactly("")
     }
 }
 
