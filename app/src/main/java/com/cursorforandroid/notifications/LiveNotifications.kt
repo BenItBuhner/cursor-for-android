@@ -60,21 +60,23 @@ object LiveNotifications {
     }
 
     /**
-     * Posts [notification] under [id] when the app may. A denied `POST_NOTIFICATIONS` (Android 13+) is not an error:
-     * the notification is simply not shown, and the next state change tries again. Checked inline (not via
-     * [hasPermission]) so lint's MissingPermission analysis can see it; the permission only exists from API 33, and
-     * earlier releases report it as denied, hence the version guard.
+     * Posts [notification] under [id] when the app may, and says whether it went out. A denied `POST_NOTIFICATIONS`
+     * (Android 13+) is not an error: the notification is simply not shown, and the next state change tries again.
+     * Checked inline (not via [hasPermission]) so lint's MissingPermission analysis can see it; the permission only
+     * exists from API 33, and earlier releases report it as denied, hence the version guard.
      */
-    fun post(context: Context, id: Int, notification: Notification) {
+    fun post(context: Context, id: Int, notification: Notification): Boolean {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            return
+            return false
         }
-        try {
+        return try {
             NotificationManagerCompat.from(context).notify(id, notification)
+            true
         } catch (_: SecurityException) {
             // Permission revoked between the check and the call.
+            false
         }
     }
 
