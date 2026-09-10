@@ -28,6 +28,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -406,10 +407,14 @@ private fun WorkRow(item: ActivityGroup) {
 @Composable
 private fun StepList(steps: List<ActivityStep>, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        steps.forEach { step ->
-            when (step) {
-                is ThinkingBlock -> ThoughtText(step.text, Modifier.padding(vertical = 4.dp))
-                is ToolCall -> ToolCallLine(step)
+        // Each step owns its slot: an opened output belongs to the call it was opened on, not to the place that call
+        // happened to hold when the group was last drawn. A thought carries no state, so its position will do.
+        steps.forEachIndexed { index, step ->
+            key(if (step is ToolCall) step.callId else "thought-$index") {
+                when (step) {
+                    is ThinkingBlock -> ThoughtText(step.text, Modifier.padding(vertical = 4.dp))
+                    is ToolCall -> ToolCallLine(step)
+                }
             }
         }
     }
@@ -434,7 +439,7 @@ private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }
     val expandable = !output.isEmpty
-    var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
+    var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth()) {
         Row(
             Modifier

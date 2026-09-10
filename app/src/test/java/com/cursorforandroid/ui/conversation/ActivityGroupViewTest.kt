@@ -1,5 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -111,6 +114,28 @@ class ActivityGroupViewTest {
         compose.onNodeWithText("$ ./gradlew test").assertIsDisplayed()
         compose.onNodeWithText("3 tests failed").assertIsDisplayed()
         compose.onNodeWithText("exit code 1").assertIsDisplayed()
+    }
+
+    @Test
+    fun `an opened tool output stays with its call when a step arrives ahead of it`() {
+        fun shell(name: String) = call(ToolKind.Shell, name, detail = "echo $name", result = """{"success":{"exitCode":0,"stdout":"$name spoke","stderr":""}}""")
+        val original = listOf(shell("one"), shell("two"), shell("three"))
+        var steps by mutableStateOf<List<ActivityStep>>(original)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) { TimelineItemView(ActivityGroup("g1", steps)) }
+        }
+
+        compose.onNodeWithText(ActivityGroup("g1", original).header.action).performClick()
+        compose.onNodeWithText("two").performClick()
+        assertThat(shown("two spoke")).isTrue()
+        assertThat(shown("one spoke")).isFalse()
+
+        steps = listOf(shell("zero")) + original
+        compose.waitForIdle()
+
+        assertThat(shown("two spoke")).isTrue()
+        assertThat(shown("one spoke")).isFalse()
+        assertThat(shown("zero spoke")).isFalse()
     }
 
     @Test
