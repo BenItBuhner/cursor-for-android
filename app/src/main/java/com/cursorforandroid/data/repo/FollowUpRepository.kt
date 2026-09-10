@@ -355,7 +355,9 @@ class FollowUpRepository(
                         restored = true,
                     )
                 }
-                reconcileInflight(e, startedIn)
+            }
+            reconcileInflight(e, startedIn)
+            synchronized(e) {
                 if (e.state.value.queue.any { it.error == null && !it.needsConfirmation }) e.ensureDispatcher()
             }
             // Whatever changed while the file was being read is now written on top of it (a no-op when nothing did).
