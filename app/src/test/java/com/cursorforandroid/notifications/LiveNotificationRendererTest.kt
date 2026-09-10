@@ -56,8 +56,9 @@ class LiveNotificationRendererTest {
     private fun Notification.actionTitles() = actions.orEmpty().map { it.title.toString() }
     private fun Notification.chip() = NotificationCompat.getShortCriticalText(this)
 
-    /** A roster row without its bar cells and gap, e.g. `Cesium Revenue… · Thinking · 4m`. */
-    private fun String.afterBar() = trimStart('\u25AE', '\u25AF', '\u2002')
+    /** A roster row without its colour edge, e.g. `Cesium Revenue Strategy  Thinking · 4m`. */
+    private fun String.afterEdge() = removePrefix("\u258E ")
+    private fun String.name() = afterEdge().substringBefore('\u2002')
 
     @Test
     fun `single running agent is one promoted card with the step, a chronometer and Stop`() {
@@ -114,21 +115,18 @@ class LiveNotificationRendererTest {
 
         assertThat(n.title()).isEqualTo("3 agents running")
         assertThat(n.extras.getString(Notification.EXTRA_TEMPLATE)).endsWith("BigTextStyle")
-        assertThat(n.rows().map { it.afterBar() }).containsExactly(
-            "Update quick ac\u2026 \u00B7 Editing \u00B7 34m",
-            "Cesium Revenue\u2026 \u00B7 Thinking \u00B7 34m",
-            "Codex-Poly-Bot\u2026 \u00B7 Running \u00B7 34m",
+        assertThat(n.rows().map { it.afterEdge() }).containsExactly(
+            "Update quick action pil\u2026\u2002\u2002Editing \u00B7 34m",
+            "Cesium Revenue Strategy\u2002\u2002Thinking \u00B7 34m",
+            "Codex-Poly-Bot Scaling\u2002\u2002Running \u00B7 34m",
         ).inOrder()
-        // Every row opens with a five-cell bar lit to the step: editing 3, thinking 1, running 3.
-        assertThat(n.rows().map { it.substringBefore('\u2002') }).containsExactly(
-            "\u25AE\u25AE\u25AE\u25AF\u25AF",
-            "\u25AE\u25AF\u25AF\u25AF\u25AF",
-            "\u25AE\u25AE\u25AE\u25AF\u25AF",
-        ).inOrder()
+        // Below Android 16 every row opens with its colour edge.
+        n.rows().forEach { assertThat(it).startsWith("\u258E ") }
         assertThat(n.text()).isEqualTo(n.rows().first())
         assertThat(n.chip()).isEqualTo("3")
         assertThat(n.number).isEqualTo(3)
-        assertThat(n.getLargeIcon()).isNull()
+        // The fleet mosaic sits in the large-icon slot.
+        assertThat(n.getLargeIcon()).isNotNull()
         assertThat(n.extras.getBoolean(Notification.EXTRA_COLORIZED)).isFalse()
         assertThat(n.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)).isFalse()
         assertThat(n.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
@@ -137,28 +135,41 @@ class LiveNotificationRendererTest {
     }
 
     @Test
-    fun `roster rows light the bar in the agent hue, amber while stopping, with the name in bold`() {
+    fun `roster rows edge in the agent hue, amber while stopping, name in bold, detail muted`() {
         val run = running("bc-1", "Agent")
-        val row = LiveNotificationRenderer.rosterRow(context, run, hue = 0xFFB48EAD.toInt(), nowMillis = startedAt + 90_000) as Spanned
-        val barColors = row.getSpans(0, 5, ForegroundColorSpan::class.java).sortedBy { row.getSpanStart(it) }
-        // Editing sits at 62 of 100: three lit cells, two hollow.
-        assertThat(barColors.map { row.getSpanStart(it) to row.getSpanEnd(it) }).containsExactly(0 to 3, 3 to 5).inOrder()
-        assertThat(barColors.first().foregroundColor).isEqualTo(0xFFB48EAD.toInt())
-        assertThat(barColors.last().foregroundColor).isEqualTo(0x66FFFFFF)
+        val row = LiveNotificationRenderer.rosterRow(context, run, hue = 0xFFB48EAD.toInt(), nowMillis = startedAt + 90_000, colourSurvives = true) as Spanned
+        assertThat(row.toString()).isEqualTo("\u258E Agent\u2002\u2002Editing \u00B7 1m")
+        val edge = row.getSpans(0, 2, ForegroundColorSpan::class.java).single()
+        assertThat(edge.foregroundColor).isEqualTo(0xFFB48EAD.toInt())
+        assertThat(row.getSpanStart(edge) to row.getSpanEnd(edge)).isEqualTo(0 to 2)
         val bold = row.getSpans(0, row.length, StyleSpan::class.java).single()
         assertThat(bold.style).isEqualTo(Typeface.BOLD)
         assertThat(row.subSequence(row.getSpanStart(bold), row.getSpanEnd(bold)).toString()).isEqualTo("Agent")
-        assertThat(row.toString().afterBar()).isEqualTo("Agent \u00B7 Editing \u00B7 1m")
+        val muted = row.getSpans(row.getSpanEnd(bold), row.length, ForegroundColorSpan::class.java).single()
+        assertThat(row.subSequence(row.getSpanStart(muted), row.getSpanEnd(muted)).toString()).isEqualTo("\u2002\u2002Editing \u00B7 1m")
 
-        val stopping = LiveNotificationRenderer.rosterRow(context, run.copy(phase = LivePhase.Stopping), hue = 0xFFB48EAD.toInt(), nowMillis = startedAt) as Spanned
-        assertThat(stopping.toString().substringBefore('\u2002')).isEqualTo("\u25AE".repeat(5))
-        val lit = stopping.getSpans(0, 5, ForegroundColorSpan::class.java).single()
-        assertThat(lit.foregroundColor).isEqualTo(0xFFF1B467.toInt())
-        assertThat(stopping.toString().afterBar()).isEqualTo("Agent \u00B7 Stopping \u00B7 now")
+        val stopping = LiveNotificationRenderer.rosterRow(context, run.copy(phase = LivePhase.Stopping), hue = 0xFFB48EAD.toInt(), nowMillis = startedAt, colourSurvives = true) as Spanned
+        assertThat(stopping.getSpans(0, 2, ForegroundColorSpan::class.java).single().foregroundColor).isEqualTo(0xFFF1B467.toInt())
+        assertThat(stopping.toString()).isEqualTo("\u258E Agent\u2002\u2002Stopping \u00B7 now")
+
+        // Android 16 strips colour from promoted text: no edge, and a dot separates name from verb instead of the gap.
+        val plain = LiveNotificationRenderer.rosterRow(context, run, hue = 0xFFB48EAD.toInt(), nowMillis = startedAt, colourSurvives = false) as Spanned
+        assertThat(plain.toString()).isEqualTo("Agent \u00B7 Editing \u00B7 now")
+        assertThat(plain.getSpans(0, plain.length, StyleSpan::class.java).single().style).isEqualTo(Typeface.BOLD)
 
         // A two-word verb keeps only its first word: the row has no room for the subject.
-        val delegating = LiveNotificationRenderer.rosterRow(context, running("bc-2", "B", activity = RunDigest.Activity("Delegating to", "3 subagents")), hue = 0, nowMillis = startedAt)
-        assertThat(delegating.toString().afterBar()).isEqualTo("B \u00B7 Delegating \u00B7 now")
+        val delegating = LiveNotificationRenderer.rosterRow(context, running("bc-2", "B", activity = RunDigest.Activity("Delegating to", "3 subagents")), hue = 0, nowMillis = startedAt, colourSurvives = false)
+        assertThat(delegating.toString()).isEqualTo("B \u00B7 Delegating \u00B7 now")
+    }
+
+    @Test
+    fun `the fleet mosaic grows its grid with the count`() {
+        assertThat(LiveNotificationRenderer.mosaicGrid(2)).isEqualTo(2)
+        assertThat(LiveNotificationRenderer.mosaicGrid(4)).isEqualTo(2)
+        assertThat(LiveNotificationRenderer.mosaicGrid(5)).isEqualTo(3)
+        assertThat(LiveNotificationRenderer.mosaicGrid(9)).isEqualTo(3)
+        assertThat(LiveNotificationRenderer.mosaicGrid(11)).isEqualTo(4)
+        assertThat(LiveNotificationRenderer.mosaic(context, listOf(0xFF81A1C1.toInt()), 11).width).isAtLeast(128)
     }
 
     @Test
@@ -170,7 +181,7 @@ class LiveNotificationRendererTest {
         assertThat(n.number).isEqualTo(12)
         assertThat(n.chip()).isEqualTo("12")
         assertThat(n.rows()).hasSize(9)
-        assertThat(n.rows().take(8).map { it.afterBar().substringBefore(" \u00B7 ") }).containsExactlyElementsIn((1..8).map { "Agent $it" }).inOrder()
+        assertThat(n.rows().take(8).map { it.name() }).containsExactlyElementsIn((1..8).map { "Agent $it" }).inOrder()
         assertThat(n.rows().last()).isEqualTo("+4 more")
     }
 
@@ -198,7 +209,7 @@ class LiveNotificationRendererTest {
         val newer = running("bc-3", "Newer").copy(startedAtMillis = startedAt + 120_000)
         val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(newer, older, stopping), hasReconciled = true))
 
-        assertThat(n.rows().map { it.afterBar().substringBefore(" \u00B7 ") }).containsExactly("Stopping now", "Older", "Newer").inOrder()
+        assertThat(n.rows().map { it.name() }).containsExactly("Stopping now", "Older", "Newer").inOrder()
         assertThat(LiveNotificationRenderer.sortedForRoster(listOf(newer, older, stopping)).map { it.agentId })
             .containsExactly("bc-2", "bc-1", "bc-3")
             .inOrder()

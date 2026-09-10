@@ -84,9 +84,16 @@ class NotificationScreenshotTest {
     @Test
     @Config(sdk = [36])
     fun progressStyleApi36() {
-        capture("32_notif_single_progress_api36", singleRunning(), expanded = true)
-        capture("33_notif_roster_api36", roster(), expanded = true)
+        capture("32_notif_single_progress_api36", singleRunning().promoted(), expanded = true)
+        capture("33_notif_roster_api36", roster().promoted(), expanded = true)
     }
+
+    /**
+     * Marks the notification the way the system does once it accepts it as a Live Update. Robolectric has no
+     * promotion pipeline, so without this Android 16's template renders the demoted fallback (all styling stripped)
+     * rather than what the shade shows for a promoted card (bold kept, colour spans stripped).
+     */
+    private fun Notification.promoted(): Notification = apply { flags = flags or Notification.FLAG_PROMOTED_ONGOING }
 
     private fun singleRunning(): Notification = LiveNotificationRenderer.live(
         context,

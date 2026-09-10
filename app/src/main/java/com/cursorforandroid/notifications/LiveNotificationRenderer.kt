@@ -43,10 +43,11 @@ import com.cursorforandroid.util.TimeFormat
  *    has no room for the step), a determinate bar walks the run, a Stop action cancels it, and a cube tile in the
  *    agent's hue fills the large-icon slot. Android 16 promotes it as a `ProgressStyle` Live Update.
  *  - **Several running agents:** the roster card — one `BigTextStyle` notification (a promotable style; `InboxStyle`
- *    is not) with a row per tracked agent: a six-cell bar lit to the agent's progress, the name in bold, the verb
- *    and the elapsed time. Below Android 16 the bar takes the agent's hue; 16 strips colour spans from promoted
- *    text, so the bar's shape and the bold carry the row there. Stopping sorts first, then longest-running; agents
- *    beyond the tracking cap are a `+N more` tail row. The chip is the count. Tap opens the app.
+ *    is not). The large-icon slot holds a mosaic of the fleet, one small tile per running agent in its hue; the
+ *    body is a row per tracked agent — name in bold, verb and elapsed time muted, and below Android 16 a thin edge
+ *    in the agent's hue (16 strips colour spans from promoted text, so there the rows are plain bold-and-muted).
+ *    Stopping sorts first, then longest-running; agents beyond the tracking cap are a `+N more` tail row. The chip
+ *    is the count. Tap opens the app.
  *  - **A finished agent:** a dismissible card with "Finished", the title, "+80 −230 · 3 Files" (or the duration when
  *    no tool reported line counts), the final reply, and Review / View PR actions.
  *
@@ -65,8 +66,7 @@ object LiveNotificationRenderer {
     private const val GIT_REMOVED = 0xFFFC6B83.toInt()
     /** Ink for the cube on a tile: the theme's `onAccent`. */
     private const val TILE_INK = 0xFF191C22.toInt()
-    /** The hollow cells of a roster bar, and the muted text beside it. */
-    private const val BAR_TRACK = 0x66FFFFFF
+    /** The verb and age beside a roster name. */
     private const val MUTED = 0xFFB0B0B0.toInt()
     /** Cursor Dark's accent hues, dealt to agents by id so rows are told apart at a glance. */
     private val TILE_HUES = intArrayOf(
@@ -77,16 +77,17 @@ object LiveNotificationRenderer {
         0xFFEBC88D.toInt(), // code function
         0xFFA8CC7C.toInt(), // code string
     )
-    /** Roster bar: [BAR_CELLS] rectangles, lit (U+25AE) up to the journey progress and hollow (U+25AF) beyond. */
-    private const val BAR_CELLS = 5
-    private const val BAR_LIT = '\u25AE'
-    private const val BAR_HOLLOW = '\u25AF'
-    private const val ROW_GAP = "\u2002"
+    /** Roster row: a left-quarter block (U+258E) as the colour edge, then name, then a two-space column gap. */
+    private const val ROW_EDGE = "\u258E "
+    private const val ROW_GAP = "\u2002\u2002"
     private const val ROW_SEP = " \u00B7 "
-    /** Sized so `▮▮▯▯▯ Market replay en… · Delegating · 52m` stays on one line of the body at 14sp. */
-    private const val ROW_NAME_MAX = 16
+    /** Sized so `▎ Hyper-realistic human li…  Stopping · 6m` stays on one line of the body at 14sp. */
+    private const val ROW_NAME_MAX = 24
     private const val SUMMARY_MAX = 320
     private const val TILE_DP = 56
+    /** Mosaic cells beyond the running agents are this faint, so the grid also reads as a count. */
+    private const val MOSAIC_EMPTY = 0x1FFFFFFF
+    private const val MOSAIC_BG = 0xFF1E1E1E.toInt()
 
     /** Journey bar is 100 units. Phases pin the ends; the current verb walks the middle. */
     internal const val JOURNEY_MAX = 100
@@ -140,7 +141,7 @@ object LiveNotificationRenderer {
         return builder.build()
     }
 
-    /** The roster card: `5 agents running` over one spanned row per tracked agent. */
+    /** The roster card: `11 agents running`, the fleet mosaic, and one row per tracked agent. */
     internal fun roster(context: Context, state: LiveActivityState): Notification {
         val ordered = sortedForRoster(state.running)
         val hues = tileHues(ordered)
@@ -155,7 +156,7 @@ object LiveNotificationRenderer {
             .setStyle(NotificationCompat.BigTextStyle().setBigContentTitle(title).bigText(join(rows + listOfNotNull(tail))))
             .setShortCriticalText(count.toString())
             .setNumber(count)
-            // No tile: the body text flows around a large icon, and the rows want the full width.
+            .setLargeIcon(mosaic(context, ordered.map { hues.getValue(it.agentId) }, count))
             .setWhen(ordered.minOf { it.startedAtMillis })
             .setShowWhen(false)
             .setContentIntent(openApp(context))
@@ -247,23 +248,23 @@ object LiveNotificationRenderer {
     // ---- roster rows --------------------------------------------------------------------------------------
 
     /**
-     * `▮▮▮▮▯▯ Codex-Poly-Bot Scaling · Running · 34m`: a six-cell bar lit up to the agent's journey progress, the
-     * name in bold, then the verb and the age. The bar's *shape* carries the progress, because Android 16 strips
-     * every colour span from a promoted notification (only bold / italic / underline survive); on 15 and below the
-     * lit cells take the agent's [hue] (amber while stopping), the hollow cells and the detail go muted.
+     * `▎ Codex-Poly-Bot Scaling  Running · 34m`: the name in bold, then the verb and age muted, like an inbox row.
+     * Android 16 strips every colour span from a promoted notification (only bold / italic / underline survive), so
+     * there the row is just that; below 16 it opens with a thin edge in the agent's [hue] (amber while stopping).
+     * A white edge on 16 would be noise, so none is drawn where its colour cannot show.
      */
-    internal fun rosterRow(context: Context, run: TrackedRun, hue: Int, nowMillis: Long): CharSequence {
+    internal fun rosterRow(context: Context, run: TrackedRun, hue: Int, nowMillis: Long, colourSurvives: Boolean = Build.VERSION.SDK_INT < 36): CharSequence {
         val row = SpannableStringBuilder()
-        val lit = Math.round(journeyProgress(run) / JOURNEY_MAX.toFloat() * BAR_CELLS).coerceIn(1, BAR_CELLS)
-        row.append(BAR_LIT.toString().repeat(lit)).append(BAR_HOLLOW.toString().repeat(BAR_CELLS - lit))
-        row.setSpan(ForegroundColorSpan(if (run.phase == LivePhase.Stopping) ORANGE else hue), 0, lit, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        if (lit < BAR_CELLS) row.setSpan(ForegroundColorSpan(BAR_TRACK), lit, BAR_CELLS, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        row.append(ROW_GAP)
+        if (colourSurvives) {
+            row.append(ROW_EDGE)
+            row.setSpan(ForegroundColorSpan(if (run.phase == LivePhase.Stopping) ORANGE else hue), 0, row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
         val nameAt = row.length
         row.append(ellipsize(run.title, ROW_NAME_MAX))
         row.setSpan(StyleSpan(Typeface.BOLD), nameAt, row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         val detailAt = row.length
-        row.append(ROW_SEP).append(rosterVerb(context, run))
+        // With colour the muted detail separates itself from the name; without it a dot has to.
+        row.append(if (colourSurvives) ROW_GAP else ROW_SEP).append(rosterVerb(context, run))
         row.append(ROW_SEP).append(TimeFormat.relativeShort(run.startedAtMillis, nowMillis))
         row.setSpan(ForegroundColorSpan(MUTED), detailAt, row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         return row
@@ -340,7 +341,43 @@ object LiveNotificationRenderer {
         }
     }
 
-    /** Rounded square in [hue] with the official cube inked on it — the album-art slot on the live card. */
+    /**
+     * The fleet as one image for the roster's large-icon slot: a rounded dark square holding a grid of small tiles,
+     * one per running agent in its hue (the palette cycles past the tracked eight), the remaining cells of the grid
+     * faint — so the mosaic shows how many as well as which. 2×2 up to four agents, 3×3 up to nine, 4×4 beyond.
+     */
+    internal fun mosaic(context: Context, hues: List<Int>, total: Int): Bitmap {
+        val size = (TILE_DP * context.resources.displayMetrics.density).toInt().coerceAtLeast(128)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val radius = size * 0.22f
+        paint.color = MOSAIC_BG
+        canvas.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), radius, radius, paint)
+        val grid = mosaicGrid(total)
+        val cells = (0 until grid * grid).map { index -> if (index < total) hues[index % hues.size.coerceAtLeast(1)] else MOSAIC_EMPTY }
+        val inset = size * 0.16f
+        val gap = size * 0.05f
+        val cell = (size - 2 * inset - (grid - 1) * gap) / grid
+        val cellRadius = cell * 0.28f
+        cells.forEachIndexed { index, colour ->
+            val col = index % grid
+            val row = index / grid
+            val left = inset + col * (cell + gap)
+            val top = inset + row * (cell + gap)
+            paint.color = colour
+            canvas.drawRoundRect(left, top, left + cell, top + cell, cellRadius, cellRadius, paint)
+        }
+        return bitmap
+    }
+
+    internal fun mosaicGrid(total: Int): Int = when {
+        total <= 4 -> 2
+        total <= 9 -> 3
+        else -> 4
+    }
+
+    /** Rounded square in [hue] with the official cube inked on it — the album-art slot on the single-agent card. */
     internal fun tile(context: Context, hue: Int): Bitmap {
         val size = (TILE_DP * context.resources.displayMetrics.density).toInt().coerceAtLeast(128)
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
