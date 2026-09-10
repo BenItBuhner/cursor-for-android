@@ -178,7 +178,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** A model picks the next follow-up's model (its default variant unless one is given); null keeps the chat's current one. */
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
-        picker.update { it.copy(override = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }) }
+        val choice = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }
+        picker.update { it.copy(override = choice) }
+        // An explicit pick is the new-chat composer's next default — opening the app must not fall back to Auto.
+        if (choice != null) {
+            viewModelScope.launch {
+                graph.prefs.rememberModel(choice.model.id, choice.params.associate { it.id to it.value })
+            }
+        }
     }
 
     fun setPlanMode(value: Boolean) { picker.update { it.copy(planMode = value) } }

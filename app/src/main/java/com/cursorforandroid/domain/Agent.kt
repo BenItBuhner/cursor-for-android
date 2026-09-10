@@ -381,6 +381,12 @@ fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoi
 }
 
 /**
+ * The catalog row [id] names. A miss is null — never the first row. The live catalogue leads with Auto, and
+ * substituting that for a last-used model is what made the new-chat picker look reset on every cold start.
+ */
+fun List<ModelOption>.named(id: String?): ModelOption? = id?.let { wanted -> firstOrNull { it.id == wanted } }
+
+/**
  * The picker entry recorded as [label] on a chat's row before the id and parameters were kept alongside it. The
  * label is the model's name, or — from versions before that — the variant's name with its parameters appended
  * when siblings shared it; a bare model name lands on the model's default variant.

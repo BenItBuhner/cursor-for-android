@@ -54,6 +54,26 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `remembering a model persists it without touching the other launch defaults`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        prefs.setComposerDefaults(
+            repoUrl = "https://github.com/acme/app",
+            ref = "main",
+            modelId = "auto-smart",
+            params = emptyMap(),
+            autoCreatePr = true,
+        )
+        prefs.rememberModel("composer-2.5", mapOf("fast" to "false"))
+        val defaults = prefs.composerDefaults.first()
+        assertThat(defaults.modelId).isEqualTo("composer-2.5")
+        assertThat(defaults.modelParams).containsExactly("fast", "false")
+        assertThat(defaults.modelChosen).isTrue()
+        assertThat(defaults.repoUrl).isEqualTo("https://github.com/acme/app")
+        assertThat(defaults.ref).isEqualTo("main")
+        assertThat(defaults.autoCreatePr).isTrue()
+    }
+
+    @Test
     fun `pinned models persist most-recently-pinned first`() = runBlocking {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.pinnedModelIds.first()).isEmpty()

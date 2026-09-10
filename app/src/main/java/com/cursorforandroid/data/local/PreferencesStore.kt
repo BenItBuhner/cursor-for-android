@@ -322,6 +322,15 @@ class PreferencesStore(context: Context) {
         }
     }
 
+    /**
+     * Records the model the new-chat picker should open on, without touching the other launch defaults.
+     * [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model.
+     */
+    suspend fun rememberModel(modelId: String?, params: Map<String, String> = emptyMap()) = store.edit { p ->
+        p[Keys.lastModel] = modelId ?: ""
+        p[Keys.lastModelParams] = encodeStringMap(params)
+    }
+
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
     suspend fun setComposerDefaults(
         repoUrl: String?,
