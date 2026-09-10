@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
+import com.cursorforandroid.domain.ToolOutput
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -89,6 +90,18 @@ class ToolCallMapperTest {
         assertThat(described.summary).isEqualTo("The git status check")
         assertThat(line("shell", """{"command":"ls"}""")).isEqualTo("Ran ls")
         assertThat(line("run_terminal_command_v2", """{"command":"ls"}""", status = "running")).isEqualTo("Running ls")
+    }
+
+    @Test
+    fun `what a call opens onto is held to a size a row can show`() {
+        val huge = call("run_terminal_cmd", """{"command":"echo ${"x".repeat(200_000)}"}""")
+        assertThat(huge.detail!!.length).isLessThan(ToolOutput.MAX_DETAIL_CHARS + 64)
+        assertThat(huge.detail).startsWith("echo xxx")
+
+        val args = (1..5_000).joinToString(",") { """"k$it":"v$it"""" }
+        val mcp = call("mcp", """{"server":"linear","tool":"list_issues","args":{$args}}""")
+        assertThat(mcp.detail!!.length).isLessThan(ToolOutput.MAX_DETAIL_CHARS + 64)
+        assertThat(mcp.detail).startsWith("""{"k1":"v1",""")
     }
 
     @Test

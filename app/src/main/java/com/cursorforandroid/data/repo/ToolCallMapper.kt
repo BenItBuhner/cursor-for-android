@@ -65,9 +65,12 @@ object ToolCallMapper {
         val summary: String,
         val kind: ToolKind,
         val server: String? = null,
-        val detail: String? = null,
+        detail: String? = null,
         val labels: ToolLabels? = null,
-    )
+    ) {
+        /** Bounded here rather than at each call it is read from: a command or an MCP argument has no size limit. */
+        val detail: String? = ToolOutput.detail(detail)
+    }
 
     private fun describe(kind: ToolKind, name: String, args: JsonObject?, result: JsonElement?, running: Boolean, previousTodos: List<Todo>?): Description = when (kind) {
         ToolKind.Read -> {

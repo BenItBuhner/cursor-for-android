@@ -30,6 +30,9 @@ data class ToolOutput(
         /** Roughly a forty-line terminal at a hundred columns. */
         const val MAX_OUTPUT_CHARS = 4_000
 
+        /** What a row opens onto above its output — a command, an MCP call's arguments — held to the same size. */
+        const val MAX_DETAIL_CHARS = 4_000
+
         /** What a built call opens onto; the reading of [raw] happened when the call was built (see [from]). */
         fun of(call: ToolCall): ToolOutput = ToolOutput(call.detail, call.output, call.exitCode)
 
@@ -41,9 +44,8 @@ data class ToolOutput(
             val result = raw as? JsonObject
             return when (kind) {
                 ToolKind.Shell -> {
-                    val out = listOfNotNull(result?.deepString("stdout", "output", "content"), result?.deepString("stderr")?.takeIf { it.isNotBlank() })
-                        .joinToString("\n").ifBlank { null }
-                    ToolOutput(detail, out?.let(::clip), result?.deepInt("exitCode", "exit_code"))
+                    val out = shellText(result?.deepString("stdout", "output", "content"), result?.deepString("stderr")?.takeIf { it.isNotBlank() })
+                    ToolOutput(detail, out, result?.deepInt("exitCode", "exit_code"))
                 }
                 ToolKind.Mcp -> ToolOutput(detail, mcpText(result)?.let(::clip))
                 else -> ToolOutput(detail, null)
@@ -65,18 +67,60 @@ data class ToolOutput(
             return result.deepString("result", "output", "text")
         }
 
-        private fun clip(text: String): String {
-            val trimmed = text.trimEnd()
-            val lines = trimmed.lines()
-            var result = if (lines.size <= MAX_OUTPUT_LINES) {
-                trimmed
-            } else {
-                lines.take(MAX_OUTPUT_LINES).joinToString("\n") + "\n… ${lines.size - MAX_OUTPUT_LINES} more lines"
+        /**
+         * A command's output with its error stream after it. Once the output alone is longer than a row can show the
+         * two are not joined: the error stream could not appear either way, and joining would copy the whole payload
+         * only for [clip] to drop all but its head.
+         */
+        private fun shellText(stdout: String?, stderr: String?): String? {
+            val text = when {
+                stdout == null -> stderr ?: return null
+                stderr == null || stdout.length > MAX_OUTPUT_CHARS -> stdout
+                else -> "$stdout\n$stderr"
             }
-            if (result.length <= MAX_OUTPUT_CHARS) return result
-            var cutAt = MAX_OUTPUT_CHARS
-            if (cutAt > 0 && cutAt < result.length && Character.isHighSurrogate(result[cutAt - 1])) cutAt--
-            return result.substring(0, cutAt) + "… ${result.length - cutAt} more characters"
+            return clip(text).ifBlank { null }
+        }
+
+        /**
+         * The head of [text]: at most [MAX_OUTPUT_LINES] lines and [MAX_OUTPUT_CHARS] characters, with what was left
+         * out noted. Nothing beyond the characters that could be shown is copied, so a payload of megabytes is read
+         * once and costs no more than a short one.
+         */
+        private fun clip(text: String): String {
+            var end = text.length
+            while (end > 0 && text[end - 1].isWhitespace()) end--
+
+            // Past the character bound nothing can be shown, so the line bound is only looked for within it.
+            var newlines = 0
+            var lineEnd = -1
+            var i = 0
+            while (i < end && i < MAX_OUTPUT_CHARS) {
+                val isNewline = text[i] == '\n'
+                i++
+                if (isNewline && ++newlines == MAX_OUTPUT_LINES) {
+                    lineEnd = i - 1
+                    break
+                }
+            }
+            if (lineEnd < 0) return cut(text, end, MAX_OUTPUT_CHARS)
+
+            while (i < end) {
+                if (text[i] == '\n') newlines++
+                i++
+            }
+            val head = text.substring(0, lineEnd) + "\n… ${newlines + 1 - MAX_OUTPUT_LINES} more lines"
+            return cut(head, head.length, MAX_OUTPUT_CHARS)
+        }
+
+        /** What a row opens onto, held to [MAX_DETAIL_CHARS]: a call can name a command or an argument of any size. */
+        fun detail(text: String?): String? = text?.let { cut(it, it.length, MAX_DETAIL_CHARS) }
+
+        /** [text] up to [end], cut down to [limit] characters without splitting a surrogate pair. */
+        private fun cut(text: String, end: Int, limit: Int): String {
+            if (end <= limit) return text.substring(0, end)
+            var cutAt = limit
+            if (cutAt > 0 && Character.isHighSurrogate(text[cutAt - 1])) cutAt--
+            return text.substring(0, cutAt) + "… ${end - cutAt} more characters"
         }
 
         private fun JsonObject.deepString(vararg keys: String): String? {
