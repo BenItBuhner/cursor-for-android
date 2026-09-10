@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -308,12 +309,13 @@ private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.val
 
 /**
  * Advertises image MIME types to the IME and turns clipboard / keyboard / drag-and-drop images into attachments.
- * Bytes are read before [ReceiveContentListener.onReceive] returns so a clipboard URI grant cannot expire on the
- * hop to IO; decode and downscale happen off the main thread afterwards.
+ * [ReceiveContentListener.onReceive] is called on the main thread, so only the URIs are taken there; the bytes go
+ * through the photo picker's bounded reader on IO, which refuses an oversized selection before it is all in memory
+ * instead of freezing the composer for the length of a cloud provider's download.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun rememberImagePasteReceiver(
+internal fun rememberImagePasteReceiver(
     enabled: Boolean,
     currentCount: Int,
     onAddAttachments: ((List<PendingAttachment>) -> Unit)?,
@@ -329,34 +331,24 @@ private fun rememberImagePasteReceiver(
         ReceiveContentListener { transferableContent ->
             val resolver = context.contentResolver
             val clipIsImage = transferableContent.hasMediaType(MediaType.Image)
-            val payloads = mutableListOf<ImagePayload>()
-            var readFailed = false
+            val uris = mutableListOf<Uri>()
             val remaining = transferableContent.consume { item ->
                 val uri = item.uri ?: return@consume false
                 if (!isImageUri(resolver, uri, clipIsImage)) return@consume false
-                val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                if (bytes == null) {
-                    readFailed = true
-                    true
-                } else {
-                    payloads += ImagePayload(
-                        id = uri.toString() + "@" + System.nanoTime(),
-                        bytes = bytes,
-                        declaredMime = resolver.getType(uri),
-                    )
-                    true
-                }
+                uris += uri
+                true
             }
-            if (payloads.isEmpty()) {
-                if (readFailed || clipIsImage) {
+            if (uris.isEmpty()) {
+                if (clipIsImage) {
                     attachmentError.value?.invoke("Couldn't read the image.")
                     return@ReceiveContentListener remaining
                 }
                 return@ReceiveContentListener transferableContent
             }
             val add = addAttachments.value
+            val taken = count.value
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importPayloads(payloads, count.value) }
+                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, taken) }
                 if (imported.attachments.isNotEmpty()) add(imported.attachments)
                 imported.error?.let { attachmentError.value?.invoke(it) }
             }
