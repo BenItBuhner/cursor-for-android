@@ -129,7 +129,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             var retries = 0
             while (catalog.pending && retries++ < PENDING_RETRIES) {
                 delay(SlashCommandRepository.PENDING_TTL_MS)
-                catalog = graph.slashCommands.load(commandScope(agent.value))
+                catalog = graph.slashCommands.load(commandScope(agent.value), force = true)
             }
         }
         viewModelScope.launch {

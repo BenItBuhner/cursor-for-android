@@ -4,11 +4,25 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.FakeCursorApi
+import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.SlashCommandApi
+import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.LaunchRequest
+import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
+import com.cursorforandroid.domain.SlashCommand.Kind
+import com.cursorforandroid.domain.SlashCommand.Origin
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -276,6 +290,44 @@ class ConversationViewModelTest {
 
         assertThat(vm.draftText.value).isEqualTo("Actually, do this instead")
         assertThat(vm.toastMessage.value).isNotNull()
+    }
+
+    /**
+     * The follow-up composer's pending-inventory loop must force a fresh fetch on each retry; otherwise half the
+     * attempts return the cached copy before its TTL has expired.
+     */
+    @Test
+    fun `pending inventory retries force a fresh fetch each time`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val api = object : SlashCommandApi {
+            val agentCalls = mutableListOf<Triple<String, String?, String?>>()
+
+            override suspend fun forRepository(repoUrl: String, ref: String?) = SlashCatalog()
+
+            override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog {
+                agentCalls += Triple(agentId, repoUrl, ref)
+                return SlashCatalog(listOf(SlashCommand("release", "Cut a release", Kind.Command, Origin.Project)), pending = true)
+            }
+
+            override suspend fun global() = emptyList<SlashCommand>()
+        }
+        val cursorApi = FakeCursorApi()
+        val backend = CursorBackend(cursorApi, FakeRunStreamer(), isDemo = false)
+        val session = SessionManager(SecureKeyStore(context), PreferencesStore(context), backend, CursorBackend(cursorApi, FakeRunStreamer(), isDemo = true))
+        val repo = SlashCommandRepository(session, api, cache = null)
+        val scope = SlashScope.Agent(IDLE, null, null)
+        var now = 1_800_000_000_000L
+        AppClock.nowMillis = { now }
+
+        var catalog = repo.load(scope)
+        var retries = 0
+        while (catalog.pending && retries++ < 8) {
+            now += SlashCommandRepository.PENDING_TTL_MS + 1
+            catalog = repo.load(scope, force = true)
+        }
+
+        assertThat(api.agentCalls).hasSize(9)
+        AppClock.nowMillis = System::currentTimeMillis
     }
 
     @Test
