@@ -210,6 +210,13 @@ class AgentsViewModel(
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
 
+    /** Marks every loaded conversation read at its current `updatedAt`, the same stamp opening a chat would write. */
+    fun markAllRead() = viewModelScope.launch {
+        val agents = graph.agents.state.value.agents
+        if (agents.isEmpty()) return@launch
+        graph.prefs.markAllRead(agents.associate { it.id to it.updatedAtMillis })
+    }
+
     /** Against the stored preferences, in one transaction, so quick successive changes compose (see the store). */
     fun updatePrefs(transform: (ListPreferences) -> ListPreferences) = viewModelScope.launch {
         graph.prefs.updateListPreferences(transform)

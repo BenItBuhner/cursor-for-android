@@ -161,6 +161,14 @@ object CursorIcons {
 
     val Check: ImageVector by lazy { icon("Check") { path("M20 6 9 17l-5-5", 2f) } }
 
+    /** Lucide `check-check` — two ticks, the mark-all-read glyph. */
+    val CheckCheck: ImageVector by lazy {
+        icon("CheckCheck") {
+            path("M18 6 7 17l-5-5", 2f)
+            path("m22 10-7.5 7.5L13 16", 2f)
+        }
+    }
+
     val Refresh: ImageVector by lazy {
         icon("Refresh") {
             path("M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8")

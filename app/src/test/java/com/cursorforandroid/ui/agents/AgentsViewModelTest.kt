@@ -107,6 +107,24 @@ class AgentsViewModelTest {
     }
 
     @Test
+    fun `read all marks every loaded conversation read`() = runBlocking<Unit> {
+        val vm = AgentsViewModel(graph)
+        val loaded = vm.loaded()
+        assertThat(loaded.unreadCount).isGreaterThan(0)
+        assertThat(loaded.sections.flatMap { it.rows }.any { it.isUnread }).isTrue()
+
+        vm.markAllRead()
+        val cleared = withTimeout(10_000) { vm.uiState.first { it.unreadCount == 0 && it.hasLoaded } }
+        assertThat(cleared.allAgents).isNotEmpty()
+        assertThat(cleared.sections.flatMap { it.rows }.none { it.isUnread }).isTrue()
+        assertThat(cleared.sections.flatMap { it.rows }.none { it.indicator == AgentIndicator.Unread }).isTrue()
+        val markers = graph.prefs.localAgentState.first().readMarkers
+        cleared.allAgents.forEach { agent ->
+            assertThat(markers[agent.id] ?: 0L).isAtLeast(agent.updatedAtMillis)
+        }
+    }
+
+    @Test
     fun `relative ages are computed against a clock that keeps ticking while the data stands still`() = runBlocking<Unit> {
         val vm = AgentsViewModel(graph, clockTickMs = 20)
         val initial = vm.loaded()

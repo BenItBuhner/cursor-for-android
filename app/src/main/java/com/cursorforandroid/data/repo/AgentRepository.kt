@@ -88,6 +88,9 @@ data class LaunchRequest(
     /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
     val env: DeviceTarget = DeviceTarget.Cloud,
 ) {
+    /** `autoCreatePR` as it goes out: a pull request wants a repository, so the switch only counts with one. */
+    val opensPullRequest: Boolean get() = autoCreatePr && repoUrl != null
+
     /**
      * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
      * stripped, cut at a word to about the length of the titles the server generates.
@@ -107,17 +110,37 @@ data class LaunchRequest(
 }
 
 /**
- * `env` on Create An Agent. Default cloud with a repository omits the field (the repo is the target); no-repo
- * cloud still sends `{ type: cloud }` so the VM is empty rather than local. Pool and machine always go out.
+ * `env` on Create An Agent. The ordinary Cursor-hosted cloud is the API's default and goes unsaid, with or without a
+ * repository: the reference wants both `repos` and `env` left out for a no-repo agent, and the `{ type: cloud }` once
+ * sent in their place is what the server answered with a `400`. A named cloud environment, a team pool and a machine
+ * always go out.
  */
-fun DeviceTarget.toEnvDto(hasRepo: Boolean): AgentEnvDto? = when (type) {
+fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
     EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
     EnvType.MACHINE -> AgentEnvDto(type = "machine", name = apiName)
-    EnvType.CLOUD, EnvType.UNKNOWN -> when {
-        apiName != null -> AgentEnvDto(type = "cloud", name = apiName)
-        hasRepo -> null
-        else -> AgentEnvDto(type = "cloud")
-    }
+    EnvType.CLOUD, EnvType.UNKNOWN -> apiName?.let { AgentEnvDto(type = "cloud", name = it) }
+}
+
+/**
+ * The Create An Agent body for this launch. A repository is the target and goes out as `repos[0]` with its starting
+ * ref; without one the request names no target at all — no `repos`, no `env` beyond a pool, machine or named
+ * environment (see [toEnvDto]) — and `autoCreatePR` stays out too (see [LaunchRequest.opensPullRequest]).
+ */
+fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto = CreateAgentRequestDto(
+    prompt = PromptEncoding.toPromptDto(prompt, images),
+    agentId = agentId,
+    model = modelRef(modelId, modelParams),
+    name = name,
+    env = env.toEnvDto(),
+    repos = repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = ref?.ifBlank { null })) },
+    autoCreatePR = opensPullRequest.takeIf { it },
+    mcpServers = mcpServers.toInlineServers(),
+    mode = if (planMode) "plan" else null,
+)
+
+/** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
+private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
+    ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
 }
 
 /** What a launch created: the list row, and the first run as the server reported it (null when adopting an agent whose run could not be read). */
@@ -492,7 +515,7 @@ class AgentRepository(
             latestRunId = null,
             repoUrl = request.repoUrl,
             startingRef = request.ref,
-            autoCreatePr = request.autoCreatePr,
+            autoCreatePr = request.opensPullRequest,
             modelDisplayName = modelDisplayName,
             modelId = request.modelId,
             modelParams = if (request.modelId != null) request.modelParams else emptyList(),
@@ -526,20 +549,7 @@ class AgentRepository(
             val (dto, run) = try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
-                withContext(Dispatchers.IO) {
-                    val body = CreateAgentRequestDto(
-                        prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
-                        agentId = request.agentId,
-                        model = modelRef(request.modelId, request.modelParams),
-                        name = request.name,
-                        env = request.env.toEnvDto(hasRepo = request.repoUrl != null),
-                        repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
-                        autoCreatePR = request.autoCreatePr.takeIf { it },
-                        mcpServers = request.mcpServers.toInlineServers(),
-                        mode = if (request.planMode) "plan" else null,
-                    )
-                    api.createAgent(body)
-                }.let { it.agent to it.run }
+                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
             } catch (t: Throwable) {
                 if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
                 val existing = api.getAgent(request.agentId)
@@ -610,11 +620,6 @@ class AgentRepository(
             upsert(switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now()))
         }
         response.run
-    }
-
-    /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
-    private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
-        ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
     }
 
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
