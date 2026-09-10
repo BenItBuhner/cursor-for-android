@@ -42,6 +42,7 @@ class SnoozeChatDialogTest {
             }
         }
         compose.onNodeWithText("Snooze").assertIsDisplayed()
+        compose.onNodeWithText("No notifications until then. The chat stays on the list.").assertIsDisplayed()
         compose.onNodeWithText("Soon").assertIsDisplayed()
         compose.onNodeWithText("Later").assertIsDisplayed()
         compose.onNodeWithText("Longer").assertIsDisplayed()

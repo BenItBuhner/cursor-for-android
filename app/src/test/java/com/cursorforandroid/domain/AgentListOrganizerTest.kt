@@ -118,7 +118,7 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `status filter hides snoozed chats by default and they come back when the timer lifts`() {
+    fun `snoozed chats stay on the list, keep a clock, and only the Snoozed filter isolates them`() {
         val agents = listOf(agent("kept"), agent("later"), agent("gone"))
         val local = LocalAgentState(
             snoozedUntil = mapOf(
@@ -127,20 +127,35 @@ class AgentListOrganizerTest {
             ),
         )
         val defaults = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
-        assertThat(defaults.flatMap { it.rows }.map { it.agent.id }).containsExactly("kept")
+        assertThat(defaults.flatMap { it.rows }.map { it.agent.id }).containsExactly("kept", "later", "gone")
+        assertThat(defaults.flatMap { it.rows }.filter { it.isSnoozed }.map { it.agent.id }).containsExactly("later", "gone")
         assertThat(AgentListOrganizer.indicatorFor(agent("later"), local, now)).isEqualTo(AgentIndicator.Snoozed)
         assertThat(AgentListOrganizer.indicatorFor(agent("later"), local, now + hour)).isEqualTo(AgentIndicator.Unread)
         assertThat(AgentListOrganizer.indicatorFor(agent("gone"), local, now + hour)).isEqualTo(AgentIndicator.Snoozed)
 
-        val snoozedToo = AgentListOrganizer.organize(
+        val onlySnoozed = AgentListOrganizer.organize(
             agents,
             ListPreferences(statuses = setOf(StatusFilter.Snoozed)),
             local,
             nowMillis = now,
             zone = zone,
         )
-        assertThat(snoozedToo.flatMap { it.rows }.map { it.agent.id }).containsExactly("later", "gone")
-        assertThat(snoozedToo.flatMap { it.rows }.all { it.isSnoozed }).isTrue()
+        assertThat(onlySnoozed.flatMap { it.rows }.map { it.agent.id }).containsExactly("later", "gone")
+        assertThat(onlySnoozed.flatMap { it.rows }.all { it.isSnoozed }).isTrue()
+    }
+
+    @Test
+    fun `a snoozed chat keeps its place when it keeps updating`() {
+        val quiet = agent("quiet", updatedAgo = 0)
+        val kept = agent("kept", updatedAgo = hour / 2)
+        val local = LocalAgentState(
+            snoozedUntil = mapOf("quiet" to now + hour),
+            snoozedAt = mapOf("quiet" to now - 2 * hour),
+        )
+        val rows = AgentListOrganizer.organize(listOf(quiet, kept), ListPreferences(), local, nowMillis = now, zone = zone)
+            .flatMap { it.rows }
+            .map { it.agent.id }
+        assertThat(rows).containsExactly("kept", "quiet").inOrder()
     }
 
     @Test

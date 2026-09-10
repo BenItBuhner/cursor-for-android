@@ -147,7 +147,6 @@ fun AppNavHost(
     val rowActions = AgentRowActions(
         onOpen = { row ->
             agentsViewModel.markRead(row.agent)
-            agentsViewModel.unsnooze(row.agent.id)
             openAgent(row.agent.id)
         },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
@@ -264,7 +263,6 @@ fun AppNavHost(
                 },
                 onPickChat = { row ->
                     agentsViewModel.markRead(row.agent)
-                    agentsViewModel.unsnooze(row.agent.id)
                     graph.share.setTarget(ShareTarget.Chat(row.agent.id))
                     openAgent(row.agent.id)
                 },

@@ -90,7 +90,7 @@ class AgentsViewModel(
     }
 
     /**
-     * Fires the moment a timed snooze lifts, so a 5-minute hide does not sit around until the next minute tick.
+     * Fires the moment a timed snooze lifts, so a 5-minute mute does not sit around until the next minute tick.
      * Completes while nothing is snoozed on a timer (Forever never wakes on its own).
      */
     private val snoozeAlarm: Flow<Long> = local.flatMapLatest { state ->
@@ -105,6 +105,12 @@ class AgentsViewModel(
     }
 
     private val clock: Flow<Long> = merge(minuteClock, snoozeAlarm)
+
+    init {
+        viewModelScope.launch {
+            snoozeAlarm.collect { graph.prefs.expireSnoozes(it) }
+        }
+    }
 
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
@@ -228,7 +234,7 @@ class AgentsViewModel(
     fun unarchive(agentId: String) = viewModelScope.launch { graph.agents.unarchive(agentId) }
     fun rename(agentId: String, name: String) = viewModelScope.launch { graph.agents.rename(agentId, name) }
 
-    /** Hides the chat on this device until [untilMillis]; `Long.MAX_VALUE` until they unsnooze. */
+    /** Silences notifications for the chat until [untilMillis]; `Long.MAX_VALUE` until they unsnooze. */
     fun snooze(agentId: String, untilMillis: Long) = viewModelScope.launch { graph.prefs.snooze(agentId, untilMillis) }
     fun unsnooze(agentId: String) = viewModelScope.launch { graph.prefs.unsnooze(agentId) }
 

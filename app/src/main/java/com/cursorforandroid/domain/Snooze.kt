@@ -1,8 +1,8 @@
 package com.cursorforandroid.domain
 
 /**
- * How long a chat stays off the list after a snooze. Durations are relative to the moment the user picks one;
- * [Forever] stays gone until they unsnooze it (or open it).
+ * How long a chat stays silenced after a snooze. Durations are relative to the moment the user picks one;
+ * [Forever] stays quiet until they unsnooze it. The chat stays on the list.
  */
 enum class SnoozeDuration(val title: String, private val durationMillis: Long?) {
     FiveMinutes("5 minutes", 5 * 60_000L),

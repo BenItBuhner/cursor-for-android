@@ -44,7 +44,7 @@ fun SnoozeChatDialog(
         }
         SheetHeader("Snooze")
         Text(
-            "Hide this chat until then. It comes back on its own.",
+            "No notifications until then. The chat stays on the list.",
             style = type.small,
             color = colors.textTertiary,
             modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp),

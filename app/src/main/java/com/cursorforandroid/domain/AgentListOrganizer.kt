@@ -15,8 +15,10 @@ data class AgentRow(
     val launchedFromThisDevice: Boolean,
     /** Where the agent's pull request stands; null for an agent without one, or one whose state is not known (yet). */
     val pullRequest: PullRequestState? = null,
-    /** True while this device is still hiding the chat; independent of archive. */
+    /** True while this device is silencing the chat; independent of archive. */
     val isSnoozed: Boolean = false,
+    /** When the snooze began; used so later updates do not jump the chat up the list. */
+    val snoozedAtMillis: Long? = null,
 )
 
 data class AgentSection(
@@ -36,13 +38,17 @@ data class LocalAgentState(
     val launchedHereIds: Set<String> = emptySet(),
     /** prUrl (as the API reports it) -> state; a pull request GitHub would not or has not yet answered for is absent. */
     val pullRequests: Map<String, PullRequestState> = emptyMap(),
-    /** agentId -> epoch millis the snooze lifts; [SnoozeDuration.FOREVER] stays hidden until unsnoozed. */
+    /** agentId -> epoch millis the snooze lifts; [SnoozeDuration.FOREVER] stays quiet until unsnoozed. */
     val snoozedUntil: Map<String, Long> = emptyMap(),
+    /** agentId -> epoch millis the user snoozed it; later agent updates do not move this. */
+    val snoozedAt: Map<String, Long> = emptyMap(),
 ) {
     fun isSnoozed(agentId: String, nowMillis: Long): Boolean {
         val until = snoozedUntil[agentId] ?: return false
         return until == SnoozeDuration.FOREVER || until > nowMillis
     }
+
+    fun quietIds(nowMillis: Long): Set<String> = snoozedUntil.keys.filter { isSnoozed(it, nowMillis) }.toSet()
 
     /** The soonest timed snooze that will expire after [nowMillis], or null when none is pending. */
     fun nextSnoozeExpiry(nowMillis: Long): Long? =
@@ -79,20 +85,35 @@ object AgentListOrganizer {
         launchedFromThisDevice = agent.id in local.launchedHereIds,
         pullRequest = agent.prUrl?.let { local.pullRequests[it] },
         isSnoozed = local.isSnoozed(agent.id, nowMillis),
+        snoozedAtMillis = local.snoozedAt[agent.id]?.takeIf { local.isSnoozed(agent.id, nowMillis) },
     )
+
+    /**
+     * The status a snoozed chat still is — running, read, and so on — so the default Status filter keeps it
+     * visible. [AgentIndicator.Snoozed] is the glyph, not a hiding place.
+     */
+    fun listedAs(row: AgentRow): AgentIndicator = when {
+        row.agent.isArchived -> AgentIndicator.Archived
+        row.indicator != AgentIndicator.Snoozed -> row.indicator
+        row.agent.isRunning -> AgentIndicator.Running
+        row.agent.isError -> AgentIndicator.Error
+        row.isUnread -> AgentIndicator.Unread
+        else -> AgentIndicator.Read
+    }
 
     fun matchesFilters(row: AgentRow, prefs: ListPreferences): Boolean {
         val agent = row.agent
         prefs.repos?.let { repos -> if (agent.repoSlug !in repos) return false }
 
-        val statusOk = when (row.indicator) {
+        val listed = listedAs(row)
+        val statusOk = when (listed) {
             AgentIndicator.Running -> StatusFilter.Running in prefs.statuses
             AgentIndicator.Unread -> StatusFilter.Unread in prefs.statuses
             AgentIndicator.Error -> StatusFilter.Error in prefs.statuses
             AgentIndicator.Read -> StatusFilter.Read in prefs.statuses
             AgentIndicator.Archived -> StatusFilter.Archived in prefs.statuses
-            AgentIndicator.Snoozed -> StatusFilter.Snoozed in prefs.statuses
-        }
+            AgentIndicator.Snoozed -> false
+        } || (row.isSnoozed && StatusFilter.Snoozed in prefs.statuses)
         if (!statusOk) return false
 
         // A pull request whose state is not known (not read yet, or a private repository without a GitHub token) is
@@ -121,8 +142,10 @@ object AgentListOrganizer {
             agent.summary?.contains(q, ignoreCase = true) == true
     }
 
+    fun recencyMillis(row: AgentRow): Long = row.snoozedAtMillis ?: row.agent.updatedAtMillis
+
     fun sort(rows: List<AgentRow>, order: SortOrder): List<AgentRow> = when (order) {
-        SortOrder.Updated -> rows.sortedByDescending { it.agent.updatedAtMillis }
+        SortOrder.Updated -> rows.sortedByDescending { recencyMillis(it) }
         SortOrder.Created -> rows.sortedByDescending { it.agent.createdAtMillis }
         SortOrder.Name -> rows.sortedBy { it.agent.name.lowercase() }
     }
@@ -177,7 +200,7 @@ object AgentListOrganizer {
 
     /** [recentRows] for sections already organized without a search query: every row once, newest first. */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
-        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { it.agent.updatedAtMillis }
+        sections.flatMap { it.rows }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
 
     private fun AgentIndicator.title(): String = when (this) {
         AgentIndicator.Running -> "Running"
@@ -192,7 +215,7 @@ object AgentListOrganizer {
         val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
         val buckets = linkedMapOf<String, MutableList<AgentRow>>()
         rows.forEach { row ->
-            val label = dateBucket(Instant.ofEpochMilli(row.agent.updatedAtMillis).atZone(zone).toLocalDate(), today)
+            val label = dateBucket(Instant.ofEpochMilli(recencyMillis(row)).atZone(zone).toLocalDate(), today)
             buckets.getOrPut(label) { mutableListOf() } += row
         }
         return DATE_BUCKET_ORDER.filter { it in buckets }.map { AgentSection("date:$it", it, buckets.getValue(it)) } +

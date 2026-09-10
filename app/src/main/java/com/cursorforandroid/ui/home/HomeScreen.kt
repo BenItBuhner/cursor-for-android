@@ -317,6 +317,7 @@ fun RecentChatRow(
             Spacer(Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
+                    row.isSnoozed -> Icon(CursorIcons.Clock, "Snoozed", tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                     agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, row.pullRequest?.label ?: "Pull request", tint = pullRequestTint(row.pullRequest), modifier = Modifier.size(14.dp))
                     agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
                     row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
@@ -364,6 +365,7 @@ private fun PreviewCard(row: AgentRow) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
             when {
                 agent.hasPullRequest -> PullRequestPill(row.pullRequest)
+                row.isSnoozed -> Pill("Snoozed", icon = CursorIcons.Clock)
                 row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)
                 row.indicator == AgentIndicator.Error -> Pill("Failed", icon = CursorIcons.Warning, tint = colors.red, fill = colors.red.copy(alpha = 0.14f))
                 agent.hasBranch -> Pill("Branch", icon = CursorIcons.GitBranch)
