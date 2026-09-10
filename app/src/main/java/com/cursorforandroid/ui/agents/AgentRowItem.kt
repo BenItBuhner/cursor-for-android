@@ -61,7 +61,8 @@ data class AgentRowActions(
     val onTogglePin: (AgentRow) -> Unit,
     val onArchive: (AgentRow) -> Unit,
     val onUnarchive: (AgentRow) -> Unit,
-    val onRename: (AgentRow, String) -> Unit,
+    /** Null hides "Rename": the public API has no rename, so it is offered only in Extended mode. */
+    val onRename: ((AgentRow, String) -> Unit)?,
 )
 
 /**
@@ -131,7 +132,7 @@ fun AgentRowItem(
             val clipboard = LocalClipboardManager.current
             val uriHandler = LocalUriHandler.current
             MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; actions.onTogglePin(row) }
-            MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
+            if (actions.onRename != null) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
             MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; uriHandler.openUri(agent.url) }
             MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; clipboard.setText(AnnotatedString(agent.url)) }
             if (agent.isArchived) {
@@ -143,7 +144,7 @@ fun AgentRowItem(
         if (renameOpen) {
             RenameChatDialog(
                 initialName = agent.name,
-                onConfirm = { name -> renameOpen = false; actions.onRename(row, name) },
+                onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
                 onDismiss = { renameOpen = false },
             )
         }

@@ -26,8 +26,12 @@ fun CursorRoot(
 ) {
     val session by graph.session.state.collectAsStateWithLifecycle()
     // The session settles itself to signed-out when a store cannot be read; this only keeps a future throw from
-    // taking the composition (and the process) with it.
-    LaunchedEffect(Unit) { runCatching { graph.session.restoreIfNeeded() } }
+    // taking the composition (and the process) with it. The Extended mode upgrade step follows the restore: it reads
+    // the same stores, and an install it finds signed in is the one it owes a notice and a wipe.
+    LaunchedEffect(Unit) {
+        runCatching { graph.session.restoreIfNeeded() }
+        runCatching { graph.extendedMode.migrateInstall() }
+    }
     Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
         when (val s = session) {
             SessionState.Loading -> Unit

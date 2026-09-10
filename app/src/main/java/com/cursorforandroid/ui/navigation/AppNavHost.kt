@@ -48,6 +48,7 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
+import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -192,12 +193,27 @@ internal fun AppShell(
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
+    // Extended mode: the account's rename is offered, and the sidebar footer says the mode is on. Until the setting
+    // has been read the shell assumes the default, which only ever hides what the setting would allow.
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+    val extendedNoticePending by graph.extendedMode.noticePending.collectAsStateWithLifecycle(initialValue = false)
+    if (extendedNoticePending && !isDemo) {
+        ExtendedModeUpgradeNotice(
+            onOpenSettings = {
+                scope.launch { graph.extendedMode.dismissNotice() }
+                navigateTop(Screen.Settings)
+            },
+            onDismiss = { scope.launch { graph.extendedMode.dismissNotice() } },
+        )
+    }
+
     val rowActions = AgentRowActions(
         onOpen = { row -> agentsViewModel.markRead(row.agent); openAgent(row.agent.id) },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
-        onRename = { row, name -> agentsViewModel.rename(row.agent.id, name) },
+        // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
+        onRename = if (isDemo || extendedMode) ({ row, name -> agentsViewModel.rename(row.agent.id, name) }) else null,
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -221,6 +237,7 @@ internal fun AppShell(
             selectedAgentId = selectedAgentId,
             selectedDestination = destination,
             updateHint = updateHint,
+            extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
                 onNewChat = { navigateTop(Screen.Home) },

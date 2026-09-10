@@ -28,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +84,7 @@ fun SettingsScreen(
     val session by graph.session.state.collectAsStateWithLifecycle()
     val credential = (session as? SessionState.SignedIn)?.credential
     val keyStorage by graph.keyStore.availability.collectAsStateWithLifecycle()
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
 
     Column(modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
@@ -198,11 +200,20 @@ fun SettingsScreen(
 
             Group("About")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                InfoRow("API", "Cloud Agents v1 · v0 transcript")
+                InfoRow("API", if (extendedMode && !isDemo) "Cloud Agents v1 · v0 transcript · Cursor account service" else "Cloud Agents v1 · v0 transcript")
                 HairlineDivider()
                 LinkRow("API documentation", "https://cursor.com/docs/cloud-agent/api/endpoints", uriHandler::openUri)
                 HairlineDivider()
                 LinkRow("Source code and releases", GitHubReleasesClient.releasesPageUrl(BuildConfig.GITHUB_REPO), uriHandler::openUri)
+            }
+
+            // Below About on purpose: nothing about the layout above changes with the setting, and the section reads
+            // as what it is — a choice about undocumented endpoints, not a feature the app leads with.
+            if (!isDemo) {
+                Group("Advanced")
+                CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                    ExtendedModeRows(graph)
+                }
             }
             Text(
                 "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License; icons are derived from Lucide (ISC).",
@@ -398,7 +409,8 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheck
 
 /**
  * The pin sync toggle and, under it, where the sync stands: the last time it went through, changes still waiting for
- * the server, or why it is not going through.
+ * the server, or why it is not going through. With Extended mode off there is no sync to toggle — the account is not
+ * asked — so the card says where the pins are instead.
  */
 @Composable
 private fun PinSyncRows(graph: AppGraph) {
@@ -407,7 +419,12 @@ private fun PinSyncRows(graph: AppGraph) {
     val scope = rememberCoroutineScope()
     val enabled by graph.prefs.pinSyncEnabled.collectAsStateWithLifecycle(initialValue = true)
     val sync by graph.pins.state.collectAsStateWithLifecycle()
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
 
+    if (!extendedMode) {
+        StatusRow(title = ExtendedModeCopy.PINS_LOCAL_TITLE, subtitle = ExtendedModeCopy.PINS_LOCAL_SUBTITLE, warning = false, icon = CursorIcons.Pin)
+        return
+    }
     Row(
         Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setPinSyncEnabled(!enabled) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -439,11 +456,11 @@ private fun PinSyncRows(graph: AppGraph) {
 }
 
 @Composable
-private fun StatusRow(title: String, subtitle: String, warning: Boolean) {
+private fun StatusRow(title: String, subtitle: String, warning: Boolean, icon: ImageVector = if (warning) CursorIcons.Warning else CursorIcons.Cloud) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(if (warning) CursorIcons.Warning else CursorIcons.Cloud, null, tint = if (warning) colors.orange else colors.iconTertiary, modifier = Modifier.size(16.dp))
+        Icon(icon, null, tint = if (warning) colors.orange else colors.iconTertiary, modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, style = type.base, color = colors.textPrimary)

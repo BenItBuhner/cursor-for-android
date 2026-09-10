@@ -69,6 +69,7 @@ import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
+import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -102,6 +103,8 @@ fun Sidebar(
     modifier: Modifier = Modifier,
     /** "Update available · 0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
     updateHint: String? = null,
+    /** Extended mode is on: the account footer says so, quietly, for as long as it is. */
+    extendedMode: Boolean = false,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -199,7 +202,7 @@ fun Sidebar(
         if (updateHint != null) {
             UpdateHintRow(updateHint, onClick = callbacks.onSettings)
         }
-        AccountFooter(user, isDemo, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
+        AccountFooter(user, isDemo, extendedMode, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
     }
 }
 
@@ -253,7 +256,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
 }
 
 @Composable
-private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, onClick: () -> Unit) {
+private fun AccountFooter(user: CursorUser, isDemo: Boolean, extendedMode: Boolean, selected: Boolean, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(
@@ -269,9 +272,12 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, selected: Boolean, 
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(user.displayName, style = type.rowMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            // Demo is the only second line the rail still carries. Email lives in Settings; it is not identity here.
-            if (isDemo) {
-                Text("Demo", style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The second line is for the two states worth being reminded of: the demo, and Extended mode (the
+            // persistent indicator that undocumented endpoints are in use). Email lives in Settings; it is not
+            // identity here.
+            when {
+                isDemo -> Text("Demo", style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                extendedMode -> Text(ExtendedModeCopy.INDICATOR, style = type.small, color = colors.orange, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
