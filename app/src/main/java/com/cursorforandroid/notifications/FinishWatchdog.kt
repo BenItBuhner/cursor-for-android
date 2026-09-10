@@ -118,6 +118,8 @@ class FinishWatchdog(
             }
             val settled = agents.agent(was.id) ?: continue
             if (settled.runStatus == RunStatus.CANCELLED) continue
+            val local = prefs.localAgentState.first()
+            if (local.isSnoozed(was.id, nowProvider())) continue
             // Claimed first so two checks cannot both announce it, and given back when the card did not go out:
             // a finish the system dropped is one the next check should still be able to tell.
             val key = "${was.id}/$runId"

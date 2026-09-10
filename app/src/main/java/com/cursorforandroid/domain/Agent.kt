@@ -187,7 +187,7 @@ data class Agent(
 }
 
 /** Visual state of the leading indicator in the agent list. */
-enum class AgentIndicator { Running, Unread, Error, Read, Archived }
+enum class AgentIndicator { Running, Unread, Error, Read, Archived, Snoozed }
 
 data class CursorUser(
     val apiKeyName: String,
@@ -379,6 +379,12 @@ fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoi
     val model = firstOrNull { it.id == id } ?: return null
     return ModelChoice(model, model.variantNearest(params))
 }
+
+/**
+ * The catalog row [id] names. A miss is null — never the first row. The live catalogue leads with Auto, and
+ * substituting that for a last-used model is what made the new-chat picker look reset on every cold start.
+ */
+fun List<ModelOption>.named(id: String?): ModelOption? = id?.let { wanted -> firstOrNull { it.id == wanted } }
 
 /**
  * The picker entry recorded as [label] on a chat's row before the id and parameters were kept alongside it. The

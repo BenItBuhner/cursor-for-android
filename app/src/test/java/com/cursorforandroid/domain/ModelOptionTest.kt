@@ -141,6 +141,17 @@ class ModelOptionTest {
     }
 
     @Test
+    fun `named finds a model by id and does not stand in the first row for a miss`() {
+        val auto = ModelOption(id = "auto-smart", displayName = "Auto")
+        val catalog = listOf(auto, composer, claude)
+        assertThat(catalog.named("composer-2")).isEqualTo(composer)
+        assertThat(catalog.named("auto-smart")).isEqualTo(auto)
+        assertThat(catalog.named("gone")).isNull()
+        assertThat(catalog.named(null)).isNull()
+        assertThat(emptyList<ModelOption>().named("composer-2")).isNull()
+    }
+
+    @Test
     fun `choiceLabelled finds the entry a chip label was built from, in today's and in earlier versions' spelling`() {
         val auto = ModelOption(id = "auto-smart", displayName = "Auto")
         val gpt = ModelOption(id = "gpt-5.6", displayName = "GPT-5.6", variants = listOf(ModelVariant("GPT-5.6 High", listOf(ModelParam("effort", "high")), isDefault = true)))

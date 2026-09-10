@@ -155,6 +155,53 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `snooze persists until unsnoozed`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.localAgentState.first().snoozedUntil).isEmpty()
+        prefs.snooze("bc-1", 1_800_000_000_000L, nowMillis = 1_700_000_000_000L)
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-1", 1_800_000_000_000L)
+        assertThat(prefs.localAgentState.first().snoozedAt).containsExactly("bc-1", 1_700_000_000_000L)
+        prefs.snooze("bc-2", Long.MAX_VALUE, nowMillis = 1_700_000_000_100L)
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-1", 1_800_000_000_000L, "bc-2", Long.MAX_VALUE)
+        prefs.unsnooze("bc-1")
+        assertThat(prefs.localAgentState.first().snoozedUntil).containsExactly("bc-2", Long.MAX_VALUE)
+        assertThat(prefs.localAgentState.first().snoozedAt).containsExactly("bc-2", 1_700_000_000_100L)
+        prefs.unsnooze("bc-2")
+        assertThat(prefs.localAgentState.first().snoozedUntil).isEmpty()
+        assertThat(prefs.localAgentState.first().snoozedAt).isEmpty()
+    }
+
+    @Test
+    fun `timed snoozes drop when the clock runs out`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        prefs.snooze("bc-1", 1_800_000_000_000L, nowMillis = 1_700_000_000_000L)
+        prefs.snooze("bc-2", Long.MAX_VALUE, nowMillis = 1_700_000_000_100L)
+        prefs.expireSnoozes(nowMillis = 1_800_000_000_000L)
+        assertThat(prefs.localAgentState.first().snoozedUntil.keys).isEqualTo(setOf("bc-2"))
+        assertThat(prefs.localAgentState.first().snoozedAt.keys).isEqualTo(setOf("bc-2"))
+    }
+
+    @Test
+    fun `remembering a model persists it without touching the other launch defaults`() = runBlocking {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        prefs.setComposerDefaults(
+            repoUrl = "https://github.com/acme/app",
+            ref = "main",
+            modelId = "auto-smart",
+            params = emptyMap(),
+            autoCreatePr = true,
+        )
+        prefs.rememberModel("composer-2.5", mapOf("fast" to "false"))
+        val defaults = prefs.composerDefaults.first()
+        assertThat(defaults.modelId).isEqualTo("composer-2.5")
+        assertThat(defaults.modelParams).containsExactly("fast", "false")
+        assertThat(defaults.modelChosen).isTrue()
+        assertThat(defaults.repoUrl).isEqualTo("https://github.com/acme/app")
+        assertThat(defaults.ref).isEqualTo("main")
+        assertThat(defaults.autoCreatePr).isTrue()
+    }
+
+    @Test
     fun `pinned models persist most-recently-pinned first`() = runBlocking {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         assertThat(prefs.pinnedModelIds.first()).isEmpty()

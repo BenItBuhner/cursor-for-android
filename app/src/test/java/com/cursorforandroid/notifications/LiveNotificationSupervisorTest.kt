@@ -336,5 +336,9 @@ class LiveNotificationSupervisorTest {
         assertThat(liveDecision(signedIn, fetched(finished = listOf("bc-1")), enabled = true, serviceActive = true)).isEqualTo(LiveDecision.Idle)
         assertThat(liveDecision(signedIn, fetched("bc-1", "bc-2"), enabled = true, serviceActive = true))
             .isEqualTo(LiveDecision.Track(setOf("bc-1", "bc-2"), serviceActive = true))
+        assertThat(liveDecision(signedIn, fetched("bc-1", "bc-2"), enabled = true, serviceActive = true, quietIds = setOf("bc-1")))
+            .isEqualTo(LiveDecision.Track(setOf("bc-2"), serviceActive = true))
+        assertThat(liveDecision(signedIn, fetched("bc-1"), enabled = true, serviceActive = false, quietIds = setOf("bc-1")))
+            .isEqualTo(LiveDecision.Idle)
     }
 }

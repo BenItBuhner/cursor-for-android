@@ -24,6 +24,7 @@ import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -83,6 +84,8 @@ class PreferencesStore(
         val pinned = stringSetPreferencesKey("pinned_ids")
         val readMarkers = stringPreferencesKey("read_markers")
         val launchedHere = stringSetPreferencesKey("launched_here_ids")
+        val snoozedUntil = stringPreferencesKey("snoozed_until")
+        val snoozedAt = stringPreferencesKey("snoozed_at")
         val demoMode = booleanPreferencesKey("demo_mode")
         val cachedUser = stringPreferencesKey("cached_user")
         val signInMethod = stringPreferencesKey("sign_in_method")
@@ -247,6 +250,8 @@ class PreferencesStore(
             pinnedIds = p[Keys.pinned] ?: emptySet(),
             readMarkers = p[Keys.readMarkers]?.let { decodeMarkers(it) } ?: emptyMap(),
             launchedHereIds = p[Keys.launchedHere] ?: emptySet(),
+            snoozedUntil = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap(),
+            snoozedAt = p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap(),
         )
     }
 
@@ -338,6 +343,36 @@ class PreferencesStore(
         p[Keys.launchedHere] = (p[Keys.launchedHere] ?: emptySet()) + agentId
     }
 
+    /** Silences [agentId] on this device until [untilMillis] (`Long.MAX_VALUE` until they unsnooze). */
+    suspend fun snooze(agentId: String, untilMillis: Long, nowMillis: Long = AppClock.now()) = edit { p ->
+        val until = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap()
+        val at = p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap()
+        p[Keys.snoozedUntil] = encodeMarkers(until + (agentId to untilMillis))
+        p[Keys.snoozedAt] = encodeMarkers(at + (agentId to (at[agentId] ?: nowMillis)))
+    }
+
+    /** Drops timed snoozes whose clock has run out so listeners see the lift immediately. */
+    suspend fun expireSnoozes(nowMillis: Long = AppClock.now()) = edit { p ->
+        val until = p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: return@edit
+        val live = until.filterValues { it == Long.MAX_VALUE || it > nowMillis }
+        if (live.size == until.size) return@edit
+        val at = (p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap()).filterKeys { it in live }
+        if (live.isEmpty()) {
+            p.remove(Keys.snoozedUntil)
+            p.remove(Keys.snoozedAt)
+        } else {
+            p[Keys.snoozedUntil] = encodeMarkers(live)
+            if (at.isEmpty()) p.remove(Keys.snoozedAt) else p[Keys.snoozedAt] = encodeMarkers(at)
+        }
+    }
+
+    suspend fun unsnooze(agentId: String) = edit { p ->
+        val until = (p[Keys.snoozedUntil]?.let { decodeMarkers(it) } ?: emptyMap()) - agentId
+        val at = (p[Keys.snoozedAt]?.let { decodeMarkers(it) } ?: emptyMap()) - agentId
+        if (until.isEmpty()) p.remove(Keys.snoozedUntil) else p[Keys.snoozedUntil] = encodeMarkers(until)
+        if (at.isEmpty()) p.remove(Keys.snoozedAt) else p[Keys.snoozedAt] = encodeMarkers(at)
+    }
+
     suspend fun setDemoMode(enabled: Boolean): Boolean {
         beginSession()
         return edit { it[Keys.demoMode] = enabled }
@@ -368,6 +403,15 @@ class PreferencesStore(
                 if (info.expiresAtMs == null) p.remove(Keys.apiKeyExpiresAt) else p[Keys.apiKeyExpiresAt] = info.expiresAtMs
             }
         }
+    }
+
+    /**
+     * Records the model the new-chat picker should open on, without touching the other launch defaults.
+     * [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model.
+     */
+    suspend fun rememberModel(modelId: String?, params: Map<String, String> = emptyMap()) = edit { p ->
+        p[Keys.lastModel] = modelId ?: ""
+        p[Keys.lastModelParams] = encodeStringMap(params)
     }
 
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */

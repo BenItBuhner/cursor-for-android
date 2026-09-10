@@ -19,11 +19,13 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.thumbnailOf
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +110,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val imageThumbnails: StateFlow<Map<String, ImageBitmap>> = thumbnails.asStateFlow()
     val isPinned: StateFlow<Boolean> = graph.prefs.localAgentState.map { agentId in it.pinnedIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val isSnoozed: StateFlow<Boolean> = graph.prefs.localAgentState.map { it.isSnoozed(agentId, AppClock.now()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
     val modelPicker: StateFlow<FollowUpModelState> = combine(agent, graph.catalog.models, picker, graph.prefs.pinnedModelIds) { a, models, local, pinned ->
         pickerState(a, models, local).copy(pinnedModelIds = pinned)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
@@ -174,7 +178,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** A model picks the next follow-up's model (its default variant unless one is given); null keeps the chat's current one. */
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
-        picker.update { it.copy(override = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }) }
+        val choice = model?.let { m -> ModelChoice(m, variant ?: m.defaultVariant) }
+        picker.update { it.copy(override = choice) }
+        // An explicit pick is the new-chat composer's next default — opening the app must not fall back to Auto.
+        if (choice != null) {
+            viewModelScope.launch {
+                graph.prefs.rememberModel(choice.model.id, choice.params.associate { it.id to it.value })
+            }
+        }
     }
 
     fun setPlanMode(value: Boolean) { picker.update { it.copy(planMode = value) } }
@@ -336,6 +347,16 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun rename(name: String) = viewModelScope.launch {
         graph.agents.rename(agentId, name).onFailure { toast.value = it.userMessage() }
+    }
+
+    fun snooze(untilMillis: Long) = viewModelScope.launch {
+        graph.prefs.snooze(agentId, untilMillis)
+        toast.value = if (untilMillis == SnoozeDuration.FOREVER) "Snoozed" else "Chat snoozed"
+    }
+
+    fun unsnooze() = viewModelScope.launch {
+        graph.prefs.unsnooze(agentId)
+        toast.value = "Chat unsnoozed"
     }
 
     fun clearToast() { toast.value = null }
