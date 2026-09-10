@@ -201,4 +201,14 @@ class FinishWatchdogTest {
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced).hasSize(1)
     }
+
+    @Test
+    fun `a snoozed chat is not announced when its run finishes`() = runBlocking {
+        api.addRunningAgent("bc-1", "Noisy worker", "run-1")
+        agents.refresh()
+        prefs.snooze("bc-1", Long.MAX_VALUE, nowMillis = now)
+        finish("run-1", "FINISHED", "Done in the background.", 4_000, "2026-04-13T18:30:04.000Z")
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced).isEmpty()
+    }
 }

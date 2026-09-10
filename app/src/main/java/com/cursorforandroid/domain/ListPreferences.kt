@@ -22,7 +22,9 @@ enum class GroupBy(val label: String) { Date("Date"), Repo("Repo"), Status("Stat
 enum class SortOrder(val label: String) { Updated("Last updated"), Created("Created"), Name("Name") }
 
 @Serializable
-enum class StatusFilter(val label: String) { Read("Read"), Unread("Unread"), Running("Running"), Error("Error"), Archived("Archived") }
+enum class StatusFilter(val label: String) { Read("Read"), Unread("Unread"), Running("Running"), Error("Error"), Archived("Archived"), Snoozed("Snoozed") }
+
+object StatusFilterSetSerializer : LenientEnumSetSerializer<StatusFilter>(StatusFilter.entries)
 
 /**
  * The Git filter: each state a chat's pull request can be in, plus the chats without one (whether or not they pushed
@@ -168,6 +170,7 @@ data class ListPreferences(
     val sortOrder: SortOrder = SortOrder.Updated,
     /** `null` means every repository ("All"). */
     val repos: Set<String>? = null,
+    @Serializable(with = StatusFilterSetSerializer::class)
     val statuses: Set<StatusFilter> = setOf(StatusFilter.Read, StatusFilter.Unread, StatusFilter.Running, StatusFilter.Error),
     @Serializable(with = GitFilterSerializer::class)
     val git: Set<GitFilter> = GitFilter.entries.toSet(),

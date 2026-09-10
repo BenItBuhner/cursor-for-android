@@ -111,6 +111,8 @@ class FinishWatchdog(
             }
             val settled = agents.agent(was.id) ?: continue
             if (settled.runStatus == RunStatus.CANCELLED) continue
+            val local = prefs.localAgentState.first()
+            if (local.isSnoozed(was.id, nowProvider())) continue
             if (announced.add("${was.id}/$runId")) announce(trackedRun(settled, runId, record))
         }
         val running = agents.state.value.agents.count { it.isRunning }
