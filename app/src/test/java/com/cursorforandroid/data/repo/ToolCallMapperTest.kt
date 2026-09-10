@@ -153,6 +153,20 @@ class ToolCallMapperTest {
         assertThat(call("read_file", """{"path":"a.kt"}""", """{"success":{"content":"","totalLines":0,"fileSize":0}}""").isError).isFalse()
     }
 
+    /** The payloads are tool-specific and unstable: a client that always sends these fields still succeeded. */
+    @Test
+    fun `a rejection is what the field says, not that it is there`() {
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":true}""").isError).isTrue()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"permissionDenied":"true"}""").isError).isTrue()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":false}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"permissionDenied":null}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":{}}""").isError).isFalse()
+        // An error field the same: reported when it says something.
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":""}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":false}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":null}""").isError).isFalse()
+    }
+
     @Test
     fun `a to-do update tells what changed against the previous list`() {
         val first = """{"todos":[{"id":"1","content":"Add tests","status":"pending"},{"id":"2","content":"Ship","status":"pending"}]}"""

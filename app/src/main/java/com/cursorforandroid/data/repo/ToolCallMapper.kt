@@ -261,8 +261,8 @@ object ToolCallMapper {
      */
     private fun isErrorResult(result: JsonElement?): Boolean {
         val obj = result.obj() ?: return false
-        if (obj["error"].let { it != null && it !is JsonNull }) return true
-        if (obj["rejected"] != null || obj["permissionDenied"] != null) return true
+        if (obj["error"].isReported()) return true
+        if (obj["rejected"].isTrue() || obj["permissionDenied"].isTrue()) return true
         if (obj.string(listOf("status"))?.lowercase() == "error") return true
         if (obj.string(listOf("resultType"))?.lowercase()?.contains("error") == true) return true
         val value = obj["value"] as? JsonObject
@@ -270,6 +270,16 @@ object ToolCallMapper {
     }
 
     private fun truncate(text: String, max: Int) = if (text.length > max) text.take(max - 3) + "..." else text
+
+    /** A reason that says something. A field that is absent, null, empty or false reports no failure. */
+    private fun JsonElement?.isReported(): Boolean = when (this) {
+        null, JsonNull -> false
+        is JsonPrimitive -> content.isNotBlank() && booleanOrNull != false
+        else -> true
+    }
+
+    /** A flag the payload sets, as a JSON boolean or as its string form. Merely naming it says nothing. */
+    private fun JsonElement?.isTrue(): Boolean = (this as? JsonPrimitive)?.booleanOrNull == true
 
     private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 
