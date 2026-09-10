@@ -2,7 +2,11 @@ package com.cursorforandroid.ui.components
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
@@ -361,6 +365,18 @@ class InlineMarkdownTest {
         return rendered.getLinkAnnotations(0, rendered.length).map { it.item }.filterIsInstance<LinkAnnotation.Url>().map { it.url }
     }
 
+    /** The span styles covering [needle] in the rendered form of [text]. */
+    private fun stylesOn(text: String, needle: String): List<SpanStyle> {
+        val rendered = render(text)
+        val start = rendered.text.indexOf(needle)
+        check(start >= 0) { "'$needle' not in '${rendered.text}'" }
+        return rendered.spanStyles.filter { it.start <= start && it.end >= start + needle.length }.map { it.item }
+    }
+
+    private fun isBold(text: String, needle: String) = stylesOn(text, needle).any { it.fontWeight == FontWeight.SemiBold }
+    private fun isItalic(text: String, needle: String) = stylesOn(text, needle).any { it.fontStyle == FontStyle.Italic }
+    private fun isCode(text: String, needle: String) = stylesOn(text, needle).any { it.background == Color.LightGray }
+
     @Test
     fun `a PR link with a hash in the label becomes the label and a url, not raw markup`() {
         // The shape an agent writes after opening a pull request — the bug in the conversation screenshot.
@@ -394,10 +410,12 @@ class InlineMarkdownTest {
     }
 
     @Test
-    fun `titles, angle brackets and a space before the destination still parse`() {
+    fun `titles, angle brackets, a space before the destination and parentheses in it still parse`() {
         assertThat(InlineMarkdown.parseMarkdownLink("[x](https://a.test \"Hi\")", 0)?.url).isEqualTo("https://a.test")
         assertThat(InlineMarkdown.parseMarkdownLink("[x](<https://a.test>)", 0)?.url).isEqualTo("https://a.test")
         assertThat(InlineMarkdown.parseMarkdownLink("[x] (https://a.test)", 0)?.url).isEqualTo("https://a.test")
+        assertThat(InlineMarkdown.parseMarkdownLink("[x](https://en.wikipedia.org/wiki/Foo_(bar)) tail", 0)?.url).isEqualTo("https://en.wikipedia.org/wiki/Foo_(bar)")
+        assertThat(render("[x](https://en.wikipedia.org/wiki/Foo_(bar)) tail").text).isEqualTo("x tail")
     }
 
     @Test
@@ -414,5 +432,83 @@ class InlineMarkdownTest {
         val rendered = render("~~old [link](https://x.test)~~")
         assertThat(rendered.text).isEqualTo("old link")
         assertThat(urlsIn("~~old [link](https://x.test)~~")).containsExactly("https://x.test")
+    }
+
+    @Test
+    fun `every emphasis spelling`() {
+        assertThat(render("**bold** __also__ *it* _also_ ***both***").text).isEqualTo("bold also it also both")
+        assertThat(isBold("**bold**", "bold")).isTrue()
+        assertThat(isBold("__bold__", "bold")).isTrue()
+        assertThat(isItalic("*it*", "it")).isTrue()
+        assertThat(isItalic("_it_", "it")).isTrue()
+        assertThat(isBold("***both***", "both") && isItalic("***both***", "both")).isTrue()
+        assertThat(isBold("**Note:** rest", "Note:")).isTrue()
+        assertThat(render("**Note:** rest").text).isEqualTo("Note: rest")
+    }
+
+    @Test
+    fun `emphasis nests either way round`() {
+        val outerBold = "**bold *inner* bold**"
+        assertThat(render(outerBold).text).isEqualTo("bold inner bold")
+        assertThat(isBold(outerBold, "bold inner bold")).isTrue()
+        assertThat(isItalic(outerBold, "inner")).isTrue()
+        val outerItalic = "*it **inner** it*"
+        assertThat(render(outerItalic).text).isEqualTo("it inner it")
+        assertThat(isItalic(outerItalic, "it inner it")).isTrue()
+        assertThat(isBold(outerItalic, "inner")).isTrue()
+    }
+
+    @Test
+    fun `stars and underscores that are not emphasis stay literal`() {
+        assertThat(render("2 * 3 * 4 = 24").text).isEqualTo("2 * 3 * 4 = 24")
+        assertThat(render("snake_case_name and __init__").text).isEqualTo("snake_case_name and init")
+        assertThat(render("**bold ** not closed").text).isEqualTo("**bold ** not closed")
+        assertThat(render("a lone * star and ** two").text).isEqualTo("a lone * star and ** two")
+        assertThat(render("file_name.py").text).isEqualTo("file_name.py")
+    }
+
+    @Test
+    fun `backslash escapes punctuation`() {
+        assertThat(render("\\*not italic\\* and a \\| pipe and \\_under\\_").text).isEqualTo("*not italic* and a | pipe and _under_")
+        assertThat(isItalic("\\*x\\*", "x")).isFalse()
+        assertThat(render("C:\\path\\n").text).isEqualTo("C:\\path\\n")
+    }
+
+    @Test
+    fun `code spans with more than one backtick and padding rules`() {
+        assertThat(render("Use ``a `tick` inside`` here").text).isEqualTo("Use  a `tick` inside  here")
+        assertThat(isCode("``a `tick` inside``", "a `tick` inside")).isTrue()
+        assertThat(render("`` ` ``").text).isEqualTo(" ` ")
+        assertThat(render("a ` unclosed").text).isEqualTo("a ` unclosed")
+        // Markup inside code is literal.
+        assertThat(render("`**not bold**`").text).isEqualTo(" **not bold** ")
+        assertThat(isBold("`**not bold**`", "not bold")).isFalse()
+    }
+
+    @Test
+    fun `line breaks, inline html tags and entities`() {
+        assertThat(render("one<br>two<br/>three<br />four").text).isEqualTo("one\ntwo\nthree\nfour")
+        assertThat(render("<b>bold</b> <strong>strong</strong> <i>it</i> <em>em</em> <code>x &lt; y</code>").text).isEqualTo("bold strong it em  x < y ")
+        assertThat(isBold("<b>bold</b>", "bold")).isTrue()
+        assertThat(isBold("<strong>bold</strong>", "bold")).isTrue()
+        assertThat(isItalic("<em>it</em>", "it")).isTrue()
+        assertThat(isCode("<code>x</code>", "x")).isTrue()
+        assertThat(stylesOn("<s>gone</s>", "gone").any { it.textDecoration == TextDecoration.LineThrough }).isTrue()
+        assertThat(render("H<sub>2</sub>O and x<sup>2</sup>").text).isEqualTo("H2O and x2")
+        assertThat(render("<summary>Details</summary> <details> <p>text</p> <span>more</span> </details>").text).isEqualTo("Details  text more ")
+        assertThat(isBold("<summary>Details</summary>", "Details")).isTrue()
+        assertThat(render("a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39; &nbsp;g &mdash; &#x41;&#66; &unknown; &").text).isEqualTo("a & b < c > d \"e\" 'f' \u00A0g — AB &unknown; &")
+        // Generics in prose are not tags.
+        assertThat(render("a List<String> value and 1 < 2").text).isEqualTo("a List<String> value and 1 < 2")
+    }
+
+    @Test
+    fun `an image left in running text shows its alt text`() {
+        assertThat(render("see ![the chart](chart.png) here").text).isEqualTo("see the chart here")
+    }
+
+    @Test
+    fun `brackets that are not links stay literal`() {
+        assertThat(render("[ ] todo and [x] done and [ref] text").text).isEqualTo("[ ] todo and [x] done and [ref] text")
     }
 }

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
@@ -54,11 +55,51 @@ object InlineMarkdown {
     )
     private val autolink = Regex("""<(https?://[^>\s]+)>""", RegexOption.IGNORE_CASE)
     private val bareUrl = Regex("""https?://[^\s<]+""", RegexOption.IGNORE_CASE)
+    private val lineBreakTag = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+    private val htmlTag = Regex("""<(/?)([A-Za-z][A-Za-z0-9]*)(?:\s[^<>]*)?(/?)>""")
+    private val entity = Regex("""&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});""")
+    private const val ASCII_PUNCTUATION = "!\"#\$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+
+    /** Inline HTML agents write in place of markdown, mapped onto the style its markdown equivalent gets. */
+    private enum class Tag { Bold, Italic, Code, Strike, Underline, Subscript, Superscript, Mark, Transparent }
+
+    private val tags = mapOf(
+        "b" to Tag.Bold, "strong" to Tag.Bold, "summary" to Tag.Bold,
+        "i" to Tag.Italic, "em" to Tag.Italic,
+        "code" to Tag.Code, "kbd" to Tag.Code, "tt" to Tag.Code,
+        "s" to Tag.Strike, "del" to Tag.Strike, "strike" to Tag.Strike,
+        "u" to Tag.Underline, "ins" to Tag.Underline,
+        "sub" to Tag.Subscript, "sup" to Tag.Superscript, "mark" to Tag.Mark,
+        // Wrappers with no inline meaning: the tags go, the text stays.
+        "p" to Tag.Transparent, "div" to Tag.Transparent, "span" to Tag.Transparent, "details" to Tag.Transparent,
+        "center" to Tag.Transparent, "font" to Tag.Transparent, "small" to Tag.Transparent, "big" to Tag.Transparent,
+    )
+
+    private val namedEntities = mapOf(
+        "amp" to "&", "lt" to "<", "gt" to ">", "quot" to "\"", "apos" to "'", "nbsp" to "\u00A0",
+        "mdash" to "—", "ndash" to "–", "hellip" to "…", "copy" to "©", "reg" to "®", "trade" to "™",
+        "rarr" to "→", "larr" to "←", "uarr" to "↑", "darr" to "↓", "harr" to "↔", "times" to "×", "divide" to "÷",
+        "bull" to "•", "middot" to "·", "deg" to "°", "plusmn" to "±", "le" to "≤", "ge" to "≥", "ne" to "≠",
+        "laquo" to "«", "raquo" to "»", "lsquo" to "‘", "rsquo" to "’", "ldquo" to "“", "rdquo" to "”", "check" to "✓",
+    )
+
+    private class Palette(val base: TextStyle, codeColor: Color, codeBackground: Color, linkColor: Color, boldColor: Color) {
+        val code = SpanStyle(fontFamily = JetBrainsMono, color = codeColor, background = codeBackground, fontSize = base.fontSize * 0.9f)
+        val bold = SpanStyle(fontWeight = FontWeight.SemiBold, color = boldColor)
+        val italic = SpanStyle(fontStyle = FontStyle.Italic)
+        val strike = SpanStyle(textDecoration = TextDecoration.LineThrough)
+        val underline = SpanStyle(textDecoration = TextDecoration.Underline)
+        val mark = SpanStyle(background = codeBackground)
+        val subscript = SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = base.fontSize * 0.75f)
+        val superscript = SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = base.fontSize * 0.75f)
+        val link = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None))
+    }
 
     /**
-     * Renders inline code, bold, italics, strikethrough and links to an AnnotatedString. Nested markup is parsed
-     * (a bold wrap around a `[label](url)` is still a link); inline code stays literal. Links use Cursor's
-     * textLink blue, matching the desktop chat renderer.
+     * Renders inline code, bold, italics, strikethrough, links, escapes, entities and the inline HTML agents use
+     * (`<br>`, `<b>`, `<code>`, `<sub>`…) to an AnnotatedString. Nested markup is parsed (a bold wrap around a
+     * `[label](url)` is still a link); inline code stays literal. Links use Cursor's textLink blue, matching the
+     * desktop chat renderer.
      */
     fun render(
         text: String,
@@ -67,68 +108,77 @@ object InlineMarkdown {
         codeBackground: Color,
         linkColor: Color,
         boldColor: Color,
-    ): AnnotatedString = buildAnnotatedString {
-        appendInline(text, base, codeColor, codeBackground, linkColor, boldColor, insideLink = false)
+    ): AnnotatedString {
+        val palette = Palette(base, codeColor, codeBackground, linkColor, boldColor)
+        return buildAnnotatedString { appendInline(text, palette, insideLink = false) }
     }
 
-    private fun AnnotatedString.Builder.appendInline(
-        text: String,
-        base: TextStyle,
-        codeColor: Color,
-        codeBackground: Color,
-        linkColor: Color,
-        boldColor: Color,
-        insideLink: Boolean,
-    ) {
+    private fun AnnotatedString.Builder.appendInline(text: String, p: Palette, insideLink: Boolean) {
         var i = 0
         val n = text.length
-        fun recurse(inner: String) = appendInline(inner, base, codeColor, codeBackground, linkColor, boldColor, insideLink)
-        fun linkStyle() = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None))
+        fun recurse(inner: String) = appendInline(inner, p, insideLink)
         fun emitLink(url: String, label: String) {
             // Labels keep bold/code/italic, but not nested links — a bare-URL label would recurse forever.
-            withLink(LinkAnnotation.Url(url = url, styles = linkStyle())) {
-                appendInline(label, base, codeColor, codeBackground, linkColor, boldColor, insideLink = true)
+            withLink(LinkAnnotation.Url(url = url, styles = p.link)) {
+                appendInline(label, p, insideLink = true)
             }
+        }
+        fun emitCode(code: String) {
+            withStyle(p.code) { append(" $code ") }
         }
         while (i < n) {
             val c = text[i]
             when {
+                c == '\\' && i + 1 < n && text[i + 1] in ASCII_PUNCTUATION -> {
+                    append(text[i + 1])
+                    i += 2
+                }
                 c == '`' -> {
-                    val end = text.indexOf('`', i + 1)
-                    if (end > i) {
-                        withStyle(SpanStyle(fontFamily = JetBrainsMono, color = codeColor, background = codeBackground, fontSize = base.fontSize * 0.9f)) {
-                            append(" ${text.substring(i + 1, end)} ")
-                        }
-                        i = end + 1
+                    val run = runLength(text, i, '`')
+                    val close = findBacktickRun(text, i + run, run)
+                    if (close >= 0) {
+                        emitCode(codeSpanContent(text.substring(i + run, close)))
+                        i = close + run
                     } else {
-                        append(c); i++
+                        append(text, i, i + run)
+                        i += run
                     }
                 }
                 text.startsWith("~~", i) -> {
-                    val end = text.indexOf("~~", i + 2)
-                    if (end > i) {
-                        withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { recurse(text.substring(i + 2, end)) }
+                    val end = if (i + 2 < n && !text[i + 2].isWhitespace()) text.indexOf("~~", i + 2) else -1
+                    if (end > i + 2) {
+                        withStyle(p.strike) { recurse(text.substring(i + 2, end)) }
                         i = end + 2
                     } else {
-                        append("~~"); i += 2
+                        append("~~")
+                        i += 2
                     }
                 }
-                text.startsWith("**", i) -> {
-                    val end = text.indexOf("**", i + 2)
-                    if (end > i) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = boldColor)) { recurse(text.substring(i + 2, end)) }
-                        i = end + 2
-                    } else {
-                        append("**"); i += 2
+                c == '*' || c == '_' -> {
+                    val run = minOf(runLength(text, i, c), 3)
+                    val prev = if (i > 0) text[i - 1] else ' '
+                    val next = if (i + run < n) text[i + run] else ' '
+                    // Left-flanking: something follows. `_` also stays literal inside a word (snake_case_name).
+                    val canOpen = !next.isWhitespace() && (c == '*' || !prev.isLetterOrDigit())
+                    var closed = false
+                    if (canOpen) {
+                        for (len in run downTo 1) {
+                            val close = findEmphasisCloser(text, i + len, c, len)
+                            if (close < 0) continue
+                            val inner = text.substring(i + len, close)
+                            when (len) {
+                                3 -> withStyle(p.bold) { withStyle(p.italic) { recurse(inner) } }
+                                2 -> withStyle(p.bold) { recurse(inner) }
+                                else -> withStyle(p.italic) { recurse(inner) }
+                            }
+                            i = close + len
+                            closed = true
+                            break
+                        }
                     }
-                }
-                c == '*' || (c == '_' && (i == 0 || !text[i - 1].isLetterOrDigit())) -> {
-                    val end = text.indexOf(c, i + 1)
-                    if (end > i + 1 && (end + 1 >= n || !text[end + 1].isLetterOrDigit() || c == '*')) {
-                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { recurse(text.substring(i + 1, end)) }
-                        i = end + 1
-                    } else {
-                        append(c); i++
+                    if (!closed) {
+                        append(text, i, i + run)
+                        i += run
                     }
                 }
                 c == '[' && !insideLink -> {
@@ -137,23 +187,31 @@ object InlineMarkdown {
                         emitLink(link.url, link.label)
                         i = link.end
                     } else {
-                        append(c); i++
+                        append(c)
+                        i++
                     }
                 }
-                c == '<' && !insideLink -> {
-                    val html = htmlAnchor.matchAt(text, i)
-                    if (html != null) {
-                        emitLink(html.groupValues[1].trim(), html.groupValues[2])
-                        i = html.range.last + 1
+                c == '!' && i + 1 < n && text[i + 1] == '[' -> {
+                    // An image the block parser did not lift out (inside a table cell, say): its alt text stands in.
+                    val image = parseMarkdownLink(text, i + 1)
+                    if (image != null) {
+                        recurse(image.label)
+                        i = image.end
                     } else {
-                        val auto = autolink.matchAt(text, i)
-                        if (auto != null) {
-                            val url = auto.groupValues[1]
-                            emitLink(url, url)
-                            i = auto.range.last + 1
-                        } else {
-                            append(c); i++
-                        }
+                        append(c)
+                        i++
+                    }
+                }
+                c == '<' -> i = appendHtml(text, i, p, insideLink, ::emitLink, ::emitCode, ::recurse)
+                c == '&' -> {
+                    val m = entity.matchAt(text, i)
+                    val decoded = m?.let { decodeEntity(it.groupValues[1]) }
+                    if (m != null && decoded != null) {
+                        append(decoded)
+                        i = m.range.last + 1
+                    } else {
+                        append(c)
+                        i++
                     }
                 }
                 !insideLink && (c == 'h' || c == 'H') && (text.startsWith("http://", i, ignoreCase = true) || text.startsWith("https://", i, ignoreCase = true)) -> {
@@ -163,19 +221,135 @@ object InlineMarkdown {
                         emitLink(url, url)
                         i += url.length
                     } else {
-                        append(c); i++
+                        append(c)
+                        i++
                     }
                 }
                 else -> {
-                    append(c); i++
+                    append(c)
+                    i++
                 }
             }
         }
     }
 
+    /** Handles the `<` at [i]: a line break, anchor, autolink or a known inline tag. Returns the index to continue from. */
+    private fun AnnotatedString.Builder.appendHtml(
+        text: String,
+        i: Int,
+        p: Palette,
+        insideLink: Boolean,
+        emitLink: (String, String) -> Unit,
+        emitCode: (String) -> Unit,
+        recurse: (String) -> Unit,
+    ): Int {
+        lineBreakTag.matchAt(text, i)?.let {
+            append('\n')
+            return it.range.last + 1
+        }
+        if (!insideLink) {
+            htmlAnchor.matchAt(text, i)?.let {
+                emitLink(it.groupValues[1].trim(), it.groupValues[2])
+                return it.range.last + 1
+            }
+            autolink.matchAt(text, i)?.let {
+                emitLink(it.groupValues[1], it.groupValues[1])
+                return it.range.last + 1
+            }
+        }
+        val tag = htmlTag.matchAt(text, i)
+        val kind = tag?.let { tags[it.groupValues[2].lowercase()] }
+        if (tag == null || kind == null) {
+            append('<')
+            return i + 1
+        }
+        val tagEnd = tag.range.last + 1
+        val isClosing = tag.groupValues[1] == "/"
+        val isSelfClosed = tag.groupValues[3] == "/"
+        // A stray closer, a self-closed tag or a wrapper with nothing to style: the tag goes, the text stays.
+        if (isClosing || isSelfClosed || kind == Tag.Transparent) return tagEnd
+        val name = tag.groupValues[2]
+        val close = text.indexOf("</$name>", tagEnd, ignoreCase = true)
+        if (close < 0) return tagEnd
+        val inner = text.substring(tagEnd, close)
+        when (kind) {
+            Tag.Bold -> withStyle(p.bold) { recurse(inner) }
+            Tag.Italic -> withStyle(p.italic) { recurse(inner) }
+            Tag.Code -> emitCode(decodeEntities(inner))
+            Tag.Strike -> withStyle(p.strike) { recurse(inner) }
+            Tag.Underline -> withStyle(p.underline) { recurse(inner) }
+            Tag.Subscript -> withStyle(p.subscript) { recurse(inner) }
+            Tag.Superscript -> withStyle(p.superscript) { recurse(inner) }
+            Tag.Mark -> withStyle(p.mark) { recurse(inner) }
+            Tag.Transparent -> recurse(inner)
+        }
+        return close + name.length + 3
+    }
+
+    private fun runLength(text: String, start: Int, c: Char): Int {
+        var end = start
+        while (end < text.length && text[end] == c) end++
+        return end - start
+    }
+
+    /** Start of the first run of exactly [length] backticks at or after [from], or -1: a code span closes with its own fence. */
+    private fun findBacktickRun(text: String, from: Int, length: Int): Int {
+        var j = from
+        while (j < text.length) {
+            if (text[j] != '`') {
+                j++
+                continue
+            }
+            val run = runLength(text, j, '`')
+            if (run == length) return j
+            j += run
+        }
+        return -1
+    }
+
+    /** CommonMark: line endings become spaces and one space of padding on both sides is dropped. */
+    private fun codeSpanContent(raw: String): String {
+        val code = raw.replace('\n', ' ')
+        return if (code.length >= 2 && code.first() == ' ' && code.last() == ' ' && code.isNotBlank()) code.substring(1, code.length - 1) else code
+    }
+
+    /**
+     * Start of the run of [c] that can close an emphasis opened with [length] delimiters, or -1. A closer follows
+     * non-space (`**bold **` is literal), a `_` closer does not run into a word, a single `*` never closes on part
+     * of a `**` (so `*a **b** c*` nests), and a `**` may close on a longer run.
+     */
+    private fun findEmphasisCloser(text: String, from: Int, c: Char, length: Int): Int {
+        var j = from
+        while (j < text.length) {
+            if (text[j] != c) {
+                j++
+                continue
+            }
+            val run = runLength(text, j, c)
+            val prev = text[j - 1]
+            val next = if (j + run < text.length) text[j + run] else ' '
+            val canClose = j > from && !prev.isWhitespace() && (c == '*' || !next.isLetterOrDigit())
+            if (canClose && (run == length || (length >= 2 && run > length))) return j
+            j += run
+        }
+        return -1
+    }
+
+    private fun decodeEntity(body: String): String? {
+        if (body.startsWith("#")) {
+            val codePoint = if (body[1] == 'x' || body[1] == 'X') body.substring(2).toIntOrNull(16) else body.substring(1).toIntOrNull()
+            if (codePoint == null || codePoint == 0 || codePoint in 0xD800..0xDFFF || !Character.isValidCodePoint(codePoint)) return null
+            return String(Character.toChars(codePoint))
+        }
+        return namedEntities[body]
+    }
+
+    private fun decodeEntities(text: String): String = entity.replace(text) { decodeEntity(it.groupValues[1]) ?: it.value }
+
     /**
      * CommonMark inline link at [start]: `[label](destination)`, optional space before `(`, `<>` around the
-     * destination, optional quoted title. Label may contain `#` (the usual `[PR #66](…)` shape).
+     * destination, balanced parentheses inside it (`/wiki/Foo_(bar)`), optional quoted title. Label may contain `#`
+     * (the usual `[PR #66](…)` shape).
      */
     internal fun parseMarkdownLink(text: String, start: Int): InlineLink? {
         if (start >= text.length || text[start] != '[') return null
@@ -196,7 +370,14 @@ object InlineMarkdown {
             i = gt + 1
         } else {
             val from = i
-            while (i < text.length && text[i] != ')' && !text[i].isWhitespace()) i++
+            var depth = 0
+            while (i < text.length && !text[i].isWhitespace()) {
+                when (text[i]) {
+                    '(' -> depth++
+                    ')' -> if (depth == 0) break else depth--
+                }
+                i++
+            }
             url = text.substring(from, i)
         }
         if (url.isEmpty()) return null
