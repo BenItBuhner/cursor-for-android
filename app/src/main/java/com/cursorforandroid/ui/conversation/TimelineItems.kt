@@ -7,6 +7,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
@@ -39,10 +41,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -172,7 +177,7 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
     Column(modifier.fillMaxWidth()) {
         MessageActions(
             text = item.raw,
-            onClick = { if (body != null) expanded = !expanded },
+            onClick = if (body != null) {{ expanded = !expanded }} else null,
             modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
         ) {
             Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -220,7 +225,7 @@ private fun MessageActions(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    onClick: () -> Unit = {},
+    onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
@@ -233,19 +238,38 @@ private fun MessageActions(
     LaunchedEffect(interaction) {
         interaction.interactions.collect { if (it is PressInteraction.Press) pressedAt = it.pressPosition.round() }
     }
-    Box(
-        modifier.combinedClickable(
+    val openMenu = {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        menuOpen = true
+    }
+    // A message that does nothing when tapped is not a control: `combinedClickable` would announce every bubble and
+    // every reply as something to double tap, which is also what makes the notification that does open look the
+    // same as the ones that do not. Without a tap it keeps the press ripple and the hold, and nothing else.
+    val gestures = when {
+        onClick != null -> Modifier.combinedClickable(
             interactionSource = interaction,
             indication = ripple(color = colors.base),
             enabled = enabled,
             onLongClickLabel = "Message actions",
-            onLongClick = {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                menuOpen = true
-            },
+            onLongClick = openMenu,
             onClick = onClick,
-        ),
-    ) {
+        )
+        enabled -> Modifier
+            .indication(interaction, ripple(color = colors.base))
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val press = PressInteraction.Press(offset)
+                        interaction.emit(press)
+                        interaction.emit(if (tryAwaitRelease()) PressInteraction.Release(press) else PressInteraction.Cancel(press))
+                    },
+                    onLongPress = { openMenu() },
+                )
+            }
+            .semantics(mergeDescendants = true) { onLongClick("Message actions") { openMenu(); true } }
+        else -> Modifier
+    }
+    Box(modifier.then(gestures)) {
         content()
         // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
         Box(Modifier.offset { pressedAt }) {
