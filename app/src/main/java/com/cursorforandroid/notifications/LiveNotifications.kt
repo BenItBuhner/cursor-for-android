@@ -64,6 +64,11 @@ object LiveNotifications {
         }
     }
 
+    /** Takes down the notification under [id], tolerating a manager that is already gone. */
+    fun cancel(context: Context, id: Int) {
+        runCatching { NotificationManagerCompat.from(context).cancel(id) }
+    }
+
     /**
      * Drops the finished card for [agentId], if one is up. Opening that chat from inside the app is why: the
      * transcript already shows the reply, so the shade has nothing left to announce. Tapping the card itself is

@@ -49,6 +49,8 @@ class LiveNotificationService : Service() {
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
     private var idleJob: Job? = null
+    /** Ids of the per-agent cards currently up, so the ones whose agent stopped running can be taken down. */
+    private var agentCardIds: Set<Int> = emptySet()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,7 +68,7 @@ class LiveNotificationService : Service() {
             if (agentId != null && runId != null) stopRun(agentId, runId)
         } else if (!firstStart) {
             // Re-issued start (running set changed, or notification permission was just granted): show the current state.
-            graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }?.let { post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, it)) }
+            graph.runMonitor.state.value.takeIf { it.running.isNotEmpty() }?.let { postLive(LiveNotificationRenderer.live(this, it)) }
         }
         return START_NOT_STICKY
     }
@@ -74,12 +76,10 @@ class LiveNotificationService : Service() {
     private fun enterForeground(): Boolean {
         if (inForeground) return true
         val monitor = graph.runMonitor
-        val initial = monitor.state.value.takeIf { it.running.isNotEmpty() }
-            ?.let { LiveNotificationRenderer.live(this, it) }
-            ?: LiveNotificationRenderer.connecting(this)
+        val initial = monitor.state.value.takeIf { it.running.isNotEmpty() }?.let { LiveNotificationRenderer.live(this, it) }
         try {
             val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
-            ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type)
+            ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial?.summary ?: LiveNotificationRenderer.connecting(this), type)
         } catch (e: Exception) {
             // ForegroundServiceStartNotAllowedException (a background start, or Android 15's dataSync budget spent
             // before the app was in front again) or a missing permission. Not fatal: [active] stays false, and the
@@ -91,6 +91,8 @@ class LiveNotificationService : Service() {
         }
         inForeground = true
         _active.value = true
+        // The summary is up as the foreground notification; the per-agent cards go with it.
+        initial?.let { postAgentCards(it) }
         // The safety net for the finished cards, in case this process does not live to post them.
         FinishWatchdogJobService.arm(this, FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
@@ -105,7 +107,7 @@ class LiveNotificationService : Service() {
                         else -> {
                             idleJob?.cancel()
                             idleJob = null
-                            post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this@LiveNotificationService, state))
+                            postLive(LiveNotificationRenderer.live(this@LiveNotificationService, state))
                         }
                     }
                 }
@@ -147,6 +149,24 @@ class LiveNotificationService : Service() {
 
     private fun post(id: Int, notification: Notification) = LiveNotifications.post(this, id, notification)
 
+    /** Summary first so the group exists before its children, then the cards; cards for agents no longer running go. */
+    private fun postLive(cards: LiveCards) {
+        post(LiveNotificationRenderer.LIVE_ID, cards.summary)
+        postAgentCards(cards)
+    }
+
+    private fun postAgentCards(cards: LiveCards) {
+        cards.agents.forEach { (id, notification) -> post(id, notification) }
+        (agentCardIds - cards.agents.keys).forEach { LiveNotifications.cancel(this, it) }
+        agentCardIds = cards.agents.keys
+    }
+
+    /** `STOP_FOREGROUND_REMOVE` only takes the summary down; the cards are ordinary notifications and go by hand. */
+    private fun cancelAgentCards() {
+        agentCardIds.forEach { LiveNotifications.cancel(this, it) }
+        agentCardIds = emptySet()
+    }
+
     /**
      * Stops following the runs and takes the live notification down. With [keepWatching] the runs are believed to be
      * still going, so the watchdog is armed to announce their finishes; without it there is nothing left to watch.
@@ -160,6 +180,7 @@ class LiveNotificationService : Service() {
         } else {
             FinishWatchdogJobService.disarm(this)
         }
+        cancelAgentCards()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -177,6 +198,7 @@ class LiveNotificationService : Service() {
     override fun onDestroy() {
         scope.cancel()
         graph.runMonitor.stop()
+        cancelAgentCards()
         inForeground = false
         _active.value = false
         super.onDestroy()

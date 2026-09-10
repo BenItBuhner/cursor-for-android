@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunDigest
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
+import com.cursorforandroid.notifications.LiveCards
 import com.cursorforandroid.notifications.LiveNotificationRenderer
 import com.cursorforandroid.notifications.LiveNotifications
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -38,8 +39,8 @@ import java.util.TimeZone
  * `createContentView` / `createBigContentView`) and writes the RemoteViews the shade would apply. This is the
  * closest the walkthrough can get to SystemUI without a device: same layouts, no hand-drawn stand-in.
  *
- * Live cards are one colorized ProgressStyle (or a determinate bar below API 36): the current step is the title,
- * the agent title or fleet ticker is the supporting line, and a generated cube poster fills the large-icon slot.
+ * Every running agent is its own card in one notification group; `30`/`31` stack the group the way the shade does —
+ * the summary's row as the header, then a card per agent — since the group chrome itself lives in SystemUI.
  *
  * Run with `./gradlew :app:recordRoborazziDebug --tests '*NotificationScreenshotTest*'`.
  */
@@ -74,14 +75,15 @@ class NotificationScreenshotTest {
     fun liveCards() {
         capture("28_notif_single_collapsed", singleRunning(), expanded = false)
         capture("29_notif_single_expanded", singleRunning(), expanded = true)
-        capture("30_notif_roster_expanded", roster(), expanded = true)
-        captureShade("31_notif_shade", listOf(singleRunning(), roster()))
+        captureGroup("30_notif_group_collapsed", group(), expandedIndex = -1)
+        captureGroup("31_notif_group_expanded", group(), expandedIndex = 0)
     }
 
     @Test
     @Config(sdk = [36])
     fun progressStyleApi36() {
         capture("32_notif_single_progress_api36", singleRunning(), expanded = true)
+        captureGroup("33_notif_group_api36", group(), expandedIndex = 0)
     }
 
     private fun singleRunning(): Notification = LiveNotificationRenderer.live(
@@ -100,9 +102,9 @@ class NotificationScreenshotTest {
             ),
             hasReconciled = true,
         ),
-    )
+    ).agents.values.single()
 
-    private fun roster(): Notification = LiveNotificationRenderer.live(
+    private fun group(): LiveCards = LiveNotificationRenderer.live(
         context,
         LiveActivityState(
             listOf(
@@ -152,7 +154,11 @@ class NotificationScreenshotTest {
         host.captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
-    private fun captureShade(name: String, notifications: List<Notification>) {
+    /**
+     * The group as the shade stacks it: the summary's row as the header, then one card per agent in roster order,
+     * hairlines between them. [expandedIndex] is the card the user has opened, or -1 for all collapsed.
+     */
+    private fun captureGroup(name: String, cards: LiveCards, expandedIndex: Int) {
         lateinit var host: View
         compose.activityRule.scenario.onActivity { activity ->
             val density = activity.resources.displayMetrics.density
@@ -163,11 +169,14 @@ class NotificationScreenshotTest {
                 setBackgroundColor(SHADE)
                 setPadding(0, gap, 0, gap)
             }
-            notifications.forEachIndexed { index, notification ->
-                if (index > 0) {
-                    column.addView(View(activity), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, gap))
-                }
-                column.addView(inflate(activity, notification, expanded = true, width), LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
+            column.addView(inflate(activity, cards.summary, expanded = false, width), LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
+            val ordered = cards.agents.values.sortedBy { it.sortKey }
+            ordered.forEachIndexed { index, card ->
+                column.addView(
+                    View(activity).apply { setBackgroundColor(HAIRLINE) },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxOf(1, (density / 2).toInt())),
+                )
+                column.addView(inflate(activity, card, expanded = index == expandedIndex, width), LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
             column.measure(
                 View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
@@ -236,5 +245,6 @@ class NotificationScreenshotTest {
         val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
         const val SHADE_WIDTH_DP = 379
         const val SHADE = 0xFF121212.toInt()
+        const val HAIRLINE = 0xFF2A2A2A.toInt()
     }
 }
