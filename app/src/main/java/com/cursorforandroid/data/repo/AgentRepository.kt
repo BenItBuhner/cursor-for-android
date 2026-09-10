@@ -145,6 +145,8 @@ class AgentRepository(
     private val account: ComposerLifecycleApi? = null,
     /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
     private val demoSources: Map<String, AgentSource> = emptyMap(),
+    /** What the demo's account list would say about its chats — which are Projects, which hang off which — for the same reason. */
+    private val demoComposers: List<ComposerSnapshot> = emptyList(),
 ) {
     private val restoreMutex = Mutex()
 
@@ -324,7 +326,7 @@ class AgentRepository(
             val landed = publish { s ->
                 val complete = depth == RefreshDepth.Full && !truncated
                 (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
-                    .let { if (backend.isDemo) it.withSources(demoSources) else it }
+                    .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             if (landed) {
@@ -670,27 +672,39 @@ class AgentRepository(
     }
 
     /**
-     * Folds the account list's name and archive flag onto the rows already shown. Official apps rename and archive
-     * here, and a v1 list that has not caught up (or never will — the public archive is a different write) would
-     * otherwise keep the old title or leave a chat sitting in the open list.
+     * Folds the account list's name, archive flag and Project facts onto the rows already shown. Official apps rename
+     * and archive here, and a v1 list that has not caught up (or never will — the public archive is a different
+     * write) would otherwise keep the old title or leave a chat sitting in the open list. Whether a chat is a Project,
+     * how it looks and whose child it is are the account's alone to say (the public list has no notion of them), so
+     * the snapshot's word replaces the row's; a row the list did not mention keeps what it had.
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>) {
         if (composers.isEmpty()) return
+        _state.update { it.withAccountSnapshots(composers) }
+    }
+
+    private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
+        if (composers.isEmpty()) return this
         val byId = composers.associateBy { it.id }
-        _state.update { s ->
-            s.copy(
-                agents = s.agents.map { agent ->
-                    val snap = byId[agent.id] ?: return@map agent
-                    val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
-                    val lifecycle = when (snap.archived) {
-                        true -> AgentLifecycle.ARCHIVED
-                        false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
-                        null -> agent.lifecycle
-                    }
-                    if (name == agent.name && lifecycle == agent.lifecycle) agent else agent.copy(name = name, lifecycle = lifecycle)
-                },
+        var changed = false
+        val next = agents.map { agent ->
+            val snap = byId[agent.id] ?: return@map agent
+            val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
+            val lifecycle = when (snap.archived) {
+                true -> AgentLifecycle.ARCHIVED
+                false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
+                null -> agent.lifecycle
+            }
+            val updated = agent.copy(
+                name = name,
+                lifecycle = lifecycle,
+                isProject = snap.isProject,
+                projectAppearance = snap.projectAppearance,
+                parent = snap.parent,
             )
+            if (updated == agent) agent else updated.also { changed = true }
         }
+        return if (changed) copy(agents = next) else this
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
