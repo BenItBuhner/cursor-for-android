@@ -44,9 +44,12 @@ class AppCaches(private val root: JsonDiskCache) {
 class SlashCommandCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
     suspend fun read(scopeKey: String): JsonDiskCache.Entry<SlashCatalog>? = cache.read(scopeKey, SlashCatalog.serializer(), VERSION)
 
-    suspend fun write(scopeKey: String, catalog: SlashCatalog) {
-        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog)) cache.prune(maxEntries)
+    suspend fun write(scopeKey: String, catalog: SlashCatalog, token: Int = cache.token()) {
+        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog, token)) cache.prune(maxEntries)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
