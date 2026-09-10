@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +34,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The follow-ups of each chat that have not reached the server: the composer's draft, and the queue.
@@ -76,6 +78,19 @@ class FollowUpRepository(
     }
 
     private val entries = HashMap<String, Entry>()
+
+    /**
+     * The account everything held here belongs to. Captured when an operation starts and checked again before it
+     * sends anything or writes anything to disk, so a send or a save that was in flight across a sign-out cannot
+     * reach the next account's server or re-create the previous one's files behind [FollowUpStore.clear].
+     */
+    private val generation = AtomicInteger()
+
+    /** Everything this repository has in flight, so [resetAll] can cancel all of it at once. */
+    @Volatile private var work: CoroutineScope = workScope()
+
+    private fun workScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
 
     private fun entry(agentId: String): Entry = synchronized(entries) {
         entries.getOrPut(agentId) { Entry(agentId).also { restore(it) } }
@@ -192,6 +207,7 @@ class FollowUpRepository(
      * queued message that could be steered.
      */
     fun sendNow(agentId: String, id: String): Boolean {
+        val startedIn = generation.get()
         val e = entry(agentId)
         val item = synchronized(e) {
             val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@synchronized null
@@ -201,11 +217,12 @@ class FollowUpRepository(
             steered
         } ?: return false
         e.scheduleSave()
-        scope.launch { steer(e, item) }
+        work.launch { steer(e, item, startedIn) }
         return true
     }
 
-    private suspend fun steer(e: Entry, item: QueuedFollowUp) {
+    private suspend fun steer(e: Entry, item: QueuedFollowUp, startedIn: Int) {
+        if (generation.get() != startedIn) return
         val staged = conversations.stageFollowUp(e.agentId, item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }, item.images.map { it.image })
         if (!isIdle(e.agentId).first()) {
             val cancel = conversations.cancelActiveRun(e.agentId).recoverCatching { t ->
@@ -219,7 +236,7 @@ class FollowUpRepository(
                 return
             }
         }
-        sendSteered(e, item, staged)
+        sendSteered(e, item, staged, startedIn)
     }
 
     /** A steer that did not go through: the bubble comes down and the message is back among the cards, with the reason. */
@@ -229,9 +246,11 @@ class FollowUpRepository(
     }
 
     /** Sends a steered message once the agent is free, waiting out any turn the server still reports; see [sendNow]. */
-    private suspend fun sendSteered(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp) {
+    private suspend fun sendSteered(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp, startedIn: Int) {
         while (true) {
             isIdle(e.agentId).first { it }
+            // The account this steer belongs to has been signed out; the message is not the next one's to send.
+            if (generation.get() != startedIn) return
             val result = conversations.sendStaged(
                 e.agentId,
                 staged,
@@ -276,17 +295,20 @@ class FollowUpRepository(
         e.dispatcher?.cancel()
         e.saveJob?.cancel()
         e.restoreJob?.cancel()
-        scope.launch { store?.remove(agentId) }
+        work.launch { store?.remove(agentId) }
     }
 
-    /** Signing out: nothing of the account stays in memory; the disk is cleared by the caller alongside the other stores. */
+    /**
+     * Signing out: nothing of the account stays in memory. Every dispatcher, save, restore and steer is cancelled
+     * together — a steer is launched on the same scope rather than tracked one job at a time — and the generation is
+     * bumped first, so work that is already past a cancellation point cannot send into the account signing in or
+     * write the previous one's draft back behind the [FollowUpStore.clear] the caller does next.
+     */
     fun resetAll() {
-        val all = synchronized(entries) { entries.values.toList().also { entries.clear() } }
-        all.forEach { e ->
-            e.dispatcher?.cancel()
-            e.saveJob?.cancel()
-            e.restoreJob?.cancel()
-        }
+        generation.incrementAndGet()
+        synchronized(entries) { entries.clear() }
+        work.cancel()
+        work = workScope()
     }
 
     // -- persistence -------------------------------------------------------------------------------------------------
@@ -300,8 +322,10 @@ class FollowUpRepository(
      */
     private fun restore(e: Entry) {
         val store = store?.takeIf { persist() } ?: return
-        e.restoreJob = scope.launch {
+        val startedIn = generation.get()
+        e.restoreJob = work.launch {
             val saved = runCatching { store.read(e.agentId) }.getOrNull()
+            if (generation.get() != startedIn) return@launch
             synchronized(e) {
                 e.update {
                     val known = queue.mapTo(HashSet()) { it.id }
@@ -320,10 +344,14 @@ class FollowUpRepository(
 
     private fun Entry.scheduleSave(delayMs: Long = 0L) {
         val store = store?.takeIf { persist() } ?: return
+        val startedIn = generation.get()
         saveJob?.cancel()
-        saveJob = scope.launch {
+        saveJob = work.launch {
             if (delayMs > 0) delay(delayMs)
             val snapshot = state.first { it.restored }
+            // The file this would write belongs to an account that has been signed out, and whose directory the
+            // sign-out has already deleted.
+            if (generation.get() != startedIn) return@launch
             runCatching { store.write(agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
         }
     }
@@ -352,10 +380,11 @@ class FollowUpRepository(
     /** Called under the entry's monitor. */
     private fun Entry.ensureDispatcher() {
         if (dispatcher?.isActive == true) return
-        dispatcher = scope.launch { dispatchLoop(this@ensureDispatcher) }
+        val startedIn = generation.get()
+        dispatcher = work.launch { dispatchLoop(this@ensureDispatcher, startedIn) }
     }
 
-    private suspend fun dispatchLoop(e: Entry) = coroutineScope {
+    private suspend fun dispatchLoop(e: Entry, startedIn: Int) = coroutineScope {
         // Following the active run is what turns the end of the turn into an idle row when nothing else is watching.
         val follower = launch {
             runToFollow(e.agentId).collectLatest { runId ->
@@ -389,7 +418,7 @@ class FollowUpRepository(
                     e.update { copy(queue = queue.map { if (it.id == h.id) it.copy(isSending = true) else it }) }
                     h
                 } ?: continue
-                dispatch(e, head)
+                dispatch(e, head, startedIn)
             }
         } finally {
             follower.cancel()
@@ -397,7 +426,8 @@ class FollowUpRepository(
     }
 
     /** [item] has already been claimed by [dispatchLoop], which is what marked it sending. */
-    private suspend fun dispatch(e: Entry, item: QueuedFollowUp) {
+    private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int) {
+        if (generation.get() != startedIn) return
         val result = conversations.sendFollowUp(
             e.agentId,
             item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
@@ -408,6 +438,7 @@ class FollowUpRepository(
             modelParams = item.modelParams,
             modelDisplayName = item.modelDisplayName,
         )
+        if (generation.get() != startedIn) return
         result.fold(
             onSuccess = {
                 e.update { copy(queue = queue.filterNot { it.id == item.id }) }

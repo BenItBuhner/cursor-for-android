@@ -36,6 +36,7 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The follow-up queue against the fake backend: a message sent mid-turn waits, goes out when the turn ends, and is
@@ -57,6 +58,10 @@ class FollowUpRepositoryTest {
     private lateinit var hub: LiveRunHub
     private lateinit var conversations: ConversationRepository
     private lateinit var store: FollowUpStore
+
+    /** Holds a send just before it reaches the server, where the repository asks for the MCP servers to attach. */
+    @Volatile private var mcpGate: CompletableDeferred<Unit>? = null
+    private val mcpCalls = AtomicInteger()
 
     @Before
     fun setUp() {
@@ -82,7 +87,7 @@ class FollowUpRepositoryTest {
 
     private fun repository(persist: Boolean = false, busyRecheckMs: Long = 20_000) = FollowUpRepository(
         conversations, agents, hub,
-        mcpServers = { emptyList() },
+        mcpServers = { mcpCalls.incrementAndGet(); mcpGate?.await(); emptyList() },
         store = store.takeIf { persist },
         persist = { true },
         scope = scope,
@@ -281,6 +286,45 @@ class FollowUpRepositoryTest {
         assertThat(api.cancelled).isEmpty()
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
         assertThat(sent().last()).isEqualTo("Try")
+    }
+
+    /**
+     * A steer is the piece of work a sign-out used to leave running: launched on the repository's own scope and
+     * tracked by nothing, it would go on under the next account, post the previous one's message with its key, and
+     * write the queue back behind the wiped files.
+     */
+    @Test
+    fun `a steer held across a sign-out reaches neither the next account's server nor its files`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.addIdleAgent("bc-2", "Other", "run-0b")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        mcpGate = CompletableDeferred()
+        val followUps = repository(persist = true)
+        followUps.state("bc-1").first { it.restored }
+        followUps.enqueue("bc-1", "And the one behind it")
+        val urgent = followUps.enqueue("bc-1", "Under the old account")
+        assertThat(followUps.sendNow("bc-1", urgent.id)).isTrue()
+        // The turn has been stopped for it and the steer is on its way out, held before it reaches the server.
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { mcpCalls.get() == 1 }
+        awaitUntil { store.read("bc-1")?.queue?.size == 2 }
+
+        // Signing out, in the order AppGraph uses: the queue is dropped, then the files are wiped.
+        followUps.resetAll()
+        store.clear()
+        mcpGate?.complete(Unit)
+
+        // A follow-up for another chat is the marker for the next account. It is queued after the held send was let
+        // go and has further to travel — an entry to make, a file to read, a turn to be found free — so by the time
+        // the server has it, a send the sign-out failed to stop would already have arrived, and its save with it.
+        api.createRunGate = CompletableDeferred()
+        followUps.enqueue("bc-2", "Under the new account")
+        awaitUntil { api.runRequests.isNotEmpty() }
+
+        assertThat(sent()).containsExactly("Under the new account")
+        assertThat(store.read("bc-1")).isNull()
     }
 
     @Test
