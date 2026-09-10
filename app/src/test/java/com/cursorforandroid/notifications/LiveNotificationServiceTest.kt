@@ -30,7 +30,10 @@ class LiveNotificationServiceTest {
     private val manager = shadowOf(app.getSystemService(NotificationManager::class.java))
 
     private fun Notification.title() = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-    private fun Notification.bigText() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+    private fun Notification.rows() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.lines().orEmpty()
+
+    /** Everything up on the live channel: there must only ever be the one. */
+    private fun liveNotifications(): List<Notification> = manager.allNotifications.filter { it.channelId == LiveNotifications.CHANNEL_LIVE }
 
     /** Pumps the (paused) main looper so the service's Main-dispatched collectors run, until [condition] holds. */
     private fun awaitOnMain(timeoutMs: Long, condition: () -> Boolean) {
@@ -67,18 +70,21 @@ class LiveNotificationServiceTest {
         assertThat(armed.isPersisted).isTrue()
         assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
 
-        // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
-        // tracker has reported, so wait for the steady state rather than the title alone.
+        // The headline counts all three as soon as the list is reconciled; the third row follows once every tracker
+        // has reported, so wait for the steady state rather than the title alone.
         awaitOnMain(10_000) {
-            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.bigText()?.lines()?.size == 3 } == true
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.rows().size == 3 } == true
         }
         val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
         assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-        assertThat(live.bigText()!!.lines()).hasSize(3)
-        assertThat(live.bigText()).doesNotContain("more")
-        assertThat(live.bigText()).contains("\u2022 Codex-Poly-Bot Scaling")
-        assertThat(live.bigText()).contains("\u2022 Cesium Revenue Strategy")
-        assertThat(live.bigText()).contains("\u2022 Hyper-realistic human limbs")
+        assertThat(live.number).isEqualTo(3)
+        // One live notification, however many agents: several promoted cards would splinter across the shade.
+        assertThat(liveNotifications()).hasSize(1)
+        val rows = live.rows()
+        assertThat(rows.joinToString("\n")).doesNotContain("more")
+        assertThat(rows.any { it.contains("Codex-Poly-Bot") }).isTrue()
+        assertThat(rows.any { it.contains("Cesium Revenue") }).isTrue()
+        assertThat(rows.any { it.contains("Hyper-realistic") }).isTrue()
 
         // The scripted runs finish on their own; each gets a card while the live notification shrinks, then goes.
         awaitOnMain(90_000) { manager.allNotifications.count { it.channelId == LiveNotifications.CHANNEL_FINISHED } == 3 }

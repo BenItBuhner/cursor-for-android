@@ -15,19 +15,15 @@
     <string name="notif_status_failed">Failed</string>
     <string name="notif_status_cancelled">Cancelled</string>
     <string name="notif_status_expired">Expired</string>
+    <!-- Group summary over the per-agent cards. -->
     <plurals name="notif_agents_running">
         <item quantity="one">%1$d agent running</item>
         <item quantity="other">%1$d agents running</item>
     </plurals>
-    <!-- Last line of the condensed card: running agents beyond the eight that get a line of their own. -->
+    <!-- Tail of the summary's name list: running agents beyond the three named, or beyond the eight tracked. -->
     <plurals name="notif_more_agents">
         <item quantity="one">+%1$d more</item>
         <item quantity="other">+%1$d more</item>
-    </plurals>
-    <!-- Status-bar chip text on Android 16; keep it short. -->
-    <plurals name="notif_chip_agents">
-        <item quantity="one">%1$d agent</item>
-        <item quantity="other">%1$d agents</item>
     </plurals>
     <string name="notif_connecting">Connecting to your agents…</string>
     <string name="notif_action_review">Review</string>

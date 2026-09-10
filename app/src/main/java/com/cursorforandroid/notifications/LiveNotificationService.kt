@@ -51,6 +51,8 @@ class LiveNotificationService : Service() {
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
     private var idleJob: Job? = null
+    /** Re-posts the roster card each minute so its per-agent ages stay honest between agent events. */
+    private var tickJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -116,6 +118,7 @@ class LiveNotificationService : Service() {
                             idleJob?.cancel()
                             idleJob = null
                             post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this@LiveNotificationService, state))
+                            keepAgesFresh(state)
                         }
                     }
                 }
@@ -132,6 +135,27 @@ class LiveNotificationService : Service() {
             // still says otherwise (or was never reconciled) the watchdog keeps reading the records instead.
             val current = graph.runMonitor.state.value
             shutdown(keepWatching = !current.hasReconciled || current.totalRunning > 0)
+        }
+    }
+
+    /**
+     * A single agent's card has a live chronometer; the roster's rows carry a rendered age (`34m`) that only moves
+     * when the card is rebuilt, so while several agents run the card is re-posted once a minute — through the same
+     * snooze filter as the live collector, so a quiet agent does not slip back in on the tick.
+     */
+    private fun keepAgesFresh(state: LiveActivityState) {
+        tickJob?.cancel()
+        tickJob = if (state.totalRunning < 2) {
+            null
+        } else {
+            scope.launch {
+                while (true) {
+                    delay(AGE_REFRESH_MS)
+                    val current = audible(graph.runMonitor.state.value)
+                    if (current.running.isEmpty()) break
+                    post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this@LiveNotificationService, current))
+                }
+            }
         }
     }
 
@@ -171,6 +195,8 @@ class LiveNotificationService : Service() {
     private fun shutdown(keepWatching: Boolean) {
         idleJob?.cancel()
         idleJob = null
+        tickJob?.cancel()
+        tickJob = null
         graph.runMonitor.stop()
         if (keepWatching) {
             FinishWatchdogJobService.arm(this, FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
@@ -206,6 +232,7 @@ class LiveNotificationService : Service() {
         private const val EXTRA_RUN_ID = "run_id"
         private const val IDLE_GRACE_MS = 2_500L
         private const val FIRST_RECONCILE_TIMEOUT_MS = 20_000L
+        private const val AGE_REFRESH_MS = 60_000L
 
         private val _active = MutableStateFlow(false)
 
