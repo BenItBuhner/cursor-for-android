@@ -17,11 +17,14 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.SessionState
+import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 /**
@@ -48,7 +51,7 @@ object LiveNotificationCoordinator {
                         FinishWatchdogJobService.disarm(activity)
                         runCatching { NotificationManagerCompat.from(activity).cancelAll() }
                     },
-                ).run(liveDecisions(graph.session.state, graph.agents.state, graph.prefs.liveNotifications, LiveNotificationService.active))
+                ).run(liveDecisions(graph.session.state, graph.agents.state, graph.prefs.liveNotifications, LiveNotificationService.active, graph.prefs.localAgentState))
             }
         }
     }
@@ -66,8 +69,14 @@ internal sealed interface LiveDecision {
     data object SignedOut : LiveDecision
 }
 
-internal fun liveDecision(session: SessionState, list: AgentListState, enabled: Boolean, serviceActive: Boolean): LiveDecision {
-    val running = list.agents.filter { it.isRunning }.map { it.id }.toSet()
+internal fun liveDecision(
+    session: SessionState,
+    list: AgentListState,
+    enabled: Boolean,
+    serviceActive: Boolean,
+    quietIds: Set<String> = emptySet(),
+): LiveDecision {
+    val running = list.agents.filter { it.isRunning && it.id !in quietIds }.map { it.id }.toSet()
     return when {
         session is SessionState.SignedOut -> LiveDecision.SignedOut
         // A list restored from disk may still say "running" about runs that finished hours ago; the service only
@@ -83,7 +92,10 @@ internal fun liveDecisions(
     list: Flow<AgentListState>,
     enabled: Flow<Boolean>,
     serviceActive: Flow<Boolean>,
-): Flow<LiveDecision> = combine(session, list, enabled, serviceActive) { s, l, e, a -> liveDecision(s, l, e, a) }.distinctUntilChanged()
+    local: Flow<LocalAgentState> = flowOf(LocalAgentState()),
+): Flow<LiveDecision> = combine(session, list, enabled, serviceActive, local) { s, l, e, a, state ->
+    liveDecision(s, l, e, a, state.quietIds(AppClock.now()))
+}.distinctUntilChanged()
 
 /**
  * Turns [LiveDecision]s into start and stop commands, and does not take a refused or lost service for an answer.

@@ -173,4 +173,12 @@ data class LiveActivityState(
 
     /** Running agents the notification has no line for because they are beyond the tracking cap. */
     val untrackedCount: Int get() = totalRunning - running.size
+
+    /** Drops snoozed runs so the live card only follows chats that may still notify. */
+    fun withoutQuiet(quietIds: Set<String>): LiveActivityState {
+        if (quietIds.isEmpty()) return this
+        val audible = running.filter { it.agentId !in quietIds }
+        val hidden = running.size - audible.size
+        return copy(running = audible, runningCount = (runningCount - hidden).coerceAtLeast(audible.size))
+    }
 }

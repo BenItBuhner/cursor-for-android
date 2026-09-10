@@ -118,6 +118,57 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `snoozed chats stay on the list, keep a clock, and only the Snoozed filter isolates them`() {
+        val agents = listOf(agent("kept"), agent("later"), agent("gone"))
+        val local = LocalAgentState(
+            snoozedUntil = mapOf(
+                "later" to now + hour,
+                "gone" to SnoozeDuration.FOREVER,
+            ),
+        )
+        val defaults = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
+        assertThat(defaults.flatMap { it.rows }.map { it.agent.id }).containsExactly("kept", "later", "gone")
+        assertThat(defaults.flatMap { it.rows }.filter { it.isSnoozed }.map { it.agent.id }).containsExactly("later", "gone")
+        assertThat(AgentListOrganizer.indicatorFor(agent("later"), local, now)).isEqualTo(AgentIndicator.Snoozed)
+        assertThat(AgentListOrganizer.indicatorFor(agent("later"), local, now + hour)).isEqualTo(AgentIndicator.Unread)
+        assertThat(AgentListOrganizer.indicatorFor(agent("gone"), local, now + hour)).isEqualTo(AgentIndicator.Snoozed)
+
+        val onlySnoozed = AgentListOrganizer.organize(
+            agents,
+            ListPreferences(statuses = setOf(StatusFilter.Snoozed)),
+            local,
+            nowMillis = now,
+            zone = zone,
+        )
+        assertThat(onlySnoozed.flatMap { it.rows }.map { it.agent.id }).containsExactly("later", "gone")
+        assertThat(onlySnoozed.flatMap { it.rows }.all { it.isSnoozed }).isTrue()
+    }
+
+    @Test
+    fun `a snoozed chat keeps its place when it keeps updating`() {
+        val quiet = agent("quiet", updatedAgo = 0)
+        val kept = agent("kept", updatedAgo = hour / 2)
+        val local = LocalAgentState(
+            snoozedUntil = mapOf("quiet" to now + hour),
+            snoozedAt = mapOf("quiet" to now - 2 * hour),
+        )
+        val rows = AgentListOrganizer.organize(listOf(quiet, kept), ListPreferences(), local, nowMillis = now, zone = zone)
+            .flatMap { it.rows }
+            .map { it.agent.id }
+        assertThat(rows).containsExactly("kept", "quiet").inOrder()
+    }
+
+    @Test
+    fun `archive beats snooze, and a snoozed chat is not unread`() {
+        val archived = agent("arch", lifecycle = AgentLifecycle.ARCHIVED)
+        val local = LocalAgentState(snoozedUntil = mapOf("arch" to SnoozeDuration.FOREVER, "quiet" to now + hour))
+        assertThat(AgentListOrganizer.indicatorFor(archived, local, now)).isEqualTo(AgentIndicator.Archived)
+        assertThat(AgentListOrganizer.isUnread(agent("quiet"), local, now)).isFalse()
+        assertThat(local.nextSnoozeExpiry(now)).isEqualTo(now + hour)
+        assertThat(local.nextSnoozeExpiry(now + hour)).isNull()
+    }
+
+    @Test
     fun `status filter hides archived by default and can show only running`() {
         val agents = listOf(
             agent("run", runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE),
@@ -364,7 +415,7 @@ class AgentListOrganizerTest {
         val prefs = ListPreferences()
         assertThat(prefs.summaryFor(FilterKind.Repo)).isEqualTo("All")
         assertThat(prefs.summaryFor(FilterKind.Status)).isEqualTo("Read +3")
-        // Every entry checked reads "All", whatever the filter; the default Status leaves Archived out.
+        // Every entry checked reads "All", whatever the filter; the default Status leaves Archived and Snoozed out.
         assertThat(prefs.summaryFor(FilterKind.Git)).isEqualTo("All")
         assertThat(prefs.copy(git = setOf(GitFilter.Merged, GitFilter.Closed)).summaryFor(FilterKind.Git)).isEqualTo("Merged +1")
         assertThat(prefs.summaryFor(FilterKind.Source)).isEqualTo("All")
@@ -374,6 +425,9 @@ class AgentListOrganizerTest {
         assertThat(prefs.copy(repos = setOf("acme/app")).summaryFor(FilterKind.Repo)).isEqualTo("app")
         assertThat(prefs.copy(statuses = emptySet()).summaryFor(FilterKind.Status)).isEqualTo("None")
         assertThat(prefs.copy(statuses = StatusFilter.entries.toSet()).summaryFor(FilterKind.Status)).isEqualTo("All")
+        val oddStatus = CursorJson.decodeFromString(ListPreferences.serializer(), """{"sortOrder":"Name","statuses":["Read","Snoozed","Muted"]}""")
+        assertThat(oddStatus.sortOrder).isEqualTo(SortOrder.Name)
+        assertThat(oddStatus.statuses).containsExactly(StatusFilter.Read, StatusFilter.Snoozed)
     }
 
     @Test

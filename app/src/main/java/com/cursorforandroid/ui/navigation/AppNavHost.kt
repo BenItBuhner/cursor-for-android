@@ -145,11 +145,16 @@ fun AppNavHost(
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
     val rowActions = AgentRowActions(
-        onOpen = { row -> agentsViewModel.markRead(row.agent); openAgent(row.agent.id) },
+        onOpen = { row ->
+            agentsViewModel.markRead(row.agent)
+            openAgent(row.agent.id)
+        },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onRename = { row, name -> agentsViewModel.rename(row.agent.id, name) },
+        onSnooze = { row, until -> agentsViewModel.snooze(row.agent.id, until) },
+        onUnsnooze = { agentsViewModel.unsnooze(it.agent.id) },
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -203,6 +208,7 @@ fun AppNavHost(
                     onOpenSidebar = openSidebar,
                     onOpenAgent = rowActions.onOpen,
                     onLaunchOpen = ::openAgent,
+                    rowActions = rowActions,
                 )
                 Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
                 is Screen.Agent -> ConversationScreen(

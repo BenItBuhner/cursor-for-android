@@ -187,7 +187,7 @@ data class Agent(
 }
 
 /** Visual state of the leading indicator in the agent list. */
-enum class AgentIndicator { Running, Unread, Error, Read, Archived }
+enum class AgentIndicator { Running, Unread, Error, Read, Archived, Snoozed }
 
 data class CursorUser(
     val apiKeyName: String,
