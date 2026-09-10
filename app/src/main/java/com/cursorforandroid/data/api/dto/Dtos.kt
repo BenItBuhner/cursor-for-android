@@ -1,13 +1,21 @@
 package com.cursorforandroid.data.api.dto
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
 // ---- v1 ---------------------------------------------------------------------------------------------------
 
+/**
+ * `env` on an agent record and on Create An Agent. [type] is required whenever `env` is sent; it keeps a default so a
+ * record that leaves it out still reads, and is written out regardless (`CursorJson` does not encode defaults), since a
+ * request whose `env` came out as `{}` or `{ name }` is refused with a `400`.
+ */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class AgentEnvDto(
-    val type: String = "cloud",
+    @EncodeDefault val type: String = "cloud",
     val name: String? = null,
 )
 
