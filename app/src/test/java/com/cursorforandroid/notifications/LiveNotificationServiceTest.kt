@@ -30,7 +30,7 @@ class LiveNotificationServiceTest {
     private val manager = shadowOf(app.getSystemService(NotificationManager::class.java))
 
     private fun Notification.title() = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-    private fun Notification.bigText() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+    private fun Notification.rosterLines() = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() }.orEmpty()
 
     /** Pumps the (paused) main looper so the service's Main-dispatched collectors run, until [condition] holds. */
     private fun awaitOnMain(timeoutMs: Long, condition: () -> Boolean) {
@@ -70,15 +70,16 @@ class LiveNotificationServiceTest {
         // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
         // tracker has reported, so wait for the steady state rather than the title alone.
         awaitOnMain(10_000) {
-            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.bigText()?.lines()?.size == 3 } == true
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.rosterLines().size == 3 } == true
         }
         val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
         assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-        assertThat(live.bigText()!!.lines()).hasSize(3)
-        assertThat(live.bigText()).doesNotContain("more")
-        assertThat(live.bigText()).contains("\u2022 Codex-Poly-Bot Scaling")
-        assertThat(live.bigText()).contains("\u2022 Cesium Revenue Strategy")
-        assertThat(live.bigText()).contains("\u2022 Hyper-realistic human limbs")
+        val roster = live.rosterLines()
+        assertThat(roster).hasSize(3)
+        assertThat(roster.joinToString("\n")).doesNotContain("more")
+        assertThat(roster.any { it.startsWith("Codex-Poly-Bot Scaling") }).isTrue()
+        assertThat(roster.any { it.startsWith("Cesium Revenue Strategy") }).isTrue()
+        assertThat(roster.any { it.startsWith("Hyper-realistic human limbs") }).isTrue()
 
         // The scripted runs finish on their own; each gets a card while the live notification shrinks, then goes.
         awaitOnMain(90_000) { manager.allNotifications.count { it.channelId == LiveNotifications.CHANNEL_FINISHED } == 3 }

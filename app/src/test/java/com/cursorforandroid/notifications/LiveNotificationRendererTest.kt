@@ -41,6 +41,8 @@ class LiveNotificationRendererTest {
     private fun Notification.text() = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
     private fun Notification.subText() = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
     private fun Notification.bigText() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+    private fun Notification.rosterLines() = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() }.orEmpty()
+    private fun Notification.summaryText() = extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)?.toString()
     private fun Notification.actionTitles() = actions.orEmpty().map { it.title.toString() }
 
     @Test
@@ -55,7 +57,9 @@ class LiveNotificationRendererTest {
         assertThat(n.flags and Notification.FLAG_ONLY_ALERT_ONCE).isNotEqualTo(0)
         assertThat(n.`when`).isEqualTo(startedAt)
         assertThat(n.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)).isTrue()
-        assertThat(n.extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE)).isTrue()
+        assertThat(n.extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE)).isFalse()
+        assertThat(n.extras.getInt(Notification.EXTRA_PROGRESS)).isEqualTo(62)
+        assertThat(n.extras.getInt(Notification.EXTRA_PROGRESS_MAX)).isEqualTo(100)
         assertThat(NotificationCompat.isRequestPromotedOngoing(n)).isTrue()
         assertThat(NotificationCompat.getChannelId(n)).isEqualTo(LiveNotifications.CHANNEL_LIVE)
         assertThat(n.actionTitles()).containsExactly("Stop")
@@ -76,7 +80,7 @@ class LiveNotificationRendererTest {
     }
 
     @Test
-    fun `several running agents condense to one line each`() {
+    fun `several running agents condense to one InboxStyle row each`() {
         val runs = listOf(
             running("bc-1", "Update quick action pills interaction and styling"),
             running("bc-2", "Cesium Revenue Strategy", activity = RunDigest.Activity.Thinking),
@@ -85,13 +89,13 @@ class LiveNotificationRendererTest {
         val n = LiveNotificationRenderer.live(context, LiveActivityState(runs, hasReconciled = true))
 
         assertThat(n.title()).isEqualTo("3 agents running")
-        val lines = n.bigText()!!.lines()
-        assertThat(lines).containsExactly(
-            "\u2022 Update quick action pills interac\u2026 \u00B7 Editing",
-            "\u2022 Cesium Revenue Strategy \u00B7 Thinking",
-            "\u2022 Codex-Poly-Bot Scaling \u00B7 Running",
+        assertThat(n.rosterLines()).containsExactly(
+            "Update quick action pills interacti\u2026 \u2014 Editing Composer.kt",
+            "Cesium Revenue Strategy \u2014 Thinking",
+            "Codex-Poly-Bot Scaling \u2014 Running redis-cli LLEN catc\u2026",
         ).inOrder()
-        assertThat(n.text()).isEqualTo(lines.first())
+        assertThat(n.summaryText()).isNull()
+        assertThat(n.text()).isEqualTo(n.rosterLines().first())
         assertThat(n.number).isEqualTo(3)
         assertThat(n.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
         assertThat(NotificationCompat.isRequestPromotedOngoing(n)).isTrue()
@@ -105,11 +109,9 @@ class LiveNotificationRendererTest {
 
         assertThat(n.title()).isEqualTo("12 agents running")
         assertThat(n.number).isEqualTo(12)
-        val lines = n.bigText()!!.lines()
-        assertThat(lines).hasSize(9)
-        assertThat(lines.take(8)).containsExactlyElementsIn((1..8).map { "\u2022 Agent $it \u00B7 Thinking" }).inOrder()
-        assertThat(lines.last()).isEqualTo("\u2022 +4 more")
-        assertThat(n.text()).isEqualTo(lines.first())
+        assertThat(n.rosterLines()).containsExactlyElementsIn((1..8).map { "Agent $it \u2014 Thinking" }).inOrder()
+        assertThat(n.summaryText()).isEqualTo("+4 more")
+        assertThat(n.text()).isEqualTo(n.rosterLines().first())
     }
 
     @Test
@@ -118,13 +120,49 @@ class LiveNotificationRendererTest {
 
         assertThat(n.title()).isEqualTo("2 agents running")
         assertThat(n.number).isEqualTo(2)
-        assertThat(n.bigText()!!.lines()).containsExactly("\u2022 Agent \u00B7 Editing", "\u2022 +1 more").inOrder()
+        assertThat(n.rosterLines()).containsExactly("Agent \u2014 Editing Composer.kt")
+        assertThat(n.summaryText()).isEqualTo("+1 more")
         assertThat(n.actionTitles()).isEmpty()
 
-        // A count that lags behind the tracked list never under-reports, and no "+N more" line appears.
+        // A count that lags behind the tracked list never under-reports, and no "+N more" summary appears.
         val stale = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "A"), running("bc-2", "B")), hasReconciled = true, runningCount = 1))
         assertThat(stale.title()).isEqualTo("2 agents running")
-        assertThat(stale.bigText()!!.lines()).hasSize(2)
+        assertThat(stale.rosterLines()).hasSize(2)
+        assertThat(stale.summaryText()).isNull()
+    }
+
+    @Test
+    fun `roster pins a stopping agent above longer-running ones`() {
+        val older = running("bc-1", "Older", activity = RunDigest.Activity.Thinking).copy(startedAtMillis = startedAt)
+        val stopping = running("bc-2", "Stopping now", phase = LivePhase.Stopping).copy(startedAtMillis = startedAt + 60_000)
+        val newer = running("bc-3", "Newer").copy(startedAtMillis = startedAt + 120_000)
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(newer, older, stopping), hasReconciled = true))
+
+        assertThat(n.rosterLines()).containsExactly(
+            "Stopping now \u2014 Stopping",
+            "Older \u2014 Thinking",
+            "Newer \u2014 Editing Composer.kt",
+        ).inOrder()
+    }
+
+    @Test
+    fun `journey progress walks the start work wrap-up bar`() {
+        val editing = running("bc-1", "Agent")
+        assertThat(LiveNotificationRenderer.journeyProgress(editing)).isEqualTo(62)
+        assertThat(LiveNotificationRenderer.activityProgress(RunDigest.Activity.Thinking)).isEqualTo(28)
+        assertThat(LiveNotificationRenderer.activityProgress(RunDigest.Activity.Writing)).isEqualTo(74)
+        assertThat(LiveNotificationRenderer.journeyProgress(editing.copy(phase = LivePhase.Starting))).isEqualTo(10)
+        assertThat(LiveNotificationRenderer.journeyProgress(editing.copy(phase = LivePhase.Stopping))).isEqualTo(92)
+
+        val style = LiveNotificationRenderer.journeyStyle(context, editing)
+        assertThat(style.progress).isEqualTo(62)
+        assertThat(style.isProgressIndeterminate).isFalse()
+        assertThat(style.isStyledByProgress).isTrue()
+        assertThat(style.progressSegments).hasSize(3)
+        assertThat(style.progressPoints).hasSize(2)
+        assertThat(style.progressTrackerIcon).isNotNull()
+        assertThat(style.progressStartIcon).isNotNull()
+        assertThat(style.progressEndIcon).isNotNull()
     }
 
     @Test
@@ -176,5 +214,38 @@ class LiveNotificationRendererTest {
         assertThat(LiveNotificationRenderer.finishedId("bc-1")).isEqualTo(LiveNotificationRenderer.finishedId("bc-1"))
         assertThat(LiveNotificationRenderer.finishedId("bc-1")).isNotEqualTo(LiveNotificationRenderer.finishedId("bc-2"))
         assertThat(LiveNotificationRenderer.finishedId("bc-1")).isNotEqualTo(LiveNotificationRenderer.LIVE_ID)
+    }
+}
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [36])
+class LiveNotificationRendererApi36Test {
+
+    private val context: Context = ApplicationProvider.getApplicationContext()
+
+    @Before
+    fun setUp() = LiveNotifications.ensureChannels(context)
+
+    @Test
+    fun `single running agent is a determinate ProgressStyle Live Update`() {
+        val run = TrackedRun(
+            agentId = "bc-1",
+            runId = "run-bc-1",
+            title = "Update quick action pills",
+            status = RunStatus.RUNNING,
+            phase = LivePhase.Running,
+            startedAtMillis = 1_700_000_000_000L,
+            digest = RunDigest(filesEdited = 1, activity = RunDigest.Activity("Editing", "Composer.kt")),
+        )
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(run), hasReconciled = true))
+
+        assertThat(n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()).isEqualTo("Update quick action pills")
+        assertThat(n.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()).isEqualTo("Editing Composer.kt")
+        assertThat(NotificationCompat.isRequestPromotedOngoing(n)).isTrue()
+        assertThat(n.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
+        val style = LiveNotificationRenderer.journeyStyle(context, run)
+        assertThat(style.progress).isEqualTo(62)
+        assertThat(style.isProgressIndeterminate).isFalse()
+        assertThat(style.progressSegments.map { it.length }).containsExactly(20, 60, 20).inOrder()
     }
 }
