@@ -7,10 +7,12 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.os.Build
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -26,36 +28,33 @@ import com.cursorforandroid.domain.RunDigest
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.util.AppClock
-
-/**
- * The live notifications for one reconcile: the group summary (also the foreground-service notification, under
- * [LiveNotificationRenderer.LIVE_ID]) and one card per tracked running agent, keyed by [LiveNotificationRenderer.liveId].
- */
-data class LiveCards(val summary: Notification, val agents: Map<Int, Notification>)
+import com.cursorforandroid.util.TimeFormat
 
 /**
  * Builds the notifications that stand in for the iOS Live Activity.
  *
- * Custom RemoteViews are not used: Android 16 Live Updates refuse them. Every running agent gets its own card, all
- * on the same official template — the ProgressStyle sports / delivery / navigation use — and the cards sit in one
- * notification group the way a messaging app stacks its conversations:
+ * There is exactly one live notification, whatever the number of running agents: Android promotes one Live Update per
+ * app, and several ongoing cards splinter across the shade (One UI in particular refuses to stack them). Custom
+ * RemoteViews are not used either — Android 16 refuses to promote them — so everything below is an official template
+ * dressed with parcelable spans.
  *
- *  - **One card per running agent.** Title is the conversation, the supporting line is the current step
- *    (`Editing Composer.kt`), the header carries a chronometer (and, below Android 16, the verb — that collapsed
- *    row has no room for the step), a determinate bar walks the run, and a Stop action cancels it. Each card has
- *    its own tile in the large-icon slot, hued per agent so three running conversations read as three things. Android 16 promotes each card as a Live Update (children may be promoted;
- *    only a group summary may not).
- *  - **One summary.** `3 agents running` with the names, posted as the foreground-service notification. Android
- *    hides it while a single card is in the group and shows it as the group header once there are several.
+ *  - **One running agent:** the conversation card. Title is the agent, the supporting line is the current step
+ *    (`Editing Composer.kt`), the header carries a chronometer (and, below Android 16, the verb — that collapsed row
+ *    has no room for the step), a determinate bar walks the run, a Stop action cancels it, and a cube tile in the
+ *    agent's hue fills the large-icon slot. Android 16 promotes it as a `ProgressStyle` Live Update.
+ *  - **Several running agents:** the roster card — one `BigTextStyle` notification (a promotable style; `InboxStyle`
+ *    is not) with a row per tracked agent: a six-cell bar lit to the agent's progress, the name in bold, the verb
+ *    and the elapsed time. Below Android 16 the bar takes the agent's hue; 16 strips colour spans from promoted
+ *    text, so the bar's shape and the bold carry the row there. Stopping sorts first, then longest-running; agents
+ *    beyond the tracking cap are a `+N more` tail row. The chip is the count. Tap opens the app.
  *  - **A finished agent:** a dismissible card with "Finished", the title, "+80 −230 · 3 Files" (or the duration when
  *    no tool reported line counts), the final reply, and Review / View PR actions.
  *
  * Nothing is colorized: `setColorized` disqualifies a Live Update on Android 16.
  */
 object LiveNotificationRenderer {
-    /** Id of the group summary (also the foreground service notification). */
+    /** Id of the single ongoing notification (also the foreground service notification). */
     const val LIVE_ID = 0x4C495645
-    const val GROUP_LIVE = "com.cursorforandroid.live"
 
     private const val ACCENT = 0xFF81A1C1.toInt()
     private const val GREEN = 0xFF3FA266.toInt()
@@ -66,7 +65,10 @@ object LiveNotificationRenderer {
     private const val GIT_REMOVED = 0xFFFC6B83.toInt()
     /** Ink for the cube on a tile: the theme's `onAccent`. */
     private const val TILE_INK = 0xFF191C22.toInt()
-    /** Cursor Dark's accent hues, dealt to agents by id so cards in the group are told apart at a glance. */
+    /** The hollow cells of a roster bar, and the muted text beside it. */
+    private const val BAR_TRACK = 0x66FFFFFF
+    private const val MUTED = 0xFFB0B0B0.toInt()
+    /** Cursor Dark's accent hues, dealt to agents by id so rows are told apart at a glance. */
     private val TILE_HUES = intArrayOf(
         0xFF81A1C1.toInt(), // accent
         0xFFB48EAD.toInt(), // purple
@@ -75,8 +77,14 @@ object LiveNotificationRenderer {
         0xFFEBC88D.toInt(), // code function
         0xFFA8CC7C.toInt(), // code string
     )
-    private const val NAMES_SEP = " \u00B7 "
-    private const val SUMMARY_NAMES_MAX = 3
+    /** Roster bar: [BAR_CELLS] rectangles, lit (U+25AE) up to the journey progress and hollow (U+25AF) beyond. */
+    private const val BAR_CELLS = 5
+    private const val BAR_LIT = '\u25AE'
+    private const val BAR_HOLLOW = '\u25AF'
+    private const val ROW_GAP = "\u2002"
+    private const val ROW_SEP = " \u00B7 "
+    /** Sized so `▮▮▯▯▯ Market replay en… · Delegating · 52m` stays on one line of the body at 14sp. */
+    private const val ROW_NAME_MAX = 16
     private const val SUMMARY_MAX = 320
     private const val TILE_DP = 56
 
@@ -84,12 +92,6 @@ object LiveNotificationRenderer {
     internal const val JOURNEY_MAX = 100
 
     fun finishedId(agentId: String): Int = 0x46000000 or (agentId.hashCode() and 0x00FFFFFF)
-
-    /** Id of an agent's live card. Stable per agent, never [LIVE_ID], never a finished id. */
-    fun liveId(agentId: String): Int {
-        val id = 0x4C000000 or (agentId.hashCode() and 0x00FFFFFF)
-        return if (id == LIVE_ID) id xor 1 else id
-    }
 
     /** Shown for the instant between the service starting and the first reconciled state. */
     fun connecting(context: Context): Notification {
@@ -106,33 +108,23 @@ object LiveNotificationRenderer {
         return builder.build()
     }
 
-    /** The summary plus one card per tracked running agent; the connecting card alone when nothing is tracked yet. */
-    fun live(context: Context, state: LiveActivityState): LiveCards {
+    fun live(context: Context, state: LiveActivityState): Notification {
         val running = state.running
-        if (running.isEmpty()) return LiveCards(connecting(context), emptyMap())
-        val roster = sortedForRoster(running)
-        val hues = tileHues(roster)
-        val cards = roster.withIndex().associate { (index, run) -> liveId(run.agentId) to agentCard(context, run, index, hues.getValue(run.agentId)) }
-        return LiveCards(summary(context, state, roster), cards)
+        if (running.isEmpty()) return connecting(context)
+        // Chosen by how many agents run, not how many are followed: a second agent beyond the tracked one still counts.
+        return if (state.totalRunning == 1) agentCard(context, running.first()) else roster(context, state)
     }
 
-    /**
-     * One conversation's card. [rank] is its place in the roster (stopping first, then longest-running); [hue] is
-     * its tile colour from [tileHues].
-     */
-    internal fun agentCard(context: Context, run: TrackedRun, rank: Int = 0, hue: Int = tileHue(run.agentId)): Notification {
+    /** One conversation's card: the whole notification when it is the only agent running. */
+    internal fun agentCard(context: Context, run: TrackedRun): Notification {
         val builder = liveBuilder(context)
             .setContentTitle(run.title)
             .setContentText(stepText(context, run))
             .setShortCriticalText(verb(context, run))
-            .setLargeIcon(tile(context, hue))
+            .setLargeIcon(tile(context, tileHue(run.agentId)))
             .setWhen(run.startedAtMillis)
             .setShowWhen(true)
             .setUsesChronometer(true)
-            .setGroup(GROUP_LIVE)
-            .setSortKey(rank.toString().padStart(3, '0'))
-            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
-            .setRequestPromotedOngoing(true)
             .setContentIntent(openAgent(context, run.agentId))
         if (run.phase != LivePhase.Stopping) {
             builder.addAction(0, context.getString(R.string.notif_action_stop), stopRun(context, run))
@@ -148,19 +140,24 @@ object LiveNotificationRenderer {
         return builder.build()
     }
 
-    /** `3 agents running` over the names. The foreground-service notification, and the header of the group. */
-    internal fun summary(context: Context, state: LiveActivityState, roster: List<TrackedRun>): Notification {
+    /** The roster card: `5 agents running` over one spanned row per tracked agent. */
+    internal fun roster(context: Context, state: LiveActivityState): Notification {
+        val ordered = sortedForRoster(state.running)
+        val hues = tileHues(ordered)
+        val now = AppClock.now()
+        val rows = ordered.map { rosterRow(context, it, hues.getValue(it.agentId), now) }
+        val tail = moreRow(context, state.untrackedCount)
         val count = state.totalRunning
+        val title = context.resources.getQuantityString(R.plurals.notif_agents_running, count, count)
         return liveBuilder(context)
-            .setContentTitle(context.resources.getQuantityString(R.plurals.notif_agents_running, count, count))
-            .setContentText(summaryNames(context, state, roster))
-            .setLargeIcon(tile(context, ACCENT))
+            .setContentTitle(title)
+            .setContentText(rows.first())
+            .setStyle(NotificationCompat.BigTextStyle().setBigContentTitle(title).bigText(join(rows + listOfNotNull(tail))))
+            .setShortCriticalText(count.toString())
             .setNumber(count)
-            .setWhen(roster.minOfOrNull { it.startedAtMillis } ?: 0L)
+            // No tile: the body text flows around a large icon, and the rows want the full width.
+            .setWhen(ordered.minOf { it.startedAtMillis })
             .setShowWhen(false)
-            .setGroup(GROUP_LIVE)
-            .setGroupSummary(true)
-            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .setContentIntent(openApp(context))
             .build()
     }
@@ -247,6 +244,41 @@ object LiveNotificationRenderer {
     internal fun sortedForRoster(runs: List<TrackedRun>): List<TrackedRun> =
         runs.sortedWith(compareBy<TrackedRun> { it.phase != LivePhase.Stopping }.thenBy { it.startedAtMillis })
 
+    // ---- roster rows --------------------------------------------------------------------------------------
+
+    /**
+     * `▮▮▮▮▯▯ Codex-Poly-Bot Scaling · Running · 34m`: a six-cell bar lit up to the agent's journey progress, the
+     * name in bold, then the verb and the age. The bar's *shape* carries the progress, because Android 16 strips
+     * every colour span from a promoted notification (only bold / italic / underline survive); on 15 and below the
+     * lit cells take the agent's [hue] (amber while stopping), the hollow cells and the detail go muted.
+     */
+    internal fun rosterRow(context: Context, run: TrackedRun, hue: Int, nowMillis: Long): CharSequence {
+        val row = SpannableStringBuilder()
+        val lit = Math.round(journeyProgress(run) / JOURNEY_MAX.toFloat() * BAR_CELLS).coerceIn(1, BAR_CELLS)
+        row.append(BAR_LIT.toString().repeat(lit)).append(BAR_HOLLOW.toString().repeat(BAR_CELLS - lit))
+        row.setSpan(ForegroundColorSpan(if (run.phase == LivePhase.Stopping) ORANGE else hue), 0, lit, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (lit < BAR_CELLS) row.setSpan(ForegroundColorSpan(BAR_TRACK), lit, BAR_CELLS, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        row.append(ROW_GAP)
+        val nameAt = row.length
+        row.append(ellipsize(run.title, ROW_NAME_MAX))
+        row.setSpan(StyleSpan(Typeface.BOLD), nameAt, row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val detailAt = row.length
+        row.append(ROW_SEP).append(rosterVerb(context, run))
+        row.append(ROW_SEP).append(TimeFormat.relativeShort(run.startedAtMillis, nowMillis))
+        row.setSpan(ForegroundColorSpan(MUTED), detailAt, row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return row
+    }
+
+    /** The verb alone, one word (`Delegating to` → `Delegating`): the row has no room for the subject. */
+    private fun rosterVerb(context: Context, run: TrackedRun): String = verb(context, run).substringBefore(' ')
+
+    /** Muted `+N more` tail for running agents beyond the tracking cap; null when every running agent has a row. */
+    internal fun moreRow(context: Context, untracked: Int): CharSequence? {
+        if (untracked <= 0) return null
+        val text = context.resources.getQuantityString(R.plurals.notif_more_agents, untracked, untracked)
+        return SpannableStringBuilder(text).apply { setSpan(ForegroundColorSpan(MUTED), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE) }
+    }
+
     // ---- pieces -------------------------------------------------------------------------------------------
 
     private fun liveBuilder(context: Context) = NotificationCompat.Builder(context, LiveNotifications.CHANNEL_LIVE)
@@ -258,6 +290,7 @@ object LiveNotificationRenderer {
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setCategory(NotificationCompat.CATEGORY_PROGRESS)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+        .setRequestPromotedOngoing(true)
 
     /** Current step, e.g. `Editing Composer.kt`. Bare verbs keep the ellipsis so they still read as in-flight. */
     internal fun stepText(context: Context, run: TrackedRun): String = when (run.phase) {
@@ -266,21 +299,11 @@ object LiveNotificationRenderer {
         else -> run.digest.activity.let { if (it.detail.isNullOrBlank()) it.verb + "\u2026" else it.label }
     }
 
-    /** The verb alone: header sub-text on the card and the status-bar chip on Android 16. */
+    /** The verb alone: header sub-text on the card below Android 16 and the status-bar chip on 16. */
     internal fun verb(context: Context, run: TrackedRun): String = when (run.phase) {
         LivePhase.Starting -> context.getString(R.string.notif_status_starting)
         LivePhase.Stopping -> context.getString(R.string.notif_status_stopping)
         else -> run.digest.activity.verb
-    }
-
-    /** `Codex-Poly-Bot Scaling · Cesium Revenue Strategy · +3 more`: up to three names, then the rest as a count. */
-    internal fun summaryNames(context: Context, state: LiveActivityState, roster: List<TrackedRun>): String {
-        val names = roster.take(SUMMARY_NAMES_MAX).map { it.title }
-        val rest = state.totalRunning - names.size
-        return buildList {
-            addAll(names)
-            if (rest > 0) add(context.resources.getQuantityString(R.plurals.notif_more_agents, rest, rest))
-        }.joinToString(NAMES_SEP)
     }
 
     fun statusLabel(context: Context, status: RunStatus): String = when (status) {
@@ -299,13 +322,13 @@ object LiveNotificationRenderer {
         else -> ACCENT
     }
 
-    /** The hue an agent's tile is painted on its own; stable per id, so a card keeps its colour across updates. */
+    /** The hue an agent wears on its own; stable per id, so it keeps its colour across updates. */
     internal fun tileHue(agentId: String): Int = TILE_HUES[Math.floorMod(agentId.hashCode(), TILE_HUES.size)]
 
     /**
      * Hues for a whole roster: each agent's own [tileHue] unless an earlier agent already wears it, in which case the
-     * next free hue — so up to six running conversations never share a tile colour, and an agent only changes colour
-     * when a newcomer above it in the roster took its hue first.
+     * next free hue — so up to six running conversations never share a colour, and an agent only changes colour when
+     * a newcomer above it in the roster took its hue first.
      */
     internal fun tileHues(roster: List<TrackedRun>): Map<String, Int> {
         val taken = mutableSetOf<Int>()
@@ -368,6 +391,9 @@ object LiveNotificationRenderer {
         }
         return builder
     }
+
+    private fun ellipsize(text: String, max: Int): String =
+        if (text.length <= max) text else text.take(max - 1).trimEnd() + "\u2026"
 
     // ---- intents ------------------------------------------------------------------------------------------
 

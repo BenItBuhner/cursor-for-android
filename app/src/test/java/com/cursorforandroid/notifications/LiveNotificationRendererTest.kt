@@ -2,6 +2,10 @@ package com.cursorforandroid.notifications
 
 import android.app.Notification
 import android.content.Context
+import android.graphics.Typeface
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import androidx.core.app.NotificationCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -10,7 +14,9 @@ import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunDigest
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,6 +31,11 @@ class LiveNotificationRendererTest {
 
     @Before
     fun setUp() = LiveNotifications.ensureChannels(context)
+
+    @After
+    fun restoreClock() {
+        AppClock.nowMillis = System::currentTimeMillis
+    }
 
     private fun running(id: String, title: String, activity: RunDigest.Activity = RunDigest.Activity("Editing", "Composer.kt"), phase: LivePhase = LivePhase.Running) = TrackedRun(
         agentId = id, runId = "run-$id", title = title, status = RunStatus.RUNNING, phase = phase, startedAtMillis = startedAt,
@@ -41,27 +52,23 @@ class LiveNotificationRendererTest {
     private fun Notification.text() = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
     private fun Notification.subText() = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
     private fun Notification.bigText() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+    private fun Notification.rows() = bigText()?.lines().orEmpty()
     private fun Notification.actionTitles() = actions.orEmpty().map { it.title.toString() }
     private fun Notification.chip() = NotificationCompat.getShortCriticalText(this)
-    private fun Notification.isSummary() = flags and Notification.FLAG_GROUP_SUMMARY != 0
 
-    /** The one agent card in a single-agent set. */
-    private fun LiveCards.only(): Notification = agents.values.single()
+    /** A roster row without its bar cells and gap, e.g. `Cesium Revenue… · Thinking · 4m`. */
+    private fun String.afterBar() = trimStart('\u25AE', '\u25AF', '\u2002')
 
     @Test
-    fun `single running agent is one promoted card in the live group with the step, a chronometer and Stop`() {
+    fun `single running agent is one promoted card with the step, a chronometer and Stop`() {
         val run = running("bc-1", "Update quick action pills interaction and styling")
-        val cards = LiveNotificationRenderer.live(context, LiveActivityState(listOf(run), hasReconciled = true))
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(run), hasReconciled = true))
 
-        assertThat(cards.agents.keys).containsExactly(LiveNotificationRenderer.liveId("bc-1"))
-        val n = cards.only()
         assertThat(n.title()).isEqualTo("Update quick action pills interaction and styling")
         assertThat(n.text()).isEqualTo("Editing Composer.kt")
         assertThat(n.subText()).isEqualTo("Editing")
         assertThat(n.chip()).isEqualTo("Editing")
         assertThat(n.getLargeIcon()).isNotNull()
-        assertThat(n.group).isEqualTo(LiveNotificationRenderer.GROUP_LIVE)
-        assertThat(n.isSummary()).isFalse()
         assertThat(n.extras.getBoolean(Notification.EXTRA_COLORIZED)).isFalse()
         assertThat(n.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
         assertThat(n.flags and Notification.FLAG_ONLY_ALERT_ONCE).isNotEqualTo(0)
@@ -74,126 +81,133 @@ class LiveNotificationRendererTest {
         assertThat(NotificationCompat.getChannelId(n)).isEqualTo(LiveNotifications.CHANNEL_LIVE)
         assertThat(n.actionTitles()).containsExactly("Stop")
         assertThat(n.contentIntent).isNotNull()
-
-        // The summary is the foreground notification: a group header, never promoted, never colorized.
-        val summary = cards.summary
-        assertThat(summary.title()).isEqualTo("1 agent running")
-        assertThat(summary.text()).isEqualTo("Update quick action pills interaction and styling")
-        assertThat(summary.group).isEqualTo(LiveNotificationRenderer.GROUP_LIVE)
-        assertThat(summary.isSummary()).isTrue()
-        assertThat(summary.number).isEqualTo(1)
-        assertThat(NotificationCompat.isRequestPromotedOngoing(summary)).isFalse()
-        assertThat(summary.extras.getBoolean(Notification.EXTRA_COLORIZED)).isFalse()
-        assertThat(summary.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
     }
 
     @Test
     fun `bare verbs get an ellipsis and stopping hides the Stop action`() {
         val thinking = running("bc-1", "Agent", activity = RunDigest.Activity.Thinking)
-        val thinkingCard = LiveNotificationRenderer.live(context, LiveActivityState(listOf(thinking), true)).only()
+        val thinkingCard = LiveNotificationRenderer.live(context, LiveActivityState(listOf(thinking), true))
         assertThat(thinkingCard.text()).isEqualTo("Thinking\u2026")
         assertThat(thinkingCard.subText()).isEqualTo("Thinking")
         assertThat(thinkingCard.chip()).isEqualTo("Thinking")
 
         val starting = running("bc-1", "Agent", phase = LivePhase.Starting)
-        val startingCard = LiveNotificationRenderer.live(context, LiveActivityState(listOf(starting), true)).only()
+        val startingCard = LiveNotificationRenderer.live(context, LiveActivityState(listOf(starting), true))
         assertThat(startingCard.text()).isEqualTo("Starting\u2026")
         assertThat(startingCard.chip()).isEqualTo("Starting")
 
-        val stopping = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "Agent", phase = LivePhase.Stopping)), true)).only()
+        val stopping = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "Agent", phase = LivePhase.Stopping)), true))
         assertThat(stopping.text()).isEqualTo("Stopping\u2026")
         assertThat(stopping.chip()).isEqualTo("Stopping")
         assertThat(stopping.actionTitles()).isEmpty()
     }
 
     @Test
-    fun `several running agents each get their own card under one summary`() {
+    fun `several running agents are one promoted BigTextStyle roster with a row each`() {
+        AppClock.nowMillis = { startedAt + 34 * 60_000 }
         val runs = listOf(
             running("bc-1", "Update quick action pills interaction and styling"),
             running("bc-2", "Cesium Revenue Strategy", activity = RunDigest.Activity.Thinking),
             running("bc-3", "Codex-Poly-Bot Scaling", activity = RunDigest.Activity("Running", "redis-cli LLEN catchup:queue")),
         )
-        val cards = LiveNotificationRenderer.live(context, LiveActivityState(runs, hasReconciled = true))
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(runs, hasReconciled = true))
 
-        assertThat(cards.agents.keys).containsExactly(
-            LiveNotificationRenderer.liveId("bc-1"),
-            LiveNotificationRenderer.liveId("bc-2"),
-            LiveNotificationRenderer.liveId("bc-3"),
-        )
-        val byTitle = cards.agents.values.associateBy { it.title() }
-        assertThat(byTitle.keys).containsExactly("Update quick action pills interaction and styling", "Cesium Revenue Strategy", "Codex-Poly-Bot Scaling")
-        assertThat(byTitle.getValue("Cesium Revenue Strategy").text()).isEqualTo("Thinking\u2026")
-        assertThat(byTitle.getValue("Codex-Poly-Bot Scaling").text()).isEqualTo("Running redis-cli LLEN catchup:queue")
-        assertThat(byTitle.getValue("Codex-Poly-Bot Scaling").chip()).isEqualTo("Running")
-        cards.agents.values.forEach { card ->
-            assertThat(card.group).isEqualTo(LiveNotificationRenderer.GROUP_LIVE)
-            assertThat(card.isSummary()).isFalse()
-            assertThat(NotificationCompat.isRequestPromotedOngoing(card)).isTrue()
-            assertThat(card.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-            assertThat(card.actionTitles()).containsExactly("Stop")
-            assertThat(card.getLargeIcon()).isNotNull()
-        }
-        // Equal start times keep the incoming order; sort keys follow the roster so the shade does too.
-        assertThat(cards.agents.values.map { it.sortKey }).containsExactly("000", "001", "002").inOrder()
-
-        val summary = cards.summary
-        assertThat(summary.title()).isEqualTo("3 agents running")
-        assertThat(summary.text()).isEqualTo("Update quick action pills interaction and styling \u00B7 Cesium Revenue Strategy \u00B7 Codex-Poly-Bot Scaling")
-        assertThat(summary.number).isEqualTo(3)
-        assertThat(summary.isSummary()).isTrue()
-        assertThat(summary.actionTitles()).isEmpty()
+        assertThat(n.title()).isEqualTo("3 agents running")
+        assertThat(n.extras.getString(Notification.EXTRA_TEMPLATE)).endsWith("BigTextStyle")
+        assertThat(n.rows().map { it.afterBar() }).containsExactly(
+            "Update quick ac\u2026 \u00B7 Editing \u00B7 34m",
+            "Cesium Revenue\u2026 \u00B7 Thinking \u00B7 34m",
+            "Codex-Poly-Bot\u2026 \u00B7 Running \u00B7 34m",
+        ).inOrder()
+        // Every row opens with a five-cell bar lit to the step: editing 3, thinking 1, running 3.
+        assertThat(n.rows().map { it.substringBefore('\u2002') }).containsExactly(
+            "\u25AE\u25AE\u25AE\u25AF\u25AF",
+            "\u25AE\u25AF\u25AF\u25AF\u25AF",
+            "\u25AE\u25AE\u25AE\u25AF\u25AF",
+        ).inOrder()
+        assertThat(n.text()).isEqualTo(n.rows().first())
+        assertThat(n.chip()).isEqualTo("3")
+        assertThat(n.number).isEqualTo(3)
+        assertThat(n.getLargeIcon()).isNull()
+        assertThat(n.extras.getBoolean(Notification.EXTRA_COLORIZED)).isFalse()
+        assertThat(n.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)).isFalse()
+        assertThat(n.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
+        assertThat(NotificationCompat.isRequestPromotedOngoing(n)).isTrue()
+        assertThat(n.actionTitles()).isEmpty()
     }
 
     @Test
-    fun `summary counts every running agent even when only eight are tracked`() {
+    fun `roster rows light the bar in the agent hue, amber while stopping, with the name in bold`() {
+        val run = running("bc-1", "Agent")
+        val row = LiveNotificationRenderer.rosterRow(context, run, hue = 0xFFB48EAD.toInt(), nowMillis = startedAt + 90_000) as Spanned
+        val barColors = row.getSpans(0, 5, ForegroundColorSpan::class.java).sortedBy { row.getSpanStart(it) }
+        // Editing sits at 62 of 100: three lit cells, two hollow.
+        assertThat(barColors.map { row.getSpanStart(it) to row.getSpanEnd(it) }).containsExactly(0 to 3, 3 to 5).inOrder()
+        assertThat(barColors.first().foregroundColor).isEqualTo(0xFFB48EAD.toInt())
+        assertThat(barColors.last().foregroundColor).isEqualTo(0x66FFFFFF)
+        val bold = row.getSpans(0, row.length, StyleSpan::class.java).single()
+        assertThat(bold.style).isEqualTo(Typeface.BOLD)
+        assertThat(row.subSequence(row.getSpanStart(bold), row.getSpanEnd(bold)).toString()).isEqualTo("Agent")
+        assertThat(row.toString().afterBar()).isEqualTo("Agent \u00B7 Editing \u00B7 1m")
+
+        val stopping = LiveNotificationRenderer.rosterRow(context, run.copy(phase = LivePhase.Stopping), hue = 0xFFB48EAD.toInt(), nowMillis = startedAt) as Spanned
+        assertThat(stopping.toString().substringBefore('\u2002')).isEqualTo("\u25AE".repeat(5))
+        val lit = stopping.getSpans(0, 5, ForegroundColorSpan::class.java).single()
+        assertThat(lit.foregroundColor).isEqualTo(0xFFF1B467.toInt())
+        assertThat(stopping.toString().afterBar()).isEqualTo("Agent \u00B7 Stopping \u00B7 now")
+
+        // A two-word verb keeps only its first word: the row has no room for the subject.
+        val delegating = LiveNotificationRenderer.rosterRow(context, running("bc-2", "B", activity = RunDigest.Activity("Delegating to", "3 subagents")), hue = 0, nowMillis = startedAt)
+        assertThat(delegating.toString().afterBar()).isEqualTo("B \u00B7 Delegating \u00B7 now")
+    }
+
+    @Test
+    fun `roster counts every running agent even when only eight are tracked`() {
         val tracked = (1..8).map { running("bc-$it", "Agent $it", activity = RunDigest.Activity.Thinking) }
-        val cards = LiveNotificationRenderer.live(context, LiveActivityState(tracked, hasReconciled = true, runningCount = 12))
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(tracked, hasReconciled = true, runningCount = 12))
 
-        assertThat(cards.agents).hasSize(8)
-        assertThat(cards.summary.title()).isEqualTo("12 agents running")
-        assertThat(cards.summary.text()).isEqualTo("Agent 1 \u00B7 Agent 2 \u00B7 Agent 3 \u00B7 +9 more")
-        assertThat(cards.summary.number).isEqualTo(12)
+        assertThat(n.title()).isEqualTo("12 agents running")
+        assertThat(n.number).isEqualTo(12)
+        assertThat(n.chip()).isEqualTo("12")
+        assertThat(n.rows()).hasSize(9)
+        assertThat(n.rows().take(8).map { it.afterBar().substringBefore(" \u00B7 ") }).containsExactlyElementsIn((1..8).map { "Agent $it" }).inOrder()
+        assertThat(n.rows().last()).isEqualTo("+4 more")
     }
 
     @Test
-    fun `a second running agent without a tracked stream still counts in the summary`() {
-        val cards = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "Agent")), hasReconciled = true, runningCount = 2))
+    fun `a second running agent without a tracked stream still makes it a roster`() {
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "Agent")), hasReconciled = true, runningCount = 2))
 
-        assertThat(cards.agents).hasSize(1)
-        assertThat(cards.summary.title()).isEqualTo("2 agents running")
-        assertThat(cards.summary.text()).isEqualTo("Agent \u00B7 +1 more")
-        assertThat(cards.summary.number).isEqualTo(2)
+        assertThat(n.title()).isEqualTo("2 agents running")
+        assertThat(n.number).isEqualTo(2)
+        assertThat(n.rows()).hasSize(2)
+        assertThat(n.rows().last()).isEqualTo("+1 more")
+        assertThat(n.actionTitles()).isEmpty()
 
-        // A count that lags behind the tracked list never under-reports, and no "+N more" appears.
+        // A count that lags behind the tracked list never under-reports, and no "+N more" row appears.
         val stale = LiveNotificationRenderer.live(context, LiveActivityState(listOf(running("bc-1", "A"), running("bc-2", "B")), hasReconciled = true, runningCount = 1))
-        assertThat(stale.summary.title()).isEqualTo("2 agents running")
-        assertThat(stale.summary.text()).isEqualTo("A \u00B7 B")
-        assertThat(stale.agents).hasSize(2)
+        assertThat(stale.title()).isEqualTo("2 agents running")
+        assertThat(stale.rows()).hasSize(2)
+        assertThat(stale.rows().none { it.contains("more") }).isTrue()
     }
 
     @Test
-    fun `a stopping agent sorts to the top of the group`() {
+    fun `roster pins a stopping agent above longer-running ones`() {
         val older = running("bc-1", "Older", activity = RunDigest.Activity.Thinking).copy(startedAtMillis = startedAt)
         val stopping = running("bc-2", "Stopping now", phase = LivePhase.Stopping).copy(startedAtMillis = startedAt + 60_000)
         val newer = running("bc-3", "Newer").copy(startedAtMillis = startedAt + 120_000)
-        val cards = LiveNotificationRenderer.live(context, LiveActivityState(listOf(newer, older, stopping), hasReconciled = true))
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(newer, older, stopping), hasReconciled = true))
 
-        val bySortKey = cards.agents.values.sortedBy { it.sortKey }.map { it.title() }
-        assertThat(bySortKey).containsExactly("Stopping now", "Older", "Newer").inOrder()
-        assertThat(cards.summary.text()).isEqualTo("Stopping now \u00B7 Older \u00B7 Newer")
+        assertThat(n.rows().map { it.afterBar().substringBefore(" \u00B7 ") }).containsExactly("Stopping now", "Older", "Newer").inOrder()
         assertThat(LiveNotificationRenderer.sortedForRoster(listOf(newer, older, stopping)).map { it.agentId })
             .containsExactly("bc-2", "bc-1", "bc-3")
             .inOrder()
     }
 
     @Test
-    fun `live ids are stable per agent and never collide with the summary or a finished card`() {
-        assertThat(LiveNotificationRenderer.liveId("bc-1")).isEqualTo(LiveNotificationRenderer.liveId("bc-1"))
-        assertThat(LiveNotificationRenderer.liveId("bc-1")).isNotEqualTo(LiveNotificationRenderer.liveId("bc-2"))
-        assertThat(LiveNotificationRenderer.liveId("bc-1")).isNotEqualTo(LiveNotificationRenderer.LIVE_ID)
-        assertThat(LiveNotificationRenderer.liveId("bc-1")).isNotEqualTo(LiveNotificationRenderer.finishedId("bc-1"))
-        // Tiles are dealt by id too, so a card keeps its hue from one update to the next.
+    fun `an agent keeps its hue from one update to the next`() {
         assertThat(LiveNotificationRenderer.tileHue("bc-1")).isEqualTo(LiveNotificationRenderer.tileHue("bc-1"))
+        assertThat(LiveNotificationRenderer.tile(context, LiveNotificationRenderer.tileHue("bc-1")).width).isAtLeast(128)
     }
 
     @Test
@@ -230,7 +244,6 @@ class LiveNotificationRendererTest {
         assertThat(style.progressTrackerIcon).isNotNull()
         assertThat(style.progressStartIcon).isNull()
         assertThat(style.progressEndIcon).isNotNull()
-        assertThat(LiveNotificationRenderer.tile(context, LiveNotificationRenderer.tileHue("bc-1")).width).isAtLeast(128)
     }
 
     @Test
@@ -305,7 +318,7 @@ class LiveNotificationRendererApi36Test {
             startedAtMillis = 1_700_000_000_000L,
             digest = RunDigest(filesEdited = 1, activity = RunDigest.Activity("Editing", "Composer.kt")),
         )
-        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(run), hasReconciled = true)).agents.values.single()
+        val n = LiveNotificationRenderer.live(context, LiveActivityState(listOf(run), hasReconciled = true))
 
         assertThat(n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()).isEqualTo("Update quick action pills")
         assertThat(n.extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()).isEqualTo("Editing Composer.kt")

@@ -7,7 +7,6 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.core.app.ApplicationProvider
@@ -17,9 +16,9 @@ import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunDigest
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
-import com.cursorforandroid.notifications.LiveCards
 import com.cursorforandroid.notifications.LiveNotificationRenderer
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.After
@@ -39,8 +38,8 @@ import java.util.TimeZone
  * `createContentView` / `createBigContentView`) and writes the RemoteViews the shade would apply. This is the
  * closest the walkthrough can get to SystemUI without a device: same layouts, no hand-drawn stand-in.
  *
- * Every running agent is its own card in one notification group; `30`/`31` stack the group the way the shade does —
- * the summary's row as the header, then a card per agent — since the group chrome itself lives in SystemUI.
+ * There is one live notification however many agents run: the conversation card for one, the `BigTextStyle` roster
+ * (a spanned row per agent) for several. Both are Android's templates, so both inflate here.
  *
  * Run with `./gradlew :app:recordRoborazziDebug --tests '*NotificationScreenshotTest*'`.
  */
@@ -59,13 +58,16 @@ class NotificationScreenshotTest {
     fun pinClock() {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         Locale.setDefault(Locale.US)
-        // Chronometer cards count `now - when`. Freeze both so the header is 3m 5s on every machine.
+        // Chronometer cards count `now - when`, roster rows render `now - startedAt`. Freeze both so the header is
+        // 3m 5s and the rows read 34m on every machine.
         SystemClock.setCurrentTimeMillis(FIXED_NOW)
+        AppClock.nowMillis = { FIXED_NOW }
     }
 
     @After
-    fun restoreLocale() {
+    fun restoreClocks() {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        AppClock.nowMillis = System::currentTimeMillis
     }
 
     @Before
@@ -75,15 +77,15 @@ class NotificationScreenshotTest {
     fun liveCards() {
         capture("28_notif_single_collapsed", singleRunning(), expanded = false)
         capture("29_notif_single_expanded", singleRunning(), expanded = true)
-        captureGroup("30_notif_group_collapsed", group(), expandedIndex = -1)
-        captureGroup("31_notif_group_expanded", group(), expandedIndex = 0)
+        capture("30_notif_roster_collapsed", roster(), expanded = false)
+        capture("31_notif_roster_expanded", roster(), expanded = true)
     }
 
     @Test
     @Config(sdk = [36])
     fun progressStyleApi36() {
         capture("32_notif_single_progress_api36", singleRunning(), expanded = true)
-        captureGroup("33_notif_group_api36", group(), expandedIndex = 0)
+        capture("33_notif_roster_api36", roster(), expanded = true)
     }
 
     private fun singleRunning(): Notification = LiveNotificationRenderer.live(
@@ -102,43 +104,35 @@ class NotificationScreenshotTest {
             ),
             hasReconciled = true,
         ),
-    ).agents.values.single()
+    )
 
-    private fun group(): LiveCards = LiveNotificationRenderer.live(
+    /** Eleven agents running, the eight the monitor tracks with a row each — the load the roster card is built for. */
+    private fun roster(): Notification = LiveNotificationRenderer.live(
         context,
         LiveActivityState(
             listOf(
-                TrackedRun(
-                    agentId = "bc-demo-0001",
-                    runId = "run-1",
-                    title = "Codex-Poly-Bot Scaling",
-                    status = RunStatus.RUNNING,
-                    phase = LivePhase.Running,
-                    startedAtMillis = FIXED_NOW - 34 * 60_000,
-                    digest = RunDigest(activity = RunDigest.Activity("Running", "redis-cli LLEN catchup:queue")),
-                ),
-                TrackedRun(
-                    agentId = "bc-demo-0003",
-                    runId = "run-3",
-                    title = "Cesium Revenue Strategy",
-                    status = RunStatus.RUNNING,
-                    phase = LivePhase.Running,
-                    startedAtMillis = FIXED_NOW - 12 * 60_000,
-                    digest = RunDigest(activity = RunDigest.Activity.Thinking),
-                ),
-                TrackedRun(
-                    agentId = "bc-demo-0010",
-                    runId = "run-10",
-                    title = "Hyper-realistic human limbs",
-                    status = RunStatus.RUNNING,
-                    phase = LivePhase.Stopping,
-                    startedAtMillis = FIXED_NOW - 6 * 60_000,
-                    digest = RunDigest(activity = RunDigest.Activity("Editing", "rig.py")),
-                ),
+                tracked("bc-demo-0010", "Hyper-realistic human limbs", 6, RunDigest.Activity("Editing", "rig.py"), LivePhase.Stopping),
+                tracked("bc-demo-0001", "Codex-Poly-Bot Scaling", 34, RunDigest.Activity("Running", "redis-cli LLEN catchup:queue")),
+                tracked("bc-demo-0003", "Cesium Revenue Strategy", 12, RunDigest.Activity.Thinking),
+                tracked("bc-demo-0004", "Cli exploration", 19, RunDigest.Activity("Reading", "cli/main.rs")),
+                tracked("bc-demo-0005", "House environment overhaul", 30, RunDigest.Activity.Writing),
+                tracked("bc-demo-0006", "Market replay engine", 52, RunDigest.Activity("Delegating to", "3 subagents")),
+                tracked("bc-demo-0011", "Fruit fly brain environment", 3, RunDigest.Activity.Starting, LivePhase.Starting),
+                tracked("bc-demo-0012", "Android mobile experience", 41, RunDigest.Activity("Editing", "ChatScreen.kt")),
             ),
             hasReconciled = true,
-            runningCount = 5,
+            runningCount = 11,
         ),
+    )
+
+    private fun tracked(id: String, title: String, minutesAgo: Int, activity: RunDigest.Activity, phase: LivePhase = LivePhase.Running) = TrackedRun(
+        agentId = id,
+        runId = "run-$id",
+        title = title,
+        status = RunStatus.RUNNING,
+        phase = phase,
+        startedAtMillis = FIXED_NOW - minutesAgo * 60_000L,
+        digest = RunDigest(activity = activity),
     )
 
     private fun capture(name: String, notification: Notification, expanded: Boolean) {
@@ -154,52 +148,16 @@ class NotificationScreenshotTest {
         host.captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
-    /**
-     * The group as the shade stacks it: the summary's row as the header, then one card per agent in roster order,
-     * hairlines between them. [expandedIndex] is the card the user has opened, or -1 for all collapsed.
-     */
-    private fun captureGroup(name: String, cards: LiveCards, expandedIndex: Int) {
-        lateinit var host: View
-        compose.activityRule.scenario.onActivity { activity ->
-            val density = activity.resources.displayMetrics.density
-            val width = (SHADE_WIDTH_DP * density).toInt()
-            val gap = (8 * density).toInt()
-            val column = LinearLayout(activity).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(SHADE)
-                setPadding(0, gap, 0, gap)
-            }
-            column.addView(inflate(activity, cards.summary, expanded = false, width), LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
-            val ordered = cards.agents.values.sortedBy { it.sortKey }
-            ordered.forEachIndexed { index, card ->
-                column.addView(
-                    View(activity).apply { setBackgroundColor(HAIRLINE) },
-                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxOf(1, (density / 2).toInt())),
-                )
-                column.addView(inflate(activity, card, expanded = index == expandedIndex, width), LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
-            }
-            column.measure(
-                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
-            )
-            column.layout(0, 0, column.measuredWidth, column.measuredHeight)
-            column.layoutParams = ViewGroup.LayoutParams(column.measuredWidth, column.measuredHeight)
-            host = column
-            activity.setContentView(host, ViewGroup.LayoutParams(column.measuredWidth, column.measuredHeight))
-        }
-        compose.waitForIdle()
-        host.captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
-    }
-
     private fun padOnShade(activity: ComponentActivity, card: View, width: Int): View {
         val density = activity.resources.displayMetrics.density
         val pad = (8 * density).toInt()
         val shade = FrameLayout(activity).apply { setBackgroundColor(SHADE) }
         shade.setPadding(0, pad, 0, pad)
         shade.addView(card, FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val maxHeight = (MAX_NOTIFICATION_HEIGHT_DP * density).toInt() + 2 * pad
         shade.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST),
         )
         shade.layout(0, 0, shade.measuredWidth, shade.measuredHeight)
         shade.layoutParams = ViewGroup.LayoutParams(shade.measuredWidth, shade.measuredHeight)
@@ -215,9 +173,12 @@ class NotificationScreenshotTest {
         val child = remote.apply(activity, host)
             ?: error("RemoteViews.apply returned null (sdk=${Build.VERSION.SDK_INT}, expanded=$expanded)")
         host.addView(child, FrameLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // SystemUI measures a notification against its maximum height, and the big-text body sizes its line count
+        // from that budget — an unbounded spec reads as zero lines. Same budget here.
+        val maxHeight = (MAX_NOTIFICATION_HEIGHT_DP * activity.resources.displayMetrics.density).toInt()
         host.measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST),
         )
         host.layout(0, 0, host.measuredWidth, host.measuredHeight)
         check(host.measuredHeight > 0) {
@@ -244,7 +205,8 @@ class NotificationScreenshotTest {
         /** Wednesday 2025-01-15 14:00 UTC, as in [AppScreenshotTest]. */
         val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
         const val SHADE_WIDTH_DP = 379
+        /** `notification_max_height` (SystemUI) for an expanded notification's body. */
+        const val MAX_NOTIFICATION_HEIGHT_DP = 400
         const val SHADE = 0xFF121212.toInt()
-        const val HAIRLINE = 0xFF2A2A2A.toInt()
     }
 }

@@ -30,11 +30,10 @@ class LiveNotificationServiceTest {
     private val manager = shadowOf(app.getSystemService(NotificationManager::class.java))
 
     private fun Notification.title() = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+    private fun Notification.rows() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.lines().orEmpty()
 
-    /** The per-agent cards up right now: everything on the live channel that is not the summary. */
-    private fun liveCards(): List<Notification> = manager.allNotifications.filter {
-        it.channelId == LiveNotifications.CHANNEL_LIVE && it.flags and Notification.FLAG_GROUP_SUMMARY == 0
-    }
+    /** Everything up on the live channel: there must only ever be the one. */
+    private fun liveNotifications(): List<Notification> = manager.allNotifications.filter { it.channelId == LiveNotifications.CHANNEL_LIVE }
 
     /** Pumps the (paused) main looper so the service's Main-dispatched collectors run, until [condition] holds. */
     private fun awaitOnMain(timeoutMs: Long, condition: () -> Boolean) {
@@ -71,24 +70,21 @@ class LiveNotificationServiceTest {
         assertThat(armed.isPersisted).isTrue()
         assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
 
-        // The summary counts all three as soon as the list is reconciled; the third card follows once every tracker
-        // has reported, so wait for the steady state rather than the summary alone.
+        // The headline counts all three as soon as the list is reconciled; the third row follows once every tracker
+        // has reported, so wait for the steady state rather than the title alone.
         awaitOnMain(10_000) {
-            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" && liveCards().size == 3
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.rows().size == 3 } == true
         }
-        val summary = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
-        assertThat(summary.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-        assertThat(summary.flags and Notification.FLAG_GROUP_SUMMARY).isNotEqualTo(0)
-        assertThat(summary.group).isEqualTo(LiveNotificationRenderer.GROUP_LIVE)
-        assertThat(summary.number).isEqualTo(3)
-        val cards = liveCards()
-        assertThat(cards.map { it.title() }).containsExactly("Codex-Poly-Bot Scaling", "Cesium Revenue Strategy", "Hyper-realistic human limbs")
-        cards.forEach { card ->
-            assertThat(card.group).isEqualTo(LiveNotificationRenderer.GROUP_LIVE)
-            assertThat(card.flags and Notification.FLAG_GROUP_SUMMARY).isEqualTo(0)
-            assertThat(card.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-            assertThat(card.actions.map { it.title.toString() }).contains("Stop")
-        }
+        val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
+        assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
+        assertThat(live.number).isEqualTo(3)
+        // One live notification, however many agents: several promoted cards would splinter across the shade.
+        assertThat(liveNotifications()).hasSize(1)
+        val rows = live.rows()
+        assertThat(rows.joinToString("\n")).doesNotContain("more")
+        assertThat(rows.any { it.contains("Codex-Poly-Bot") }).isTrue()
+        assertThat(rows.any { it.contains("Cesium Revenue") }).isTrue()
+        assertThat(rows.any { it.contains("Hyper-realistic") }).isTrue()
 
         // The scripted runs finish on their own; each gets a card while the live notification shrinks, then goes.
         awaitOnMain(90_000) { manager.allNotifications.count { it.channelId == LiveNotifications.CHANNEL_FINISHED } == 3 }
@@ -107,11 +103,9 @@ class LiveNotificationServiceTest {
         assertThat(graph.agents.state.value.agents.count { it.isRunning }).isEqualTo(0)
 
         // Idle grace elapses on the main looper clock; the service stops itself and removes the live notification. With
-        // nothing left running there is nothing for the watchdog to watch either. The per-agent cards went one by one
-        // as their runs finished, and none is left behind.
+        // nothing left running there is nothing for the watchdog to watch either.
         awaitOnMain(10_000) { shadowOf(service).isForegroundStopped && shadowOf(service).isStoppedBySelf }
         assertThat(shadowOf(service).notificationShouldRemoved).isTrue()
-        assertThat(liveCards()).isEmpty()
         assertThat(graph.runMonitor.isRunning).isFalse()
         assertThat(FinishWatchdogJobService.isArmed(app)).isFalse()
         controller.destroy()
@@ -128,14 +122,12 @@ class LiveNotificationServiceTest {
         }
         val controller = Robolectric.buildService(LiveNotificationService::class.java).create().startCommand(0, 1)
         val service = controller.get()
-        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" && liveCards().size == 3 }
+        awaitOnMain(10_000) { manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.title() == "3 agents running" }
 
         // Android 15 ends a dataSync service six hours after the app was last in front; the runs keep going in the cloud.
         service.onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         awaitOnMain(5_000) { shadowOf(service).isForegroundStopped && shadowOf(service).isStoppedBySelf }
         assertThat(graph.runMonitor.isRunning).isFalse()
-        // The agent cards leave with the summary; the shade is not left holding three frozen chronometers.
-        assertThat(liveCards()).isEmpty()
         // The live notification is gone, but the watchdog is armed to announce the finishes, soon.
         val armed = checkNotNull(app.getSystemService(JobScheduler::class.java).getPendingJob(FinishWatchdogJobService.JOB_ID))
         assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
