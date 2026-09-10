@@ -26,14 +26,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -90,17 +88,20 @@ class PinRepositoryTest {
     /** The real settings store, with its reads held up and its writes refused on demand. */
     private class GatedSettings(context: android.content.Context) : DataStore<Preferences> {
         private val delegate = PreferenceDataStoreFactory.create(
-            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
             produceFile = { context.preferencesDataStoreFile("pin_repository_test") },
         )
 
         /** Awaited by every read while set, so a test can stop a caller between what it reads and what it writes. */
         @Volatile var readGate: CompletableDeferred<Unit>? = null
+        /** Completed when a read reaches [readGate], before it waits. */
+        @Volatile var readGateReached: CompletableDeferred<Unit>? = null
         val reads = AtomicInteger()
         @Volatile var writesFail = false
 
         override val data: Flow<Preferences> = flow {
             reads.incrementAndGet()
+            readGateReached?.complete(Unit)
             readGate?.await()
             emitAll(delegate.data)
         }
@@ -113,7 +114,7 @@ class PinRepositoryTest {
 
     private val api = FakeCursorApi()
     private val pinsApi = FakePinsApi()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private lateinit var settings: GatedSettings
     private lateinit var prefs: PreferencesStore
     private lateinit var session: SessionManager
@@ -142,17 +143,13 @@ class PinRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
-        while (!condition()) delay(10)
-    }
-
     private suspend fun pinnedIds() = prefs.localAgentState.first().pinnedIds
 
     @Test
     fun `a list read overlays the account's name and archive flag`() = runBlocking<Unit> {
         pinsApi.composers += ComposerSnapshot("bc-1", name = "Renamed on iOS", archived = true)
         agents.refresh()
-        awaitUntil { agents.state.value.agents.any { it.id == "bc-1" && it.name == "Renamed on iOS" && it.lifecycle == AgentLifecycle.ARCHIVED } }
+        agents.state.first { it.agents.any { agent -> agent.id == "bc-1" && agent.name == "Renamed on iOS" && agent.lifecycle == AgentLifecycle.ARCHIVED } }
     }
 
     @Test
@@ -161,7 +158,7 @@ class PinRepositoryTest {
         pinsApi.server += "bc-2"
 
         agents.refresh()
-        awaitUntil { pins.state.value.lastSyncedAtMillis != null }
+        pins.state.first { it.lastSyncedAtMillis != null }
 
         assertThat(pinsApi.pinCalls).containsExactly(listOf("bc-1"))
         assertThat(pinnedIds()).containsExactly("bc-1", "bc-2")
@@ -302,14 +299,19 @@ class PinRepositoryTest {
                 throw SessionUnavailableException("Device policy.", SessionUnavailableException.SIGN_IN_POLICY_VIOLATION)
         }
         var listCalls = 0
+        val secondList = CompletableDeferred<Unit>()
         val counting = object : PinsApi by policy {
-            override suspend fun list(): AccountList { listCalls++; return policy.list() }
+            override suspend fun list(): AccountList {
+                listCalls++
+                if (listCalls == 2) secondList.complete(Unit)
+                return policy.list()
+            }
         }
         val repository = PinRepository(session, prefs, agents, counting, scope, now = { now })
 
         // The completed list fetch is what starts syncing (and watching the setting).
         agents.refresh()
-        awaitUntil { repository.state.value.error != null }
+        repository.state.first { it.error != null }
         assertThat(repository.state.value.error).contains("Device policy.")
         assertThat(listCalls).isEqualTo(1)
         assertThat(repository.sync().isSuccess).isTrue() // halted: nothing is asked
@@ -317,7 +319,7 @@ class PinRepositoryTest {
 
         prefs.setPinSyncEnabled(false)
         prefs.setPinSyncEnabled(true)
-        awaitUntil { listCalls == 2 }
+        secondList.await()
     }
 
     @Test
@@ -339,7 +341,8 @@ class PinRepositoryTest {
         val first = scope.launch { repository.toggle("bc-1") }
         val second = scope.launch { repository.toggle("bc-1") }
         // Both flips have landed once the pin is back where it started and a wish is still waiting for the server.
-        awaitUntil { pinnedIds().isEmpty() && prefs.pendingPinChanges.first().isNotEmpty() }
+        prefs.pendingPinChanges.first { it.isNotEmpty() }
+        assertThat(pinnedIds()).isEmpty()
         release!!.resume(Unit)
         sync.join()
         first.join()
@@ -371,7 +374,7 @@ class PinRepositoryTest {
         val sync = scope.launch { repository.sync() }
         listed.await()
         val tap = scope.launch { repository.toggle("bc-1") }
-        awaitUntil { pinnedIds().contains("bc-1") }
+        prefs.localAgentState.first { it.pinnedIds.contains("bc-1") }
         release!!.resume(Unit)
         sync.join()
         tap.join()
@@ -435,15 +438,17 @@ class PinRepositoryTest {
     @Test
     fun `a pin tapped for the previous account is never flipped into the next one's`() = runBlocking<Unit> {
         prefs.setPinsMigrated(true)
-        val before = settings.reads.get()
+        val reached = CompletableDeferred<Unit>()
         settings.readGate = CompletableDeferred()
+        settings.readGateReached = reached
 
         val tap = scope.launch { assertThat(pins.toggle("bc-1").isSuccess).isTrue() }
-        awaitUntil { settings.reads.get() > before }
+        reached.await()
         // reset() takes the same lock the flip does, so this returning means no flip is half-done behind it.
         pins.reset()
         settings.readGate!!.complete(Unit)
         settings.readGate = null
+        settings.readGateReached = null
         tap.join()
 
         assertThat(pinnedIds()).isEmpty()
@@ -483,8 +488,8 @@ class PinRepositoryTest {
         pinsApi.server += "bc-old"
 
         agents.refresh()
-        awaitUntil { pins.state.value.lastSyncedAtMillis != null }
-        awaitUntil { agents.agent("bc-old") != null }
+        pins.state.first { it.lastSyncedAtMillis != null }
+        agents.state.first { it.agents.any { agent -> agent.id == "bc-old" } }
 
         assertThat(pinnedIds()).containsExactly("bc-old")
         assertThat(agents.agent("bc-old")?.name).isEqualTo("Old and pinned")
