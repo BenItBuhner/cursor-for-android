@@ -43,7 +43,7 @@ class LiveNotificationRendererTest {
     private fun Notification.bigText() = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
     private fun Notification.rosterLines() = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() }.orEmpty()
     private fun Notification.actionTitles() = actions.orEmpty().map { it.title.toString() }
-    private fun Notification.chip() = extras.getCharSequence(Notification.EXTRA_SHORT_CRITICAL_TEXT)?.toString()
+    private fun Notification.chip() = NotificationCompat.getShortCriticalText(this)
 
     @Test
     fun `single running agent is a colorized scoreboard with the step as the title`() {

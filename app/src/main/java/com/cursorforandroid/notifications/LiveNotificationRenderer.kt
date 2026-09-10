@@ -51,7 +51,8 @@ object LiveNotificationRenderer {
     private const val ACCENT = 0xFF81A1C1.toInt()
     /** Deep polar-night wash so a colorized card is a live surface, not a black row, and the frost bar still reads. */
     private const val COLORIZED = 0xFF31475C.toInt()
-    private const val POSTER_BG = 0xFF141414.toInt()
+    private const val POSTER_BG = ACCENT
+    private const val POSTER_GLYPH = 0xFF191C22.toInt()
     private const val GREEN = 0xFF3FA266.toInt()
     private const val RED = 0xFFE34671.toInt()
     private const val GRAY = 0xFF9A9A9A.toInt()
@@ -302,7 +303,7 @@ object LiveNotificationRenderer {
         canvas.drawRoundRect(0f, 0f, size.toFloat(), size.toFloat(), radius, radius, paint)
         val glyph = ContextCompat.getDrawable(context, R.drawable.ic_stat_agent)?.mutate()
         if (glyph != null) {
-            glyph.setTint(0xFFFFFFFF.toInt())
+            glyph.setTint(POSTER_GLYPH)
             val inset = (size * 0.22f).toInt()
             glyph.setBounds(inset, inset, size - inset, size - inset)
             glyph.draw(canvas)
