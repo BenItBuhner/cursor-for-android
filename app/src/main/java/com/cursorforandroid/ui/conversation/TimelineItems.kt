@@ -534,19 +534,20 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 
 @Composable
 private fun RunFooterView(item: RunFooter, modifier: Modifier) {
-    val label = when (item.status) {
-        RunStatus.ERROR -> "Failed after"
-        RunStatus.CANCELLED -> "Cancelled after"
-        RunStatus.EXPIRED -> "Expired after"
-        else -> "Worked"
+    val ending = when (item.status) {
+        RunStatus.ERROR -> "Failed"
+        RunStatus.CANCELLED -> "Cancelled"
+        RunStatus.EXPIRED -> "Expired"
+        else -> null
     }
     val duration = TimeFormat.duration(item.durationMs)
     // Duration and status only. The header already names the branch and owns the pull-request button; repeating
     // either as a pill under every reply is just noise. A status this build cannot read says nothing worth
-    // printing either; the footer's presence is the point.
-    val named = item.status != RunStatus.FINISHED && item.status != RunStatus.UNKNOWN
-    if (duration != null || named) {
-        SummaryLine(label, duration ?: item.status.name.lowercase(), modifier)
+    // printing either; the footer's presence is the point. The "after" belongs to the duration, so a run the
+    // API returned without one is left saying just how it ended.
+    when {
+        duration != null -> SummaryLine(ending?.let { "$it after" } ?: "Worked", duration, modifier)
+        ending != null -> SummaryLine(ending, "", modifier)
     }
 }
 

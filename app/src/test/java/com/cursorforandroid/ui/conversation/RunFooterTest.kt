@@ -66,6 +66,14 @@ class RunFooterTest {
     }
 
     @Test
+    fun `a failed run the api did not time says how it ended and nothing about after`() {
+        show(footer(status = RunStatus.ERROR, durationMs = null))
+        compose.onNodeWithText("Failed").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Failed after").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("error").fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
     fun `a finished run with no duration paints nothing`() {
         show(footer(durationMs = null))
         compose.waitForIdle()
