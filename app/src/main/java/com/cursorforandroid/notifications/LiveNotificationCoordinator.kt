@@ -51,7 +51,13 @@ object LiveNotificationCoordinator {
                         LiveNotificationService.stop(activity)
                         FinishWatchdogJobService.disarm(activity)
                     },
-                    clearPosted = { runCatching { NotificationManagerCompat.from(activity).cancelAll() } },
+                    clearPosted = { ids ->
+                        runCatching {
+                            val manager = NotificationManagerCompat.from(activity)
+                            manager.cancel(LiveNotificationRenderer.LIVE_ID)
+                            ids.forEach { manager.cancel(LiveNotificationRenderer.finishedId(it)) }
+                        }
+                    },
                 ).run(
                     liveDecisions(
                         graph.session.state,
@@ -135,13 +141,14 @@ internal fun liveDecisions(
 internal class LiveNotificationSupervisor(
     private val start: () -> Boolean,
     private val stop: () -> Unit,
-    /** Takes down what is already in the shade; only a sign-out goes that far. */
-    private val clearPosted: () -> Unit = {},
+    /** Takes down live and finished cards for these agents; only a sign-out goes that far. */
+    private val clearPosted: (Set<String>) -> Unit = {},
     private val startGraceMs: Long = START_GRACE_MS,
     private val maxStartAttempts: Int = MAX_START_ATTEMPTS,
     private val restartBaseMs: Long = RESTART_BASE_MS,
     private val restartMaxMs: Long = RESTART_MAX_MS,
     private val healthyAfterMs: Long = HEALTHY_AFTER_MS,
+    private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     /** Times in a row the service went down with agents still running, since it last stayed up for [healthyAfterMs]. */
     private var losses = 0
@@ -149,10 +156,19 @@ internal class LiveNotificationSupervisor(
     /** Whether the service has been seen up for the current run of agents (so a `serviceActive = false` is a loss, not a first start). */
     private var seenUp = false
 
+    /** When the service last reported up; used so churn in the running set does not cancel the healthy-again clock. */
+    private var lastUpAtMillis = 0L
+
+    /** Agents the last [LiveDecision.Track] was for; what a sign-out clears from the shade. */
+    private var trackedIds: Set<String> = emptySet()
+
     suspend fun run(decisions: Flow<LiveDecision>) {
         decisions.collectLatest { decision ->
             when (decision) {
-                is LiveDecision.Track -> if (decision.serviceActive) keepUp() else bringUp()
+                is LiveDecision.Track -> {
+                    trackedIds = decision.runningIds
+                    if (decision.serviceActive) keepUp() else bringUp()
+                }
                 LiveDecision.Blocked -> {
                     settle()
                     stop()
@@ -161,7 +177,7 @@ internal class LiveNotificationSupervisor(
                 LiveDecision.SignedOut -> {
                     settle()
                     stop()
-                    clearPosted()
+                    clearPosted(trackedIds)
                 }
             }
         }
@@ -174,15 +190,14 @@ internal class LiveNotificationSupervisor(
 
     private suspend fun keepUp() {
         seenUp = true
+        lastUpAtMillis = now()
         start()
-        delay(healthyAfterMs)
-        losses = 0
     }
 
     private suspend fun bringUp() {
         if (seenUp) {
             seenUp = false
-            losses++
+            losses = if (now() - lastUpAtMillis >= healthyAfterMs) 1 else losses + 1
             delay((restartBaseMs shl (losses - 1).coerceIn(0, 20)).coerceAtMost(restartMaxMs))
         }
         var attempt = 0
