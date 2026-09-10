@@ -112,7 +112,6 @@ fun ComposerBox(
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
-    focusRequester: FocusRequester? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -123,10 +122,7 @@ fun ComposerBox(
     var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
     var wantsFocus by remember { mutableStateOf(focused) }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    val ownFocus = remember { FocusRequester() }
-    // The caller's requester where it drives focus itself, the composer's own otherwise: the "+" menu hands the field
-    // back after inserting a command, which needs one either way.
-    val focus = focusRequester ?: ownFocus
+    val focus = remember { FocusRequester() }
     // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
     LaunchedEffect(wantsFocus, menuOpen) {
         if (wantsFocus && !menuOpen) {
