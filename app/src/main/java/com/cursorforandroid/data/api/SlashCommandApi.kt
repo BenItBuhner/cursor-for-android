@@ -9,7 +9,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 /**
- * The `/` commands the account offers a cloud composer. An interface so the repository can be tested against a fake.
+ * The `/` commands a cloud composer can offer beyond the built-ins, from whoever can say: the account service (in
+ * Extended mode) or the repository's own contents. An interface so the repository can be tested against a fake.
  */
 interface SlashCommandApi {
     /** What a new chat on [repoUrl] at [ref] (blank for the default branch) can lead with: the built-in, project, plugin and synced skills. */
@@ -23,6 +24,13 @@ interface SlashCommandApi {
 
     /** The commands that apply everywhere — `/goal` and the team's — as far as they are meant for cloud agents. */
     suspend fun global(): List<SlashCommand>
+}
+
+/** A source with nothing to add: the composers keep the built-ins. */
+object NoSlashCommandApi : SlashCommandApi {
+    override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = SlashCatalog()
+    override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog = SlashCatalog()
+    override suspend fun global(): List<SlashCommand> = emptyList()
 }
 
 /**

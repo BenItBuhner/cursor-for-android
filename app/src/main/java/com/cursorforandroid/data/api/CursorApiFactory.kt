@@ -182,6 +182,26 @@ object CursorApiFactory {
         }
         .build()
 
+    /**
+     * For the anonymous reads of GitHub's REST API that stand in for the account service when Extended mode is off
+     * (pull request states, repository trees). No Cursor credential rides along, and no retry: GitHub's rate limit is
+     * hourly and a `429` retried in seconds only spends more of it; the repositories behind these calls have their
+     * own schedules.
+     */
+    fun gitHubClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("User-Agent", "cursor-for-android/${BuildConfig.VERSION_NAME}").build())
+        }
+        .apply {
+            if (BuildConfig.DEBUG) {
+                addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            }
+        }
+        .build()
+
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(client)
