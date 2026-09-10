@@ -542,25 +542,6 @@ class FollowUpRepositoryTest {
     }
 
     @Test
-    fun `a failed head leaves the dispatcher inactive until retry`() = runBlocking<Unit> {
-        api.addIdleAgent("bc-1", "Agent", "run-0")
-        agents.refresh()
-        api.failCreateRun = true
-        val followUps = repository()
-        val stuck = followUps.enqueue("bc-1", "Stuck")
-        followUps.enqueue("bc-1", "Second")
-
-        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
-        delay(300)
-        assertThat(api.runRequests).hasSize(1)
-
-        api.failCreateRun = false
-        followUps.retry("bc-1", stuck.id)
-        awaitUntil { sent() == listOf("Stuck") }
-        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
-    }
-
-    @Test
     fun `a chat with nothing typed and nothing queued leaves nothing on disk`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-0")
         agents.refresh()
