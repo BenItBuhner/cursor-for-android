@@ -143,7 +143,9 @@ class FollowUpRepository(
     /** Takes a queued follow-up away. One in flight, or steered, stays until the server has answered. */
     fun remove(agentId: String, id: String) {
         val e = entry(agentId)
-        e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
+        synchronized(e) {
+            e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
+        }
         e.scheduleSave()
     }
 
@@ -154,16 +156,18 @@ class FollowUpRepository(
     fun takeForEdit(agentId: String, id: String): QueuedFollowUp? {
         val e = entry(agentId)
         var taken: QueuedFollowUp? = null
-        e.update {
-            val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
-            taken = item
-            val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
-                item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
+        synchronized(e) {
+            e.update {
+                val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
+                taken = item
+                val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
+                    item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
+                }
+                copy(
+                    draft = FollowUpDraft(item.text, item.images),
+                    queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
+                )
             }
-            copy(
-                draft = FollowUpDraft(item.text, item.images),
-                queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
-            )
         }
         e.scheduleSave()
         return taken
@@ -376,7 +380,15 @@ class FollowUpRepository(
                     s.restored && idle && head != null && head.error == null && !head.isSending && !head.isSteered
                 }
                 ready.first { it }
-                val head = e.state.value.queue.firstOrNull() ?: continue
+                // Claiming the head and marking it sending are one step, under the monitor every other queue
+                // operation takes: a steer, an edit or a removal either gets there first and this finds nothing to
+                // claim, or arrives to a message that already reads as in flight and leaves it alone.
+                val head = synchronized(e) {
+                    val h = e.state.value.queue.firstOrNull()
+                    if (h == null || h.error != null || h.isSending || h.isSteered) return@synchronized null
+                    e.update { copy(queue = queue.map { if (it.id == h.id) it.copy(isSending = true) else it }) }
+                    h
+                } ?: continue
                 dispatch(e, head)
             }
         } finally {
@@ -384,8 +396,8 @@ class FollowUpRepository(
         }
     }
 
+    /** [item] has already been claimed by [dispatchLoop], which is what marked it sending. */
     private suspend fun dispatch(e: Entry, item: QueuedFollowUp) {
-        e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = true) else it }) }
         val result = conversations.sendFollowUp(
             e.agentId,
             item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },

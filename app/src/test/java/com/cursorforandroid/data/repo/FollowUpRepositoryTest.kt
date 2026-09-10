@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +35,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
 
 /**
  * The follow-up queue against the fake backend: a message sent mid-turn waits, goes out when the turn ends, and is
@@ -279,6 +281,62 @@ class FollowUpRepositoryTest {
         assertThat(api.cancelled).isEmpty()
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
         assertThat(sent().last()).isEqualTo("Try")
+    }
+
+    @Test
+    fun `a follow-up the dispatcher has claimed is left alone by steer, edit and remove`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val gate = CompletableDeferred<Unit>()
+        api.createRunGate = gate
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Only once")
+
+        // The dispatcher has claimed the head and its request is out; the card reads as in flight.
+        awaitUntil { api.runRequests.size == 1 }
+        assertThat(followUps.state("bc-1").value.queue.single().isSending).isTrue()
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isFalse()
+        assertThat(followUps.takeForEdit("bc-1", item.id)).isNull()
+        followUps.remove("bc-1", item.id)
+        assertThat(followUps.state("bc-1").value.queue).hasSize(1)
+        assertThat(followUps.state("bc-1").value.draft.isEmpty).isTrue()
+
+        gate.complete(Unit)
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(sent()).containsExactly("Only once")
+        assertThat(api.cancelled).isEmpty()
+    }
+
+    /**
+     * The steer and the dispatcher both go for the head, from different threads, on forty agents at once. Whichever
+     * wins, the message reaches the server exactly once: claiming the head and marking it sending are one step under
+     * the monitor [FollowUpRepository.sendNow] holds.
+     */
+    @Test
+    fun `a steer racing the dispatcher for the head still sends the message once`() = runBlocking<Unit> {
+        val count = 40
+        repeat(count) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i") }
+        agents.refresh()
+        val followUps = repository()
+        val start = CountDownLatch(1)
+        val steered = CountDownLatch(count)
+        val threads = (0 until count).map { i ->
+            Thread {
+                start.await()
+                followUps.state("bc-$i").value.queue.firstOrNull()?.let { followUps.sendNow("bc-$i", it.id) }
+                steered.countDown()
+            }.apply { start() }
+        }
+
+        repeat(count) { i -> followUps.enqueue("bc-$i", "Message $i") }
+        start.countDown()
+        steered.await()
+        threads.forEach { it.join() }
+
+        repeat(count) { i -> awaitUntil { followUps.state("bc-$i").value.queue.isEmpty() } }
+        // Nothing sends twice, whichever of the two got there first.
+        repeat(count) { i -> assertThat(sent().count { it == "Message $i" }).isEqualTo(1) }
     }
 
     @Test
