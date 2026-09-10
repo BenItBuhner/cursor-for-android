@@ -505,8 +505,8 @@ class FollowUpRepositoryTest {
 
         first.resetAll()
         val second = repository(persist = true)
-        val restored = second.state("bc-1").first { it.restored }
-        assertThat(restored.queue.single().needsConfirmation).isTrue()
+        second.state("bc-1").first { it.restored }
+        awaitUntil { second.state("bc-1").value.queue.singleOrNull()?.needsConfirmation == true }
         assertThat(sent()).isEmpty()
 
         api.createRunGate?.complete(Unit)
