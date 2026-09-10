@@ -12,6 +12,7 @@ import com.cursorforandroid.ui.components.PendingAttachment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -143,6 +144,21 @@ class ConversationViewModelTest {
         val picker = open(IDLE).picker { it.currentLabel != null }
         assertThat(picker.current).isNull()
         assertThat(picker.chipLabel).isEqualTo("Claude Legacy 3")
+    }
+
+    @Test
+    fun `picking a model remembers it for the new-chat composer`() = runBlocking {
+        val vm = open(IDLE)
+        val composer = vm.picker().models.first { it.id == "composer-2.5" }
+        val slow = composer.variants.first { !it.isDefault }
+        vm.selectModel(composer, slow)
+        withTimeout(10_000) {
+            while (graph.prefs.composerDefaults.first().modelId != "composer-2.5") delay(10)
+        }
+        val defaults = graph.prefs.composerDefaults.first()
+        assertThat(defaults.modelId).isEqualTo("composer-2.5")
+        assertThat(defaults.modelParams).isEqualTo(slow.params.associate { it.id to it.value })
+        assertThat(defaults.modelChosen).isTrue()
     }
 
     @Test

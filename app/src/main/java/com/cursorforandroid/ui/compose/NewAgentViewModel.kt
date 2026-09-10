@@ -20,6 +20,7 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.named
 import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.SlashCatalog
@@ -194,30 +195,39 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     private suspend fun loadModels(force: Boolean = false) {
         // The saved list shows right away (the picker spins in its header while it is revalidated).
         if (_state.value.models.isEmpty()) {
-            graph.catalog.models.value.takeIf { it.isNotEmpty() }?.let { saved -> _state.update { it.withModels(saved) } }
+            graph.catalog.models.value.takeIf { it.isNotEmpty() }?.let { saved ->
+                _state.update { it.withModels(saved, fallbackIfMissing = false) }
+            }
         }
         _state.update { it.copy(isLoadingModels = true) }
         graph.catalog.loadModels(force)
-            .onSuccess { models -> _state.update { it.withModels(models) } }
+            .onSuccess { models -> _state.update { it.withModels(models, fallbackIfMissing = true) } }
             .onFailure { _state.update { it.copy(isLoadingModels = false, modelsUnavailable = it.models.isEmpty()) } }
     }
 
     /**
      * Adopts a freshly loaded model list. A selection already made on this screen is re-resolved against the new
-     * instances; otherwise the last launch's choice is restored — a variant is matched on its exact parameters, so a
+     * instances; otherwise the last used model is restored — a variant is matched on its exact parameters, so a
      * parameter-less variant is not swapped for the model's default one — and a user who has never picked anything
      * (or who last launched with the old "Default" choice) starts on the first recommended model. A list that lacks
-     * the wanted model (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it
-     * rather than the stand-in.
+     * the wanted model (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it.
+     * The first row is never stood in for a remembered id: on the live catalogue that row is Auto, which is what
+     * made every cold start look like the picker had reset.
      */
-    private fun NewAgentUiState.withModels(models: List<ModelOption>): NewAgentUiState {
+    private fun NewAgentUiState.withModels(models: List<ModelOption>, fallbackIfMissing: Boolean): NewAgentUiState {
         val remembered = defaults
         val (wantedId, wantedParams) = when {
             modelSelectionResolved -> selectedModel?.id to selectedVariant?.params?.associate { it.id to it.value }
             remembered?.modelChosen == true && remembered.modelId != null -> remembered.modelId to remembered.modelParams
-            else -> models.firstOrNull()?.id to null
+            else -> null to null
         }
-        val model = wantedId?.let { id -> models.firstOrNull { it.id == id } ?: models.firstOrNull() }
+        val exact = models.named(wantedId)
+        val model = when {
+            exact != null -> exact
+            wantedId == null -> models.firstOrNull()
+            fallbackIfMissing -> models.firstOrNull()
+            else -> selectedModel
+        }
         val variant = model?.let { m -> wantedParams?.let(m::variantWithParams) ?: m.defaultVariant }
         modelSelectionResolved = wantedId == null || model?.id == wantedId
         return copy(models = models, selectedModel = model, selectedVariant = variant, isLoadingModels = false, modelsUnavailable = false)
@@ -258,12 +268,33 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         // An explicit pick settles the selection: a list arriving afterwards re-resolves it, never the remembered one.
-        // There is no "Default" model; a null pick lands on the first catalog entry.
+        // There is no "Default" model; a null pick lands on the first catalog entry. The pick is written at once so
+        // opening the app again — which creates a new composer — opens on this model, not Auto.
         modelSelectionResolved = true
         val chosen = model ?: _state.value.models.firstOrNull()
-        _state.update { it.copy(selectedModel = chosen, selectedVariant = variant ?: chosen?.defaultVariant) }
+        val picked = variant ?: chosen?.defaultVariant
+        _state.update { it.copy(selectedModel = chosen, selectedVariant = picked) }
+        rememberModel(chosen?.id, picked)
     }
     fun togglePinnedModel(modelId: String) = viewModelScope.launch { graph.prefs.togglePinnedModel(modelId) }
+
+    /** Writes the pick so the next composer — a new process, a new view model — opens on it. */
+    private fun rememberModel(modelId: String?, variant: ModelVariant?) {
+        val params = variant?.params?.associate { it.id to it.value } ?: emptyMap()
+        defaults = (defaults ?: emptyDefaults()).copy(modelId = modelId, modelParams = params, modelChosen = true)
+        viewModelScope.launch { graph.prefs.rememberModel(modelId, params) }
+    }
+
+    private fun emptyDefaults() = ComposerDefaults(
+        repoUrl = null,
+        ref = null,
+        modelId = null,
+        modelParams = emptyMap(),
+        autoCreatePr = false,
+        modelChosen = false,
+        env = DeviceTarget.Cloud,
+    )
+
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
     fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
     fun selectDevice(device: DeviceTarget) = _state.update { it.copy(selectedDevice = device).withDevices() }
@@ -302,13 +333,18 @@ class NewAgentViewModel(private val graph: AppGraph) : ViewModel() {
         // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
         _state.update { it.copy(isLaunching = true, error = null) }
         viewModelScope.launch {
+            val remembered = defaults?.takeIf { it.modelChosen }
             val draft = LaunchRequest(
                 prompt = s.prompt.trim(),
                 images = s.attachments.map { it.image },
                 repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
                 ref = s.ref.trim().ifBlank { null },
-                modelId = s.selectedModel?.id,
-                modelParams = s.selectedVariant?.params ?: emptyList(),
+                // The last-used id goes out even when this list has not resolved it yet, so a send during a
+                // catalog refresh does not silently launch (and then remember) Auto.
+                modelId = s.selectedModel?.id ?: remembered?.modelId,
+                modelParams = s.selectedVariant?.params
+                    ?: remembered?.modelParams?.map { (id, value) -> ModelParam(id, value) }
+                    ?: emptyList(),
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
                 mcpServers = graph.mcpServers.enabled(),
