@@ -39,7 +39,7 @@ class AgentRowStateTest {
                     row = row(),
                     selected = false,
                     prefs = ListPreferences(),
-                    actions = AgentRowActions({}, {}, {}, {}, { _, _ -> }),
+                    actions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
                 )
             }
         }
