@@ -48,6 +48,13 @@ class SlashCommandsTest {
     }
 
     @Test
+    fun `token spans are the whole tokens the composer paints`() {
+        assertThat(SlashCommands.tokenRanges("/multitask /review fix a/b")).containsExactly(0..9, 11..17).inOrder()
+        assertThat(SlashCommands.tokenRanges("fix it\n/review-bugbot")).containsExactly(7..20)
+        assertThat(SlashCommands.tokenRanges("no commands, /Bad or /- here")).isEmpty()
+    }
+
+    @Test
     fun `strip leaves only the request`() {
         assertThat(SlashCommands.strip("/multitask /land-it Ship the release notes")).isEqualTo("Ship the release notes")
         assertThat(SlashCommands.strip("/review a /review b")).isEqualTo("a b")

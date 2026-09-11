@@ -173,11 +173,12 @@ private fun SlashCommandRow(entry: SlashCommand, onClick: () -> Unit) {
     }
 }
 
-/** Commands get a glyph on the right — the goal's target, multitask's grid, a terminal for a machine command; skills none, as on the Skills page. */
+/** Commands get a glyph on the right — the goal's target, multitask's loop, plan's checklist, a terminal for a machine command; skills none, as on the Skills page. */
 private fun commandGlyph(entry: SlashCommand) = when {
     entry.kind != SlashCommand.Kind.Command -> null
     entry.name == "goal" -> CursorIcons.Target
     entry.name == SlashCommands.MULTITASK -> CursorIcons.Multitask
+    entry.name == SlashCommands.PLAN -> CursorIcons.Plan
     else -> CursorIcons.Terminal
 }
 

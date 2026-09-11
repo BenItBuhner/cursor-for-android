@@ -74,13 +74,17 @@ class ComposerFocusTest {
         compose.onNodeWithText("Multitask").performClick()
         compose.waitForIdle()
 
-        assertThat(draft()).isEqualTo("/multitask ")
-        assertThat(selection()).isEqualTo(TextRange("/multitask ".length))
+        // The command is the owner's: the field shows it as the Multitask pill and stays empty, caret at the start.
+        compose.runOnIdle { assertThat(hoisted).isEqualTo("/multitask ") }
+        assertThat(draft()).isEmpty()
+        assertThat(selection()).isEqualTo(TextRange(0))
+        compose.onNodeWithContentDescription("Remove Multitask").assertExists()
         field.assertIsFocused()
 
-        // And carrying on writes after the command rather than into it.
+        // And carrying on writes the request, which goes out behind the command.
         field.performTextInput("ship it")
-        assertThat(draft()).isEqualTo("/multitask ship it")
+        assertThat(draft()).isEqualTo("ship it")
+        compose.runOnIdle { assertThat(hoisted).isEqualTo("/multitask ship it") }
     }
 
     @Test

@@ -160,6 +160,8 @@ object BuiltInSlashCommands {
     val commands: List<SlashCommand> = listOf(
         command("goal", "Set a goal that Cursor will pursue to completion", argumentHint = "<objective>"),
         command(SlashCommands.MULTITASK, "Orchestrate multiple subagents in parallel"),
+        // The composer's word for plan mode: it becomes the Plan pill rather than text (see ModePills).
+        command(SlashCommands.PLAN, "Explore first and draft a plan before making changes"),
     )
 
     val skills: List<SlashCommand> = listOf(

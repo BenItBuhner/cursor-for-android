@@ -73,8 +73,8 @@ data class FollowUpModelState(
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
-    /** The model's name alone — never its parameters — with the plan-mode flag when it is asked for. */
-    val chipLabel: String get() = (override?.label ?: currentLabel ?: "Model") + if (planMode == true) " · Plan" else ""
+    /** The model's name alone — never its parameters. Plan mode is the composer's pill, not part of the chip. */
+    val chipLabel: String get() = override?.label ?: currentLabel ?: "Model"
 }
 
 class ConversationViewModel(private val graph: AppGraph, val agentId: String) : ViewModel() {

@@ -347,11 +347,12 @@ class ConversationViewModelTest {
     }
 
     @Test
-    fun `plan mode is not asked for until toggled, then shows on the chip`() {
+    fun `plan mode is not asked for until toggled, and never rides on the model chip`() {
         val vm = open(IDLE)
         assertThat(vm.picker().planMode).isNull()
         vm.setPlanMode(true)
-        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Model · Plan")
+        // The composer wears plan mode as its own pill; the chip stays the model's name alone.
+        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Model")
         vm.setPlanMode(false)
         assertThat(vm.picker { it.planMode == false }.chipLabel).isEqualTo("Model")
     }
