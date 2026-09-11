@@ -79,6 +79,14 @@ object CursorDimens {
     val composerMaxWidth = 640.dp
     val composerPadding = 12.dp
     /**
+     * Extra inset on the composer field, on top of [composerPadding], applied on every side. The 24dp
+     * corner eats the 12dp ring the footer discs sit in, so the placeholder and typed text would otherwise
+     * start in the throat of the arc — closer to the stroke than the "+" and send glyphs, which sit centred
+     * in those discs (`(roundButton - roundButtonGlyph) / 2` ≈ 3.5dp inside the circle). 4dp lines the
+     * glyphs up with that content, and keeps the top and bottom air equal to the left and right.
+     */
+    val composerTextInset = 4.dp
+    /**
      * Composer corner radius, concentric with the round buttons in its footer. Each disc sits [composerPadding] in
      * from the side and, once the footer's 2dp of centring is added to the 10dp bottom padding, [composerPadding]
      * up from the bottom, so its centre is `roundButton / 2 + composerPadding` from both edges. A corner arc of

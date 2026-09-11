@@ -84,7 +84,7 @@ private fun QueuedFollowUpRow(
             .fillMaxWidth()
             .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
             .heightIn(min = RowHeight)
-            .padding(start = CursorDimens.composerPadding, end = CursorDimens.composerPadding - 6.dp)
+            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
             .semantics { contentDescription = if (item.error != null) "Queued follow-up $position of $count, not sent: ${item.error}" else "Queued follow-up $position of $count" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
