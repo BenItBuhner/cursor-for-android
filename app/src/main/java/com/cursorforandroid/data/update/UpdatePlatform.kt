@@ -25,6 +25,15 @@ interface UpdatePlatform {
     val applicationId: String
     val sdkInt: Int
 
+    /**
+     * SHA-256 (lowercase hex) of the certificate this build's releases are signed with, read from the release keystore
+     * at build time. It is the updater's root of trust: an APK signed with anything else is refused, whatever the
+     * installed build happens to carry. Null in a build with no release key — a debug build, or the
+     * `-Papp.allowUnsignedRelease=true` verification build CI produces — which falls back to trusting the installed
+     * build's own certificates.
+     */
+    val releaseCertSha256: String?
+
     /** Whether the user has allowed this app to install packages ("Install unknown apps"). */
     fun canRequestInstalls(): Boolean
 
