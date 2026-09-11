@@ -365,13 +365,32 @@ class ConversationViewModelTest {
     }
 
     @Test
-    fun `plan mode is not asked for until toggled, then shows on the chip`() {
+    fun `plan mode is not asked for until toggled, and never rides on the model chip`() {
         val vm = open(IDLE)
         assertThat(vm.picker().planMode).isNull()
         vm.setPlanMode(true)
-        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Model · Plan")
+        // The composer wears plan mode as its own pill; the chip stays the model's name alone.
+        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Model")
         vm.setPlanMode(false)
         assertThat(vm.picker { it.planMode == false }.chipLabel).isEqualTo("Model")
+    }
+
+    @Test
+    fun `plan mode and multitask are one slot for a follow-up too`() {
+        val vm = open(IDLE)
+        vm.setDraft("/multitask fan the suites out")
+        // A plan never asked for stays not asked for: the command alone does not set the mode either way.
+        assertThat(vm.picker().planMode).isNull()
+
+        // Asking for a plan takes the command out of the draft.
+        vm.setPlanMode(true)
+        assertThat(vm.picker { it.planMode == true }.planMode).isTrue()
+        assertThat(vm.draftText.value).isEqualTo("fan the suites out")
+
+        // A draft that carries the command again puts the plan off, to agent mode as the pill's cross does.
+        vm.setDraft("/multitask fan the suites out")
+        assertThat(vm.picker { it.planMode == false }.planMode).isFalse()
+        assertThat(vm.draftText.value).isEqualTo("/multitask fan the suites out")
     }
 
     private companion object {

@@ -622,13 +622,28 @@ class UpdateManager(
     }
 
     /**
-     * The release notes name the certificate the APK was signed with; when it is not among the installed build's,
-     * Android will refuse the update and there is no point downloading it.
+     * The certificates a downloaded APK may be signed with: the release key this build pins, or — in a build that has
+     * none, such as a debug build — whatever the installed build is itself signed with. The pin is what makes the
+     * check mean anything: the fallback is only as trustworthy as the installed signature, and an install that came
+     * from a debug-key APK trusts the public debug key, which is no authentication at all.
+     */
+    private fun trustedSigners(): Set<String> =
+        platform.releaseCertSha256?.let { setOf(it) } ?: platform.installedSigningSha256s()
+
+    /**
+     * Whether [release] cannot be installed over this build because the two are signed with different keys. Two ways
+     * that happens: this install is not signed with the release key it pins (it came from a debug-key APK, as v0.1.0
+     * did, before release signing existed), or the certificate the release notes name is not one this build trusts.
+     * Android refuses such an update either way, so the user is sent to a manual reinstall rather than a download
+     * that could only fail — see [SIGNATURE_MISMATCH_MESSAGE].
      */
     private fun signatureMismatch(release: AppRelease): Boolean {
-        val published = release.signingCertSha256 ?: return false
         val installed = platform.installedSigningSha256s()
-        return installed.isNotEmpty() && published !in installed
+        val pinned = platform.releaseCertSha256
+        if (pinned != null && installed.isNotEmpty() && pinned !in installed) return true
+        val published = release.signingCertSha256 ?: return false
+        val trusted = trustedSigners()
+        return trusted.isNotEmpty() && published !in trusted
     }
 
     /** The digest to check the download against: GitHub's for the asset, else the release's `SHA256SUMS.txt`. */
@@ -642,9 +657,11 @@ class UpdateManager(
 
     /**
      * The APK must be this package, exactly the build the release's tag names, newer than the installed one, and
-     * signed with a key it already trusts. The tag is all the state and the UI know a release by, so an archive whose
-     * own version disagrees with it is not the thing being offered — and a mispackaged, far higher versionCode would
-     * install happily and then block every real update after it.
+     * signed with the release key ([trustedSigners]). The tag is all the state and the UI know a release by, so an
+     * archive whose own version disagrees with it is not the thing being offered — and a mispackaged, far higher
+     * versionCode would install happily and then block every real update after it.
+     *
+     * A build that pins a key also refuses an archive whose signers cannot be read at all: unverifiable is not trusted.
      */
     private fun validate(apk: File, release: AppRelease) {
         val info = platform.inspect(apk) ?: throw IOException("The downloaded file isn't a valid Android package.")
@@ -660,8 +677,9 @@ class UpdateManager(
         if (info.versionCode <= platform.installedVersionCode) {
             throw IOException("The APK in release ${release.tagName} isn't newer than the installed build.")
         }
-        val installed = platform.installedSigningSha256s()
-        if (info.signingSha256s.isNotEmpty() && installed.isNotEmpty() && info.signingSha256s.none { it in installed }) {
+        val trusted = trustedSigners()
+        val unreadable = info.signingSha256s.isEmpty() && platform.releaseCertSha256 != null
+        if (trusted.isNotEmpty() && (unreadable || (info.signingSha256s.isNotEmpty() && info.signingSha256s.none { it in trusted }))) {
             throw IOException(SIGNATURE_MISMATCH_MESSAGE)
         }
     }
@@ -753,6 +771,6 @@ class UpdateManager(
         const val BACKGROUND_IDLE_MS = 5_000L
         /** How long a committed session's verdict is still expected; after that the session is treated as orphaned. */
         const val PENDING_INSTALL_TTL_MS = 10 * 60 * 1000L
-        const val SIGNATURE_MISMATCH_MESSAGE = "This release is signed with a different key than the installed build, so Android won't install it as an update. Uninstall the app first, or get it from the release page."
+        const val SIGNATURE_MISMATCH_MESSAGE = "This release is signed with a different key than the installed build, so Android can't update it in place. Uninstall Cursor, then install the APK from the release page; you'll sign in again afterwards."
     }
 }

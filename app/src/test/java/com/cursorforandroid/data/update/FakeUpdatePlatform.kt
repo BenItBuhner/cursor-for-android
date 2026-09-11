@@ -11,6 +11,8 @@ class FakeUpdatePlatform(
     override var installedVersionName: String = "0.1.0",
     override val applicationId: String = "com.cursorforandroid",
     override var sdkInt: Int = 35,
+    /** The pinned release certificate; null reproduces a build with no release key (a debug build, or CI's R8 build). */
+    override var releaseCertSha256: String? = null,
 ) : UpdatePlatform {
     var canInstall = true
     var metered = false

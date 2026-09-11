@@ -382,6 +382,29 @@ class NewAgentViewModelTest {
     }
 
     @Test
+    fun `plan mode and multitask are one slot, whichever way round they are set`() {
+        val vm = loaded()
+        vm.setPrompt("/multitask fan the suites out")
+        vm.setPlanMode(true)
+        // Asking for a plan takes the command out of the prompt.
+        assertThat(vm.state.value.planMode).isTrue()
+        assertThat(vm.state.value.prompt).isEqualTo("fan the suites out")
+
+        // A prompt that leads with the command — typed, picked, or from the "+" menu — puts the plan off.
+        vm.setPrompt("/multitask fan the suites out")
+        assertThat(vm.state.value.planMode).isFalse()
+        assertThat(vm.state.value.prompt).isEqualTo("/multitask fan the suites out")
+
+        // Shared-in text carrying the command does the same; text without it leaves a plan alone.
+        vm.setPrompt("")
+        vm.setPlanMode(true)
+        vm.applyShare("plain text", emptyList())
+        assertThat(vm.state.value.planMode).isTrue()
+        vm.applyShare("/multitask more", emptyList())
+        assertThat(vm.state.value.planMode).isFalse()
+    }
+
+    @Test
     fun `the branch launched from is restored, including the default branch`() {
         val first = loaded()
         first.setRef("develop")

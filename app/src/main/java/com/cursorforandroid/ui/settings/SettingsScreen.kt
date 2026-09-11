@@ -338,6 +338,17 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit) {
                 CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = 30.dp)
         }
     }
+    // A signer mismatch is the one outcome the user has to act on outside the app, so it gets a sentence rather than a
+    // status line: Android cannot replace an install signed with a different key, whatever the updater does.
+    (state as? UpdateState.Available)?.takeIf { it.signatureMismatch }?.let { mismatch ->
+        HairlineDivider()
+        HintRow(
+            title = "Reinstall to move to ${mismatch.release.versionName}",
+            subtitle = "This build and the new release are signed with different keys, so Android won't update it in place. " +
+                "Download the APK from the release page, uninstall Cursor, then install it. You'll sign in again afterwards.",
+            onClick = { open(mismatch.release.htmlUrl) },
+        )
+    }
     state.release?.takeIf { it.htmlUrl.isNotBlank() }?.let { release ->
         HairlineDivider()
         LinkRow("What's new in ${release.versionName}", release.htmlUrl, open)
@@ -375,7 +386,7 @@ private fun updateStatusLine(state: UpdateState): String = when (state) {
     UpdateState.Checking -> "Checking GitHub for a newer release…"
     is UpdateState.UpToDate -> "Up to date · ${checkedLabel(state.checkedAtMs)}"
     is UpdateState.Available ->
-        if (state.signatureMismatch) "${state.release.versionName} is out, but signed with a different key" else "${state.release.versionName} is available"
+        if (state.signatureMismatch) "${state.release.versionName} needs a manual reinstall" else "${state.release.versionName} is available"
     is UpdateState.Downloading -> state.fraction?.let { "Downloading ${state.release.versionName}… ${(it * 100).toInt()}%" }
         ?: "Downloading ${state.release.versionName}… ${"%.1f".format(Locale.US, state.bytesRead / 1_048_576.0)} MB"
     is UpdateState.Downloaded -> "${state.release.versionName} is ready · the app closes while it installs"

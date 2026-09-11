@@ -355,6 +355,9 @@ fun ConversationScreen(
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
                 onModel = if (archived) null else ({ modelSheet = true }),
+                // Plan mode for the next run is a pill beside "+", as on cursor.com/agents, not a suffix on the chip.
+                planMode = picker.planMode == true,
+                onPlanMode = viewModel::setPlanMode,
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }

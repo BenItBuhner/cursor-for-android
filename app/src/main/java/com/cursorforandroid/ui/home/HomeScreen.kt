@@ -176,8 +176,11 @@ fun HomeScreen(
                         onRemoveAttachment = viewModel::removeAttachment,
                         onAddAttachments = viewModel::addAttachments,
                         onAttachmentError = viewModel::reportError,
-                        modelLabel = state.modelLabel + if (state.planMode) " · Plan" else "",
+                        modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
+                        // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.
+                        planMode = state.planMode,
+                        onPlanMode = viewModel::setPlanMode,
                     )
                     state.error?.let {
                         Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {

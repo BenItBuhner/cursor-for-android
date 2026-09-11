@@ -1,3 +1,5 @@
+import java.security.KeyStore
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -63,11 +65,15 @@ fun preReleaseStage(preRelease: String): Int {
 // ---------------------------------------------------------------------------------------------------------------------
 // Release signing
 //
-// CI:    RELEASE_KEYSTORE_FILE / RELEASE_KEYSTORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD env vars
+// CI:    RELEASE_KEYSTORE_FILE / RELEASE_KEYSTORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD env vars.
+//        release.yml decodes the RELEASE_KEYSTORE_BASE64 secret into RUNNER_TEMP and points RELEASE_KEYSTORE_FILE at it.
 // Local: a git-ignored keystore.properties next to settings.gradle.kts with storeFile / storePassword / keyAlias /
 //        keyPassword (storeFile is resolved against the repository root).
-// When neither is present, release builds are signed with the debug key so `assembleRelease` still produces an
-// installable APK; the release workflow reports which key was used.
+//
+// A release APK or bundle built without either FAILS. An artifact signed with the public debug key is not publishable,
+// and every install it produces is stranded on a key no later release can reproduce. `-Papp.allowUnsignedRelease=true`
+// is the one explicit escape hatch: ci.yml passes it because its `assembleRelease` exists only to exercise R8, and the
+// APK that comes out is never published. Debug builds never need signing secrets.
 // ---------------------------------------------------------------------------------------------------------------------
 data class ReleaseSigning(val storeFile: File, val storePassword: String, val keyAlias: String, val keyPassword: String)
 
@@ -85,6 +91,34 @@ fun releaseSigning(): ReleaseSigning? {
 }
 
 val releaseSigning: ReleaseSigning? = releaseSigning()
+val allowUnsignedRelease: Boolean = providers.gradleProperty("app.allowUnsignedRelease").map(String::toBoolean).getOrElse(false)
+
+/**
+ * SHA-256 of the certificate [signing] signs with, in the lowercase hex `apksigner --print-certs` prints, the release
+ * notes carry and the RELEASE_CERT_SHA256 repository variable pins. Read straight from the keystore so it cannot
+ * disagree with what actually signs the APK.
+ */
+fun certificateSha256(signing: ReleaseSigning): String {
+    require(signing.storeFile.isFile) { "Release keystore not found at ${signing.storeFile}" }
+    val certificate = listOf("PKCS12", "JKS").firstNotNullOfOrNull { type ->
+        runCatching {
+            val store = KeyStore.getInstance(type)
+            signing.storeFile.inputStream().use { store.load(it, signing.storePassword.toCharArray()) }
+            store.getCertificate(signing.keyAlias)
+        }.getOrNull()
+    } ?: error(
+        "Could not read the certificate for alias '${signing.keyAlias}' from ${signing.storeFile.name} as PKCS12 or JKS; " +
+            "check RELEASE_KEYSTORE_PASSWORD and RELEASE_KEY_ALIAS.",
+    )
+    return MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * Baked into release builds as `BuildConfig.RELEASE_CERT_SHA256`; empty in a build with no release key. It is the only
+ * certificate the in-app updater will install an APK signed with, so it has to come from the key that signs this very
+ * build rather than from anything a release's notes claim.
+ */
+val releaseCertSha256: String = releaseSigning?.let(::certificateSha256).orEmpty()
 
 android {
     namespace = "com.cursorforandroid"
@@ -118,11 +152,16 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // The debug fallback is only ever reached under -Papp.allowUnsignedRelease=true; without it the task-graph
+            // check at the end of this file fails the build before anything is packaged.
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             buildConfigField("String", "UPDATE_API_BASE_URL", "\"$GITHUB_API_BASE_URL\"")
+            buildConfigField("String", "RELEASE_CERT_SHA256", "\"$releaseCertSha256\"")
         }
         debug {
             applicationIdSuffix = ".debug"
+            // A debug build is a different applicationId and can never be updated by a release APK, so it pins nothing.
+            buildConfigField("String", "RELEASE_CERT_SHA256", "\"\"")
             // Debug builds can be pointed at a stand-in for the GitHub API (`-Papp.updateApiBaseUrl=http://10.0.2.2:8080/`)
             // to exercise the updater against an emulator; src/debug's network security config permits cleartext to
             // the emulator host for exactly that. Release builds always use GitHub.
@@ -215,23 +254,41 @@ if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).g
     }
 }
 
-// Prints the resolved version so the release workflow can reuse it without duplicating the versionCode scheme.
+// Prints the resolved version so the release workflow can reuse it without duplicating the versionCode scheme, and the
+// certificate the build pinned so the workflow can check it against the one that actually signed the APK.
 tasks.register("printAppVersion") {
     group = "help"
-    description = "Prints the resolved versionName and versionCode."
+    description = "Prints the resolved versionName, versionCode and pinned release certificate."
     val resolvedName = appResolvedVersionName
     val resolvedCode = appVersionCode
+    val resolvedCert = releaseCertSha256
     doLast {
         println("versionName=$resolvedName")
         println("versionCode=$resolvedCode")
+        println("releaseCertSha256=$resolvedCert")
     }
 }
 
+// `packageRelease` and `signReleaseBundle` are the two tasks that apply a signing config, so this is exact: it does not
+// fire for `lintRelease` or `testReleaseUnitTest`, which need no key.
 if (releaseSigning == null) {
     val appTaskPrefix = "${project.path}:"
+    val signingTasks = setOf("packageRelease", "signReleaseBundle")
     gradle.taskGraph.whenReady {
-        if (allTasks.any { it.path.startsWith(appTaskPrefix) && it.name.contains("Release") }) {
-            logger.warn("Release signing is not configured (RELEASE_KEYSTORE_FILE or keystore.properties); release artifacts will be signed with the debug key.")
+        val packaging = allTasks.filter { it.path.startsWith(appTaskPrefix) && it.name in signingTasks }
+        if (packaging.isEmpty()) return@whenReady
+        if (allowUnsignedRelease) {
+            logger.warn(
+                "app.allowUnsignedRelease is set: ${packaging.joinToString { it.name }} will sign with the public debug key. " +
+                    "The result is for build verification only - it must not be published, and it pins no certificate for the updater.",
+            )
+        } else {
+            error(
+                "Release signing is not configured, so ${packaging.joinToString { it.name }} cannot produce a publishable artifact.\n" +
+                    "  CI:    set the RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS and RELEASE_KEY_PASSWORD secrets.\n" +
+                    "  Local: create a git-ignored keystore.properties (storeFile / storePassword / keyAlias / keyPassword).\n" +
+                    "  Neither: pass -Papp.allowUnsignedRelease=true to build an unpublishable debug-signed release for verification.",
+            )
         }
     }
 }
