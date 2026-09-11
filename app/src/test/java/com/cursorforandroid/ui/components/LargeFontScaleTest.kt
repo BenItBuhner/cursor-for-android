@@ -143,8 +143,9 @@ class LargeFontScaleTest {
     fun `a composer footer grows for content taller than its designed height`() {
         composer { Box(Modifier.testTag("tall").width(24.dp).height(72.dp)) }
         assertThat(heightOf("tall")).isEqualTo(72f)
-        // 12dp of padding over a 22dp field, a 10dp gap, the footer, then 10dp: 82dp were the footer held to 28dp.
-        assertThat(heightOf("composer")).isWithin(1f).of(126f)
+        // 12dp of padding and a 4dp inset over a 22dp field, 4dp inset, a 12dp gap, the footer, then 10dp: 92dp were
+        // the footer held to 28dp.
+        assertThat(heightOf("composer")).isWithin(1f).of(136f)
     }
 
     private companion object {

@@ -1,7 +1,10 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -13,9 +16,19 @@ data class PinnedIds(val ids: Set<String>, val loaded: Boolean)
 
 /**
  * One composer from `ListBackgroundComposers`: the name and archive flag the desktop Agents window and the iOS
- * app read. [archived] is null when the record omitted `isArchived`.
+ * app read, and the chat's place among Cursor Projects as the Agents Window derives it (see
+ * [BackgroundComposerApi.snapshot]). [archived] is null when the record omitted `isArchived`.
  */
-data class ComposerSnapshot(val id: String, val name: String? = null, val archived: Boolean? = null)
+data class ComposerSnapshot(
+    val id: String,
+    val name: String? = null,
+    val archived: Boolean? = null,
+    /** The record carries `projectMetadata` and no manager: a Project's own chat. */
+    val isProject: Boolean = false,
+    val projectAppearance: ProjectAppearance? = null,
+    /** The chat this one hangs off, and how; null for a chat of its own. */
+    val parent: AgentParent? = null,
+)
 
 /**
  * What one read of the account's agent list says beyond the agents themselves: the pins, where each agent's pull
@@ -58,9 +71,10 @@ fun interface PullRequestStatusApi {
  * `aiserver.v1.BackgroundComposerService`, the account-level service behind cursor.com/agents and the first-party
  * apps ("background composer" is what a cloud agent is called there; its `bc_id` is the agent id the public API
  * uses). The corners used here: `ListBackgroundComposers` with `includePinnedState` returns the user's
- * `pinnedBcIds` and, per composer, the `name` / `isArchived` / `prUrl` / `prStatus` the account keeps and the
+ * `pinnedBcIds` and, per composer, the `name` / `isArchived` / `prUrl` / `prStatus` the account keeps, the
  * `source` the chat was started from (`aiserver.v1.BackgroundComposerSource`, what the Source filter of
- * cursor.com/agents cuts the list by); `Pin` / `UnpinBackgroundComposers` change the pins;
+ * cursor.com/agents cuts the list by) and its place among Cursor Projects (`projectMetadata`, `managerAgentId`,
+ * `sideChatInfo`, `cloudSubagentParent`, see [snapshot]); `Pin` / `UnpinBackgroundComposers` change the pins;
  * `ArchiveBackgroundComposer` (with `unarchive`) and `RenameBackgroundComposer` are the official archive and
  * rename; `GetPullRequestMergeStatus` answers for one pull request. Calls carry the session token from
  * [SessionTokenProvider] (see [unaryWithSession]).
@@ -92,10 +106,7 @@ class BackgroundComposerApi(
             val state = pullRequestState(composer.prStatus, composer.isPrMerged) ?: continue
             pullRequests[url] = state
         }
-        val composers = response.composers.mapNotNull { composer ->
-            val id = composer.bcId.trim().takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            ComposerSnapshot(id = id, name = composer.name, archived = composer.isArchived)
-        }
+        val composers = response.composers.mapNotNull { composer -> snapshot(composer) }
         return AccountList(
             PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState),
             pullRequests,
@@ -165,7 +176,7 @@ class BackgroundComposerApi(
 
     /** The corner of `aiserver.v1.BackgroundComposer` read here; everything else the record carries is ignored. */
     @Serializable
-    private data class ComposerDto(
+    internal data class ComposerDto(
         val bcId: String = "",
         val name: String? = null,
         val isArchived: Boolean? = null,
@@ -175,7 +186,27 @@ class BackgroundComposerApi(
         val prStatus: JsonPrimitive? = null,
         /** `aiserver.v1.BackgroundComposerSource`, encoded the same way; absent for the zero value (`UNSPECIFIED`). */
         val source: JsonPrimitive? = null,
+        /** `aiserver.v1.ProjectMetadata`: present (if only as `{}`) on a Project's chat, absent on every other. */
+        val projectMetadata: ProjectMetadataDto? = null,
+        /** The Project coordinator this chat works for, on a worker it created or adopted. */
+        val managerAgentId: String? = null,
+        /** `aiserver.v1.SideChatInfo`: the chat this one branched off as a side chat. */
+        val sideChatInfo: SideChatInfoDto? = null,
+        /** `aiserver.v1.CloudSubagentParentReference`: the agent that spawned this one as a cloud subagent. */
+        val cloudSubagentParent: CloudSubagentParentDto? = null,
     )
+
+    @Serializable
+    internal data class ProjectMetadataDto(val appearance: ProjectAppearanceDto? = null)
+
+    @Serializable
+    internal data class ProjectAppearanceDto(val icon: String = "", val colorId: String = "")
+
+    @Serializable
+    internal data class SideChatInfoDto(val parentBcId: String? = null, val seedTurnCount: Int? = null)
+
+    @Serializable
+    internal data class CloudSubagentParentDto(val parentAgentId: String? = null, val parentToolCallId: String? = null)
 
     @Serializable
     private data class BcIdsDto(val bcIds: List<String>)
@@ -220,6 +251,35 @@ class BackgroundComposerApi(
          * their source (nor their pins and pull request states).
          */
         val HIDDEN_SOURCES: List<AgentSource> = listOf(AgentSource.SDK)
+
+        /**
+         * What the record says about names, archive and Cursor Projects, derived the way the Agents Window derives
+         * it from the same record (Cursor 3.20): a chat is a Project when it carries `projectMetadata` — an empty
+         * one included — unless a coordinator manages it, since a worker is never a Project itself; its parent is
+         * the first of the agent that spawned it as a cloud subagent, the chat it branched off as a side chat and
+         * the coordinator it works for; and the appearance counts only with both an icon and a colour set. A blank
+         * link, or one naming the chat itself, is no link; a record without an id is no snapshot (null).
+         */
+        internal fun snapshot(composer: ComposerDto): ComposerSnapshot? {
+            val id = composer.bcId.trim().takeIf { it.isNotEmpty() } ?: return null
+            fun String?.link(): String? = this?.trim()?.takeIf { it.isNotEmpty() && it != id }
+            val manager = composer.managerAgentId.link()
+            val parent = composer.cloudSubagentParent?.parentAgentId.link()?.let { AgentParent(it, AgentParentKind.SUBAGENT) }
+                ?: composer.sideChatInfo?.parentBcId.link()?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
+                ?: manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
+            val isProject = composer.projectMetadata != null && manager == null
+            val appearance = composer.projectMetadata?.appearance
+                ?.takeIf { isProject && it.icon.isNotBlank() && it.colorId.isNotBlank() }
+                ?.let { ProjectAppearance(it.icon.trim(), it.colorId.trim()) }
+            return ComposerSnapshot(
+                id = id,
+                name = composer.name,
+                archived = composer.isArchived,
+                isProject = isProject,
+                projectAppearance = appearance,
+                parent = parent,
+            )
+        }
 
         /**
          * `aiserver.v1.PRStatus` as the list reports it. [isPrMerged] stands in when the status is unspecified or

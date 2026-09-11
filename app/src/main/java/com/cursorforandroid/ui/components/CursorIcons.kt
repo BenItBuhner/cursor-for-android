@@ -161,6 +161,14 @@ object CursorIcons {
 
     val Check: ImageVector by lazy { icon("Check") { path("M20 6 9 17l-5-5", 2f) } }
 
+    /** Lucide `check-check` — two ticks, the mark-all-read glyph. */
+    val CheckCheck: ImageVector by lazy {
+        icon("CheckCheck") {
+            path("M18 6 7 17l-5-5", 2f)
+            path("m22 10-7.5 7.5L13 16", 2f)
+        }
+    }
+
     val Refresh: ImageVector by lazy {
         icon("Refresh") {
             path("M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8")
@@ -414,5 +422,143 @@ object CursorIcons {
                 path("M9 8V2")
             }
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------------------
+    // Cursor Projects: the icons a Project can be given (the Agents Window's icon names, Lucide geometry)
+    // ------------------------------------------------------------------------------------------------------------
+
+    /** Lucide `zap`: the Projects palette's default icon (`lightning`). */
+    val Lightning: ImageVector by lazy {
+        icon("Lightning") {
+            path("M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z")
+        }
+    }
+
+    val Rocket: ImageVector by lazy {
+        icon("Rocket") {
+            path("M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z")
+            path("m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z")
+            path("M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0")
+            path("M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5")
+        }
+    }
+
+    val Star: ImageVector by lazy {
+        icon("Star") {
+            path("M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z")
+        }
+    }
+
+    val Flag: ImageVector by lazy {
+        icon("Flag") {
+            path("M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528")
+        }
+    }
+
+    val Code: ImageVector by lazy {
+        icon("Code") {
+            path("m16 18 6-6-6-6")
+            path("m8 6-6 6 6 6")
+        }
+    }
+
+    val Database: ImageVector by lazy {
+        icon("Database") {
+            path("M3 5a9 3 0 1 0 18 0a9 3 0 1 0-18 0")
+            path("M3 5v14a9 3 0 0 0 18 0V5")
+            path("M3 12a9 3 0 0 0 18 0")
+        }
+    }
+
+    val Shield: ImageVector by lazy {
+        icon("Shield") {
+            path("M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z")
+        }
+    }
+
+    val Heart: ImageVector by lazy {
+        icon("Heart") {
+            path("M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5")
+        }
+    }
+
+    val Moon: ImageVector by lazy {
+        icon("Moon") {
+            path("M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401")
+        }
+    }
+
+    val Server: ImageVector by lazy {
+        icon("Server") {
+            rect(2f, 2f, 20f, 8f, 2f)
+            rect(2f, 14f, 20f, 8f, 2f)
+            path("M6 6h.01")
+            path("M6 18h.01")
+        }
+    }
+
+    val Calendar: ImageVector by lazy {
+        icon("Calendar") {
+            path("M8 2v4")
+            path("M16 2v4")
+            rect(3f, 4f, 18f, 18f, 2f)
+            path("M3 10h18")
+        }
+    }
+
+    val Link: ImageVector by lazy {
+        icon("Link") {
+            path("M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71")
+            path("M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71")
+        }
+    }
+
+    val Bug: ImageVector by lazy {
+        icon("Bug") {
+            path("m8 2 1.88 1.88")
+            path("M14.12 3.88 16 2")
+            path("M9 7.13v-1a3.003 3.003 0 1 1 6 0v1")
+            path("M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6")
+            path("M12 20v-9")
+            path("M6.53 9C4.6 8.8 3 7.1 3 5")
+            path("M6 13H2")
+            path("M3 21c0-2.1 1.7-3.9 3.8-4")
+            path("M20.97 5c0 2.1-1.6 3.8-3.5 4")
+            path("M22 13h-4")
+            path("M17.2 17c2.1.1 3.8 1.9 3.8 4")
+        }
+    }
+
+    /**
+     * The glyph for a Project's icon name as the account spells it (`lightning`, `rocket`, `folder`, …): the ones
+     * drawn here, the app's own glyphs where they match, and [Lightning] — the default the Agents Window also falls
+     * back to — for a name this build does not draw.
+     */
+    fun project(iconName: String?): ImageVector = when (iconName?.trim()?.lowercase()) {
+        "rocket" -> Rocket
+        "star" -> Star
+        "flag" -> Flag
+        "code", "brackets-curly" -> Code
+        "database" -> Database
+        "shield" -> Shield
+        "heart" -> Heart
+        "moon" -> Moon
+        "server" -> Server
+        "calendar" -> Calendar
+        "link" -> Link
+        "bug" -> Bug
+        "folder" -> Folder
+        "terminal" -> Terminal
+        "git-branch" -> GitBranch
+        "book-open", "library" -> Book
+        "file-text", "files" -> File
+        "globe", "browser" -> Globe
+        "target" -> Target
+        "cloud" -> Cloud
+        "image", "camera" -> Image
+        "sparkle", "magic-wand" -> Sparkle
+        "layers" -> Layers
+        else -> Lightning
     }
 }

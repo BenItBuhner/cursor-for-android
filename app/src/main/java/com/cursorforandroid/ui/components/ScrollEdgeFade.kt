@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import com.cursorforandroid.ui.theme.CursorDimens
 
 /**
@@ -64,6 +65,41 @@ fun Modifier.scrollEdgeFade(clippedAtTop: Boolean, clippedAtBottom: Boolean, fad
                     brush = Brush.verticalGradient(*edgeStops(bottom, outerFirst = false), startY = size.height - depth, endY = size.height),
                     topLeft = Offset(0f, size.height - depth),
                     size = Size(size.width, depth),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+        }
+}
+
+/**
+ * [scrollEdgeFade] for content that scrolls sideways — a table wider than the message: each side dissolves while
+ * there is more table past it, so a flat cut at the card edge never passes for the last column.
+ */
+@Composable
+fun Modifier.horizontalScrollEdgeFade(clippedAtStart: Boolean, clippedAtEnd: Boolean, fadeWidth: Dp = CursorDimens.scrollFade): Modifier {
+    val start by animateFloatAsState(if (clippedAtStart) 1f else 0f, tween(FADE_DURATION_MS), label = "startFade")
+    val end by animateFloatAsState(if (clippedAtEnd) 1f else 0f, tween(FADE_DURATION_MS), label = "endFade")
+    return this
+        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val depth = fadeWidth.toPx().coerceAtMost(size.width / 2f)
+            if (depth <= 0f) return@drawWithContent
+            val rtl = layoutDirection == LayoutDirection.Rtl
+            val left = if (rtl) end else start
+            val right = if (rtl) start else end
+            if (left > 0f) {
+                drawRect(
+                    brush = Brush.horizontalGradient(*edgeStops(left, outerFirst = true), startX = 0f, endX = depth),
+                    size = Size(depth, size.height),
+                    blendMode = BlendMode.DstIn,
+                )
+            }
+            if (right > 0f) {
+                drawRect(
+                    brush = Brush.horizontalGradient(*edgeStops(right, outerFirst = false), startX = size.width - depth, endX = size.width),
+                    topLeft = Offset(size.width - depth, 0f),
+                    size = Size(depth, size.height),
                     blendMode = BlendMode.DstIn,
                 )
             }

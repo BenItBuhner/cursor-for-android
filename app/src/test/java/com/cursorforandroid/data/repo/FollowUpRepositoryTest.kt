@@ -7,13 +7,13 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
-import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
@@ -27,6 +27,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -99,6 +100,8 @@ class FollowUpRepositoryTest {
     private fun repository(
         persist: Boolean = false,
         busyRecheckMs: Long = 20_000,
+        idleSettleMs: Long = 20_000,
+        retryBaseMs: Long = 20,
         scope: CoroutineScope = this.scope,
     ) = FollowUpRepository(
         conversations, agents, hub,
@@ -108,6 +111,8 @@ class FollowUpRepositoryTest {
         scope = scope,
         draftSaveDelayMs = 10,
         busyRecheckMs = busyRecheckMs,
+        idleSettleMs = idleSettleMs,
+        retryBaseMs = retryBaseMs,
     )
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
@@ -268,6 +273,193 @@ class FollowUpRepositoryTest {
         awaitUntil { streamer.connections.contains("run-1") }
         finish("run-1")
         awaitUntil { sent() == listOf("Now") }
+    }
+
+    @Test
+    fun `a busy answer as the wire delivers it keeps the message waiting too`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        // Not the fake's ready-made exception: the HttpException Retrofit raises, its body still unread. The
+        // repository reads the code and the chat words the failure, and both must find `agent_busy` in it.
+        api.createRunError = FakeCursorApi.httpError(409, "agent_busy", "Agent is busy.")
+        val followUps = repository()
+
+        followUps.enqueue("bc-1", "Go on")
+
+        awaitUntil { api.runRequests.size == 1 }
+        awaitUntil { agents.agent("bc-1")?.isRunning == true }
+        delay(200)
+        val waiting = followUps.state("bc-1").value.queue.single()
+        assertThat(waiting.error).isNull()
+        assertThat(waiting.isSending).isFalse()
+        // Nor is being busy an error for the chat to show.
+        assertThat(conversations.state("bc-1").value.error).isNull()
+
+        api.createRunError = null
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.FINISHED) }
+        awaitUntil { api.runRequests.size == 2 }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
+    fun `a steer whose send stumbles once is tried again rather than failed`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // The agent is still winding down the turn that was just cancelled for the message: the first send is
+        // refused for a reason other than being busy, as the wire delivers it.
+        api.failNextCreateRun = FakeCursorApi.httpError(409, "agent_stopping", "The agent is stopping.")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { sent() == listOf("Now", "Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        // The message stayed on screen throughout and is filed under its run now.
+        awaitUntil { prompts("bc-1").single { it.text == "Now" }.isPending.not() }
+        assertThat(conversations.state("bc-1").value.error).isNull()
+    }
+
+    @Test
+    fun `a steer whose send keeps failing returns the message to the cards with the reason`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        api.failCreateRun = true
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        awaitUntil { followUps.state("bc-1").value.queue.single().error != null }
+        val back = followUps.state("bc-1").value.queue.single()
+        // Tried a few times, then given up with the server's reason on the card, where it can be read.
+        assertThat(api.runRequests).hasSize(4)
+        assertThat(back.error).isEqualTo("Try again later.")
+        assertThat(back.isSteered).isFalse()
+        assertThat(back.isSending).isFalse()
+        assertThat(prompts("bc-1").none { it.text == "Now" }).isTrue()
+        // Send-now on the failed card is the retry; the turn was stopped already, so nothing is cancelled again.
+        api.failCreateRun = false
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(api.cancelled).containsExactly("run-1")
+        assertThat(sent().last()).isEqualTo("Now")
+    }
+
+    @Test
+    fun `a steer stops the run the row reports when the chat still follows an older one`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // A turn started elsewhere: the list learns of run-2 on its next refresh, the open chat has not reloaded.
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.v0["bc-1"] = api.v0.getValue("bc-1").copy(status = "RUNNING")
+        agents.refresh()
+        awaitUntil { agents.agent("bc-1")?.let { it.isRunning && it.latestRunId == "run-2" } == true }
+        assertThat(conversations.state("bc-1").value.activeRunId).isEqualTo("run-1")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        // The turn cancelled is the one under way, not the finished one the chat happened to be looking at.
+        awaitUntil { api.cancelled == listOf("run-2") }
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
+    fun `a steer whose cancel finds its run over stops the turn the server is actually on`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // Meanwhile, on the server: run-1 ended and run-2 began (a follow-up from another device), and neither the
+        // row nor the chat has heard of it yet.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED")
+        api.notCancellable += "run-1"
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        // The refused cancel is not the end of it: the row is settled against the record, which names run-2, and
+        // that is the turn stopped for the message.
+        awaitUntil { api.cancelled == listOf("run-2") }
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(agents.agent("bc-1")?.latestRunId).isNotEqualTo("run-1")
+    }
+
+    @Test
+    fun `a steered message is not held by a row the record put back to running`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        awaitUntil { streamer.connections.contains("run-1") }
+        // The server goes on answering busy for a while after the cancel, its record a step behind its stream.
+        api.busyCreateRun = true
+        val followUps = repository(idleSettleMs = 100)
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { api.runRequests.isNotEmpty() }
+        // The stream reports the end of the cancelled turn: the row is idle, the next send is refused as busy all
+        // the same — and the row must not be left saying running by that, since the stream will not say the run
+        // ended a second time.
+        finish("run-1", text = "")
+        awaitUntil { api.runRequests.size >= 2 }
+        delay(300)
+        assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
+
+        // Nothing here corrects the row but the repository itself: no refresh, no patch.
+        api.busyCreateRun = false
+        awaitUntil { api.runs.values.any { it.id.startsWith("run-followup") } }
+        assertThat(sent().last()).isEqualTo("Now")
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        awaitUntil { prompts("bc-1").single { it.text == "Now" }.isPending.not() }
+    }
+
+    @Test
+    fun `steering while the chat is still being created waits for its first turn rather than stopping the launch`() = runBlocking<Unit> {
+        val request = LaunchRequest(prompt = "Do the thing", repoUrl = "https://github.com/acme/app", ref = "main", modelId = "auto-smart", modelParams = emptyList(), autoCreatePr = false, planMode = false)
+            .let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce")) }
+        val id = request.agentId!!
+        api.createGate = CompletableDeferred()
+        val launch = async { conversations.launch(request, "Auto") }
+        awaitUntil { prompts(id).isNotEmpty() }
+        conversations.attach(id)
+        // Prompts sent from here are placed by the clock; the steer comes after the launch, as it would.
+        now += 1_000
+        val followUps = repository()
+        val item = followUps.enqueue(id, "Also this")
+
+        assertThat(followUps.sendNow(id, item.id)).isTrue()
+        delay(200)
+        // Nothing to stop yet, and the launch is not what gets stopped: the message shows as pending and waits.
+        assertThat(launch.isActive).isTrue()
+        assertThat(api.cancelled).isEmpty()
+        assertThat(prompts(id).any { it.text == "Also this" && it.isPending }).isTrue()
+
+        api.createGate!!.complete(Unit)
+        assertThat(launch.await().isSuccess).isTrue()
+        val first = agents.agent(id)!!.latestRunId!!
+        awaitUntil { streamer.connections.contains(first) }
+        finish(first)
+        awaitUntil { sent() == listOf("Also this") }
+        awaitUntil { followUps.state(id).value.queue.isEmpty() }
+        assertThat(api.cancelled).isEmpty()
     }
 
     @Test

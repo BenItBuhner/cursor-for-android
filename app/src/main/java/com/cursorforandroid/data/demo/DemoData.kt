@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.demo
 
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.RepoConfigDto
@@ -10,8 +11,11 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ArtifactPaths
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import java.time.Instant
 import java.time.format.DateTimeFormatter
@@ -422,6 +426,83 @@ internal object DemoData {
             prompt = "Bump Gradle plugins and Compose to the latest stable versions.",
             replies = listOf("Bumped AGP, Kotlin and the Compose BOM; build and tests green."),
         ),
+        // A Cursor Project: the coordinator chat, which plans and delegates rather than writing code, and the chats it
+        // runs — two workers it created and a side chat branched off it (see [composers]).
+        Seed(
+            id = PROJECT_ID, name = "Cesium billing launch", repo = REPO_CESIUM, ageMillis = HOUR + 5 * MIN,
+            runStatus = "FINISHED", durationMs = 4 * MIN,
+            summary = "Two PRs up: usage aggregation merged, the Stripe webhook handler open and waiting on a proration decision.",
+            prompt = "Take the Cesium billing launch from the metering scaffold to a shippable release: usage aggregation, Stripe checkout and webhooks, the pricing page and a rollout plan. Keep the PRs small and tell me when something needs a decision.",
+            replies = listOf(
+                "Two PRs are up: the `usage_events` aggregation is merged, and the Stripe webhook handler is open and waiting on one decision — whether a mid-cycle upgrade is prorated or billed from the next cycle. Next tracks: checkout session creation, then the rollout plan.",
+            ),
+            trace = listOf(
+                thought("Four tracks, two of them independent: the aggregation feeds the invoice amounts, the webhook handler records payments. Start those, keep the pricing copy in a side chat, hold checkout until the proration question is settled."),
+                read("convex/usage.ts"), read("convex/schema.ts"),
+                delegate("Usage events aggregation"), delegate("Stripe webhook handler"),
+                reply,
+            ),
+            earlier = listOf(
+                Turn(
+                    prompt = "Kick off the launch: split the work into tracks and start the ones that don't depend on a product decision.",
+                    replies = listOf("Split the launch into four tracks and started workers on the first two, the usage-event aggregation and the Stripe webhook handler. The pricing copy is a side chat with the marketing brief. I'll report back as each PR opens."),
+                    durationMs = 6 * MIN,
+                    trace = listOf(
+                        thought("Read the scaffold the earlier chat left before deciding what can start today."),
+                        read("convex/usage.ts"), read("convex/crons.ts"), grep("recordUsage"),
+                        reply,
+                    ),
+                ),
+            ),
+        ),
+        Seed(
+            id = "bc-demo-0019", name = "Usage events aggregation", repo = REPO_CESIUM, ageMillis = HOUR + 20 * MIN,
+            runStatus = "FINISHED", branch = "cursor/usage-aggregation-3c7d", prUrl = "https://github.com/techlitnow/cesium/pull/215", prState = PullRequestState.Merged, durationMs = 31 * MIN,
+            prompt = "Roll the usage events into hourly and daily aggregates with a backfill for the last 30 days.",
+            replies = listOf("Added `usageHourly` and `usageDaily` tables, a cron that rolls events up every ten minutes and an idempotent backfill mutation for the last 30 days. PR merged."),
+            trace = listOf(
+                thought("Aggregates must be idempotent: key them on the hour and the account so a re-run overwrites rather than doubles."),
+                read("convex/usage.ts"), read("convex/schema.ts"), edit("convex/schema.ts"), edit("convex/usageAggregates.ts"), edit("convex/crons.ts"), sh("npx convex dev --once"),
+                reply,
+            ),
+        ),
+        Seed(
+            id = "bc-demo-0020", name = "Stripe webhook handler", repo = REPO_CESIUM, ageMillis = HOUR + 35 * MIN,
+            runStatus = "FINISHED", branch = "cursor/stripe-webhooks-8e1f", prUrl = "https://github.com/techlitnow/cesium/pull/218", prState = PullRequestState.Open, durationMs = 27 * MIN,
+            prompt = "Handle Stripe's checkout.session.completed and invoice.paid webhooks, verify the signatures and record each payment against the account.",
+            replies = listOf("The HTTP action verifies the `Stripe-Signature` header, dedupes on the event id and records payments on `accounts.billing`. PR open — it needs a decision on whether a mid-cycle upgrade is prorated."),
+            trace = listOf(
+                thought("Webhooks retry, so the handler has to be idempotent on the event id before it touches the account."),
+                web("stripe webhook signature verification node"), read("convex/http.ts"), edit("convex/http.ts"), edit("convex/billing.ts"), edit("convex/schema.ts"), sh("npx convex dev --once"),
+                reply,
+            ),
+        ),
+        Seed(
+            id = "bc-demo-0021", name = "Pricing page copy", repo = REPO_CESIUM, ageMillis = HOUR + 50 * MIN,
+            runStatus = "FINISHED", durationMs = 7 * MIN,
+            prompt = "Draft the pricing page copy for the three tiers from the marketing brief, in the product's voice.",
+            replies = listOf("Three tiers, one line of promise each and the limits stated plainly; the draft is in the reply above, ready to paste into the pricing page once the tiers are final."),
+            trace = listOf(
+                thought("Read the brief and the existing onboarding copy so the tiers sound like the rest of the product."),
+                read("docs/marketing-brief.md"), read("src/i18n/en.json"),
+                reply,
+            ),
+        ),
+    )
+
+    /** The demo's Cursor Project: the coordinator chat the workers and the side chat below it belong to. */
+    const val PROJECT_ID = "bc-demo-0018"
+
+    /**
+     * What the account's list says about the seeds' place among Cursor Projects — which chat is a Project and how it
+     * looks, and which chats hang off it as its workers or side chat — since the demo stands in for the account
+     * service too (see `AgentRepository.applyAccountSnapshots`).
+     */
+    val composers: List<ComposerSnapshot> = listOf(
+        ComposerSnapshot(PROJECT_ID, isProject = true, projectAppearance = ProjectAppearance(icon = "rocket", colorId = "purple")),
+        ComposerSnapshot("bc-demo-0019", parent = AgentParent(PROJECT_ID, AgentParentKind.PROJECT_WORKER)),
+        ComposerSnapshot("bc-demo-0020", parent = AgentParent(PROJECT_ID, AgentParentKind.PROJECT_WORKER)),
+        ComposerSnapshot("bc-demo-0021", parent = AgentParent(PROJECT_ID, AgentParentKind.SIDE_CHAT)),
     )
 
     /** The seeds' pull requests as GitHub would report them, by URL. */
