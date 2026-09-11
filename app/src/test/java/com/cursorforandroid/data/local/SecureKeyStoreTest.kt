@@ -130,9 +130,12 @@ class SecureKeyStoreTest {
         assertThat(store.mcpServersJson()).isEqualTo("""[{"id":"1","name":"linear"}]""")
 
         assertThat(sharedPrefsFiles()).doesNotContain("cursor_prefs_fallback.xml")
+        // SharedPreferences writes through a temp file it renames or removes on its own thread; one listed a moment ago
+        // may be gone by the time it is read, and a file that is gone holds nothing.
         val onDisk = File(File(context.applicationInfo.dataDir, "shared_prefs"), "").listFiles().orEmpty()
             .filter { it.isFile }
-            .joinToString("\n") { it.readText() }
+            .mapNotNull { runCatching { it.readText() }.getOrNull() }
+            .joinToString("\n")
         assertThat(onDisk).doesNotContain("key_memory")
     }
 

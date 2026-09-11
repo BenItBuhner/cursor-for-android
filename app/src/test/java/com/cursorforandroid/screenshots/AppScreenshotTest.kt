@@ -126,6 +126,12 @@ class AppScreenshotTest {
         return graph
     }
 
+    /**
+     * The sidebar's sections are organized off the main thread from the list; a frame taken as soon as the rows are
+     * there can predate the Projects group. Its header is the last thing to appear, so it is what a capture waits on.
+     */
+    private fun waitForSidebarSections() = waitForText("Projects", 30_000)
+
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
@@ -149,8 +155,7 @@ class AppScreenshotTest {
         waitForText("Claude Fable 5.1", 30_000)
         compose.waitUntil(30_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
         // Rows are published page by page; what the demo's account list says about them — which chats are Projects,
-        // which hang off which — lands with the publish that completes the fetch. The tablet's permanent sidebar is
-        // captured straight after this, so wait for that publish, not just for the rows.
+        // which hang off which — lands with the publish that completes the fetch.
         compose.waitUntil(30_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
         scrollListTo("Cesium Revenue Strategy")
     }
@@ -191,6 +196,7 @@ class AppScreenshotTest {
         // Sidebar drawer: the header's "+" is the new-chat button.
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        waitForSidebarSections()
         capture("03_sidebar")
 
         // Chats filter sheet from the header's filter icon. The root page is 04 (chatsFilterReadAll).
@@ -326,6 +332,7 @@ class AppScreenshotTest {
         enterDemo(graph)
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        waitForSidebarSections()
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText("Read All")
         capture("04_chats_filter")
@@ -373,6 +380,7 @@ class AppScreenshotTest {
     fun tabletTwoPane() {
         val graph = launchApp()
         enterDemo(graph)
+        waitForSidebarSections()
         capture("09_tablet_home")
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
