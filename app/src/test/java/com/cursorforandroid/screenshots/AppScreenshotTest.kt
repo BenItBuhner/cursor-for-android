@@ -10,7 +10,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
@@ -22,6 +24,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -130,16 +133,37 @@ class AppScreenshotTest {
      * The sidebar's sections are organized off the main thread from the list; a frame taken as soon as the rows are
      * there can predate the Projects group. Its header is the last thing to appear, so it is what a capture waits on.
      */
-    private fun waitForSidebarSections() = waitForText("Projects", 30_000)
+    /** The sidebar's list, told from the recent list by the section headers only it has. */
+    private val sidebarList: SemanticsMatcher = hasScrollToNodeAction() and hasAnyDescendant(hasText("Pinned") or hasText("Today"))
+
+    /**
+     * The sidebar's sections are organized off the main thread from the list, and the list keeps the row that was
+     * first in view where it is when rows land above it — the Projects group arrives with the publish that completes
+     * the load, above "Pinned" — so a sidebar composed while the list was still loading can sit past its own top.
+     * The frames show the top: put the list there, then wait for the header that lands last.
+     */
+    private fun waitForSidebarSections() {
+        compose.waitUntil(30_000) { compose.onAllNodes(sidebarList).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(sidebarList).onFirst().performScrollToIndex(0)
+        waitForText("Projects", 30_000)
+    }
 
     private fun waitForText(text: String, timeoutMillis: Long = 20_000) {
         compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    /**
+     * The home screen's list of recent chats. The sidebar's list is composed as well — closed, or permanent on a
+     * tablet, where it comes first — and scrolling that one instead moved its Projects group out of the frames that
+     * show it; the sidebar is the list with section headers, the recent list has none.
+     */
+    private val homeList: SemanticsMatcher =
+        hasScrollToNodeAction() and !hasAnyDescendant(hasText("Projects") or hasText("Pinned") or hasText("Today") or hasText("Yesterday") or hasText("Older"))
+
     private fun scrollListTo(text: String, timeoutMillis: Long = 30_000) {
-        compose.waitUntil(timeoutMillis) { compose.onAllNodes(hasScrollToNodeAction()).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(timeoutMillis) { compose.onAllNodes(homeList).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(timeoutMillis) {
-            runCatching { compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText(text, substring = true)) }.isSuccess
+            runCatching { compose.onAllNodes(homeList).onFirst().performScrollToNode(hasText(text, substring = true)) }.isSuccess
         }
         waitForText(text, timeoutMillis)
     }
@@ -157,7 +181,9 @@ class AppScreenshotTest {
         // Rows are published page by page; what the demo's account list says about them — which chats are Projects,
         // which hang off which — lands with the publish that completes the fetch.
         compose.waitUntil(30_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
-        scrollListTo("Cesium Revenue Strategy")
+        // A pinned chat, so it sits near the top of the sidebar's list whether the drawer is open or not; nothing is
+        // scrolled to find it — the recent list has it a day down, and the home frames start at the composer.
+        compose.waitUntil(30_000) { compose.onAllNodesWithText("Cesium Revenue Strategy").fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test
