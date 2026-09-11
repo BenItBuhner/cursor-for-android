@@ -51,11 +51,16 @@ class CursorApiException(
 /**
  * Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. An exception
  * that already is one (the demo backend raises them directly) passes through.
+ *
+ * The same exception is looked at more than once on its way up — a repository decides by the code, then a screen
+ * words it — so the body is peeked at rather than read: Retrofit buffers it once, and `string()` would drain that
+ * buffer, leaving every later look with an empty body and a code that is only the status (`http_409`), which is how
+ * a `409 agent_busy` stopped being recognised as one.
  */
 fun Throwable.toCursorError(): CursorApiException? {
     if (this is CursorApiException) return this
     val http = this as? HttpException ?: return null
-    val body = runCatching { http.response()?.errorBody()?.string() }.getOrNull()
+    val body = runCatching { http.response()?.errorBody()?.source()?.peek()?.readUtf8() }.getOrNull()
     val parsed = body?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
     return CursorApiException(
         httpCode = http.code(),
@@ -64,6 +69,27 @@ fun Throwable.toCursorError(): CursorApiException? {
         helpUrl = parsed?.helpUrl,
     )
 }
+
+/**
+ * True for a failure worth asking again about in a moment: the server slow or unreachable (a timeout, a dropped
+ * connection), a `429`, a `5xx`, or a `409` about the agent's state other than it being busy — the moments right
+ * after a run was cancelled, when the agent is between turns. Busy is a wait, not a retry, and is left to the caller;
+ * so is anything that will not change by itself: a request the server found wrong, a rejected key, an agent that is
+ * gone or archived, a spent usage limit, or being offline.
+ */
+fun Throwable.isTransientFailure(): Boolean {
+    toCursorError()?.let { e ->
+        return when {
+            e.isRateLimited || e.httpCode == 408 || e.httpCode in 500..599 -> true
+            e.httpCode == 409 -> e.code !in SETTLED_CONFLICTS
+            else -> false
+        }
+    }
+    return this is IOException && this !is java.net.UnknownHostException
+}
+
+/** `409` codes that describe a state another attempt will find unchanged, or one the caller handles in its own way. */
+private val SETTLED_CONFLICTS = setOf("agent_busy", "agent_id_conflict", "agent_archived", "run_not_cancellable", "usage_limit_exceeded")
 
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
