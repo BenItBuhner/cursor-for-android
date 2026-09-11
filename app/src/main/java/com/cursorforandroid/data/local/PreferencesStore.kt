@@ -113,6 +113,7 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
+        val crashReports = booleanPreferencesKey("crash_reports")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -160,6 +161,13 @@ class PreferencesStore(
     suspend fun setAutoUpdate(enabled: Boolean) = edit { it[Keys.autoUpdate] = enabled }
 
     suspend fun setIncludePreReleases(include: Boolean) = edit { it[Keys.includePreReleases] = include }
+
+    // ---- crash reports (device-level; a consent, so it outlives the account and is never assumed) ----------------
+
+    /** Send anonymous crash reports (crash/CrashReporting.kt). Off until the user turns it on; nothing is sent before. */
+    val crashReports: Flow<Boolean> = data.map { it[Keys.crashReports] ?: false }
+
+    suspend fun setCrashReports(enabled: Boolean) = edit { it[Keys.crashReports] = enabled }
 
     suspend fun setUpdateLastCheckedAt(epochMillis: Long) = edit { it[Keys.updateLastCheckedAt] = epochMillis }
 

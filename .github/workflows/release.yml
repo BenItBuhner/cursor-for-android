@@ -12,6 +12,13 @@ name: Release
 # APK from - and this workflow refuses to publish an APK signed with anything else. Optionally also pin the expected
 # signer with the RELEASE_CERT_SHA256 repository variable (or secret) to catch a swapped keystore secret.
 #
+# Crash reports (opt-in in the app; crash/CrashReporting.kt) are optional here too. With the SENTRY_DSN secret set,
+# the build bakes that project in and the app's Settings offer the toggle; without it the build carries no crash
+# reporting at all and says so. With SENTRY_AUTH_TOKEN (an organization auth token with project:releases) plus the
+# SENTRY_ORG and SENTRY_PROJECT variables (or secrets), the build's R8 mapping is uploaded under a fresh UUID the
+# app sends with each report, so an obfuscated trace can be read back. The mapping is attached to the release either
+# way; only the upload needs the token.
+#
 # "Run workflow" (workflow_dispatch) rebuilds an existing tag, e.g. after adding the signing secrets; tick "dry run"
 # to only attach the artifacts to the workflow run. A dry run is the only case where debug signing is allowed, and
 # it never touches the GitHub Release.
@@ -107,12 +114,50 @@ jobs:
             exit 1
           fi
 
+      # Optional, and absent by default: without SENTRY_DSN the app is built with no crash reporting and its Settings
+      # say so. The mapping id is minted here so the build and the upload below agree on it.
+      - name: Prepare crash reporting
+        id: crash
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG || secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || secrets.SENTRY_PROJECT }}
+        run: |
+          if [[ -z "$SENTRY_DSN" ]]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SENTRY_DSN not set; this build has no crash reporting."
+            exit 0
+          fi
+          # The DSN itself stays in the secrets context (an output holding a secret is dropped by the runner); the
+          # build step reads it from there and only the mapping id travels as an output.
+          uuid="$(uuidgen | tr 'A-Z' 'a-z')"
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "uuid=${uuid}" >> "$GITHUB_OUTPUT"
+          missing=()
+          for name in SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+            echo "Crash reports go to the configured Sentry project; the R8 mapping will be uploaded as ${uuid}."
+          else
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${missing[*]} not set; the R8 mapping will not be uploaded to Sentry, so this build's crash reports will arrive obfuscated. It is still attached to the release."
+          fi
+
       # An unsigned release build fails by default (app/build.gradle.kts). Only the dry run, which the step above lets
       # through without secrets and which never publishes, opts in to the debug key.
       - name: Build release APK and AAB
         env:
           UNSIGNED: ${{ steps.signing.outputs.configured != 'true' && '-Papp.allowUnsignedRelease=true' || '' }}
-        run: ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}" $UNSIGNED
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          MAPPING_UUID: ${{ steps.crash.outputs.uuid }}
+        run: |
+          crash=()
+          [[ -z "$SENTRY_DSN" ]] || crash=(-Papp.sentryDsn="$SENTRY_DSN" -Papp.sentryProguardUuid="$MAPPING_UUID")
+          ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}" $UNSIGNED "${crash[@]}"
 
       - name: Package artifacts
         id: package
@@ -142,12 +187,33 @@ jobs:
           echo "pinned_cert=${pinned_cert}" >> "$GITHUB_OUTPUT"
           ls -l dist
 
+      # Under the same UUID the build baked in (BuildConfig.SENTRY_PROGUARD_UUID), so Sentry can pick this mapping for
+      # this build's reports. sentry-cli is fetched by Sentry's installer, pinned, into the runner's temp dir.
+      - name: Upload the R8 mapping to Sentry
+        if: ${{ steps.crash.outputs.upload == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG || secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || secrets.SENTRY_PROJECT }}
+          SENTRY_CLI_VERSION: "3.7.0"
+          MAPPING_UUID: ${{ steps.crash.outputs.uuid }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sL https://sentry.io/get-cli/ | INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          "$RUNNER_TEMP/bin/sentry-cli" --version
+          "$RUNNER_TEMP/bin/sentry-cli" upload-proguard --uuid "$MAPPING_UUID" --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" \
+            "dist/cursor-for-android-${VERSION}-mapping.txt"
+          echo "Uploaded the R8 mapping for ${VERSION} as ${MAPPING_UUID}."
+
       - name: Write release notes header
         env:
           VERSION: ${{ steps.tag.outputs.version }}
           VERSION_CODE: ${{ steps.package.outputs.version_code }}
           CERT_SHA256: ${{ steps.package.outputs.cert_sha256 }}
           SIGNED: ${{ steps.signing.outputs.configured }}
+          CRASH_REPORTS: ${{ steps.crash.outputs.configured }}
+          MAPPING_UUID: ${{ steps.crash.outputs.uuid }}
         run: |
           commit="$(git rev-parse HEAD)" # not GITHUB_SHA: on workflow_dispatch that is the selected branch head
           {
@@ -160,6 +226,11 @@ jobs:
               echo "| Signing certificate (SHA-256) | \`${CERT_SHA256}\` |"
             else
               echo "| Signing | **Debug key** - release signing secrets were not configured for this build; it will not install over a release-signed build. |"
+            fi
+            if [[ "$CRASH_REPORTS" == "true" ]]; then
+              echo "| Crash reports | Opt-in, off by default (Settings > Privacy). Anonymous; R8 mapping id \`${MAPPING_UUID}\`. |"
+            else
+              echo "| Crash reports | None - this build was made without a project to report to. |"
             fi
             echo
             echo "**Install:** download \`cursor-for-android-${VERSION}.apk\`, then \`adb install -r cursor-for-android-${VERSION}.apk\` (or open it on the device). \`SHA256SUMS.txt\` holds the checksums of the APK and AAB; \`*-mapping.txt\` is the R8 mapping for de-obfuscating stack traces."

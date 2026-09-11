@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.BackgroundComposerApi
@@ -88,6 +89,8 @@ class AppGraph(
     private val app = context.applicationContext
 
     val prefs = PreferencesStore(context)
+    /** Opt-in crash reports; inert until the setting is on, and in a build with no DSN. Eager: it is only two strings. */
+    val crashReporting = CrashReporting(app)
     /**
      * Disk copies of what the API last returned; the app opens on them and revalidates in the background. Eager
      * because it is only file paths until something reads or writes, and the sign-out wipe goes through it.

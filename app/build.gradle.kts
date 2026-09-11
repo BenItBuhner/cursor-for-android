@@ -120,6 +120,27 @@ fun certificateSha256(signing: ReleaseSigning): String {
  */
 val releaseCertSha256: String = releaseSigning?.let(::certificateSha256).orEmpty()
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Crash reports (opt-in; crash/CrashReporting.kt)
+//
+// `-Papp.sentryDsn=https://<key>@<host>/<project>` bakes the Sentry project into BuildConfig.SENTRY_DSN; the release
+// workflow passes it from the SENTRY_DSN secret when that exists. Without it the field is empty and the app has no
+// crash reporting at all: the Settings toggle says so and nothing is initialised. `-Papp.sentryProguardUuid=<uuid>` is
+// the id the workflow uploads this build's R8 mapping under, so a report from an obfuscated build can be read back;
+// it is only meaningful together with the DSN. Neither is ever set for a PR or debug build.
+// ---------------------------------------------------------------------------------------------------------------------
+val appSentryDsn: String = providers.gradleProperty("app.sentryDsn").orNull?.trim().orEmpty().also {
+    require(it.isEmpty() || Regex("""^https://[^@\s]+@[^/\s]+/\d+$""").matches(it)) {
+        "app.sentryDsn must look like https://<public-key>@<host>/<project-id>"
+    }
+}
+val appSentryProguardUuid: String = providers.gradleProperty("app.sentryProguardUuid").orNull?.trim().orEmpty().also {
+    require(it.isEmpty() || Regex("""^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$""").matches(it)) {
+        "app.sentryProguardUuid must be a UUID"
+    }
+    require(it.isEmpty() || appSentryDsn.isNotEmpty()) { "app.sentryProguardUuid is only meaningful with app.sentryDsn" }
+}
+
 android {
     namespace = "com.cursorforandroid"
     // 36 is required by androidx.core 1.17, which carries the Android 16 Live Updates notification APIs.
@@ -134,6 +155,8 @@ android {
         versionNameSuffix = appVersionNameSuffix
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "GITHUB_REPO", "\"$appGitHubRepo\"")
+        buildConfigField("String", "SENTRY_DSN", "\"$appSentryDsn\"")
+        buildConfigField("String", "SENTRY_PROGUARD_UUID", "\"$appSentryProguardUuid\"")
     }
 
     signingConfigs {
@@ -227,6 +250,7 @@ dependencies {
 
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.sentry.android.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
