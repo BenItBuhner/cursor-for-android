@@ -25,6 +25,7 @@ import com.cursorforandroid.domain.named
 import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
@@ -210,7 +211,7 @@ class NewAgentViewModel(
                 attachments = attachments.map { (_, attachment) -> attachment },
                 noRepo = draft.noRepo,
                 planMode = draft.planMode,
-            )
+            ).withExclusiveModes()
         }
         return ComposerDefaults(
             repoUrl = draft.repoUrl,
@@ -344,7 +345,7 @@ class NewAgentViewModel(
     }
 
     fun setPrompt(value: String) {
-        _state.update { it.copy(prompt = value, error = null) }
+        _state.update { it.copy(prompt = value, error = null).withExclusiveModes() }
         restoreWaitingIfFree()
     }
     fun addAttachments(items: List<PendingAttachment>) = _state.update { it.copy(attachments = (it.attachments + items).take(PromptImage.MAX_COUNT), error = null) }
@@ -358,7 +359,7 @@ class NewAgentViewModel(
             prompt = ShareDraft.mergeText(s.prompt, text),
             attachments = (s.attachments + items).take(PromptImage.MAX_COUNT),
             error = warning,
-        )
+        ).withExclusiveModes()
     }
     fun removeAttachment(item: PendingAttachment) {
         _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
@@ -406,7 +407,18 @@ class NewAgentViewModel(
     )
 
     fun setAutoCreatePr(value: Boolean) = _state.update { it.copy(autoCreatePr = value) }
-    fun setPlanMode(value: Boolean) = _state.update { it.copy(planMode = value) }
+
+    /** Plan mode and `/multitask` are one slot: asking for a plan takes the command out of the prompt. */
+    fun setPlanMode(value: Boolean) = _state.update {
+        it.copy(planMode = value, prompt = if (value) SlashCommands.remove(it.prompt, SlashCommands.MULTITASK) else it.prompt)
+    }
+
+    /**
+     * The one-slot rule the other way round: a prompt that carries `/multitask` — typed, picked, shared in or restored —
+     * puts plan mode off. A run is planned or fanned out to subagents, never asked for both.
+     */
+    private fun NewAgentUiState.withExclusiveModes(): NewAgentUiState =
+        if (planMode && SlashCommands.has(prompt, SlashCommands.MULTITASK)) copy(planMode = false) else this
     fun selectDevice(device: DeviceTarget) = _state.update { it.copy(selectedDevice = device).withDevices() }
 
     fun refreshRepositories() = viewModelScope.launch {
@@ -534,7 +546,7 @@ class NewAgentViewModel(
             autoCreatePr = request.autoCreatePr,
             planMode = request.planMode,
             selectedDevice = request.env,
-        ).withPickerLists()
+        ).withExclusiveModes().withPickerLists()
     }
 
     private fun NewAgentUiState.modelFor(request: LaunchRequest): ModelOption? = request.modelId?.let { id -> models.firstOrNull { it.id == id } }

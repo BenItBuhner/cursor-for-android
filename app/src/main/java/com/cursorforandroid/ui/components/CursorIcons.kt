@@ -386,6 +386,17 @@ object CursorIcons {
         }
     }
 
+    /** Plan mode: Lucide `list-checks`, a checklist — the steps drafted before anything is edited. */
+    val Plan: ImageVector by lazy {
+        icon("Plan") {
+            path("m3 17 2 2 4-4")
+            path("m3 7 2 2 4-4")
+            path("M13 6h8")
+            path("M13 12h8")
+            path("M13 18h8")
+        }
+    }
+
     /** Files: an upright paperclip as the web's row draws it (Lucide's leans 45°), so the geometry is our own. */
     val Paperclip: ImageVector by lazy {
         icon("Paperclip") {

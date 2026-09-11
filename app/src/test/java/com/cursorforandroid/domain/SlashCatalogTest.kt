@@ -102,9 +102,9 @@ class SlashCatalogTest {
     fun `built-in list stays cloud-relevant`() {
         val names = builtIn.entries.map { it.name }
         assertThat(names).containsNoneOf("canvas", "statusline", "update-cli-config", "update-cursor-settings")
-        assertThat(names).containsAtLeast("goal", "multitask", "autopilot", "review", "subscribe", "split-to-prs")
+        assertThat(names).containsAtLeast("goal", "multitask", "plan", "autopilot", "review", "subscribe", "split-to-prs")
         assertThat(names).containsNoDuplicates()
         names.forEach { assertThat(SlashCommands.isValidName(it)).isTrue() }
-        assertThat(builtIn.commands.map { it.name }).containsExactly("goal", "multitask").inOrder()
+        assertThat(builtIn.commands.map { it.name }).containsExactly("goal", "multitask", "plan").inOrder()
     }
 }

@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
@@ -73,8 +74,8 @@ data class FollowUpModelState(
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
-    /** The model's name alone — never its parameters — with the plan-mode flag when it is asked for. */
-    val chipLabel: String get() = (override?.label ?: currentLabel ?: "Model") + if (planMode == true) " · Plan" else ""
+    /** The model's name alone — never its parameters. Plan mode is the composer's pill, not part of the chip. */
+    val chipLabel: String get() = override?.label ?: currentLabel ?: "Model"
 }
 
 class ConversationViewModel(private val graph: AppGraph, val agentId: String) : ViewModel() {
@@ -188,13 +189,27 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    fun setPlanMode(value: Boolean) { picker.update { it.copy(planMode = value) } }
+    /** Plan mode and `/multitask` are one slot: asking for a plan takes the command out of the draft. */
+    fun setPlanMode(value: Boolean) {
+        picker.update { it.copy(planMode = value) }
+        if (value && SlashCommands.has(draft.value, SlashCommands.MULTITASK)) setDraft(SlashCommands.remove(draft.value, SlashCommands.MULTITASK))
+    }
 
     fun togglePinnedModel(modelId: String) = viewModelScope.launch { graph.prefs.togglePinnedModel(modelId) }
 
     fun setDraft(value: String) {
         draft.value = value
         graph.followUps.setDraftText(agentId, value)
+        keepModesExclusive(value)
+    }
+
+    /**
+     * The one-slot rule the other way round: a draft that carries `/multitask` — typed, picked, shared in, restored or
+     * taken back from the queue — puts a plan that was asked for off (to agent mode, as the pill's cross does). A plan
+     * never asked for stays not asked for.
+     */
+    private fun keepModesExclusive(text: String) {
+        if (SlashCommands.has(text, SlashCommands.MULTITASK)) picker.update { if (it.planMode == true) it.copy(planMode = false) else it }
     }
 
     fun addAttachments(items: List<PendingAttachment>) {
@@ -217,6 +232,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         thumbnails.update { cache -> cache + restored.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
         draft.value = saved.text
         attachments.value = restored
+        keepModesExclusive(saved.text)
     }
 
     private suspend fun decodeThumbnails(images: List<DraftImage>) {

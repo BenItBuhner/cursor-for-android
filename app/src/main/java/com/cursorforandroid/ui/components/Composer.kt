@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -47,20 +49,29 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
+import com.cursorforandroid.domain.SlashCommands
+import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +89,14 @@ import kotlinx.coroutines.withContext
  * tighter than the 16dp left. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
- * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
+ * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page. A `/command`
+ * standing in the text is painted in the Cursor orange ([CommandOrange]) over the field's own glyphs, without
+ * the field editing anything differently. Two commands are not text at all but pills right of "+", as on the web
+ * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
+ * `/plan`, which is [planMode]. Typing either with a space after it, or picking it from the popover or the "+"
+ * menu, turns it into its pill and takes the token out of the text; the pill's cross puts the mode off again. The
+ * two are one slot — the one turned on last replaces the other, in the owner's state as well — so at most one pill
+ * is ever worn.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
  * bottom corners, so the box wraps them evenly instead of pinching in behind them.
  *
@@ -113,12 +131,20 @@ fun ComposerBox(
     onAttachmentError: ((String) -> Unit)? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
+    /** Plan mode as the owner holds it, worn as a pill; [onPlanMode] puts it on from `/plan` and off from the pill's cross. Null leaves `/plan` as text. */
+    planMode: Boolean = false,
+    onPlanMode: ((Boolean) -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
+    // The owner's text split into what the field shows and the Multitask pill; the field never holds the token.
+    val presented = remember(value) { ModePills.present(value) }
+    // Plan and Multitask are one slot (see ModePills), and the owner keeps them so; should it ever hold both for a
+    // frame, the token in the text is the one shown, since it is the one the field is hiding.
+    val planPill = planMode && onPlanMode != null && !presented.multitask
     // Saved alongside the text and the caret, so a composer rebuilt from instance state is left the way the reader
     // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
     // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
@@ -152,14 +178,17 @@ fun ComposerBox(
     // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
     // A TextFieldState field is also what makes image paste possible at all: a value/onValueChange BasicTextField
     // cannot advertise image MIME types to the IME or receive clipboard images.
-    val field = rememberTextFieldState(initialText = value, initialSelection = TextRange(value.length))
+    // What is adopted is the presented text: the "+" menu putting `/multitask` in front of the owner's value changes
+    // nothing the field shows, so the caret stays where it was and only the pill appears.
+    val field = rememberTextFieldState(initialText = presented.text, initialSelection = TextRange(presented.text.length))
     var adopted by rememberSaveable { mutableStateOf(value) }
     SideEffect {
         if (value != adopted) {
             adopted = value
-            if (value != field.text.toString()) field.setTextAndPlaceCursorAtEnd(value)
+            if (presented.text != field.text.toString()) field.setTextAndPlaceCursorAtEnd(presented.text)
         }
     }
+    val textScroll = rememberScrollState()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
         currentCount = attachments.size,
@@ -178,9 +207,47 @@ fun ComposerBox(
     val currentToken by rememberUpdatedState(slashToken)
     val currentCommands by rememberUpdatedState(commands)
     val currentMenu by rememberUpdatedState(plusMenu)
+    val currentPresented by rememberUpdatedState(presented)
+    val currentPlanMode by rememberUpdatedState(onPlanMode)
+    val currentPlanOn by rememberUpdatedState(planMode)
+
+    /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
+    fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
+        val next = ModePills.compose(text, multitask)
+        if (next != value) onValueChange(next)
+    }
+
+    /**
+     * Puts [pill] on for the field's [text], and the other mode off: plan mode is asked for and `/multitask` leaves
+     * the owner's text, or the text leads with `/multitask` and plan mode is put off. The owner keeps the two
+     * exclusive as well; this is so the composer never depends on it.
+     */
+    fun turnOn(pill: ModePills.Pill, text: String) {
+        when (pill) {
+            ModePills.Pill.Plan -> {
+                currentPlanMode?.invoke(true)
+                publish(text, multitask = false)
+            }
+            ModePills.Pill.Multitask -> {
+                publish(text, multitask = true)
+                if (currentPlanOn) currentPlanMode?.invoke(false)
+            }
+        }
+    }
 
     fun complete(entry: SlashCommand) {
         val token = currentToken ?: return
+        val pill = ModePills.pillFor(entry.name, planEnabled = currentPlanMode != null)
+        if (pill != null) {
+            // Multitask and Plan are pills, not text: the token goes, the mode goes on.
+            val next = ModePills.consumeToken(field.text.toString(), token)
+            field.edit {
+                replace(0, length, next.text)
+                if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
+            }
+            turnOn(pill, next.text)
+            return
+        }
         // A name the catalog does not list — typed, or picked before — is remembered so it is one tap away next time.
         if (currentCommands.byName(entry.name) == null) currentMenu?.onSkillUsed?.invoke(entry.name)
         val next = SlashTokens.complete(field.text.toString(), token, entry.name)
@@ -189,7 +256,7 @@ fun ComposerBox(
             if (next.selection.start >= length) placeCursorAtEnd() else placeCursorBeforeCharAt(next.selection.start)
         }
         // An edit made here does not pass through the input transformation, so the owner is told directly.
-        if (next.text != value) onValueChange(next.text)
+        publish(next.text)
     }
 
     Column(
@@ -205,15 +272,29 @@ fun ComposerBox(
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,
         // and the top/bottom air matches the left/right.
         Box(Modifier.padding(CursorDimens.composerTextInset)) {
+            // The field's layout, handed over as it is measured and read back as the command highlight draws.
+            val textLayout = remember { TextLayoutHandle() }
             BasicTextField(
                 state = field,
                 textStyle = type.input.copy(color = colors.textPrimary),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 cursorBrush = SolidColor(colors.textPrimary),
                 lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
+                scrollState = textScroll,
+                onTextLayout = { textLayout.get = it },
                 inputTransformation = InputTransformation {
-                    val next = toString()
-                    if (next != value) onValueChange(next)
+                    // A `/multitask ` or `/plan ` the reader has just closed with a space becomes its pill: the token
+                    // leaves the text here, before the field ever shows it, and the caret stays on its characters.
+                    // The last one typed is the one that stays on; the other mode goes off with it.
+                    val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onPlanMode != null)
+                    val turnedOn = typed.turnedOn
+                    if (turnedOn != null) {
+                        replace(0, length, typed.text)
+                        selection = typed.selection
+                        turnOn(turnedOn, toString())
+                    } else {
+                        publish(toString())
+                    }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -227,7 +308,9 @@ fun ComposerBox(
                         // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
                         // back over the first character typed.
                         if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        inner()
+                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = CommandOrange)) {
+                            inner()
+                        }
                     }
                 },
             )
@@ -253,6 +336,8 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = { next ->
                             onValueChange(next)
+                            // Multitask from the menu is the same one slot as the pills: it puts plan mode off.
+                            if (planMode && SlashCommands.has(next, SlashCommands.MULTITASK)) onPlanMode?.invoke(false)
                             // The command goes in at the front of the prompt and the caret follows the adopted text
                             // to the end, which is where the reader carries on writing; the field is handed back with it.
                             wantsFocus = true
@@ -263,12 +348,22 @@ fun ComposerBox(
                 }
                 Spacer(Modifier.width(10.dp))
             }
-            // Leftover width (and optional extras) stay on the left so the model chip can sit next to send.
-            // The chip takes what it needs and ellipsises only when send would otherwise be pushed out.
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.End) {
+            // Pills right of "+", the model chip next to send, and the leftover width between them. The children are
+            // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
+            // before a pill would, and send is never pushed out.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                if (planPill) {
+                    ModePill(ModePills.Pill.Plan, onClear = { onPlanMode?.invoke(false) })
+                    Spacer(Modifier.width(6.dp))
+                }
+                if (presented.multitask) {
+                    ModePill(ModePills.Pill.Multitask, onClear = { publish(field.text.toString(), multitask = false) })
+                    Spacer(Modifier.width(6.dp))
+                }
+                Spacer(Modifier.weight(1f))
                 footerExtra?.invoke(this)
                 if (modelLabel != null) {
-                    SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null, modifier = Modifier.weight(1f, fill = false))
+                    SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null)
                 }
             }
             Spacer(Modifier.width(8.dp))
@@ -299,6 +394,47 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 
 /** How long a send has to be in flight before the busy ring becomes a cancel button. */
 private const val CancelOfferDelayMillis = 2_500L
+
+/**
+ * `--cursor-brand` (#F54E00), the Cursor orange the web and desktop composers paint `/commands` in; the same in
+ * every theme, so it is not a [CursorColors] token here. (main carries it as `CursorColors.brand`; this is that value.)
+ */
+internal val CommandOrange = Color(0xFFF54E00)
+
+/**
+ * Where a text field leaves its layout provider: set from `onTextLayout` during the field's measure, read while the
+ * command highlight draws. Not snapshot state on purpose — the provider itself reads the field's layout result, which
+ * is, so the draw is invalidated by the layout changing rather than by a write made in the middle of measuring.
+ */
+private class TextLayoutHandle {
+    var get: (() -> TextLayoutResult?)? = null
+}
+
+/**
+ * Paints the `/command` tokens of a text field in [color] — the Cursor orange — the way cursor.com/agents and the
+ * desktop composer set a command apart from the request. Purely a matter of drawing: the field lays its text out
+ * once and hands the result over through `onTextLayout` ([layout]); after the field has drawn, the same layout is
+ * drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of the laid-out text), so
+ * the orange glyphs land exactly on the field's own. Nothing about editing, selection or the caret changes. The
+ * field draws its text in the space of its scrolled content (its core node places that content at `-scroll` and
+ * draws there), so the repaint follows [scroll] the same way and is clipped to the field's bounds like the field.
+ */
+private fun Modifier.slashCommandHighlight(layout: () -> TextLayoutResult?, scroll: ScrollState, color: Color): Modifier =
+    clipToBounds().drawWithContent {
+        drawContent()
+        val result = layout() ?: return@drawWithContent
+        // The laid-out text rather than the state's: the two differ for the frame between an edit and its layout.
+        val text = result.layoutInput.text.text
+        val tokens = SlashCommands.tokenRanges(text)
+        if (tokens.isEmpty()) return@drawWithContent
+        translate(top = -scroll.value.toFloat()) {
+            for (token in tokens) {
+                val end = (token.last + 1).coerceAtMost(text.length)
+                if (token.first >= end) continue
+                clipPath(result.getPathForRange(token.first, end)) { drawText(result, color = color) }
+            }
+        }
+    }
 
 /**
  * Saves whether the field had focus, rather than the state it is held in. `rememberSaveable { mutableStateOf(…) }`
@@ -360,7 +496,9 @@ internal fun rememberImagePasteReceiver(
 
 /**
  * Plain-text selector with a small chevron: "codex-poly-bot ⌄", "main ⌄", "Claude Fable 5.1 ⌄". Nothing is
- * painted around it until pressed; a chip that cannot be changed drops the chevron instead of greying out.
+ * painted around it until pressed; a chip that cannot be changed drops the chevron instead of greying out. Squeezed
+ * (the label is what gives, never the glyphs) it ellipsises the label and keeps the chevron, so it still reads as a
+ * selector; that takes a row with a bounded width to measure in, which is where every chip sits.
  */
 @Composable
 fun SelectorChip(
@@ -390,6 +528,8 @@ fun SelectorChip(
                 color = colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                // Measured after the glyphs, so a squeeze shortens the label rather than dropping the chevron.
+                modifier = Modifier.weight(1f, fill = false),
             )
         }
         if (showChevron) Icon(CursorIcons.ChevronDown, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
