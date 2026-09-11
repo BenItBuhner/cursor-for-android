@@ -346,7 +346,7 @@ fun RecentChatRow(
             if (renameOpen) {
                 RenameChatDialog(
                     initialName = agent.name,
-                    onConfirm = { name -> renameOpen = false; actions.onRename(row, name) },
+                    onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
                     onDismiss = { renameOpen = false },
                 )
             }

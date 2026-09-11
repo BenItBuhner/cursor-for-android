@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.SignInMethod
@@ -80,6 +81,11 @@ class SessionManager(
     private val mintedKeyTtlMs: Long = CursorLogin.API_KEY_TTL_MS,
     /** The account service's view of the user (the profile picture, above all); absent in tests that stop at `/v1/me`. */
     private val profile: Lazy<ProfileApi?> = lazyOf(null),
+    /**
+     * Whether [profile] may be asked at all (Extended mode). Everything, for tests of the enrichment itself; the graph
+     * always passes the setting, under which the default is to leave the account service alone.
+     */
+    private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
 ) {
     private val _state = MutableStateFlow<SessionState>(SessionState.Loading)
     val state: StateFlow<SessionState> = _state.asStateFlow()
@@ -179,8 +185,10 @@ class SessionManager(
     }
 
     private suspend fun validateStoredKey(cached: CursorUser?, credential: CredentialInfo) {
-        // `/v1/me` knows nothing of the picture; the one shown last time stays until the account service answers.
-        runCatching { realBackend.api.me().toUser().copy(profilePictureUrl = cached?.profilePictureUrl) }
+        // `/v1/me` knows nothing of the picture; the one shown last time stays until the account service answers —
+        // unless the account service is not to be asked, in which case a picture it gave earlier goes with it.
+        val keepPicture = capabilities().accountProfile
+        runCatching { realBackend.api.me().toUser().copy(profilePictureUrl = cached?.profilePictureUrl?.takeIf { keepPicture }) }
             .onSuccess { user ->
                 prefs.setCachedUser(user)
                 if (_backend.value === realBackend) _state.value = SessionState.SignedIn(user, isDemo = false, credential = credential)
@@ -227,6 +235,8 @@ class SessionManager(
      * described it, and an answer that arrives after a sign-out or a backend switch is dropped.
      */
     private suspend fun enrichProfile(user: CursorUser, credential: CredentialInfo) {
+        // Behind Extended mode: `GetMe` is not a documented call, and the initials do without it.
+        if (!capabilities().accountProfile) return
         val api = profile.value ?: return
         val fetched = runCatching { api.profile() }.getOrNull() ?: return
         val enriched = user.copy(
@@ -240,6 +250,34 @@ class SessionManager(
         if (_backend.value !== realBackend || current.isDemo || current.user.userId != user.userId) return
         prefs.setCachedUser(enriched)
         _state.value = SessionState.SignedIn(enriched, isDemo = false, credential = credential)
+    }
+
+    /**
+     * For Extended mode being turned off: the signed-in account loses what only the account service could have said
+     * — the picture at once, in the state and the cache — and is described again by `/v1/me` alone, which also
+     * replaces a name or email `GetMe` had filled in. A demo or signed-out session has nothing to forget.
+     */
+    suspend fun forgetAccountProfile() {
+        val current = _state.value as? SessionState.SignedIn ?: return
+        if (current.isDemo || _backend.value !== realBackend) return
+        val stripped = current.user.copy(profilePictureUrl = null)
+        if (stripped != current.user) {
+            prefs.setCachedUser(stripped)
+            if (_state.value === current) _state.value = current.copy(user = stripped)
+        }
+        val credential = current.credential ?: CredentialInfo(SignInMethod.ApiKey, expiresAtMs = null)
+        scope.launch { validateStoredKey(stripped, credential) }
+    }
+
+    /**
+     * For Extended mode being turned on: the account service is asked for what `/v1/me` leaves out, the way it is
+     * behind every sign-in. Nothing to do for the demo or while signed out.
+     */
+    fun refreshAccountProfile() {
+        val current = _state.value as? SessionState.SignedIn ?: return
+        if (current.isDemo || _backend.value !== realBackend) return
+        val credential = current.credential ?: CredentialInfo(SignInMethod.ApiKey, expiresAtMs = null)
+        scope.launch { enrichProfile(current.user, credential) }
     }
 
     /**

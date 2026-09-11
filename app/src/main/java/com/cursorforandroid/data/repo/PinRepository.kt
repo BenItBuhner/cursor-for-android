@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +73,12 @@ class PinRepository(
     private val maxMaterialized: Int = MAX_MATERIALIZED,
     /** Handed every account list read, with the agents token taken before the read (see [AgentRepository.token]). */
     private val onList: suspend (AccountList, Int) -> Unit = { _, _ -> },
+    /**
+     * Whether the account may be read at all, and whether the pins may follow it (Extended mode). Everything, for
+     * tests of the sync itself; the graph passes the setting, under which the default leaves the account alone and
+     * the pins are this device's — [toggle] flips them here and nothing is recorded as owed to a server.
+     */
+    private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
 ) {
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
@@ -206,14 +213,17 @@ class PinRepository(
     }
 
     private suspend fun round(): Result<Unit> = serverMutex.withLock {
-        if (!sessionUsable()) {
+        // The whole round is one call to the account service and what follows from its answer: without the session
+        // (Extended mode off) none of it happens — no list read, no pins pushed, nothing handed to [onList].
+        val allowed = capabilities()
+        if (!sessionUsable() || !allowed.accountSession) {
             _state.update { it.copy(active = false, isSyncing = false) }
             return Result.success(Unit)
         }
         val startedIn = generation.get()
         // The account list is read either way: it also carries the pull request states and the sources (see [onList]).
         // Only the pins themselves are subject to the setting.
-        val pinsEnabled = prefs.pinSyncEnabled.first()
+        val pinsEnabled = allowed.pinSync && prefs.pinSyncEnabled.first()
         _state.update { it.copy(active = pinsEnabled, isSyncing = pinsEnabled) }
         try {
             val known = agents.state.value.agents.mapTo(HashSet()) { it.id }
@@ -317,7 +327,7 @@ class PinRepository(
     /** The account service can be asked at all: a real backend, and no failure that retrying cannot fix. */
     private fun sessionUsable(): Boolean = !session.isDemo && !halted
 
-    private suspend fun eligible(): Boolean = sessionUsable() && prefs.pinSyncEnabled.first()
+    private suspend fun eligible(): Boolean = sessionUsable() && capabilities().pinSync && prefs.pinSyncEnabled.first()
 
     private suspend fun pendingCount(): Int = prefs.pendingPinChanges.first().size
 

@@ -185,3 +185,29 @@ object BuiltInSlashCommands {
 
     fun byName(name: String): SlashCommand? = (commands + skills).firstOrNull { it.name == name }
 }
+
+/**
+ * The project skills and commands a repository defines for its agents, read off its file tree: `.cursor/skills/<name>/SKILL.md`
+ * is a skill named `<name>`, `.cursor/commands/<name>.md` a command named `<name>` (cursor.com/docs/skills,
+ * cursor.com/docs/commands). This is what a cloud agent loads from the repository, so it is what a documented-API-only
+ * composer can offer without asking the account service: names and paths, since the descriptions live inside the files.
+ */
+object RepositorySlashCommands {
+    private val SKILL = Regex("""^\.cursor/skills/([^/]+)/SKILL\.md$""")
+    private val COMMAND = Regex("""^\.cursor/commands/([^/]+)\.md$""")
+
+    fun fromPaths(paths: Iterable<String>): SlashCatalog {
+        val entries = LinkedHashMap<String, SlashCommand>()
+        fun put(command: SlashCommand) {
+            if (SlashCommands.isValidName(command.name) && command.name !in entries) entries[command.name] = command
+        }
+        val normalized = paths.map { it.trim().trimStart('/').replace('\\', '/') }.sorted()
+        normalized.forEach { path ->
+            COMMAND.matchEntire(path)?.let { put(SlashCommand(it.groupValues[1], kind = SlashCommand.Kind.Command, origin = SlashCommand.Origin.Project, sourcePath = path)) }
+        }
+        normalized.forEach { path ->
+            SKILL.matchEntire(path)?.let { put(SlashCommand(it.groupValues[1], kind = SlashCommand.Kind.Skill, origin = SlashCommand.Origin.Project, sourcePath = path)) }
+        }
+        return SlashCatalog(entries.values.toList())
+    }
+}

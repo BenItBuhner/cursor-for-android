@@ -68,7 +68,8 @@ data class AgentRowActions(
     val onTogglePin: (AgentRow) -> Unit,
     val onArchive: (AgentRow) -> Unit,
     val onUnarchive: (AgentRow) -> Unit,
-    val onRename: (AgentRow, String) -> Unit,
+    /** Null hides "Rename": the public API has no rename, so it is offered only in Extended mode. */
+    val onRename: ((AgentRow, String) -> Unit)?,
     val onSnooze: (AgentRow, Long) -> Unit,
     val onUnsnooze: (AgentRow) -> Unit,
 )
@@ -169,7 +170,7 @@ fun AgentRowItem(
         if (renameOpen) {
             RenameChatDialog(
                 initialName = agent.name,
-                onConfirm = { name -> renameOpen = false; actions.onRename(row, name) },
+                onConfirm = { name -> renameOpen = false; actions.onRename?.invoke(row, name) },
                 onDismiss = { renameOpen = false },
             )
         }
@@ -227,7 +228,7 @@ fun ChatOverflowMenu(
     val agent = row.agent
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = CursorTheme.colors.elevated, shape = CursorTheme.shapes.lg) {
         MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
-        MenuItem("Rename", CursorIcons.Pencil) { onRename() }
+        if (actions.onRename != null) MenuItem("Rename", CursorIcons.Pencil) { onRename() }
         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
         MenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
         if (!agent.isArchived) {

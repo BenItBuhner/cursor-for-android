@@ -5,10 +5,16 @@ import android.os.Build
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.data.api.AccountApi
+import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.BackgroundComposerApi
+import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
+import com.cursorforandroid.data.api.GitHubApi
+import com.cursorforandroid.data.api.GitHubSlashCommandApi
+import com.cursorforandroid.data.api.PinsApi
+import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
@@ -28,17 +34,24 @@ import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.CatalogRepository
+import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
 import com.cursorforandroid.data.repo.ChatLauncher
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
+import com.cursorforandroid.data.repo.ExtendedMode
 import com.cursorforandroid.data.repo.FollowUpRepository
+import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
+import com.cursorforandroid.data.repo.PullRequestSource
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -47,6 +60,9 @@ import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -105,14 +121,65 @@ class AppGraph(
     private val demoParts = lazy { DemoBackendFactory.create() }
     private val demoBackend = demo ?: CursorBackend(isDemo = true, parts = demoParts)
 
+    /**
+     * Whether the private `api2` surfaces below — the account session, `GetMe`, the account's pins, archive and rename,
+     * its slash-command lists and its pull request states — may be used at all. Off by default: then the app speaks
+     * only the documented API, and GitHub's for what a GitHub-hosted repository can say about itself. Every part
+     * that could reach `api2` reads [Capabilities] from here before it does, and the session provider refuses to
+     * hand out a token while the mode is off, whatever a caller forgot to check. Cheap: it holds the preferences.
+     */
+    val extendedMode = ExtendedMode(
+        prefs,
+        // Whether this install was signed in before the setting existed (see ExtendedMode.migrateInstall): an account
+        // the preferences still describe, or a stored key. The preferences answer first, so the key store — opened
+        // off the main thread — is only consulted when they do not; the demo has no account to have used.
+        hadAccount = {
+            !prefs.demoMode.first() &&
+                (prefs.cachedUser.first() != null || prefs.credentialInfo.first() != null || withContext(Dispatchers.IO) { !keyStore.apiKey().isNullOrBlank() })
+        },
+    )
+    private val capabilities: suspend () -> Capabilities = { extendedMode.capabilities() }
+
     /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
     private val lazyAccountClient = lazy { CursorApiFactory.loginClient() }
     private val lazyAccountRpc = lazy { ConnectJsonClient(lazyAccountClient.value, CursorLoginEndpoints.API_URL) }
-    /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only. */
-    private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }) }
+    /** The account session the account-level RPCs take, derived from the stored key when needed and kept in memory only; none while Extended mode is off. */
+    private val lazySessionTokens = lazy { SessionTokenProvider(lazyAccountClient.value, { keyStore.apiKey() }, sessionAllowed = { extendedMode.isEnabled() }) }
     /** The account's agent list, pins, archive, rename, pull request statuses and sources: what the desktop Agents window and the iOS app show. */
     private val lazyAccountAgents = lazy { BackgroundComposerApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyAccountPullRequests = lazy { CursorPullRequestSource(lazyAccountAgents.value) }
+    private val lazyAccountSlashCommands = lazy { DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value) }
+
+    /**
+     * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
+     * repositories it hosts — pull request states and the `.cursor/` skills and commands in a repository's tree.
+     */
+    private val lazyGitHub = lazy { GitHubApi(CursorApiFactory.gitHubClient()) }
+    private val lazyGitHubPullRequests = lazy { GitHubPullRequestSource(lazyGitHub.value) }
+    private val lazyGitHubSlashCommands = lazy { GitHubSlashCommandApi(lazyGitHub.value) }
+
+    // The repositories take their sources by value, so the account's and GitHub's are handed over behind these
+    // shims: a graph in default mode never builds the api2 client, and one in Extended mode never builds GitHub's.
+    private val accountAgents = object : PinsApi, ComposerLifecycleApi {
+        override suspend fun list(): AccountList = lazyAccountAgents.value.list()
+        override suspend fun pin(ids: Collection<String>) = lazyAccountAgents.value.pin(ids)
+        override suspend fun unpin(ids: Collection<String>) = lazyAccountAgents.value.unpin(ids)
+        override suspend fun archive(id: String) = lazyAccountAgents.value.archive(id)
+        override suspend fun unarchive(id: String) = lazyAccountAgents.value.unarchive(id)
+        override suspend fun rename(id: String, name: String) = lazyAccountAgents.value.rename(id, name)
+    }
+    private val accountPullRequests = PullRequestSource { url -> lazyAccountPullRequests.value.lookup(url) }
+    private val gitHubPullRequests = PullRequestSource { url -> lazyGitHubPullRequests.value.lookup(url) }
+    private val accountSlashCommands = object : SlashCommandApi {
+        override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forRepository(repoUrl, ref)
+        override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forAgent(agentId, repoUrl, ref)
+        override suspend fun global(): List<SlashCommand> = lazyAccountSlashCommands.value.global()
+    }
+    private val gitHubSlashCommands = object : SlashCommandApi {
+        override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyGitHubSlashCommands.value.forRepository(repoUrl, ref)
+        override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog = lazyGitHubSlashCommands.value.forAgent(agentId, repoUrl, ref)
+        override suspend fun global(): List<SlashCommand> = lazyGitHubSlashCommands.value.global()
+    }
 
     val session = SessionManager(
         keyStore,
@@ -123,6 +190,7 @@ class AppGraph(
         // What the key is called on cursor.com/dashboard/api, so the user can tell this phone's key from others.
         mintedKeyName = "Cursor for Android (${Build.MODEL.ifBlank { "Android" }})",
         profile = lazy { AccountApi(lazyAccountRpc.value, lazySessionTokens.value) },
+        capabilities = capabilities,
     )
 
     private val lazyAgents = lazy {
@@ -133,15 +201,19 @@ class AppGraph(
             caches.agents,
             demoSources = DemoData.sources,
             demoComposers = DemoData.composers,
-            account = lazyAccountAgents.value,
+            account = accountAgents,
+            capabilities = capabilities,
         )
     }
     val agents: AgentRepository get() = lazyAgents.value
 
-    /** Where the agents' pull requests stand, on the account's word: the public API names a PR but never says if it is open, merged or closed. */
+    /**
+     * Where the agents' pull requests stand: the public API names a PR but never says if it is open, merged or closed.
+     * On the account's word in Extended mode; on GitHub's, for the repositories it hosts, otherwise.
+     */
     private val lazyPullRequests = lazy {
         PullRequestRepository(
-            account = lazyAccountPullRequests.value,
+            account = CapabilityGatedPullRequestSource(capabilities, account = accountPullRequests, gitHub = gitHubPullRequests),
             demo = DemoPullRequests,
             isDemo = { session.isDemo },
             cache = caches.pullRequests,
@@ -150,19 +222,20 @@ class AppGraph(
     val pullRequests: PullRequestRepository get() = lazyPullRequests.value
 
     /**
-     * Pins shared with the desktop Agents window and the iOS app through the account; its list read also carries the
-     * PR states and where each chat was started from (the Source filter).
+     * Pins shared with the desktop Agents window and the iOS app through the account (Extended mode; otherwise they
+     * are this device's); its list read also carries the PR states and where each chat was started from (the Source filter).
      */
     private val lazyPins = lazy {
         PinRepository(
             session = session,
             prefs = prefs,
             agents = agents,
-            api = lazyAccountAgents.value,
+            api = accountAgents,
             onList = { list, agentsToken ->
                 agents.applySources(list.sources, agentsToken)
                 pullRequests.seed(list.pullRequests)
             },
+            capabilities = capabilities,
         )
     }
     val pins: PinRepository get() = lazyPins.value
@@ -170,9 +243,12 @@ class AppGraph(
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value
 
-    /** The composers' `/` catalogs — `/goal`, the built-in skills, and the project, plugin and synced ones the account lists per repository or agent. */
+    /**
+     * The composers' `/` catalogs — `/goal`, the built-in skills, and the project, plugin and synced ones the account
+     * lists per repository or agent (Extended mode), or the project ones a GitHub-hosted repository's tree shows.
+     */
     private val lazySlashCommands = lazy {
-        SlashCommandRepository(session, DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value), caches.slashCommands)
+        SlashCommandRepository(session, accountSlashCommands, caches.slashCommands, repoContents = gitHubSlashCommands, capabilities = capabilities)
     }
     val slashCommands: SlashCommandRepository get() = lazySlashCommands.value
 
@@ -285,6 +361,35 @@ class AppGraph(
             followUpStore.clear()
             caches.clear()
         }
+
+        // Extended mode turned off (and, once, an upgraded install whose mode starts off): nothing the account
+        // service produced stays. The session token first — nothing on api2 may be called from here — then what its
+        // calls left in memory and on disk, and the pins become this device's own. Same rule as the sign-out above:
+        // memory is reset only where this process built it, disk is wiped regardless.
+        extendedMode.onDisabled = {
+            if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
+            if (lazyPins.isInitialized()) pins.reset()
+            prefs.settlePinsLocally()
+            if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
+            if (lazyPullRequests.isInitialized()) pullRequests.reset()
+            caches.pullRequests.removeAll()
+            if (lazySlashCommands.isInitialized()) slashCommands.reset()
+            caches.slashCommands.removeAll()
+            if (lazyAgents.isInitialized()) agents.forgetAccountSources(prefs.localAgentState.first().launchedHereIds)
+            session.forgetAccountProfile()
+        }
+        // Extended mode turned on: what the account adds is fetched now rather than at the next cue — the picture,
+        // and the pins, whose first sync pushes this device's up before adopting the account's list.
+        extendedMode.onEnabled = {
+            if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
+            if (lazyPullRequests.isInitialized()) pullRequests.reset()
+            if (lazySlashCommands.isInitialized()) slashCommands.reset()
+            session.refreshAccountProfile()
+            if (lazyPins.isInitialized()) {
+                pins.reset()
+                pins.sync()
+            }
+        }
     }
 
     /**
@@ -303,6 +408,10 @@ class AppGraph(
             "sessionTokens" to lazySessionTokens,
             "accountAgents" to lazyAccountAgents,
             "accountPullRequests" to lazyAccountPullRequests,
+            "accountSlashCommands" to lazyAccountSlashCommands,
+            "gitHub" to lazyGitHub,
+            "gitHubPullRequests" to lazyGitHubPullRequests,
+            "gitHubSlashCommands" to lazyGitHubSlashCommands,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,
             "pins" to lazyPins,

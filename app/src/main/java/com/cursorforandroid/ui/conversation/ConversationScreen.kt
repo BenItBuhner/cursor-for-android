@@ -121,6 +121,8 @@ fun ConversationScreen(
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+    val isDemo = graph.session.isDemo
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val share by graph.share.offer.collectAsStateWithLifecycle()
@@ -198,7 +200,8 @@ fun ConversationScreen(
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
                         MenuItem(if (isPinned) "Unpin" else "Pin", CursorIcons.Pin) { menuOpen = false; viewModel.togglePinned() }
-                        MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
+                        // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
+                        if (isDemo || extendedMode) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
