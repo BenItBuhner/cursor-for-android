@@ -66,8 +66,11 @@ import kotlinx.coroutines.withContext
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
- * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
- * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
+ * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] so the placeholder
+ * and typed text share the left and right edges of the glyphs in those discs, not the discs themselves: the
+ * 24dp corners would otherwise leave the first letter sitting in the arc. The text is the largest thing in the
+ * box and the round buttons the smallest controls ([CursorDimens.roundButton] beside [CursorTypography.input]),
+ * as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
@@ -172,7 +175,8 @@ fun ComposerBox(
             AttachmentStrip(attachments, onRemoveAttachment)
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
-        Box {
+        // The extra inset is on the Box so the popover stays under the glyphs, not under the corner.
+        Box(Modifier.padding(horizontal = CursorDimens.composerTextInset)) {
             BasicTextField(
                 state = field,
                 textStyle = type.input.copy(color = colors.textPrimary),
