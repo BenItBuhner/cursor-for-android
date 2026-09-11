@@ -57,23 +57,30 @@ class ModePillsTest {
     @Test
     fun `a command closed with a space leaves the typed text, the caret staying on its characters`() {
         assertThat(ModePills.consumeTyped("/multitask ", TextRange(11), planEnabled = true))
-            .isEqualTo(Typed("", TextRange(0), setOf(Pill.Multitask)))
+            .isEqualTo(Typed("", TextRange(0), listOf(Pill.Multitask)))
         assertThat(ModePills.consumeTyped("fix /plan the bug", TextRange(10), planEnabled = true))
-            .isEqualTo(Typed("fix the bug", TextRange(4), setOf(Pill.Plan)))
+            .isEqualTo(Typed("fix the bug", TextRange(4), listOf(Pill.Plan)))
         assertThat(ModePills.consumeTyped("/plan fix", TextRange(0), planEnabled = true).selection).isEqualTo(TextRange(0))
-        assertThat(ModePills.consumeTyped("/multitask /plan fix", TextRange(20), planEnabled = true))
-            .isEqualTo(Typed("fix", TextRange(3), setOf(Pill.Multitask, Pill.Plan)))
         // A caret inside the token lands where the token stood.
         assertThat(ModePills.consumeTyped("/plan\nfix", TextRange(3), planEnabled = true))
-            .isEqualTo(Typed("fix", TextRange(0), setOf(Pill.Plan)))
+            .isEqualTo(Typed("fix", TextRange(0), listOf(Pill.Plan)))
+    }
+
+    @Test
+    fun `both commands at once come out in text order, and the last is the one that stays on`() {
+        val both = ModePills.consumeTyped("/multitask /plan fix", TextRange(20), planEnabled = true)
+        assertThat(both).isEqualTo(Typed("fix", TextRange(3), listOf(Pill.Multitask, Pill.Plan)))
+        assertThat(both.turnedOn).isEqualTo(Pill.Plan)
+        assertThat(ModePills.consumeTyped("/plan /multitask fix", TextRange(20), planEnabled = true).turnedOn).isEqualTo(Pill.Multitask)
+        assertThat(ModePills.consumeTyped("fix it", TextRange(6), planEnabled = true).turnedOn).isNull()
     }
 
     @Test
     fun `a token still being typed, or one that is not a pill, stays as text`() {
         assertThat(ModePills.consumeTyped("/multitask", TextRange(10), planEnabled = true))
-            .isEqualTo(Typed("/multitask", TextRange(10), emptySet()))
+            .isEqualTo(Typed("/multitask", TextRange(10), emptyList()))
         assertThat(ModePills.consumeTyped("/plan ", TextRange(6), planEnabled = false))
-            .isEqualTo(Typed("/plan ", TextRange(6), emptySet()))
+            .isEqualTo(Typed("/plan ", TextRange(6), emptyList()))
         assertThat(ModePills.consumeTyped("/goal ship it", TextRange(13), planEnabled = true).pills).isEmpty()
         assertThat(ModePills.consumeTyped("/multitasking ", TextRange(14), planEnabled = true).pills).isEmpty()
         assertThat(ModePills.consumeTyped("a/plan ", TextRange(7), planEnabled = true).pills).isEmpty()

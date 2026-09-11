@@ -33,10 +33,12 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * The home composer alone, in each of the states its footer and text can take: nothing on, the Plan pill, the
- * Multitask pill, a `/command` painted in the Cursor orange, and — in the light theme, with a long model name — all
- * of them at once, the model chip giving way to the pills. Written to `screenshots/` beside the walkthrough; CI
- * compares them pixel for pixel (`verifyRoborazziDebug`), and `recordRoborazziDebug` re-records them on purpose.
+ * The home composer alone, in each of the states its footer and text can take: nothing on, the Plan pill (amber,
+ * beside a `/command` in the brand orange so the two hues sit together), the Multitask pill (violet), a `/command`
+ * painted in the Cursor orange on its own, and — in the light theme, with a long model name — the Plan pill with the
+ * model chip giving way to it. Plan and Multitask are one slot, so no state wears both. Written to `screenshots/`
+ * beside the walkthrough; CI compares them pixel for pixel (`verifyRoborazziDebug`), and `recordRoborazziDebug`
+ * re-records them on purpose.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -95,8 +97,9 @@ class ComposerScreenshotTest {
         // Nothing on: "+", the model chip beside send, the placeholder.
         capture("29_composer_no_pill", settledText = "Ask Cursor to build")
 
-        // Plan mode, as the model picker's toggle or `/plan` leaves it: a pill right of "+", the chip the model's name alone.
-        scene = Scene(planMode = true, value = "Work out how the sidebar should group projects")
+        // Plan mode, as the model picker's toggle or `/plan` leaves it: an amber pill right of "+", the chip the model's
+        // name alone, and a `/command` in the brand orange beside it in the text.
+        scene = Scene(planMode = true, value = "/review Work out how the sidebar should group projects")
         capture("30_composer_plan_pill", settledText = "Work out how")
 
         // A `/multitask` prompt: the owner still holds the token in front; the field shows the request beside the pill.
@@ -107,11 +110,11 @@ class ComposerScreenshotTest {
         scene = Scene(value = "/review Ship the release notes, then /subscribe to the checks")
         capture("32_composer_slash_highlight", settledText = "Ship the release")
 
-        // Light theme, both pills, a long model name and a command at once: the chip ellipsises, send stays put.
+        // Light theme: the Plan pill, a long model name and a command at once: the chip ellipsises, send stays put.
         scene = Scene(
-            value = "/multitask /goal Ship the 0.2.0 release notes",
+            value = "/goal Ship the 0.2.0 release notes",
             planMode = true,
-            modelLabel = "Claude Fable 5.1 Thinking (Max)",
+            modelLabel = "Claude Fable 5.1 Thinking (Max) with the extended context window",
             mode = ThemeMode.Light,
         )
         capture("33_composer_pills_light", settledText = "Ship the 0.2.0")

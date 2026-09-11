@@ -170,16 +170,70 @@ class ComposerPillsTest {
         assertThat(shown()).isEmpty()
         compose.runOnIdle { assertThat(value).isEmpty() }
 
+        // Multitask picked next replaces the plan: one slot, one pill.
         field.performTextInput("/mu")
         compose.waitUntil { compose.onAllNodes(hasText("Orchestrate multiple subagents", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("/multitask").performClick()
         compose.waitUntil { value == "/multitask " }
         assertThat(shown()).isEmpty()
-        compose.onNodeWithText("Plan").assertIsDisplayed()
+        compose.runOnIdle {
+            assertThat(planMode).isFalse()
+            assertThat(planChanges).containsExactly(true, false).inOrder()
+        }
         compose.onNodeWithText("Multitask").assertIsDisplayed()
+        assertThat(pillCount("Plan")).isEqualTo(0)
 
         field.performTextInput("ship it")
         compose.runOnIdle { assertThat(value).isEqualTo("/multitask ship it") }
+    }
+
+    @Test
+    fun `typing the other mode replaces the pill, in the field and in the owner`() {
+        planMode = true
+        show()
+        compose.onNodeWithText("Plan").assertIsDisplayed()
+
+        field.performTextInput("/multitask ")
+        compose.waitUntil { pillCount("Multitask") == 1 }
+        compose.runOnIdle {
+            assertThat(value).isEqualTo("/multitask ")
+            assertThat(planMode).isFalse()
+        }
+        assertThat(pillCount("Plan")).isEqualTo(0)
+
+        field.performTextInput("/plan ")
+        compose.waitUntil { pillCount("Plan") == 1 }
+        compose.runOnIdle {
+            assertThat(value).isEmpty()
+            assertThat(planMode).isTrue()
+        }
+        assertThat(pillCount("Multitask")).isEqualTo(0)
+        assertThat(shown()).isEmpty()
+    }
+
+    @Test
+    fun `multitask from the plus menu puts a plan off`() {
+        planMode = true
+        show()
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.onNodeWithText("Multitask").performClick()
+        compose.waitUntil { value == "/multitask " }
+        compose.runOnIdle { assertThat(planMode).isFalse() }
+        compose.waitUntil { pillCount("Plan") == 0 }
+        assertThat(pillCount("Multitask")).isEqualTo(1)
+    }
+
+    @Test
+    fun `an owner holding both modes is shown one pill, never two`() {
+        // The view models keep the two exclusive; should one not, the command in the text is what the field hides,
+        // so that is the pill worn.
+        value = "/multitask fix"
+        planMode = true
+        show()
+
+        assertThat(pillCount("Multitask")).isEqualTo(1)
+        assertThat(pillCount("Plan")).isEqualTo(0)
     }
 
     @Test
@@ -204,23 +258,19 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `a long model name gives way to the pills rather than pushing send out`() {
+    fun `a long model name gives way to the pill rather than pushing send out`() {
         value = "/multitask fix"
-        planMode = true
-        show(modelLabel = "Claude Fable 5.1 Thinking (Max) with the extended context window", width = 320.dp)
+        show(modelLabel = "Claude Fable 5.1 Thinking (Max) with the extended context window", width = 300.dp)
 
         val box = bounds(hasTestTag("composer"))
         val plus = bounds(hasContentDescription("Add to prompt"))
-        val plan = bounds(hasText("Plan"))
         val multitask = bounds(hasText("Multitask"))
         val model = bounds(hasText("Claude Fable 5.1", substring = true))
         val send = bounds(hasContentDescription("Send"))
 
-        compose.onNodeWithText("Plan").assertIsDisplayed()
         compose.onNodeWithText("Multitask").assertIsDisplayed()
-        assertThat(plan.left).isGreaterThan(plus.right)
-        assertThat(multitask.left).isGreaterThan(plan.right)
-        // The chip is still there, between the pills and send, only shorter; send sits inside the box.
+        assertThat(multitask.left).isGreaterThan(plus.right)
+        // The chip is still there, between the pill and send, only shorter; send sits inside the box.
         assertThat(model.width).isGreaterThan(0f)
         assertThat(model.left).isAtLeast(multitask.right)
         assertThat(model.right).isAtMost(send.left)

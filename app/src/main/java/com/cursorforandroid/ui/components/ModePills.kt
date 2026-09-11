@@ -26,7 +26,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 /**
  * The two slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
  * still travels in the prompt as its token, and `/plan`, which is plan mode (`mode: "plan"` on the run) and never
- * travels as text at all.
+ * travels as text at all. They are two settings of one slot — a run is planned or fanned out to subagents, not
+ * both — so turning either on takes the other off, and the composer only ever wears one of them.
  *
  * Everything here is presentation. The owner of the composer keeps holding the prompt the way it has always been
  * sent — `/multitask fix the flaky test` — and the field shows `fix the flaky test` beside a Multitask pill; every
@@ -63,8 +64,14 @@ object ModePills {
         else -> null
     }
 
-    /** The field's text once commands typed into it have become pills, the caret kept on the same characters. */
-    data class Typed(val text: String, val selection: TextRange, val pills: Set<Pill>)
+    /**
+     * The field's text once commands typed into it have become pills, the caret kept on the same characters. [pills]
+     * are in the order they stood in the text; the last is the one that ends up on, the modes being one slot.
+     */
+    data class Typed(val text: String, val selection: TextRange, val pills: List<Pill>) {
+        /** The pill left on once the typed ones have replaced each other in turn, if any was typed. */
+        val turnedOn: Pill? get() = pills.lastOrNull()
+    }
 
     /**
      * Takes every `/multitask ` and (with [planEnabled]) `/plan ` — a token with whitespace after it, so the reader
@@ -75,7 +82,7 @@ object ModePills {
         var result = text
         var start = selection.start
         var end = selection.end
-        val pills = mutableSetOf<Pill>()
+        val pills = ArrayList<Pill>()
         // Later tokens first, so the spans of the earlier ones stay valid as characters leave.
         for (match in CLOSED.findAll(text).toList().asReversed()) {
             val pill = pillFor(match.groupValues[1], planEnabled) ?: continue
@@ -86,7 +93,7 @@ object ModePills {
             start = shift(start, removed)
             end = shift(end, removed)
         }
-        return Typed(result, TextRange(start, end), pills)
+        return Typed(result, TextRange(start, end), pills.asReversed())
     }
 
     /**
@@ -128,25 +135,42 @@ object ModePills {
 internal val PillVioletDark = Color(0xFFA296EC)
 internal val PillVioletLight = Color(0xFF6A5ACD)
 
-/** How much of the violet the pill's wash carries over the surface, dark or light. */
+/**
+ * Plan mode's amber: Cursor Dark Anysphere's own `charts.yellow` (#F1B467), a far lighter and yellower hue than the
+ * brand orange the `/commands` are painted in, so the two never read as one thing. The light theme takes the light
+ * theme's counterpart (#A46700) deepened to #8F5C00, the lightest step at which the label clears 4.5:1 on its wash.
+ */
+internal val PillAmberDark = Color(0xFFF1B467)
+internal val PillAmberLight = Color(0xFF8F5C00)
+
+/** How much of its tint a pill's wash carries over the surface, dark or light. */
 private const val PillWashAlpha = 0.12f
 
+/** A pill's tint in the theme in force: Multitask the web's violet, Plan the theme's amber. */
+@Composable
+internal fun pillTint(pill: ModePills.Pill): Color {
+    val dark = CursorTheme.colors.isDark
+    return when (pill) {
+        ModePills.Pill.Multitask -> if (dark) PillVioletDark else PillVioletLight
+        ModePills.Pill.Plan -> if (dark) PillAmberDark else PillAmberLight
+    }
+}
+
 /**
- * A mode the message goes out under, worn in the composer footer the way cursor.com/agents wears Multitask: a wash
- * of the web's violet ([PillVioletDark] / [PillVioletLight]) with the mode's glyph and name in the same violet, and a
- * cross that takes it off again. The label never wraps and yields no width: the model chip beside send is what gives
- * way when the footer is tight.
+ * A mode the message goes out under, worn in the composer footer the way cursor.com/agents wears Multitask: a
+ * stadium of the mode's tint at a wash ([pillTint]) with its glyph and name in the same tint, and a cross that takes
+ * it off again. The label never wraps and yields no width: the model chip beside send is what gives way when the
+ * footer is tight.
  */
 @Composable
 fun ModePill(pill: ModePills.Pill, onClear: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val tint = if (colors.isDark) PillVioletDark else PillVioletLight
+    val tint = pillTint(pill)
     Row(
         modifier
             .heightIn(min = CursorDimens.roundButton)
-            .background(tint.copy(alpha = PillWashAlpha), CursorTheme.shapes.base)
-            .padding(start = 8.dp, end = 3.dp),
+            .background(tint.copy(alpha = PillWashAlpha), CursorTheme.shapes.full)
+            .padding(start = 10.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(pill.icon, null, tint = tint, modifier = Modifier.size(13.dp))
