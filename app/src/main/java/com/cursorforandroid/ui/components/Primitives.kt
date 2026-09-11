@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -64,6 +65,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -71,6 +73,19 @@ import com.cursorforandroid.ui.theme.CursorTheme
 /** Fill + hairline stroke sharing one shape so the edge stays crisp. */
 fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
     this.clip(shape).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
+
+/**
+ * Takes every pointer event that reaches this node and answers none of them. For a surface drawn over the shell
+ * rather than in place of it: an opaque background paints the shell out but leaves its drags and taps live
+ * underneath, and a hit that finds no pointer node here goes on to whatever is at those coordinates below.
+ */
+fun Modifier.opaqueToPointerInput(): Modifier = this.pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            awaitPointerEvent().changes.forEach { it.consume() }
+        }
+    }
+}
 
 @Composable
 fun Modifier.pressable(onClick: () -> Unit, shape: Shape, enabled: Boolean = true, role: Role? = Role.Button): Modifier {
@@ -331,6 +346,27 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
                 hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
             }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+            AgentIndicator.Snoozed -> Icon(CursorIcons.Clock, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/**
+ * The leading glyph of a Cursor Project's row: the Project's icon in the Project's colour, as the Agents Window
+ * draws it — the default lightning in the secondary icon tone when the Project has not been given a look (see
+ * [CursorIcons.project] and `CursorColors.projectTone`). A Project is told by its look rather than by what it
+ * pushed, so the icon stays while the row is unread or in error; that state rides on it as a small [badge] in the
+ * unread blue or the error red, haloed in the sidebar colour so it reads against the icon.
+ */
+@Composable
+fun ProjectGlyph(appearance: ProjectAppearance?, badge: Color? = null, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    Box(modifier.size(CursorDimens.glyph)) {
+        Icon(CursorIcons.project(appearance?.icon), "Project", tint = colors.projectTone(appearance?.colorId), modifier = Modifier.size(16.dp).align(Alignment.Center))
+        if (badge != null) {
+            Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(8.dp).background(colors.sidebar, CircleShape).padding(1.5.dp)) {
+                Dot(badge, size = 5.dp)
+            }
         }
     }
 }

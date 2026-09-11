@@ -65,9 +65,12 @@ object ToolCallMapper {
         val summary: String,
         val kind: ToolKind,
         val server: String? = null,
-        val detail: String? = null,
+        detail: String? = null,
         val labels: ToolLabels? = null,
-    )
+    ) {
+        /** Bounded here rather than at each call it is read from: a command or an MCP argument has no size limit. */
+        val detail: String? = ToolOutput.detail(detail)
+    }
 
     private fun describe(kind: ToolKind, name: String, args: JsonObject?, result: JsonElement?, running: Boolean, previousTodos: List<Todo>?): Description = when (kind) {
         ToolKind.Read -> {
@@ -146,7 +149,7 @@ object ToolCallMapper {
                 }
             }
         }
-        val displayServer = server?.replace(Regex("^(user|team|project)-"), "")?.ifBlank { null }
+        val displayServer = server?.replace(PROVIDER_SCOPE, "")?.ifBlank { null }
         val inner = (args?.get("args") ?: args?.get("arguments"))?.toString()
         return Description(tool.orEmpty(), ToolKind.Mcp, server = displayServer, detail = inner?.takeIf { it != "{}" && it != "null" })
     }
@@ -217,7 +220,7 @@ object ToolCallMapper {
             val folder = segments.getOrNull(projectsAt + 3)
             val rest = segments.drop(projectsAt + 4)
             when (folder) {
-                "terminals" -> if (rest.size == 1 && Regex("^(ext-)?\\d+\\.txt$").matches(rest[0])) return read to "terminal"
+                "terminals" -> if (rest.size == 1 && TERMINAL_FILE.matches(rest[0])) return read to "terminal"
                 "agent-tools" -> if (rest.size == 1 && rest[0].endsWith(".txt")) return read to "tool output"
                 "agent-transcripts" -> return read to "agent transcript"
             }
@@ -245,7 +248,7 @@ object ToolCallMapper {
 
     /** The agent's description of a command, sentence-cased and without a leading "run": "Check the git status". */
     private fun shellDescription(description: String): String? {
-        val text = description.trim().replace(Regex("^run(?=\\s|$)\\s*", RegexOption.IGNORE_CASE), "")
+        val text = description.trim().replace(LEADING_RUN, "")
         return text.takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
     }
 
@@ -261,8 +264,8 @@ object ToolCallMapper {
      */
     private fun isErrorResult(result: JsonElement?): Boolean {
         val obj = result.obj() ?: return false
-        if (obj["error"].let { it != null && it !is JsonNull }) return true
-        if (obj["rejected"] != null || obj["permissionDenied"] != null) return true
+        if (obj["error"].isReported()) return true
+        if (obj["rejected"].isTrue() || obj["permissionDenied"].isTrue()) return true
         if (obj.string(listOf("status"))?.lowercase() == "error") return true
         if (obj.string(listOf("resultType"))?.lowercase()?.contains("error") == true) return true
         val value = obj["value"] as? JsonObject
@@ -270,6 +273,16 @@ object ToolCallMapper {
     }
 
     private fun truncate(text: String, max: Int) = if (text.length > max) text.take(max - 3) + "..." else text
+
+    /** A reason that says something. A field that is absent, null, empty or false reports no failure. */
+    private fun JsonElement?.isReported(): Boolean = when (this) {
+        null, JsonNull -> false
+        is JsonPrimitive -> content.isNotBlank() && booleanOrNull != false
+        else -> true
+    }
+
+    /** A flag the payload sets, as a JSON boolean or as its string form. Merely naming it says nothing. */
+    private fun JsonElement?.isTrue(): Boolean = (this as? JsonPrimitive)?.booleanOrNull == true
 
     private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 
@@ -313,6 +326,10 @@ object ToolCallMapper {
     private val COMMAND_KEYS = listOf("command", "cmd")
     private val DESCRIPTION_KEYS = listOf("description")
     private val URL_KEYS = listOf("url", "uri")
+    /** Compiled once: [describe] runs for every tool event on the stream. */
+    private val PROVIDER_SCOPE = Regex("^(user|team|project)-")
+    private val TERMINAL_FILE = Regex("^(ext-)?\\d+\\.txt$")
+    private val LEADING_RUN = Regex("^run(?=\\s|$)\\s*", RegexOption.IGNORE_CASE)
     private val SKILL_ROOTS = listOf(".cursor/skills/", ".cursor/skills-cursor/", ".cursor/cloud-skills/", ".cursor/plugins/", ".claude/skills/", ".claude/plugins/", ".codex/skills/", ".grok/skills/", ".agents/skills/")
     private const val QUERY_MAX = 40
     private const val PROMPT_MAX = 48

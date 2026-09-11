@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -71,7 +72,10 @@ import kotlinx.coroutines.withContext
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
  * 12px padding, 14/22 text, and a footer of round buttons — "+" on the left, opening the
  * Multitask / Files / Skills / MCP Servers menu ([ComposerPlusMenu]), send / stop on the right — with the 13px
- * model selector hugging send. The text is the largest thing in the box and the round buttons the smallest
+ * model selector hugging send. The field is inset a further [CursorDimens.composerTextInset] on every side so
+ * the placeholder and typed text share the edges of the glyphs in those discs, not the discs themselves: the
+ * 24dp corners would otherwise leave the first letter sitting in the arc, and the 12dp top pad alone reads
+ * tighter than the 16dp left. The text is the largest thing in the box and the round buttons the smallest
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page.
@@ -111,7 +115,6 @@ fun ComposerBox(
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
-    focusRequester: FocusRequester? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -122,10 +125,7 @@ fun ComposerBox(
     var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
     var wantsFocus by remember { mutableStateOf(focused) }
     var menuOpen by rememberSaveable { mutableStateOf(false) }
-    val ownFocus = remember { FocusRequester() }
-    // The caller's requester where it drives focus itself, the composer's own otherwise: the "+" menu hands the field
-    // back after inserting a command, which needs one either way.
-    val focus = focusRequester ?: ownFocus
+    val focus = remember { FocusRequester() }
     // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
     LaunchedEffect(wantsFocus, menuOpen) {
         if (wantsFocus && !menuOpen) {
@@ -202,7 +202,9 @@ fun ComposerBox(
             AttachmentStrip(attachments, onRemoveAttachment)
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
-        Box {
+        // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,
+        // and the top/bottom air matches the left/right.
+        Box(Modifier.padding(CursorDimens.composerTextInset)) {
             BasicTextField(
                 state = field,
                 textStyle = type.input.copy(color = colors.textPrimary),
@@ -237,7 +239,7 @@ fun ComposerBox(
                 onDismiss = { dismissedToken = slashToken },
             )
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
         // The footer's designed height is a minimum: the model chip and anything [footerExtra] adds are sp-sized, and
         // an exact constraint here would hold them to 28dp however much taller they asked to be.
         Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
@@ -308,12 +310,13 @@ private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.val
 
 /**
  * Advertises image MIME types to the IME and turns clipboard / keyboard / drag-and-drop images into attachments.
- * Bytes are read before [ReceiveContentListener.onReceive] returns so a clipboard URI grant cannot expire on the
- * hop to IO; decode and downscale happen off the main thread afterwards.
+ * [ReceiveContentListener.onReceive] is called on the main thread, so only the URIs are taken there; the bytes go
+ * through the photo picker's bounded reader on IO, which refuses an oversized selection before it is all in memory
+ * instead of freezing the composer for the length of a cloud provider's download.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun rememberImagePasteReceiver(
+internal fun rememberImagePasteReceiver(
     enabled: Boolean,
     currentCount: Int,
     onAddAttachments: ((List<PendingAttachment>) -> Unit)?,
@@ -329,34 +332,24 @@ private fun rememberImagePasteReceiver(
         ReceiveContentListener { transferableContent ->
             val resolver = context.contentResolver
             val clipIsImage = transferableContent.hasMediaType(MediaType.Image)
-            val payloads = mutableListOf<ImagePayload>()
-            var readFailed = false
+            val uris = mutableListOf<Uri>()
             val remaining = transferableContent.consume { item ->
                 val uri = item.uri ?: return@consume false
                 if (!isImageUri(resolver, uri, clipIsImage)) return@consume false
-                val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                if (bytes == null) {
-                    readFailed = true
-                    true
-                } else {
-                    payloads += ImagePayload(
-                        id = uri.toString() + "@" + System.nanoTime(),
-                        bytes = bytes,
-                        declaredMime = resolver.getType(uri),
-                    )
-                    true
-                }
+                uris += uri
+                true
             }
-            if (payloads.isEmpty()) {
-                if (readFailed || clipIsImage) {
+            if (uris.isEmpty()) {
+                if (clipIsImage) {
                     attachmentError.value?.invoke("Couldn't read the image.")
                     return@ReceiveContentListener remaining
                 }
                 return@ReceiveContentListener transferableContent
             }
             val add = addAttachments.value
+            val taken = count.value
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importPayloads(payloads, count.value) }
+                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, taken) }
                 if (imported.attachments.isNotEmpty()) add(imported.attachments)
                 imported.error?.let { attachmentError.value?.invoke(it) }
             }

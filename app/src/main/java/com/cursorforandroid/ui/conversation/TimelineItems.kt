@@ -7,6 +7,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +30,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -38,10 +41,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -171,7 +177,7 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
     Column(modifier.fillMaxWidth()) {
         MessageActions(
             text = item.raw,
-            onClick = { if (body != null) expanded = !expanded },
+            onClick = if (body != null) {{ expanded = !expanded }} else null,
             modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
         ) {
             Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -219,7 +225,7 @@ private fun MessageActions(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    onClick: () -> Unit = {},
+    onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val colors = CursorTheme.colors
@@ -232,19 +238,38 @@ private fun MessageActions(
     LaunchedEffect(interaction) {
         interaction.interactions.collect { if (it is PressInteraction.Press) pressedAt = it.pressPosition.round() }
     }
-    Box(
-        modifier.combinedClickable(
+    val openMenu = {
+        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        menuOpen = true
+    }
+    // A message that does nothing when tapped is not a control: `combinedClickable` would announce every bubble and
+    // every reply as something to double tap, which is also what makes the notification that does open look the
+    // same as the ones that do not. Without a tap it keeps the press ripple and the hold, and nothing else.
+    val gestures = when {
+        onClick != null -> Modifier.combinedClickable(
             interactionSource = interaction,
             indication = ripple(color = colors.base),
             enabled = enabled,
             onLongClickLabel = "Message actions",
-            onLongClick = {
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                menuOpen = true
-            },
+            onLongClick = openMenu,
             onClick = onClick,
-        ),
-    ) {
+        )
+        enabled -> Modifier
+            .indication(interaction, ripple(color = colors.base))
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val press = PressInteraction.Press(offset)
+                        interaction.emit(press)
+                        interaction.emit(if (tryAwaitRelease()) PressInteraction.Release(press) else PressInteraction.Cancel(press))
+                    },
+                    onLongPress = { openMenu() },
+                )
+            }
+            .semantics(mergeDescendants = true) { onLongClick("Message actions") { openMenu(); true } }
+        else -> Modifier
+    }
+    Box(modifier.then(gestures)) {
         content()
         // A zero-size anchor at the press point, so the menu opens under the finger rather than below a tall reply.
         Box(Modifier.offset { pressedAt }) {
@@ -406,10 +431,14 @@ private fun WorkRow(item: ActivityGroup) {
 @Composable
 private fun StepList(steps: List<ActivityStep>, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        steps.forEach { step ->
-            when (step) {
-                is ThinkingBlock -> ThoughtText(step.text, Modifier.padding(vertical = 4.dp))
-                is ToolCall -> ToolCallLine(step)
+        // Each step owns its slot: an opened output belongs to the call it was opened on, not to the place that call
+        // happened to hold when the group was last drawn. A thought carries no state, so its position will do.
+        steps.forEachIndexed { index, step ->
+            key(if (step is ToolCall) step.callId else "thought-$index") {
+                when (step) {
+                    is ThinkingBlock -> ThoughtText(step.text, Modifier.padding(vertical = 4.dp))
+                    is ToolCall -> ToolCallLine(step)
+                }
             }
         }
     }
@@ -434,7 +463,7 @@ private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }
     val expandable = !output.isEmpty
-    var expanded by rememberSaveable(call.callId) { mutableStateOf(false) }
+    var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -534,19 +563,20 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 
 @Composable
 private fun RunFooterView(item: RunFooter, modifier: Modifier) {
-    val label = when (item.status) {
-        RunStatus.ERROR -> "Failed after"
-        RunStatus.CANCELLED -> "Cancelled after"
-        RunStatus.EXPIRED -> "Expired after"
-        else -> "Worked"
+    val ending = when (item.status) {
+        RunStatus.ERROR -> "Failed"
+        RunStatus.CANCELLED -> "Cancelled"
+        RunStatus.EXPIRED -> "Expired"
+        else -> null
     }
     val duration = TimeFormat.duration(item.durationMs)
     // Duration and status only. The header already names the branch and owns the pull-request button; repeating
     // either as a pill under every reply is just noise. A status this build cannot read says nothing worth
-    // printing either; the footer's presence is the point.
-    val named = item.status != RunStatus.FINISHED && item.status != RunStatus.UNKNOWN
-    if (duration != null || named) {
-        SummaryLine(label, duration ?: item.status.name.lowercase(), modifier)
+    // printing either; the footer's presence is the point. The "after" belongs to the duration, so a run the
+    // API returned without one is left saying just how it ended.
+    when {
+        duration != null -> SummaryLine(ending?.let { "$it after" } ?: "Worked", duration, modifier)
+        ending != null -> SummaryLine(ending, "", modifier)
     }
 }
 

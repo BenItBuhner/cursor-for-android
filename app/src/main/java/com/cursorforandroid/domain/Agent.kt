@@ -110,6 +110,28 @@ data class GitBranch(
     val prUrl: String?,
 )
 
+/**
+ * A Cursor Project's icon and colour, as the account records them on the Project's chat
+ * (`aiserver.v1.ProjectMetadata.appearance`): [icon] is one of the Agents Window's icon names (`lightning`, the
+ * default, `rocket`, `folder`, …) and [colorId] one of its ten tones (`default`, `green`, `cyan`, `blue`, `purple`,
+ * `magenta`, `orange`, `yellow`, `red`, `brand`). Kept as the strings the account uses; the theme maps them to
+ * glyphs and colours, and stands in for names a later build introduces.
+ */
+@Serializable
+data class ProjectAppearance(val icon: String, val colorId: String)
+
+/**
+ * How a chat hangs off another one, as the account's list reports it: a worker the Project's coordinator created or
+ * adopted (`managerAgentId`), a side chat branched off a chat (`sideChatInfo.parentBcId`), or a cloud subagent the
+ * parent spawned for a task or a subscription (`cloudSubagentParent.parentAgentId`).
+ */
+@Serializable
+enum class AgentParentKind { PROJECT_WORKER, SIDE_CHAT, SUBAGENT }
+
+/** The chat another chat belongs to, and in what capacity (see [AgentParentKind]). */
+@Serializable
+data class AgentParent(val id: String, val kind: AgentParentKind)
+
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
 @Serializable
 data class Agent(
@@ -145,7 +167,27 @@ data class Agent(
      * has said. Kept across refreshes like the model: the public list never carries it.
      */
     val source: AgentSource? = null,
+    /**
+     * True when the account marks the chat as a Cursor Project: the coordinator chat that plans a body of work,
+     * delegates it to worker agents and keeps the Project's shared context. It is what the Agents Window calls
+     * `isProject` — the account's record carries `projectMetadata` — and, like [source], only the account's list
+     * says so; the public API has no notion of Projects. A worker under a Project is never one itself.
+     */
+    val isProject: Boolean = false,
+    /** The Project's icon and colour; null for a chat that is not a Project, or a Project that has not set them. */
+    val projectAppearance: ProjectAppearance? = null,
+    /**
+     * The chat this one hangs off — the Project whose coordinator delegated to it, the chat it branched from as a
+     * side chat, or the agent that spawned it as a cloud subagent — as the account reports it; null for a chat of
+     * its own. The sidebar nests a chat under its parent when the parent is listed too.
+     */
+    val parent: AgentParent? = null,
 ) {
+    /**
+     * A Project at the top of its tree: the chat the Projects group lists. The Agents Window's rule as well — a
+     * Project that is itself somebody's subagent or side chat is shown where its parent is.
+     */
+    val isProjectRoot: Boolean get() = isProject && parent == null
     /**
      * The name of the chat's model, for the composer chip and the list row. Rows recorded by earlier versions carry
      * the variant's parameters after the name ("Composer 2 · Fast", "Claude 5 · 1M context · Max effort"); only the
@@ -187,7 +229,7 @@ data class Agent(
 }
 
 /** Visual state of the leading indicator in the agent list. */
-enum class AgentIndicator { Running, Unread, Error, Read, Archived }
+enum class AgentIndicator { Running, Unread, Error, Read, Archived, Snoozed }
 
 data class CursorUser(
     val apiKeyName: String,
@@ -379,6 +421,12 @@ fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoi
     val model = firstOrNull { it.id == id } ?: return null
     return ModelChoice(model, model.variantNearest(params))
 }
+
+/**
+ * The catalog row [id] names. A miss is null — never the first row. The live catalogue leads with Auto, and
+ * substituting that for a last-used model is what made the new-chat picker look reset on every cold start.
+ */
+fun List<ModelOption>.named(id: String?): ModelOption? = id?.let { wanted -> firstOrNull { it.id == wanted } }
 
 /**
  * The picker entry recorded as [label] on a chat's row before the id and parameters were kept alongside it. The

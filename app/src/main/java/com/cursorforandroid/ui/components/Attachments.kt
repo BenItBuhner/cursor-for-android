@@ -115,14 +115,7 @@ fun rememberImagePicker(
 
 private const val TooLargeMessage = "Images must be 15 MB or smaller."
 
-/** Bytes read from a picker or the clipboard, still identified by the URI they came from. */
-internal class ImagePayload(
-    val id: String,
-    val bytes: ByteArray,
-    val declaredMime: String?,
-)
-
-/** What [importAttachments] / [importPayloads] made of a batch: the ones that loaded, and the first reason the rest did not. */
+/** What [importAttachments] made of a batch: the ones that loaded, and the first reason the rest did not. */
 internal class AttachmentImport(
     val attachments: List<PendingAttachment>,
     val error: String? = null,
@@ -218,14 +211,6 @@ internal fun importAttachments(context: Context, uris: List<Uri>, currentCount: 
     if (remaining == 0) return AttachmentImport(emptyList(), attachmentLimitMessage())
     val overflow = uris.size > remaining
     return attachmentImport(uris.take(remaining).map { loadAttachment(context, it) }, overflow)
-}
-
-internal fun importPayloads(payloads: List<ImagePayload>, currentCount: Int): AttachmentImport {
-    if (payloads.isEmpty()) return AttachmentImport(emptyList())
-    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(0)
-    if (remaining == 0) return AttachmentImport(emptyList(), attachmentLimitMessage())
-    val overflow = payloads.size > remaining
-    return attachmentImport(payloads.take(remaining).map { loadAttachment(it.bytes, it.declaredMime, it.id) }, overflow)
 }
 
 private fun attachmentImport(results: List<Result<PendingAttachment>>, overflow: Boolean): AttachmentImport {

@@ -990,7 +990,34 @@ class ConversationRepository(
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val staged = stageFollowUp(agentId, text, images)
         return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
-            .onFailure { discardStaged(agentId, staged, it.userMessage()) }
+            .onFailure { t ->
+                // Refused as busy, the message is not lost: the caller queues it for the end of the turn. That is
+                // nothing for the chat to show as an error.
+                discardStaged(agentId, staged, t.userMessage().takeUnless { t.toCursorError()?.code == AGENT_BUSY })
+            }
+    }
+
+    /**
+     * Whether [text] is the newest prompt the server holds for this chat, filed no earlier than [sinceMillis]. This
+     * is what a follow-up whose send the app did not live to see the end of has to ask before it goes out again: the
+     * runs API takes no idempotency key, so nothing else can tell a message that arrived from one that did not.
+     *
+     * A follow-up the server accepted is, by construction, the last prompt of the chat and the newest run of it. The
+     * run's stamp is the server's and [sinceMillis] this device's, so the two are compared with room for the clocks
+     * disagreeing — being a little generous costs a duplicate that would not have been sent, never a message shown
+     * as sent that was not.
+     *
+     * A failure is not an answer of no: the caller has to tell "it did not arrive" from "nobody could say".
+     */
+    suspend fun wasSentSince(agentId: String, text: String, sinceMillis: Long): Result<Boolean> = runCatching {
+        val api = session.current.api
+        coroutineScope {
+            val conversation = async { api.conversationV0(agentId) }
+            val runs = async { api.listRuns(agentId, limit = RUN_PAGE_SIZE) }
+            val newest = conversation.await().messages.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
+            val newestRunAt = runs.await().items.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
+            newest == text.trim() && newestRunAt >= sinceMillis - CLOCK_SKEW_ALLOWANCE_MS
+        }
     }
 
     /**
@@ -1180,13 +1207,31 @@ class ConversationRepository(
     }
 
     suspend fun cancelActiveRun(agentId: String): Result<Unit> {
-        val e = entry(agentId)
         // A chat the server has not answered for yet has no run to cancel; stopping it gives the launch up instead.
         if (cancelLaunch(agentId)) return Result.success(Unit)
-        val runId = e.state.value.activeRunId ?: return Result.failure(IllegalStateException("No active run."))
+        val runId = runToCancel(agentId) ?: return Result.failure(IllegalStateException("No active run."))
+        return cancelRun(agentId, runId)
+    }
+
+    /** Cancels one run of the chat and, once the server has agreed, shows the turn as cancelled. */
+    suspend fun cancelRun(agentId: String, runId: String): Result<Unit> {
+        val e = entry(agentId)
         return agents.cancelRun(agentId, runId).onSuccess {
             e.state.update { it.copy(runStatus = RunStatus.CANCELLED) }
         }
+    }
+
+    /**
+     * The run a Stop is aimed at: the one the server is on, as far as this device knows. The row's latest run while
+     * the row says the agent is running — a follow-up that went out while no screen was attached, or a turn started
+     * elsewhere, reaches the row before the chat has loaded it, and the run the chat still follows may be over by
+     * then — else the run the chat follows. Never a prompt's local placeholder, which the server knows nothing of.
+     * Null when nothing is known to be running.
+     */
+    fun runToCancel(agentId: String): String? {
+        val row = agents.agent(agentId)
+        return row?.takeIf { it.isRunning }?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+            ?: entry(agentId).state.value.activeRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
     }
 
     /**
@@ -1314,6 +1359,8 @@ class ConversationRepository(
         /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
         const val MAX_PARALLEL_REPLAYS = 3
         const val RUN_PAGE_SIZE = 50
+        /** Room for device and server clocks to disagree when matching a send marker to a run stamp. */
+        const val CLOCK_SKEW_ALLOWANCE_MS = 60_000L
         /** Pages of runs one load will read to cover the transcript's prompts before giving the join up. */
         const val MAX_RUN_PAGES = 8
         /** A chat opened this recently is not fetched again when the app comes to the foreground. */
@@ -1323,5 +1370,7 @@ class ConversationRepository(
         const val ASSISTANT_MESSAGE = "assistant_message"
         /** Ids of the runs local prompts are paired with until the server has answered (the same id as their message, see [LocalPrompt.filed]). */
         const val LOCAL_RUN_PREFIX = "local-"
+        /** `POST /v1/agents/{id}/runs` while a run is `CREATING` or `RUNNING`. */
+        const val AGENT_BUSY = "agent_busy"
     }
 }

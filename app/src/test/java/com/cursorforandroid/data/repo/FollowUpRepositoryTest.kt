@@ -7,21 +7,27 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.DraftImage
+import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -34,6 +40,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The follow-up queue against the fake backend: a message sent mid-turn waits, goes out when the turn ends, and is
@@ -56,8 +64,19 @@ class FollowUpRepositoryTest {
     private lateinit var conversations: ConversationRepository
     private lateinit var store: FollowUpStore
 
+    /** Holds a send just before it reaches the server, where the repository asks for the MCP servers to attach. */
+    @Volatile private var mcpGate: CompletableDeferred<Unit>? = null
+    private val mcpCalls = AtomicInteger()
+
     @Before
     fun setUp() {
+        api.failCreateRun = false
+        api.busyCreateRun = false
+        api.createRunGate = null
+        api.failCancelWith = null
+        api.failCancel = false
+        mcpGate = null
+        mcpCalls.set(0)
         context = ApplicationProvider.getApplicationContext()
         val prefs = PreferencesStore(context)
         val backend = CursorBackend(api, streamer, isDemo = false)
@@ -78,14 +97,22 @@ class FollowUpRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(persist: Boolean = false, busyRecheckMs: Long = 20_000) = FollowUpRepository(
+    private fun repository(
+        persist: Boolean = false,
+        busyRecheckMs: Long = 20_000,
+        idleSettleMs: Long = 20_000,
+        retryBaseMs: Long = 20,
+        scope: CoroutineScope = this.scope,
+    ) = FollowUpRepository(
         conversations, agents, hub,
-        mcpServers = { emptyList() },
+        mcpServers = { mcpCalls.incrementAndGet(); mcpGate?.await(); emptyList() },
         store = store.takeIf { persist },
         persist = { true },
         scope = scope,
         draftSaveDelayMs = 10,
         busyRecheckMs = busyRecheckMs,
+        idleSettleMs = idleSettleMs,
+        retryBaseMs = retryBaseMs,
     )
 
     private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
@@ -249,6 +276,193 @@ class FollowUpRepositoryTest {
     }
 
     @Test
+    fun `a busy answer as the wire delivers it keeps the message waiting too`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        // Not the fake's ready-made exception: the HttpException Retrofit raises, its body still unread. The
+        // repository reads the code and the chat words the failure, and both must find `agent_busy` in it.
+        api.createRunError = FakeCursorApi.httpError(409, "agent_busy", "Agent is busy.")
+        val followUps = repository()
+
+        followUps.enqueue("bc-1", "Go on")
+
+        awaitUntil { api.runRequests.size == 1 }
+        awaitUntil { agents.agent("bc-1")?.isRunning == true }
+        delay(200)
+        val waiting = followUps.state("bc-1").value.queue.single()
+        assertThat(waiting.error).isNull()
+        assertThat(waiting.isSending).isFalse()
+        // Nor is being busy an error for the chat to show.
+        assertThat(conversations.state("bc-1").value.error).isNull()
+
+        api.createRunError = null
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.FINISHED) }
+        awaitUntil { api.runRequests.size == 2 }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
+    fun `a steer whose send stumbles once is tried again rather than failed`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // The agent is still winding down the turn that was just cancelled for the message: the first send is
+        // refused for a reason other than being busy, as the wire delivers it.
+        api.failNextCreateRun = FakeCursorApi.httpError(409, "agent_stopping", "The agent is stopping.")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { sent() == listOf("Now", "Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        // The message stayed on screen throughout and is filed under its run now.
+        awaitUntil { prompts("bc-1").single { it.text == "Now" }.isPending.not() }
+        assertThat(conversations.state("bc-1").value.error).isNull()
+    }
+
+    @Test
+    fun `a steer whose send keeps failing returns the message to the cards with the reason`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        api.failCreateRun = true
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        awaitUntil { followUps.state("bc-1").value.queue.single().error != null }
+        val back = followUps.state("bc-1").value.queue.single()
+        // Tried a few times, then given up with the server's reason on the card, where it can be read.
+        assertThat(api.runRequests).hasSize(4)
+        assertThat(back.error).isEqualTo("Try again later.")
+        assertThat(back.isSteered).isFalse()
+        assertThat(back.isSending).isFalse()
+        assertThat(prompts("bc-1").none { it.text == "Now" }).isTrue()
+        // Send-now on the failed card is the retry; the turn was stopped already, so nothing is cancelled again.
+        api.failCreateRun = false
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(api.cancelled).containsExactly("run-1")
+        assertThat(sent().last()).isEqualTo("Now")
+    }
+
+    @Test
+    fun `a steer stops the run the row reports when the chat still follows an older one`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // A turn started elsewhere: the list learns of run-2 on its next refresh, the open chat has not reloaded.
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.v0["bc-1"] = api.v0.getValue("bc-1").copy(status = "RUNNING")
+        agents.refresh()
+        awaitUntil { agents.agent("bc-1")?.let { it.isRunning && it.latestRunId == "run-2" } == true }
+        assertThat(conversations.state("bc-1").value.activeRunId).isEqualTo("run-1")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        // The turn cancelled is the one under way, not the finished one the chat happened to be looking at.
+        awaitUntil { api.cancelled == listOf("run-2") }
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
+    fun `a steer whose cancel finds its run over stops the turn the server is actually on`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // Meanwhile, on the server: run-1 ended and run-2 began (a follow-up from another device), and neither the
+        // row nor the chat has heard of it yet.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED")
+        api.notCancellable += "run-1"
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+
+        // The refused cancel is not the end of it: the row is settled against the record, which names run-2, and
+        // that is the turn stopped for the message.
+        awaitUntil { api.cancelled == listOf("run-2") }
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(agents.agent("bc-1")?.latestRunId).isNotEqualTo("run-1")
+    }
+
+    @Test
+    fun `a steered message is not held by a row the record put back to running`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        awaitUntil { streamer.connections.contains("run-1") }
+        // The server goes on answering busy for a while after the cancel, its record a step behind its stream.
+        api.busyCreateRun = true
+        val followUps = repository(idleSettleMs = 100)
+        val item = followUps.enqueue("bc-1", "Now")
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { api.runRequests.isNotEmpty() }
+        // The stream reports the end of the cancelled turn: the row is idle, the next send is refused as busy all
+        // the same — and the row must not be left saying running by that, since the stream will not say the run
+        // ended a second time.
+        finish("run-1", text = "")
+        awaitUntil { api.runRequests.size >= 2 }
+        delay(300)
+        assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
+
+        // Nothing here corrects the row but the repository itself: no refresh, no patch.
+        api.busyCreateRun = false
+        awaitUntil { api.runs.values.any { it.id.startsWith("run-followup") } }
+        assertThat(sent().last()).isEqualTo("Now")
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        awaitUntil { prompts("bc-1").single { it.text == "Now" }.isPending.not() }
+    }
+
+    @Test
+    fun `steering while the chat is still being created waits for its first turn rather than stopping the launch`() = runBlocking<Unit> {
+        val request = LaunchRequest(prompt = "Do the thing", repoUrl = "https://github.com/acme/app", ref = "main", modelId = "auto-smart", modelParams = emptyList(), autoCreatePr = false, planMode = false)
+            .let { it.copy(agentId = LaunchIdempotency.agentId(it, "nonce")) }
+        val id = request.agentId!!
+        api.createGate = CompletableDeferred()
+        val launch = async { conversations.launch(request, "Auto") }
+        awaitUntil { prompts(id).isNotEmpty() }
+        conversations.attach(id)
+        // Prompts sent from here are placed by the clock; the steer comes after the launch, as it would.
+        now += 1_000
+        val followUps = repository()
+        val item = followUps.enqueue(id, "Also this")
+
+        assertThat(followUps.sendNow(id, item.id)).isTrue()
+        delay(200)
+        // Nothing to stop yet, and the launch is not what gets stopped: the message shows as pending and waits.
+        assertThat(launch.isActive).isTrue()
+        assertThat(api.cancelled).isEmpty()
+        assertThat(prompts(id).any { it.text == "Also this" && it.isPending }).isTrue()
+
+        api.createGate!!.complete(Unit)
+        assertThat(launch.await().isSuccess).isTrue()
+        val first = agents.agent(id)!!.latestRunId!!
+        awaitUntil { streamer.connections.contains(first) }
+        finish(first)
+        awaitUntil { sent() == listOf("Also this") }
+        awaitUntil { followUps.state(id).value.queue.isEmpty() }
+        assertThat(api.cancelled).isEmpty()
+    }
+
+    @Test
     fun `steering a message that is no longer queued stops nothing`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
@@ -281,26 +495,124 @@ class FollowUpRepositoryTest {
         assertThat(sent().last()).isEqualTo("Try")
     }
 
+    /**
+     * A steer is the piece of work a sign-out used to leave running: launched on the repository's own scope and
+     * tracked by nothing, it would go on under the next account, post the previous one's message with its key, and
+     * write the queue back behind the wiped files.
+     */
+    @Test
+    fun `a steer held across a sign-out reaches neither the next account's server nor its files`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.addIdleAgent("bc-2", "Other", "run-0b")
+        agents.refresh()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        mcpGate = CompletableDeferred()
+        val followUps = repository(persist = true)
+        followUps.state("bc-1").first { it.restored }
+        followUps.enqueue("bc-1", "And the one behind it")
+        val urgent = followUps.enqueue("bc-1", "Under the old account")
+        assertThat(followUps.sendNow("bc-1", urgent.id)).isTrue()
+        // The turn has been stopped for it and the steer is on its way out, held before it reaches the server.
+        awaitUntil { api.cancelled == listOf("run-1") }
+        awaitUntil { mcpCalls.get() == 1 }
+        awaitUntil { store.read("bc-1")?.queue?.size == 2 }
+
+        // Signing out, in the order AppGraph uses: the queue is dropped, then the files are wiped.
+        followUps.resetAll()
+        store.clear()
+        mcpGate?.complete(Unit)
+
+        // A follow-up for another chat is the marker for the next account. It is queued after the held send was let
+        // go and has further to travel — an entry to make, a file to read, a turn to be found free — so by the time
+        // the server has it, a send the sign-out failed to stop would already have arrived, and its save with it.
+        api.createRunGate = CompletableDeferred()
+        followUps.enqueue("bc-2", "Under the new account")
+        awaitUntil { api.runRequests.isNotEmpty() }
+
+        assertThat(sent()).containsExactly("Under the new account")
+        assertThat(store.read("bc-1")).isNull()
+    }
+
+    @Test
+    fun `a follow-up the dispatcher has claimed is left alone by steer, edit and remove`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val gate = CompletableDeferred<Unit>()
+        api.createRunGate = gate
+        val followUps = repository()
+        val item = followUps.enqueue("bc-1", "Only once")
+
+        // The dispatcher has claimed the head and its request is out; the card reads as in flight.
+        awaitUntil { api.runRequests.size == 1 }
+        assertThat(followUps.state("bc-1").value.queue.single().isSending).isTrue()
+
+        assertThat(followUps.sendNow("bc-1", item.id)).isFalse()
+        assertThat(followUps.takeForEdit("bc-1", item.id)).isNull()
+        followUps.remove("bc-1", item.id)
+        assertThat(followUps.state("bc-1").value.queue).hasSize(1)
+        assertThat(followUps.state("bc-1").value.draft.isEmpty).isTrue()
+
+        gate.complete(Unit)
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(sent()).containsExactly("Only once")
+        assertThat(api.cancelled).isEmpty()
+    }
+
+    /**
+     * The steer and the dispatcher both go for the head, from different threads, on forty agents at once. Whichever
+     * wins, the message reaches the server exactly once: claiming the head and marking it sending are one step under
+     * the monitor [FollowUpRepository.sendNow] holds.
+     */
+    @Test
+    fun `a steer racing the dispatcher for the head still sends the message once`() = runBlocking<Unit> {
+        val count = 40
+        repeat(count) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i") }
+        agents.refresh()
+        val followUps = repository()
+        val start = CountDownLatch(1)
+        val steered = CountDownLatch(count)
+        val threads = (0 until count).map { i ->
+            Thread {
+                start.await()
+                followUps.state("bc-$i").value.queue.firstOrNull()?.let { followUps.sendNow("bc-$i", it.id) }
+                steered.countDown()
+            }.apply { start() }
+        }
+
+        repeat(count) { i -> followUps.enqueue("bc-$i", "Message $i") }
+        start.countDown()
+        steered.await()
+        threads.forEach { it.join() }
+
+        repeat(count) { i -> awaitUntil { followUps.state("bc-$i").value.queue.isEmpty() } }
+        // Nothing sends twice, whichever of the two got there first.
+        repeat(count) { i -> assertThat(sent().count { it == "Message $i" }).isEqualTo(1) }
+    }
+
     @Test
     fun `a failure other than busy holds the queue at that message until it is retried`() = runBlocking<Unit> {
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
         api.addIdleAgent("bc-1", "Agent", "run-0")
         agents.refresh()
         api.failCreateRun = true
-        val followUps = repository()
+        val followUps = repository(scope = testScope)
 
         val first = followUps.enqueue("bc-1", "First")
         followUps.enqueue("bc-1", "Second")
 
-        awaitUntil { followUps.state("bc-1").value.queue.first().error != null }
-        delay(200)
+        followUps.state("bc-1").first { it.queue.first().error != null }
         assertThat(api.runRequests).hasSize(1)
         assertThat(followUps.state("bc-1").value.queue.map { it.text }).containsExactly("First", "Second").inOrder()
         assertThat(followUps.state("bc-1").value.queue[1].error).isNull()
 
         api.failCreateRun = false
         followUps.retry("bc-1", first.id)
-        awaitUntil { sent().count { it == "First" } == 2 }
-        awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("Second") }
+        followUps.state("bc-1").first { sent().count { it == "First" } == 2 && it.queue.map { q -> q.text } == listOf("Second") }
+        } finally {
+            testScope.cancel()
+        }
     }
 
     @Test
@@ -381,6 +693,98 @@ class FollowUpRepositoryTest {
         awaitUntil { sent() == listOf("Queued before the restart") }
         assertThat(api.runRequests.single().prompt.images).hasSize(1)
         awaitUntil { store.read("bc-1")?.queue?.isEmpty() == true }
+    }
+
+    /**
+     * The follow-up POST carries no idempotency key. A send marker on disk before the request means a restore must
+     * ask whether the server took it, not send again by itself.
+     */
+    @Test
+    fun `a follow-up mid-send is flagged on restore and not sent again`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        api.createRunGate = CompletableDeferred()
+        val first = repository(persist = true)
+        first.state("bc-1").first { it.restored }
+        first.enqueue("bc-1", "Maybe already")
+        awaitUntil { store.read("bc-1")?.queue?.single()?.sendStartedAtMillis != null }
+
+        first.resetAll()
+        val second = repository(persist = true)
+        second.state("bc-1").first { it.restored }
+        awaitUntil { second.state("bc-1").value.queue.singleOrNull()?.needsConfirmation == true }
+        assertThat(api.runs.keys.none { it.startsWith("run-followup") }).isTrue()
+
+        api.createRunGate?.complete(Unit)
+        delay(300)
+        assertThat(api.runs.keys.none { it.startsWith("run-followup") }).isTrue()
+    }
+
+    @Test
+    fun `a follow-up the server already took is dropped on restore`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        val sendStarted = AppClock.now()
+        val runAt = java.time.Instant.ofEpochMilli(sendStarted + 5_000).toString()
+        api.runs["run-fu"] = RunDto(id = "run-fu", agentId = "bc-1", status = "RUNNING", createdAt = runAt, updatedAt = runAt)
+        api.transcripts["bc-1"] = listOf(V0ConversationMessageDto("run-fu-u", "user_message", "Already there"))
+        store.write(
+            "bc-1",
+            FollowUpDraft.EMPTY,
+            listOf(
+                QueuedFollowUp(
+                    id = "queued-test",
+                    text = "Already there",
+                    queuedAtMillis = sendStarted - 1_000,
+                    sendStartedAtMillis = sendStarted,
+                ),
+            ),
+        )
+
+        val followUps = repository(persist = true)
+        followUps.state("bc-1").first { it.restored }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(api.runs.keys).contains("run-fu")
+    }
+
+    @Test
+    fun `a failed head leaves the dispatcher inactive until retry`() = runBlocking<Unit> {
+        val testScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            api.addIdleAgent("bc-1", "Agent", "run-0")
+            agents.refresh()
+            api.failCreateRun = true
+            val followUps = repository(scope = testScope)
+            val stuck = followUps.enqueue("bc-1", "Stuck")
+
+            followUps.state("bc-1").first { it.queue.single().error != null }
+            assertThat(api.runRequests).hasSize(1)
+            assertThat(FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1")).isFalse()
+
+            followUps.enqueue("bc-1", "Second")
+            api.failCreateRun = false
+            followUps.retry("bc-1", stuck.id)
+            assertThat(FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1")).isTrue()
+            followUps.state("bc-1").first { sent().count { it == "Stuck" } == 2 && it.queue.map { q -> q.text } == listOf("Second") }
+        } finally {
+            testScope.cancel()
+        }
+    }
+
+    @Test
+    fun `empty entries are evicted once the cap is reached`() = runBlocking<Unit> {
+        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
+            api.addIdleAgent("bc-$i", "Agent $i", "run-$i")
+        }
+        agents.refresh()
+        val followUps = repository(persist = false)
+        repeat(FollowUpRepositoryTestHelper.MAX_ENTRIES) { i ->
+            followUps.state("bc-$i").first { it.restored }
+        }
+        assertThat(FollowUpRepositoryTestHelper.entryCount(followUps)).isEqualTo(FollowUpRepositoryTestHelper.MAX_ENTRIES)
+
+        followUps.state("bc-overflow").first { it.restored }
+        assertThat(FollowUpRepositoryTestHelper.entryCount(followUps)).isAtMost(FollowUpRepositoryTestHelper.MAX_ENTRIES)
     }
 
     @Test

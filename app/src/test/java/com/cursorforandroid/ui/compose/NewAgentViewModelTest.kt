@@ -50,7 +50,7 @@ class NewAgentViewModelTest {
     private val created = CopyOnWriteArrayList<CreateAgentRequestDto>()
 
     @Before
-    fun setUp() = runBlocking {
+    fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         // The demo's own catalogue and data, with the requests it is sent recorded.
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
@@ -64,7 +64,11 @@ class NewAgentViewModelTest {
             ApplicationProvider.getApplicationContext<Context>(),
             demo = CursorBackend(api, demoStreamer, isDemo = true),
         )
-        graph.session.enterDemo()
+        runBlocking {
+            graph.session.enterDemo()
+            // Shared Robolectric prefs outlive a single test; a previous pick must not look like this install's default.
+            graph.prefs.rememberModel(null)
+        }
     }
 
     @After
@@ -235,6 +239,20 @@ class NewAgentViewModelTest {
         val second = loaded()
         assertThat(second.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
         assertThat(second.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
+    }
+
+    @Test
+    fun `a model picked without launching is restored on the next composer`() = runBlocking<Unit> {
+        val first = loaded()
+        val composer = first.state.value.models.first { it.id == "composer-2.5" }
+        val slow = composer.variants.first { !it.isDefault }
+        first.selectModel(composer, slow)
+        awaitUntil { graph.prefs.composerDefaults.first().modelId == "composer-2.5" }
+
+        val second = loaded()
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("composer-2.5")
+        assertThat(second.state.value.selectedVariant).isEqualTo(slow)
+        assertThat(second.state.value.modelLabel).isEqualTo("Composer 2.5")
     }
 
     @Test

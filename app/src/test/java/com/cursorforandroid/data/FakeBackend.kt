@@ -37,6 +37,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.flow.transformWhile
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
+import retrofit2.HttpException
+import retrofit2.Response
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -56,14 +60,22 @@ open class FakeCursorApi : CursorApi {
     val createRequests = CopyOnWriteArrayList<CreateAgentRequestDto>()
     val runRequests = CopyOnWriteArrayList<CreateRunRequestDto>()
     var failCancel = false
+    /** Runs whose cancel answers `409 run_not_cancellable`: over already, whatever [runs] says about them. */
+    val notCancellable: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** Fails every cancel with this, for failures other than the run being over already. */
     @Volatile var failCancelWith: Throwable? = null
     var failCreateRun = false
     /** When set, [delete] throws it, as the real API does for a chat the account may not delete. */
     @Volatile var failDelete: Throwable? = null
     val deleted = CopyOnWriteArrayList<String>()
+    /** When set, [createRun] throws it once (after recording the request), like a server that stumbled on one request. */
+    @Volatile var failNextCreateRun: Throwable? = null
+    /** When set, every [createRun] throws it (after recording the request) for as long as it is set. */
+    @Volatile var createRunError: Throwable? = null
     /** Answers every follow-up with `409 agent_busy`, the way the server does while a run is still going. */
     @Volatile var busyCreateRun = false
+    /** When set, [createRun] waits for it (after recording the request) before filing anything, like a slow server. */
+    @Volatile var createRunGate: CompletableDeferred<Unit>? = null
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
@@ -275,6 +287,9 @@ open class FakeCursorApi : CursorApi {
      */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
         runRequests += body
+        createRunGate?.await()
+        failNextCreateRun?.let { failNextCreateRun = null; throw it }
+        createRunError?.let { throw it }
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")
         if (busyCreateRun) throw CursorApiException(409, "agent_busy", "Agent is busy.")
         val agent = agents[id] ?: throw notFound()
@@ -288,10 +303,20 @@ open class FakeCursorApi : CursorApi {
         return CreateRunResponseDto(run)
     }
     override suspend fun cancelRun(id: String, runId: String): IdResponseDto {
-        if (failCancel) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
+        if (failCancel || runId in notCancellable) throw CursorApiException(409, "run_not_cancellable", "Run already finished.")
         failCancelWith?.let { throw it }
         cancelled += runId
         return IdResponseDto(runId)
+    }
+
+    companion object {
+        /**
+         * An error exactly as Retrofit delivers the API's `{ error: { code, message } }` answers: an [HttpException]
+         * whose body has yet to be read, unlike the [CursorApiException]s the fake raises directly.
+         */
+        fun httpError(status: Int, code: String, message: String): HttpException = HttpException(
+            Response.error<Any>(status, """{"error":{"code":"$code","message":"$message"}}""".toResponseBody("application/json".toMediaType())),
+        )
     }
     override suspend fun listAgentsV0(limit: Int, cursor: String?): V0ListAgentsResponseDto {
         listAgentsV0Calls++

@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -56,6 +57,7 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.agents.RenameChatDialog
+import com.cursorforandroid.ui.agents.SnoozeChatDialog
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
@@ -113,6 +115,7 @@ fun ConversationScreen(
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
+    val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
@@ -131,9 +134,10 @@ fun ConversationScreen(
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var menuOpen by remember { mutableStateOf(false) }
-    var modelSheet by remember { mutableStateOf(false) }
-    var renameOpen by remember { mutableStateOf(false) }
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var modelSheet by rememberSaveable { mutableStateOf(false) }
+    var renameOpen by rememberSaveable { mutableStateOf(false) }
+    var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -199,6 +203,13 @@ fun ConversationScreen(
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         if (isActive) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; viewModel.cancelRun() }
+                        if (agent?.isArchived != true) {
+                            if (isSnoozed) {
+                                MenuItem("Unsnooze", CursorIcons.Clock) { menuOpen = false; viewModel.unsnooze() }
+                            } else {
+                                MenuItem("Snooze", CursorIcons.Clock) { menuOpen = false; snoozeOpen = true }
+                            }
+                        }
                         if (agent?.isArchived == true) {
                             MenuItem("Unarchive", CursorIcons.Archive) { menuOpen = false; viewModel.unarchive() }
                         } else {
@@ -377,6 +388,12 @@ fun ConversationScreen(
             initialName = agent?.name.orEmpty(),
             onConfirm = { name -> renameOpen = false; viewModel.rename(name) },
             onDismiss = { renameOpen = false },
+        )
+    }
+    if (snoozeOpen) {
+        SnoozeChatDialog(
+            onPick = { until -> snoozeOpen = false; viewModel.snooze(until) },
+            onDismiss = { snoozeOpen = false },
         )
     }
 }

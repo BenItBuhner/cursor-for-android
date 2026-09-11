@@ -46,6 +46,7 @@ import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
@@ -183,7 +184,7 @@ internal fun AppShell(
     // a chat or Settings with the drawer shut has nothing the list would keep current.
     val listOnScreen = topScreen == Screen.Home ||
         drawerState.isOpen ||
-        drawerState.targetValue == DrawerValue.Open ||
+        drawerState.fraction > 0f ||
         (wide && !sidebarCollapsed)
     LifecycleStartEffect(listOnScreen) {
         val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
@@ -192,11 +193,16 @@ internal fun AppShell(
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
     val rowActions = AgentRowActions(
-        onOpen = { row -> agentsViewModel.markRead(row.agent); openAgent(row.agent.id) },
+        onOpen = { row ->
+            agentsViewModel.markRead(row.agent)
+            openAgent(row.agent.id)
+        },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
         onUnarchive = { agentsViewModel.unarchive(it.agent.id) },
         onRename = { row, name -> agentsViewModel.rename(row.agent.id, name) },
+        onSnooze = { row, until -> agentsViewModel.snooze(row.agent.id, until) },
+        onUnsnooze = { agentsViewModel.unsnooze(it.agent.id) },
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -255,6 +261,7 @@ internal fun AppShell(
                         onOpenSidebar = pane.openSidebar,
                         onOpenAgent = pane.onOpenAgent,
                         onLaunchOpen = ::openAgent,
+                        rowActions = pane.rowActions,
                     )
                     Screen.Settings -> SettingsScreen(
                         graph = graph,
@@ -281,6 +288,7 @@ internal fun AppShell(
         openSidebar = openSidebar,
         onBack = onBack,
         onOpenAgent = rowActions.onOpen,
+        rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
     )
 
@@ -312,7 +320,7 @@ internal fun AppShell(
     val pendingShare = shareOffer
     when {
         shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput(), contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
             }
         }
@@ -345,6 +353,7 @@ private class DetailPane(
     val openSidebar: (() -> Unit)?,
     val onBack: (() -> Unit)?,
     val onOpenAgent: (AgentRow) -> Unit,
+    val rowActions: AgentRowActions,
     /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
     val backEnabled: Boolean,
 )

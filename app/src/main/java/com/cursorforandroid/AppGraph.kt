@@ -132,6 +132,7 @@ class AppGraph(
             attachments,
             caches.agents,
             demoSources = DemoData.sources,
+            demoComposers = DemoData.composers,
             account = lazyAccountAgents.value,
         )
     }
@@ -158,8 +159,8 @@ class AppGraph(
             prefs = prefs,
             agents = agents,
             api = lazyAccountAgents.value,
-            onList = { list ->
-                agents.applySources(list.sources)
+            onList = { list, agentsToken ->
+                agents.applySources(list.sources, agentsToken)
                 pullRequests.seed(list.pullRequests)
             },
         )

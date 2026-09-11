@@ -2,6 +2,8 @@ package com.cursorforandroid.ui.conversation
 
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -79,6 +81,14 @@ class MessageActionsTest {
         assertThat(menuIsOpen()).isFalse()
     }
 
+    @Test
+    fun `a reply is not announced as something to activate, but still offers message actions on a hold`() {
+        show(AssistantMessage("a1", "Plain reply."))
+        val node = compose.onNodeWithText("Plain reply.").fetchSemanticsNode()
+        assertThat(node.config.getOrNull(SemanticsActions.OnClick)).isNull()
+        assertThat(node.config.getOrNull(SemanticsActions.OnLongClick)).isNotNull()
+    }
+
     private val injected = "<system_notification>\nThe following task has finished.\n\n<task>\nkind: subagent\nstatus: success\ntitle: Contacts and clipping\ndetail: This is the last output of the subagent:\n\nThe clipping is gone. Four commits, not pushed.\n</task>\n</system_notification>"
 
     @Test
@@ -100,6 +110,9 @@ class MessageActionsTest {
         compose.onNodeWithText("Copy message").assertIsDisplayed().performClick()
         compose.waitUntil(5_000) { !menuIsOpen() }
         assertThat(clipboard.getText()?.text).isEqualTo(injected)
+        val node = compose.onNodeWithText("Subagent completed").fetchSemanticsNode()
+        assertThat(node.config.getOrNull(SemanticsActions.OnClick)).isNotNull()
+        assertThat(node.config.getOrNull(SemanticsActions.OnLongClick)).isNotNull()
     }
 
     @Test

@@ -79,6 +79,47 @@ class ShareInboxTest {
         assertThat(inbox.offer.value!!.text).isEqualTo("Again")
     }
 
+    /**
+     * The guard above lives in this process only, so the activity has to strike a share off the intent it came on;
+     * otherwise the launch intent offers it again every time the activity is created.
+     */
+    @Test
+    fun `a share that has been drafted is struck off the intent it came on`() = runBlocking {
+        val inbox = ShareInbox(context)
+        val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Dealt with")
+        inbox.receive(intent) { ShareIntent.clear(intent) }
+        awaitUntil { inbox.offer.value != null }
+
+        inbox.consume(inbox.offer.value!!.generation)
+
+        assertThat(ShareIntent.isShare(intent)).isFalse()
+        // What a relaunch from Recents hands back: the same intent, now with nothing on it to offer.
+        inbox.receive(intent)
+        delay(50)
+        assertThat(inbox.offer.value).isNull()
+    }
+
+    @Test
+    fun `a share the user dismissed is struck off the intent it came on`() = runBlocking {
+        val inbox = ShareInbox(context)
+        val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Never mind")
+        inbox.receive(intent) { ShareIntent.clear(intent) }
+        awaitUntil { inbox.offer.value != null }
+
+        inbox.clear()
+
+        assertThat(ShareIntent.isShare(intent)).isFalse()
+    }
+
+    @Test
+    fun `a share holding nothing to draft is struck off too`() = runBlocking {
+        val inbox = ShareInbox(context)
+        val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "   ")
+        inbox.receive(intent) { ShareIntent.clear(intent) }
+        awaitUntil { !inbox.loading.value && !ShareIntent.isShare(intent) }
+        assertThat(inbox.offer.value).isNull()
+    }
+
     @Test
     fun `picking an existing chat records that destination`() = runBlocking {
         val inbox = ShareInbox(context)

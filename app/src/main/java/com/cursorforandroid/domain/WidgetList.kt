@@ -48,11 +48,11 @@ object WidgetList {
         WidgetMode.Recent -> AgentListOrganizer.recentRows(agents, prefs, local, nowMillis = nowMillis, zone = zone)
         // The sidebar's "Pinned" group, in the sidebar's order.
         WidgetMode.Pinned -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
-            .firstOrNull { it.key == "pinned" }?.rows.orEmpty()
+            .firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty()
         // Agents at work, whatever the Status filter says (a "Running" list with Running filtered out would only
         // ever be empty); the Repo / Git / Source filters still apply.
         WidgetMode.Running -> agents
-            .map { AgentListOrganizer.toRow(it, local) }
+            .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
             .sortedByDescending { it.agent.updatedAtMillis }
     }.take(MAX_ROWS)

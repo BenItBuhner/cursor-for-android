@@ -12,14 +12,16 @@ import com.cursorforandroid.domain.PromptImage
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 
 /**
- * Picker and clipboard pastes share [importAttachments] / [importPayloads]. A screenshot from Android's clipboard
- * often arrives as a wildcard image type or with no type, so magic bytes have to stand in for the resolver.
+ * Picker and clipboard pastes share [importAttachments]. A screenshot from Android's clipboard often arrives as a
+ * wildcard image type or with no type, so magic bytes have to stand in for the resolver.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -55,28 +57,60 @@ class AttachmentImportTest {
         assertThat(resolveImageMime("image/bmp", "BM".toByteArray())).isNull()
     }
 
-    @Test
-    fun `payloads become attachments the composer can send`() {
-        val imported = importPayloads(listOf(ImagePayload("paste@1", png(), "image/*")), currentCount = 0)
-        assertThat(imported.error).isNull()
-        assertThat(imported.attachments).hasSize(1)
-        assertThat(PromptImage.isSupported(imported.attachments.single().image.mimeType)).isTrue()
+    /** [count] temporary PNGs, as the clipboard or the picker hands them over: content the resolver can open. */
+    private fun pngUris(count: Int): List<Uri> = List(count) {
+        File.createTempFile("clipboard", ".png").also { file -> file.writeBytes(png()) }.let(Uri::fromFile)
     }
 
     @Test
     fun `a sixth pasted image is refused with the same limit as the picker`() {
-        val payloads = List(2) { i -> ImagePayload("paste@$i", png(), "image/png") }
-        val imported = importPayloads(payloads, currentCount = PromptImage.MAX_COUNT)
+        val imported = importAttachments(context, pngUris(2), currentCount = PromptImage.MAX_COUNT)
         assertThat(imported.attachments).isEmpty()
         assertThat(imported.error).isEqualTo(attachmentLimitMessage())
     }
 
     @Test
     fun `overflow keeps the ones that fit and names the cap`() {
-        val payloads = List(3) { i -> ImagePayload("paste@$i", png(), "image/png") }
-        val imported = importPayloads(payloads, currentCount = PromptImage.MAX_COUNT - 1)
+        val imported = importAttachments(context, pngUris(3), currentCount = PromptImage.MAX_COUNT - 1)
         assertThat(imported.attachments).hasSize(1)
         assertThat(imported.error).isEqualTo(attachmentLimitMessage())
+    }
+
+    /**
+     * The paste path reads through the picker's bounded reader, so a provider that streams a huge original without
+     * declaring its size is refused at the cap rather than after all of it — which is what pasting a cloud-backed
+     * image used to cost, on the main thread.
+     */
+    @Test
+    fun `a pasted stream that declares no size is refused at the cap without being drained`() {
+        val uri = Uri.parse("content://com.cursorforandroid.test/huge.png")
+        val stream = CountingStream(100L * 1024 * 1024)
+        Shadows.shadowOf(context.contentResolver).registerInputStream(uri, stream)
+
+        val imported = importAttachments(context, listOf(uri), currentCount = 0)
+
+        assertThat(imported.attachments).isEmpty()
+        assertThat(imported.error).isEqualTo("Images must be 15 MB or smaller.")
+        assertThat(stream.consumed).isEqualTo(PromptImage.MAX_BYTES + 1)
+    }
+
+    /** A stream of [length] zero bytes that allocates nothing, counting what was actually taken from it. */
+    private class CountingStream(private val length: Long) : InputStream() {
+        var consumed = 0L
+            private set
+
+        override fun read(): Int {
+            if (consumed >= length) return -1
+            consumed++
+            return 0
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (consumed >= length) return -1
+            val n = minOf(len.toLong(), length - consumed).toInt()
+            consumed += n
+            return n
+        }
     }
 
     @Test

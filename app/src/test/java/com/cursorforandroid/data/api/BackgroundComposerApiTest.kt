@@ -1,7 +1,10 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -49,7 +52,10 @@ class BackgroundComposerApiTest {
                      {"bcId":"bc-4","prUrl":"https://github.com/acme/app/pull/4","isPrMerged":false,"prStatus":4,"source":21},
                      {"bcId":"bc-5","prUrl":"https://github.com/acme/app/pull/5","isPrMerged":true,"source":"BACKGROUND_COMPOSER_SOURCE_GROK_BOT"},
                      {"bcId":"bc-6","prUrl":"https://github.com/acme/app/pull/6","isPrMerged":false,"source":"BACKGROUND_COMPOSER_SOURCE_TELEPATHY"},
-                     {"bcId":"bc-7","name":"no pr","isArchived":true}
+                     {"bcId":"bc-7","name":"no pr","isArchived":true},
+                     {"bcId":"bc-8","name":"Billing launch","projectMetadata":{"appearance":{"icon":"rocket","colorId":"purple"}},"startedAsNewProject":false},
+                     {"bcId":"bc-10","name":"Webhook worker","managerAgentId":"bc-8","source":"BACKGROUND_COMPOSER_SOURCE_WEBSITE"},
+                     {"bcId":"bc-11","name":"Pricing side chat","sideChatInfo":{"parentBcId":"bc-8","seedTurnCount":3}}
                    ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
             ),
         )
@@ -60,6 +66,9 @@ class BackgroundComposerApiTest {
         assertThat(list.composers).containsAtLeast(
             ComposerSnapshot("bc-1", name = "x", archived = false),
             ComposerSnapshot("bc-7", name = "no pr", archived = true),
+            ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")),
+            ComposerSnapshot("bc-10", name = "Webhook worker", parent = AgentParent("bc-8", AgentParentKind.PROJECT_WORKER)),
+            ComposerSnapshot("bc-11", name = "Pricing side chat", parent = AgentParent("bc-8", AgentParentKind.SIDE_CHAT)),
         )
         assertThat(list.pullRequests).containsExactly(
             "https://github.com/acme/app/pull/1", PullRequestState.Open,
@@ -78,6 +87,7 @@ class BackgroundComposerApiTest {
             "bc-4", AgentSource.SDK,
             "bc-5", AgentSource.GROK_BOT,
             "bc-6", AgentSource.UNKNOWN,
+            "bc-10", AgentSource.WEBSITE,
         )
         server.takeRequest() // the exchange
         val request = server.takeRequest()
@@ -93,6 +103,40 @@ class BackgroundComposerApiTest {
         assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo(BackgroundComposerApi.LIST_WINDOW.toString())
         // SDK agents are left out of the list unless asked for, as cursor.com/agents leaves them out until its Source filter says SDK.
         assertThat(body["includeHiddenSources"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("BACKGROUND_COMPOSER_SOURCE_SDK")
+    }
+
+    @Test
+    fun `a chat's place among Projects is derived the way the Agents Window derives it`() {
+        fun composer(
+            id: String = "bc-x",
+            project: BackgroundComposerApi.ProjectMetadataDto? = null,
+            manager: String? = null,
+            sideChat: String? = null,
+            subagentParent: String? = null,
+        ) = BackgroundComposerApi.ComposerDto(
+            bcId = id,
+            projectMetadata = project,
+            managerAgentId = manager,
+            sideChatInfo = sideChat?.let { BackgroundComposerApi.SideChatInfoDto(parentBcId = it) },
+            cloudSubagentParent = subagentParent?.let { BackgroundComposerApi.CloudSubagentParentDto(parentAgentId = it, parentToolCallId = "call-1") },
+        )
+        val appearance = BackgroundComposerApi.ProjectAppearanceDto(icon = "flag", colorId = "green")
+
+        // `projectMetadata` makes a Project, empty or not; the appearance counts only whole.
+        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto()))).isEqualTo(ComposerSnapshot("bc-x", isProject = true))
+        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(appearance)))!!.projectAppearance).isEqualTo(ProjectAppearance("flag", "green"))
+        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(BackgroundComposerApi.ProjectAppearanceDto(icon = "flag"))))!!.projectAppearance).isNull()
+        assertThat(BackgroundComposerApi.snapshot(composer())!!.isProject).isFalse()
+        // A worker is never a Project itself, whatever metadata it carries.
+        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(appearance), manager = "bc-m")))
+            .isEqualTo(ComposerSnapshot("bc-x", parent = AgentParent("bc-m", AgentParentKind.PROJECT_WORKER)))
+        // The parent is the first of: the agent that spawned it, the chat it branched off, the coordinator it works for.
+        assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s", subagentParent = "bc-p"))!!.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SUBAGENT))
+        assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s"))!!.parent).isEqualTo(AgentParent("bc-s", AgentParentKind.SIDE_CHAT))
+        assertThat(BackgroundComposerApi.snapshot(composer(manager = " bc-m "))!!.parent).isEqualTo(AgentParent("bc-m", AgentParentKind.PROJECT_WORKER))
+        // Blank links and a record naming itself say nothing; a record without an id is not a snapshot.
+        assertThat(BackgroundComposerApi.snapshot(composer(manager = "  ", sideChat = "", subagentParent = "bc-x"))!!.parent).isNull()
+        assertThat(BackgroundComposerApi.snapshot(composer(id = " "))).isNull()
     }
 
     @Test

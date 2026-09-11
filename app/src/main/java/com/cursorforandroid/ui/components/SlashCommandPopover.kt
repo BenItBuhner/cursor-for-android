@@ -16,6 +16,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
@@ -102,11 +103,20 @@ fun SlashCommandPopover(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val results = if (token == null) emptyList() else catalog.search(token.query, recent)
-    val expanded = token != null && results.isNotEmpty()
-    // The popover has nothing to say once the token matches nothing (a made-up word after a slash, "/2x"); it closes
-    // itself rather than hanging on to an empty card.
-    LaunchedEffect(token, results.isEmpty()) { if (token != null && results.isEmpty()) onDismiss() }
+    // Held against the query rather than recomputed: this composable follows the composer, which follows every
+    // caret move and — while a run streams — every delta, and the search walks the whole catalog.
+    val query = token?.query
+    val results = remember(query, catalog, recent) {
+        if (query == null) emptyList() else catalog.search(query, recent)
+    }
+    // A catalog still waiting on the agent's machine has something to say even with nothing to list, which is the
+    // state the notice below exists for: the command being typed may be one the machine has not reported yet.
+    val expanded = token != null && (results.isNotEmpty() || catalog.pending)
+    // The popover has nothing to say once the token matches nothing (a made-up word after a slash, "/2x") and
+    // nothing more is coming; it closes itself rather than hanging on to an empty card.
+    LaunchedEffect(token, results.isEmpty(), catalog.pending) {
+        if (token != null && results.isEmpty() && !catalog.pending) onDismiss()
+    }
 
     DropdownMenu(
         expanded = expanded,

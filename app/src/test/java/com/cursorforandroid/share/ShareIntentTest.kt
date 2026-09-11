@@ -112,6 +112,31 @@ class ShareIntentTest {
     }
 
     @Test
+    fun `clearing a share leaves nothing on the intent to read again`() {
+        val uri = pngUri("cleared.png")
+        val intent = Intent(Intent.ACTION_SEND)
+            .setType("image/png")
+            .putExtra(Intent.EXTRA_TEXT, "Look")
+            .putExtra(Intent.EXTRA_SUBJECT, "A title")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+        intent.clipData = ClipData.newUri(context.contentResolver, "image", uri)
+
+        ShareIntent.clear(intent)
+
+        assertThat(ShareIntent.isShare(intent)).isFalse()
+        assertThat(ShareIntent.load(context, intent)).isNull()
+        assertThat(ShareIntent.textOf(intent)).isEmpty()
+        assertThat(ShareIntent.urisOf(intent)).isEmpty()
+    }
+
+    @Test
+    fun `clearing leaves an intent that is not a share alone`() {
+        val intent = Intent(Intent.ACTION_VIEW).setData("https://cursor.com/agents/bc-1".toUri())
+        ShareIntent.clear(intent)
+        assertThat(intent.action).isEqualTo(Intent.ACTION_VIEW)
+    }
+
+    @Test
     fun `the token is stable for the same payload`() {
         val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "Hi")
         assertThat(ShareIntent.token(intent)).isEqualTo(ShareIntent.token(Intent(intent)))

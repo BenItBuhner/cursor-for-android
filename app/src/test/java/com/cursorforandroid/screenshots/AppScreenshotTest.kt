@@ -32,8 +32,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
-import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.SourceFilter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -41,7 +41,6 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -190,10 +189,9 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         capture("03_sidebar")
 
-        // Chats filter sheet from the header's filter icon.
+        // Chats filter sheet from the header's filter icon. The root page is 04 (chatsFilterReadAll).
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
         waitForText("Grouping")
-        capture("04_chats_filter")
         compose.onNodeWithText("Status").performClick()
         waitForText("Archived")
         capture("05_status_filter")
@@ -260,7 +258,9 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Light").performClick()
-        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Light }
+        // Light hides the OLED row. Wait on that, not DataStore: runBlocking { prefs.first() } inside waitUntil
+        // hops off the main thread on Robolectric's unconfined effects and tears the slot table.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText("OLED black", substring = true)).fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
         capture("07_settings_light")
         compose.onNodeWithContentDescription("Back").performClick()
@@ -277,7 +277,7 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
+        waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Back").performClick()
 
@@ -317,6 +317,29 @@ class AppScreenshotTest {
     }
 
     @Test
+    fun chatsFilterReadAll() {
+        val graph = launchApp()
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Filter and group chats").performClick()
+        waitForText("Read All")
+        capture("04_chats_filter")
+
+        compose.onNodeWithText("Read All").performClick()
+        // The count is the UI's word that the write landed. Do not read DataStore from waitUntil:
+        // that blocks the main thread and the mark-all coroutine never finishes.
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasContentDescription("unread", substring = true)).fetchSemanticsNodes().isEmpty()
+        }
+        compose.waitForIdle()
+        Espresso.pressBack()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Grouping").fetchSemanticsNodes().isEmpty() }
+        compose.waitForIdle()
+        capture("28_sidebar_all_read")
+    }
+
+    @Test
     fun oledBlack() {
         val graph = launchApp()
         enterDemo(graph)
@@ -325,13 +348,11 @@ class AppScreenshotTest {
         compose.onNodeWithText("Demo User").performClick()
         waitForText("Appearance")
         compose.onNodeWithText("Cursor Dark").performClick()
-        compose.waitUntil(10_000) { runBlocking { graph.prefs.themeMode.first() } == ThemeMode.Dark }
         // The preference is one thing, the screen having recomposed from it another: wait for the copy that only the
         // dark theme shows, or a slow runner captures "Match system" still checked.
         waitForText("True-black surfaces instead of Cursor Dark's charcoal.")
         capture("20_settings_dark")
         compose.onNodeWithText("OLED black").performClick()
-        compose.waitUntil(10_000) { runBlocking { graph.prefs.oledBlack.first() } }
         // The switch in the OLED row (its row merges the label into its semantics) reads on once the screen has caught up.
         compose.waitUntil(10_000) {
             compose.onAllNodes(isOn() and hasAnyAncestor(hasText("OLED black", substring = true))).fetchSemanticsNodes().isNotEmpty()

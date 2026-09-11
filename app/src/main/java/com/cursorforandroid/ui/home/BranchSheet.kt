@@ -12,7 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -42,7 +42,7 @@ internal fun BranchSheet(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     CursorSheet(onDismiss = onDismiss) { dismiss ->
         // Picking a row plays the sheet's hide animation before the selection is applied.
         fun pick(ref: String) {

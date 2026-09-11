@@ -43,6 +43,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -72,7 +74,8 @@ import kotlinx.coroutines.launch
 
 /**
  * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: grouping, sort, the
- * Repo / Status / Git / Source / Environment filters and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
+ * Repo / Status / Git / Source / Environment filters, Read All, and the metadata toggles. Flat 40dp rows, 13sp,
+ * desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,7 +145,7 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
             ) { current ->
                 LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     when (current) {
-                        null -> rows { RootPage(state.prefs, viewModel, onOpen = { page = it }) }
+                        null -> rows { RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it }) }
                         FilterKind.Repo -> repoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->
                             val selected = state.prefs.repos ?: state.repoSlugs.toSet()
                             val next = if (slug in selected) selected - slug else selected + slug
@@ -168,7 +171,7 @@ private const val PageTransitionMillis = 300
 private fun LazyListScope.rows(content: @Composable ColumnScope.() -> Unit) = item { Column(content = content) }
 
 @Composable
-private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
+private fun RootPage(prefs: ListPreferences, unreadCount: Int, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
     SectionLabel("Grouping")
     PickerRow(CursorIcons.Layers, "Group by", GroupBy.entries.map { it.label }, prefs.groupBy.ordinal) { viewModel.setGroupBy(GroupBy.entries[it]) }
     PickerRow(CursorIcons.Filter, "Sort by", SortOrder.entries.map { it.label }, prefs.sortOrder.ordinal) { viewModel.setSortOrder(SortOrder.entries[it]) }
@@ -179,6 +182,7 @@ private fun RootPage(prefs: ListPreferences, viewModel: AgentsViewModel, onOpen:
     DrillRow(CursorIcons.GitBranch, "Git", prefs.summaryFor(FilterKind.Git)) { onOpen(FilterKind.Git) }
     DrillRow(CursorIcons.Globe, "Source", prefs.summaryFor(FilterKind.Source)) { onOpen(FilterKind.Source) }
     DrillRow(CursorIcons.Cloud, "Environment", prefs.summaryFor(FilterKind.Environment)) { onOpen(FilterKind.Environment) }
+    ReadAllRow(unreadCount = unreadCount, onClick = viewModel::markAllRead)
 
     SectionLabel("Metadata")
     ToggleRow(CursorIcons.Folder, "Workspace", prefs.showWorkspace, viewModel::setShowWorkspace)
@@ -198,23 +202,49 @@ private fun SectionLabel(text: String) {
 
 /** A sheet list row: 17px glyph at 66 %, label, trailing control; inset 8dp so the press highlight has a margin. */
 @Composable
-private fun RowShell(icon: ImageVector?, label: String, onClick: (() -> Unit)?, trailing: @Composable RowScope.() -> Unit) {
+private fun RowShell(
+    icon: ImageVector?,
+    label: String,
+    onClick: (() -> Unit)?,
+    enabled: Boolean = true,
+    trailing: @Composable RowScope.() -> Unit,
+) {
     val colors = CursorTheme.colors
+    val iconTint = if (enabled) colors.iconSecondary else colors.iconQuaternary
+    val labelColor = if (enabled) colors.textPrimary else colors.textQuaternary
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
-            .then(if (onClick != null) Modifier.pressable(onClick, CursorTheme.shapes.base) else Modifier)
+            .then(if (onClick != null && enabled) Modifier.pressable(onClick, CursorTheme.shapes.base) else Modifier)
             .height(CursorDimens.listRow)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(17.dp))
+            Icon(icon, null, tint = iconTint, modifier = Modifier.size(17.dp))
             Spacer(Modifier.width(12.dp))
         }
-        Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(label, style = CursorTheme.typography.base, color = labelColor, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         trailing()
+    }
+}
+
+/** Marks every loaded conversation read. Dims when nothing is unread. */
+@Composable
+private fun ReadAllRow(unreadCount: Int, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val enabled = unreadCount > 0
+    RowShell(CursorIcons.CheckCheck, "Read All", onClick = onClick, enabled = enabled) {
+        if (enabled) {
+            Text(
+                unreadCount.toString(),
+                style = CursorTheme.typography.base,
+                color = colors.textTertiary,
+                maxLines = 1,
+                modifier = Modifier.semantics { contentDescription = "$unreadCount unread" },
+            )
+        }
     }
 }
 

@@ -45,6 +45,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
+import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -79,9 +80,13 @@ fun ShareDestinationScreen(
         onArchive = {},
         onUnarchive = {},
         onRename = { _, _ -> },
+        onSnooze = { _, _ -> },
+        onUnsnooze = {},
     )
 
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
+    // The picker is drawn over the shell, not in its place: without this the drawer's edge drag and whatever
+    // control sits under a blank part of the list are still live behind an opaque background.
+    Column(modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput()) {
         CursorHeader(
             title = "Add to",
             subtitle = draft.summary().ifBlank { null },

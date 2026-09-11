@@ -39,7 +39,7 @@ class ComposerSlashPopoverTest {
     private var prompt = ""
     private val remembered = mutableListOf<String>()
 
-    private fun show() {
+    private fun show(commands: SlashCatalog = catalog) {
         compose.setContent {
             var value by remember { mutableStateOf("") }
             CursorTheme(mode = ThemeMode.Dark) {
@@ -49,7 +49,7 @@ class ComposerSlashPopoverTest {
                     placeholder = "Ask",
                     onSend = {},
                     plusMenu = ComposerMenuActions(onPickFiles = {}, onSkillUsed = { remembered += it }),
-                    commands = catalog,
+                    commands = commands,
                 )
             }
         }
@@ -98,6 +98,16 @@ class ComposerSlashPopoverTest {
 
         assertThat(prompt).isEqualTo("/land-it ")
         assertThat(remembered).containsExactly("land-it")
+    }
+
+    @Test
+    fun `a catalog still waiting on the machine says so even when nothing matches`() {
+        show(catalog.copy(pending = true))
+        val field = compose.onNode(hasSetTextAction())
+
+        // A body no name and no description can hold, so the list really is empty and only the notice is left.
+        field.performTextInput("/-zz")
+        compose.waitUntil { shown("Looking for the agent's own skills") }
     }
 
     @Test

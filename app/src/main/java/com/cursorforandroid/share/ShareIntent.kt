@@ -21,6 +21,21 @@ object ShareIntent {
         return action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE
     }
 
+    /**
+     * Strikes the share off [intent], once it has been drafted or dismissed. An activity answers with the intent
+     * that launched it for as long as its task lives, so a share left on one is read again the next time the
+     * activity is created — after a relaunch from Recents, or a configuration change it does not absorb — by which
+     * time the grants on its images are usually gone and what comes back is the same text, degraded.
+     */
+    fun clear(intent: Intent?) {
+        if (!isShare(intent) || intent == null) return
+        intent.action = null
+        intent.removeExtra(Intent.EXTRA_TEXT)
+        intent.removeExtra(Intent.EXTRA_SUBJECT)
+        intent.removeExtra(Intent.EXTRA_STREAM)
+        intent.clipData = null
+    }
+
     /** Stable fingerprint of the payload, used to ignore a recreate redelivering the same share. */
     fun token(intent: Intent): String {
         val text = textOf(intent)
