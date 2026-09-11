@@ -48,4 +48,30 @@ class ComposerTest {
         val gapFromPlus = model.left - plus.right
         assertThat(gapToSend).isLessThan(gapFromPlus)
     }
+
+    @Test
+    fun `the placeholder shares the plus glyph's left edge, not the disc's`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                ComposerBox(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "Ask Cursor to build, fix bugs, explore",
+                    onSend = {},
+                    plusMenu = ComposerMenuActions(onPickFiles = {}),
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                )
+            }
+        }
+        compose.waitForIdle()
+
+        val placeholder = compose.onNodeWithText("Ask Cursor to build, fix bugs, explore").fetchSemanticsNode().boundsInRoot
+        val plus = compose.onNodeWithContentDescription("Add to prompt").fetchSemanticsNode().boundsInRoot
+        val send = compose.onNodeWithContentDescription("Send").fetchSemanticsNode().boundsInRoot
+
+        // The description lives on the 17dp glyph, which is what the extra field inset is lining up with.
+        assertThat(placeholder.left).isWithin(3f).of(plus.left)
+        assertThat(placeholder.right).isLessThan(send.right)
+    }
 }

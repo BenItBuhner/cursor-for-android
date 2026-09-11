@@ -990,7 +990,11 @@ class ConversationRepository(
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val staged = stageFollowUp(agentId, text, images)
         return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
-            .onFailure { discardStaged(agentId, staged, it.userMessage()) }
+            .onFailure { t ->
+                // Refused as busy, the message is not lost: the caller queues it for the end of the turn. That is
+                // nothing for the chat to show as an error.
+                discardStaged(agentId, staged, t.userMessage().takeUnless { t.toCursorError()?.code == AGENT_BUSY })
+            }
     }
 
     /**
@@ -1203,13 +1207,31 @@ class ConversationRepository(
     }
 
     suspend fun cancelActiveRun(agentId: String): Result<Unit> {
-        val e = entry(agentId)
         // A chat the server has not answered for yet has no run to cancel; stopping it gives the launch up instead.
         if (cancelLaunch(agentId)) return Result.success(Unit)
-        val runId = e.state.value.activeRunId ?: return Result.failure(IllegalStateException("No active run."))
+        val runId = runToCancel(agentId) ?: return Result.failure(IllegalStateException("No active run."))
+        return cancelRun(agentId, runId)
+    }
+
+    /** Cancels one run of the chat and, once the server has agreed, shows the turn as cancelled. */
+    suspend fun cancelRun(agentId: String, runId: String): Result<Unit> {
+        val e = entry(agentId)
         return agents.cancelRun(agentId, runId).onSuccess {
             e.state.update { it.copy(runStatus = RunStatus.CANCELLED) }
         }
+    }
+
+    /**
+     * The run a Stop is aimed at: the one the server is on, as far as this device knows. The row's latest run while
+     * the row says the agent is running — a follow-up that went out while no screen was attached, or a turn started
+     * elsewhere, reaches the row before the chat has loaded it, and the run the chat still follows may be over by
+     * then — else the run the chat follows. Never a prompt's local placeholder, which the server knows nothing of.
+     * Null when nothing is known to be running.
+     */
+    fun runToCancel(agentId: String): String? {
+        val row = agents.agent(agentId)
+        return row?.takeIf { it.isRunning }?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+            ?: entry(agentId).state.value.activeRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
     }
 
     /**
@@ -1348,5 +1370,7 @@ class ConversationRepository(
         const val ASSISTANT_MESSAGE = "assistant_message"
         /** Ids of the runs local prompts are paired with until the server has answered (the same id as their message, see [LocalPrompt.filed]). */
         const val LOCAL_RUN_PREFIX = "local-"
+        /** `POST /v1/agents/{id}/runs` while a run is `CREATING` or `RUNNING`. */
+        const val AGENT_BUSY = "agent_busy"
     }
 }

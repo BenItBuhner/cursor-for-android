@@ -99,6 +99,9 @@ data class LaunchRequest(
     /** Where the agent runs: Cursor cloud (the default), a team pool, or a connected machine. */
     val env: DeviceTarget = DeviceTarget.Cloud,
 ) {
+    /** `autoCreatePR` as it goes out: a pull request wants a repository, so the switch only counts with one. */
+    val opensPullRequest: Boolean get() = autoCreatePr && repoUrl != null
+
     /**
      * What the chat is called until the server has named it: the prompt's first line of text, its slash commands
      * stripped, cut at a word to about the length of the titles the server generates.
@@ -118,17 +121,37 @@ data class LaunchRequest(
 }
 
 /**
- * `env` on Create An Agent. Default cloud with a repository omits the field (the repo is the target); no-repo
- * cloud still sends `{ type: cloud }` so the VM is empty rather than local. Pool and machine always go out.
+ * `env` on Create An Agent. The ordinary Cursor-hosted cloud is the API's default and goes unsaid, with or without a
+ * repository: the reference wants both `repos` and `env` left out for a no-repo agent, and the `{ type: cloud }` once
+ * sent in their place is what the server answered with a `400`. A named cloud environment, a team pool and a machine
+ * always go out.
  */
-fun DeviceTarget.toEnvDto(hasRepo: Boolean): AgentEnvDto? = when (type) {
+fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
     EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
     EnvType.MACHINE -> AgentEnvDto(type = "machine", name = apiName)
-    EnvType.CLOUD, EnvType.UNKNOWN -> when {
-        apiName != null -> AgentEnvDto(type = "cloud", name = apiName)
-        hasRepo -> null
-        else -> AgentEnvDto(type = "cloud")
-    }
+    EnvType.CLOUD, EnvType.UNKNOWN -> apiName?.let { AgentEnvDto(type = "cloud", name = it) }
+}
+
+/**
+ * The Create An Agent body for this launch. A repository is the target and goes out as `repos[0]` with its starting
+ * ref; without one the request names no target at all — no `repos`, no `env` beyond a pool, machine or named
+ * environment (see [toEnvDto]) — and `autoCreatePR` stays out too (see [LaunchRequest.opensPullRequest]).
+ */
+fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto = CreateAgentRequestDto(
+    prompt = PromptEncoding.toPromptDto(prompt, images),
+    agentId = agentId,
+    model = modelRef(modelId, modelParams),
+    name = name,
+    env = env.toEnvDto(),
+    repos = repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = ref?.ifBlank { null })) },
+    autoCreatePR = opensPullRequest.takeIf { it },
+    mcpServers = mcpServers.toInlineServers(),
+    mode = if (planMode) "plan" else null,
+)
+
+/** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
+private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
+    ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
 }
 
 /** What a launch created: the list row, and the first run as the server reported it (null when adopting an agent whose run could not be read). */
@@ -156,6 +179,8 @@ class AgentRepository(
     private val account: ComposerLifecycleApi? = null,
     /** Where the demo's chats were started, by id: the demo has no account service to say (see [applySources]). */
     private val demoSources: Map<String, AgentSource> = emptyMap(),
+    /** What the demo's account list would say about its chats — which are Projects, which hang off which — for the same reason. */
+    private val demoComposers: List<ComposerSnapshot> = emptyList(),
 ) {
     private val restoreMutex = Mutex()
 
@@ -382,7 +407,7 @@ class AgentRepository(
             val complete = depth != RefreshDepth.Quick && !truncated
             val landed = publish { s ->
                 (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
-                    .let { if (backend.isDemo) it.withSources(demoSources) else it }
+                    .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
@@ -563,7 +588,7 @@ class AgentRepository(
             latestRunId = null,
             repoUrl = request.repoUrl,
             startingRef = request.ref,
-            autoCreatePr = request.autoCreatePr,
+            autoCreatePr = request.opensPullRequest,
             modelDisplayName = modelDisplayName,
             modelId = request.modelId,
             modelParams = if (request.modelId != null) request.modelParams else emptyList(),
@@ -598,20 +623,7 @@ class AgentRepository(
             val (dto, run) = try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
-                withContext(Dispatchers.IO) {
-                    val body = CreateAgentRequestDto(
-                        prompt = PromptEncoding.toPromptDto(request.prompt, request.images),
-                        agentId = request.agentId,
-                        model = modelRef(request.modelId, request.modelParams),
-                        name = request.name,
-                        env = request.env.toEnvDto(hasRepo = request.repoUrl != null),
-                        repos = request.repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = request.ref?.ifBlank { null })) },
-                        autoCreatePR = request.autoCreatePr.takeIf { it },
-                        mcpServers = request.mcpServers.toInlineServers(),
-                        mode = if (request.planMode) "plan" else null,
-                    )
-                    api.createAgent(body)
-                }.let { it.agent to it.run }
+                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
             } catch (t: Throwable) {
                 if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
                 val existing = api.getAgent(request.agentId)
@@ -685,11 +697,6 @@ class AgentRepository(
         response.run
     }
 
-    /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
-    private fun modelRef(modelId: String?, params: List<ModelParam>): ModelRefDto? = modelId?.let { id ->
-        ModelRefDto(id = id, params = params.takeIf { it.isNotEmpty() }?.map { ModelParamDto(it.id, it.value) })
-    }
-
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
         val startedIn = token()
         session.current.api.cancelRun(agentId, runId)
@@ -747,27 +754,39 @@ class AgentRepository(
     }
 
     /**
-     * Folds the account list's name and archive flag onto the rows already shown. Official apps rename and archive
-     * here, and a v1 list that has not caught up (or never will — the public archive is a different write) would
-     * otherwise keep the old title or leave a chat sitting in the open list.
+     * Folds the account list's name, archive flag and Project facts onto the rows already shown. Official apps rename
+     * and archive here, and a v1 list that has not caught up (or never will — the public archive is a different
+     * write) would otherwise keep the old title or leave a chat sitting in the open list. Whether a chat is a Project,
+     * how it looks and whose child it is are the account's alone to say (the public list has no notion of them), so
+     * the snapshot's word replaces the row's; a row the list did not mention keeps what it had.
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
+        publish(null, startedIn) { it.withAccountSnapshots(composers) }
+    }
+
+    private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
+        if (composers.isEmpty()) return this
         val byId = composers.associateBy { it.id }
-        publish(null, startedIn) { s ->
-            s.copy(
-                agents = s.agents.map { agent ->
-                    val snap = byId[agent.id] ?: return@map agent
-                    val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
-                    val lifecycle = when (snap.archived) {
-                        true -> AgentLifecycle.ARCHIVED
-                        false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
-                        null -> agent.lifecycle
-                    }
-                    if (name == agent.name && lifecycle == agent.lifecycle) agent else agent.copy(name = name, lifecycle = lifecycle)
-                },
+        var changed = false
+        val next = agents.map { agent ->
+            val snap = byId[agent.id] ?: return@map agent
+            val name = snap.name?.trim()?.takeIf { it.isNotEmpty() } ?: agent.name
+            val lifecycle = when (snap.archived) {
+                true -> AgentLifecycle.ARCHIVED
+                false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
+                null -> agent.lifecycle
+            }
+            val updated = agent.copy(
+                name = name,
+                lifecycle = lifecycle,
+                isProject = snap.isProject,
+                projectAppearance = snap.projectAppearance,
+                parent = snap.parent,
             )
+            if (updated == agent) agent else updated.also { changed = true }
         }
+        return if (changed) copy(agents = next) else this
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
