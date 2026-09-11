@@ -179,8 +179,10 @@ private data class CachedTraces(val agentId: String, val runs: List<CachedTrace>
  * (`410 stream_expired` afterwards), so a trace is written the moment it has been seen whole — followed live to its
  * result, or replayed — and opening the chat later shows it from here, whether or not the log still exists.
  *
- * Tool call payloads (`args`, `result`) are dropped on the way to disk: nothing renders them, their summaries are
- * already part of each call, and they can be as large as the files the tool touched.
+ * Tool call payloads (`args`, `result`) are dropped on the way to disk: their summaries are already part of each call,
+ * and they can be as large as the files the tool touched. What a call produced that the transcript does render — the
+ * clipped diff, file text, question, or the `file://` URI of a generated image — is typed on the call
+ * ([com.cursorforandroid.domain.ToolPayload]) and travels with it; a trace written before those existed reads as it did.
  */
 class TraceCache(
     private val cache: JsonDiskCache,

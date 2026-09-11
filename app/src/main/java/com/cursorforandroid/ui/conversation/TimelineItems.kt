@@ -46,6 +46,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -59,6 +60,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.round
+import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.ActivityStep
 import com.cursorforandroid.domain.AssistantMessage
@@ -73,11 +75,13 @@ import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolOutput
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
@@ -377,10 +381,23 @@ private fun LineStats(stats: String, style: TextStyle = CursorTheme.typography.b
  */
 @Composable
 private fun ActivityGroupView(item: ActivityGroup, modifier: Modifier) {
+    val media = LocalMarkdownMedia.current
+    val uriHandler = LocalUriHandler.current
     Column(modifier.fillMaxWidth()) {
         if (item.leadingThoughts.isNotEmpty()) ThoughtRow(item)
         if (item.work.isNotEmpty()) {
             if (item.isWorkGrouped) WorkRow(item) else StepList(item.work, Modifier.padding(top = if (item.leadingThoughts.isNotEmpty()) 2.dp else 0.dp))
+        }
+        // What the steps produced that is worth seeing without opening them: the pictures and recordings, and the
+        // question the run is paused on — the one thing in a chat that is waiting for the reader.
+        if (item.media.isNotEmpty()) GroupMediaStrip(item, Modifier.padding(top = 8.dp))
+        item.pendingQuestion?.let { call ->
+            val agentId = media?.agentId
+            PendingQuestionCard(
+                call,
+                Modifier.padding(top = 8.dp),
+                onOpenInBrowser = agentId?.let { id -> { uriHandler.openUri(CursorEndpoints.webUrl(id)) } },
+            )
         }
     }
 }
@@ -462,7 +479,12 @@ private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }
-    val expandable = !output.isEmpty
+    val payload = call.hasExpandablePayload()
+    val truncated = call.truncated?.any == true
+    // A diff or file card names its path itself, so a call that opens onto one of those and produced no output has
+    // nothing left for the output card to say.
+    val showOutput = !output.isEmpty && !(output.output == null && (call.payload is ToolPayload.FileDiff || call.payload is ToolPayload.FileContent))
+    val expandable = showOutput || payload || truncated
     var expanded by rememberSaveable(key = call.callId) { mutableStateOf(false) }
     Column(modifier.fillMaxWidth()) {
         Row(
@@ -497,7 +519,11 @@ private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
         }
         if (expandable) {
             AnimatedVisibility(visible = expanded) {
-                ToolOutputView(call, output, Modifier.padding(top = 4.dp, bottom = 6.dp))
+                Column(Modifier.padding(top = 4.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (showOutput) ToolOutputView(call, output)
+                    if (payload) ToolPayloadView(call)
+                    call.truncated?.takeIf { it.any }?.let { TruncationNote(it, Modifier.padding(horizontal = 2.dp)) }
+                }
             }
         }
     }

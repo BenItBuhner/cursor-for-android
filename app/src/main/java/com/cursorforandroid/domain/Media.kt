@@ -214,6 +214,12 @@ sealed interface MediaRef {
         override val label: String get() = "Embedded image"
     }
 
+    /** A file on this device (`file://…`): an image the agent generated, kept the moment the stream delivered it. */
+    data class Local(val path: String) : MediaRef {
+        override val cacheKey: String get() = "file:$path"
+        override val label: String get() = ArtifactPaths.fileName(path)
+    }
+
     /** A `src` we cannot fetch: a repository-relative path, a VM path with no agent to ask, an unknown scheme. */
     data class Unavailable(val src: String) : MediaRef {
         override val cacheKey: String get() = "unavailable:$src"
@@ -227,6 +233,11 @@ sealed interface MediaRef {
         fun parse(src: String, agentId: String?): MediaRef {
             val trimmed = src.trim()
             if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) return Remote(trimmed)
+            // Both spellings `java.io.File.toURI()` (`file:/x`) and `Uri.fromFile` (`file:///x`) produce.
+            if (trimmed.startsWith("file:", ignoreCase = true)) {
+                val path = runCatching { java.net.URI(trimmed).path }.getOrNull()?.takeIf { it.isNotBlank() } ?: return Unavailable(trimmed)
+                return Local(path)
+            }
             dataUri.find(trimmed)?.let { m ->
                 val isBase64 = m.groupValues[2].contains("base64", ignoreCase = true)
                 val bytes = runCatching {

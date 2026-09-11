@@ -334,6 +334,45 @@ data class SseToolCallDto(
     val status: String,
     val args: JsonElement? = null,
     val result: JsonElement? = null,
+    /** Present when `args` or `result` were too large for the stream and left out (`RunStreamToolCallTruncation`). */
+    val truncated: SseToolCallTruncationDto? = null,
+)
+
+@Serializable
+data class SseToolCallTruncationDto(val args: Boolean = false, val result: Boolean = false)
+
+/**
+ * The `interaction_update` event: the SDK-shape update (`@cursor/sdk`'s `InteractionUpdate`) the stream emits beside
+ * the simplified events, under the same event id. Only the tool-call updates are read — `tool-call-started` and
+ * `tool-call-completed`, whose [toolCall] carries the typed arguments and result the simplified `tool_call` event
+ * may have left out — so every other [type] (text and thinking deltas, turn and step markers) keeps its defaults.
+ */
+@Serializable
+data class SseInteractionUpdateDto(
+    val type: String = "",
+    val callId: String? = null,
+    val toolCall: SseInteractionToolCallDto? = null,
+    val modelCallId: String? = null,
+) {
+    val isToolCallStarted: Boolean get() = type == TOOL_CALL_STARTED
+    val isToolCallCompleted: Boolean get() = type == TOOL_CALL_COMPLETED
+    val isToolCall: Boolean get() = (isToolCallStarted || isToolCallCompleted) && callId != null && toolCall != null
+
+    companion object {
+        const val TOOL_CALL_STARTED = "tool-call-started"
+        const val TOOL_CALL_COMPLETED = "tool-call-completed"
+    }
+}
+
+/**
+ * The tool call of an interaction update: [type] is the SDK's tool name (`edit`, `read`, `write`, `shell`,
+ * `generateImage`, `recordScreen`, `task`, `mcp`, …), [result] its `{status: "success", value} | {status: "error", error}`.
+ */
+@Serializable
+data class SseInteractionToolCallDto(
+    val type: String = "",
+    val args: JsonElement? = null,
+    val result: JsonElement? = null,
 )
 
 @Serializable

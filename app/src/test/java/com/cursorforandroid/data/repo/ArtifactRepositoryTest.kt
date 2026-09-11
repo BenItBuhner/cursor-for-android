@@ -1,7 +1,10 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.FakeCursorApi
+import com.cursorforandroid.data.api.dto.ArtifactDto
 import com.cursorforandroid.data.api.dto.DownloadArtifactResponseDto
+import com.cursorforandroid.data.api.dto.ListArtifactsResponseDto
+import com.cursorforandroid.domain.Artifact
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -103,5 +106,44 @@ class ArtifactRepositoryTest {
     fun `an empty url is an error rather than a blank image request`() {
         api.response = { DownloadArtifactResponseDto(url = "") }
         assertThrows(IllegalStateException::class.java) { runBlocking { repo.downloadUrl("bc-1", "artifacts/a.png") } }
+    }
+
+    private class ListingApi : FakeCursorApi() {
+        var listings = 0
+        var items = listOf(
+            ArtifactDto("artifacts/screenshots/home.png", 20_480, "2026-04-13T18:40:00Z"),
+            ArtifactDto("artifacts/demo.mp4", 4_194_304, "2026-04-13T18:44:00Z"),
+            ArtifactDto("artifacts/notes.md", 512, null),
+            ArtifactDto("", 1, null),
+        )
+        override suspend fun artifacts(id: String): ListArtifactsResponseDto {
+            listings++
+            return ListArtifactsResponseDto(items)
+        }
+    }
+
+    @Test
+    fun `the listing is typed, newest first, and read once until it ages`() = runBlocking {
+        val api = ListingApi()
+        val repo = ArtifactRepository(api = { api }, now = { now })
+
+        val listed = repo.list("bc-1")
+        assertThat(listed.map { it.name }).containsExactly("demo.mp4", "home.png", "notes.md").inOrder()
+        assertThat(listed.map { it.kind }).containsExactly(Artifact.Kind.Video, Artifact.Kind.Image, Artifact.Kind.Markdown).inOrder()
+        assertThat(listed[1].sizeBytes).isEqualTo(20_480L)
+        assertThat(listed[1].updatedAtMillis).isEqualTo(Instant.parse("2026-04-13T18:40:00Z").toEpochMilli())
+        assertThat(listed[1].vmPath).isEqualTo("/opt/cursor/artifacts/screenshots/home.png")
+        assertThat(listed[2].updatedAtMillis).isNull()
+
+        repo.list("bc-1")
+        assertThat(api.listings).isEqualTo(1)
+        assertThat(repo.lastListing("bc-1")).isEqualTo(listed)
+
+        now += ArtifactRepository.LISTING_TTL_MS
+        repo.list("bc-1")
+        assertThat(api.listings).isEqualTo(2)
+        repo.list("bc-1", force = true)
+        assertThat(api.listings).isEqualTo(3)
+        assertThat(repo.lastListing("bc-2")).isNull()
     }
 }

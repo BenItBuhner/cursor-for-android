@@ -48,6 +48,7 @@ class AppGraphTest {
         val graph = AppGraph(app)
         val cached = write(File(app.cacheDir, "cursor/agents/list.json"))
         val attachment = write(File(app.filesDir, "attachments/bc-1/run-1/0.png"))
+        val generated = write(File(app.filesDir, "generated/bc-1/call-1.png"))
         val draft = write(File(app.filesDir, "draft/composer.json"))
         assertThat(graph.builtParts()).isEmpty()
 
@@ -55,11 +56,12 @@ class AppGraphTest {
 
         assertThat(cached.exists()).isFalse()
         assertThat(attachment.exists()).isFalse()
+        assertThat(generated.exists()).isFalse()
         assertThat(draft.exists()).isFalse()
         // A wipe has to be performed whatever this process touched, so those stores are built here; the
         // repositories the sign-out would only have emptied in memory are left unbuilt. The image loader is in the
         // first group because Coil's disk cache outlives the process that filled it.
-        assertThat(graph.builtParts()).containsExactly("attachments", "drafts", "artifacts", "media")
+        assertThat(graph.builtParts()).containsExactly("attachments", "generatedMedia", "drafts", "artifacts", "media")
     }
 
     @Test

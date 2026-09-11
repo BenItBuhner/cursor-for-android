@@ -3,6 +3,7 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.api.dto.ApiErrorBodyDto
 import com.cursorforandroid.data.api.dto.RunGitDto
 import com.cursorforandroid.data.api.dto.SseErrorDto
+import com.cursorforandroid.data.api.dto.SseInteractionUpdateDto
 import com.cursorforandroid.data.api.dto.SseResultDto
 import com.cursorforandroid.data.api.dto.SseStatusDto
 import com.cursorforandroid.data.api.dto.SseTextDto
@@ -32,6 +33,12 @@ sealed interface RunStreamEvent {
     data class Assistant(val text: String) : RunStreamEvent
     data class Thinking(val text: String) : RunStreamEvent
     data class ToolCall(val call: SseToolCallDto) : RunStreamEvent
+    /**
+     * A tool-call update in the SDK's shape (`interaction_update`), carrying the typed arguments and result — the diff
+     * of an edit, the text of a file, a generated image — that the simplified [ToolCall] event for the same call may
+     * have left out. Emitted beside that event, in either order; the builder joins the two by `callId`.
+     */
+    data class Interaction(val update: SseInteractionUpdateDto) : RunStreamEvent
     data object Heartbeat : RunStreamEvent
     data class Result(
         val runId: String?,
@@ -155,7 +162,7 @@ object SseParser {
     /** What a frame turned out to be. Only a frame that said something may be resumed from. */
     sealed interface Parsed {
         data class Delivered(val event: RunStreamEvent) : Parsed
-        /** A frame of a kind this client has no use for (`interaction_update`, anything new). */
+        /** A frame of a kind this client has no use for (an `interaction_update` that is not about a tool call, anything new). */
         data object Ignored : Parsed
         /** The frame's data is not what its name promised: truncated, or a shape this version cannot read. */
         data object Undecodable : Parsed
@@ -169,13 +176,18 @@ object SseParser {
                 "assistant" -> RunStreamEvent.Assistant(json.decodeFromString(SseTextDto.serializer(), frame.data).text)
                 "thinking" -> RunStreamEvent.Thinking(json.decodeFromString(SseTextDto.serializer(), frame.data).text)
                 "tool_call" -> RunStreamEvent.ToolCall(json.decodeFromString(SseToolCallDto.serializer(), frame.data))
+                // The SDK-shape update duplicates the text and thinking deltas, which the simplified events already
+                // deliver; only its tool-call updates carry something the simplified `tool_call` does not.
+                "interaction_update" -> json.decodeFromString(SseInteractionUpdateDto.serializer(), frame.data).let {
+                    if (it.isToolCall) RunStreamEvent.Interaction(it) else return Parsed.Ignored
+                }
                 "heartbeat" -> RunStreamEvent.Heartbeat
                 "result" -> json.decodeFromString(SseResultDto.serializer(), frame.data).let {
                     RunStreamEvent.Result(it.runId, RunStatus.parse(it.status), it.text, it.durationMs, it.git)
                 }
                 "error" -> json.decodeFromString(SseErrorDto.serializer(), frame.data).let { RunStreamEvent.Error(it.code, it.message) }
                 "done" -> RunStreamEvent.Done
-                else -> return Parsed.Ignored // interaction_update and unknown events are intentionally ignored
+                else -> return Parsed.Ignored // unknown events are intentionally ignored
             }
         }
         return decoded.getOrNull()?.let { Parsed.Delivered(it) } ?: Parsed.Undecodable

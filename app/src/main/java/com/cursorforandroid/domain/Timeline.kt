@@ -112,8 +112,24 @@ data class ToolCall(
     val output: String? = null,
     /** A command's exit code, when its result reported one. */
     val exitCode: Int? = null,
+    /**
+     * What the call produced beyond the row: an edit's diff, a file's text, a generated image, a recording, the
+     * subagent, the question asked (see [ToolPayload]). Clipped like [output]; null when the stream carried none.
+     */
+    val payload: ToolPayload? = null,
+    /** The stream left the call's arguments or result out for size (`tool_call.truncated`); null when it said nothing. */
+    val truncated: ToolTruncation? = null,
 ) : ActivityStep {
     val isRunning: Boolean get() = status == STATUS_RUNNING
+
+    /** A question the agent is waiting on right now: an `ask_question` call still running, with its questions. */
+    val pendingQuestion: ToolPayload.Question? get() = (payload as? ToolPayload.Question)?.takeIf { isRunning && !it.isAnswered }
+
+    /** True when the call opens onto a picture or a recording rather than text. */
+    val hasMedia: Boolean get() = (payload as? ToolPayload.GeneratedImage)?.src != null || payload is ToolPayload.Recording
+
+    /** The path this call touched, for the Files list: the payload's when it has one, else the call's own detail. */
+    val touchedPath: String? get() = payload?.path ?: detail?.takeIf { kind == ToolKind.Read || isFileChange }
 
     /** "Reading", "Read" or "Read" (the attempted form) — the verb for the call's state. */
     val action: String
@@ -217,6 +233,12 @@ data class ActivityGroup(
 
     /** What the work counts up to; the numbers behind the summary row. */
     val summary: WorkSummary by lazy { WorkSummary.of(calls) }
+
+    /** The calls that produced a picture or a recording, in order: shown under the group whether or not it is open. */
+    val media: List<ToolCall> by lazy { calls.filter { it.hasMedia } }
+
+    /** The question the agent is waiting on, when the newest running call is asking one. */
+    val pendingQuestion: ToolCall? by lazy { calls.lastOrNull { it.pendingQuestion != null } }
 }
 
 /** What a stretch of tool calls adds up to, counted the way Cursor's client counts a step group. */
@@ -307,6 +329,11 @@ data class WorkHeader(
             }
             if (summary.images > 0 && summary.images == calls.size) {
                 return WorkHeader(if (busy) "Generating" else "Generated", plural(summary.images, "image"))
+            }
+            // A step that is only the agent asking: "Asking a question" while the run waits on it, "Asked" after.
+            if (calls.all { it.kind == ToolKind.Question }) {
+                val questions = calls.sumOf { (it.payload as? ToolPayload.Question)?.questions?.size ?: 1 }
+                return WorkHeader(if (busy) "Asking" else "Asked", plural(questions, "question"))
             }
             val parts = mutableListOf<String>()
             val action: String
@@ -461,7 +488,10 @@ object ToolNames {
         "fetch_rules" to ToolLabels("Fetching rules", "Fetched rules", "Fetch rules"),
         "switch_mode" to ToolLabels("Switching mode", "Switched mode", "Switch mode"),
         "record_screen" to ToolLabels("Recording screen", "Recorded screen", "Record screen"),
+        // The SDK-shape stream names the same tools in camel case; [kindOf] lowercases, so these are the spellings it sees.
+        "recordscreen" to ToolLabels("Recording screen", "Recorded screen", "Record screen"),
         "computer_use" to ToolLabels("Using computer", "Used computer", "Use computer"),
+        "computeruse" to ToolLabels("Using computer", "Used computer", "Use computer"),
         "create_goal" to ToolLabels("Creating goal", "Created goal", "Create goal"),
         "update_goal" to ToolLabels("Updating goal", "Updated goal", "Update goal"),
         "await" to ToolLabels("Waiting", "Waited", "Wait"),

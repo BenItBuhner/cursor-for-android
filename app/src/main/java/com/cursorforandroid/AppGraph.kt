@@ -27,6 +27,7 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.FollowUpStore
+import com.cursorforandroid.data.local.GeneratedMediaStore
 import com.cursorforandroid.data.local.McpServerStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
@@ -41,6 +42,7 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.CursorPullRequestSource
 import com.cursorforandroid.data.repo.ExtendedMode
 import com.cursorforandroid.data.repo.FollowUpRepository
+import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
@@ -252,8 +254,14 @@ class AppGraph(
     }
     val slashCommands: SlashCommandRepository get() = lazySlashCommands.value
 
+    /** Images agents generate, kept on-device the moment the stream delivers them: nothing serves them again. */
+    private val lazyGeneratedMedia = lazy { GeneratedMediaStore(app) }
+    val generatedMedia: GeneratedMediaStore get() = lazyGeneratedMedia.value
+
     /** One shared live stream per run, consumed by both the conversation screen and the live notification. */
-    private val lazyLiveRuns = lazy { LiveRunHub(session, agents) }
+    private val lazyLiveRuns = lazy {
+        LiveRunHub(session, agents, images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) })
+    }
     val liveRuns: LiveRunHub get() = lazyLiveRuns.value
 
     private val lazyConversations = lazy {
@@ -357,6 +365,7 @@ class AppGraph(
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
+            generatedMedia.clear()
             drafts.clear()
             followUpStore.clear()
             caches.clear()
@@ -417,6 +426,7 @@ class AppGraph(
             "pins" to lazyPins,
             "catalog" to lazyCatalog,
             "slashCommands" to lazySlashCommands,
+            "generatedMedia" to lazyGeneratedMedia,
             "liveRuns" to lazyLiveRuns,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,

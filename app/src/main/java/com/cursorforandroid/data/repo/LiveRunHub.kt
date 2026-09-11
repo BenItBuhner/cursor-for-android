@@ -54,6 +54,8 @@ class LiveRunHub(
     private val reconnectMaxMs: Long = 30_000L,
     /** How long a rebuilt pass may hold the published trace still before it is let through anyway (see [Entry.catchUp]). */
     private val catchUpTimeoutMs: Long = 20_000L,
+    /** Where the images agents generate are kept on the device, so a trace carries a `file://` URI rather than the pixels. */
+    private val images: GeneratedImageStore? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     /** Everything known about a run right now. Items are the same timeline entries the conversation renders. */
@@ -91,7 +93,7 @@ class LiveRunHub(
     }
 
     private inner class Entry(val agentId: String, val runId: String, startedAt: Long) {
-        var live = TimelineBuilder.LiveRun(runId, nowProvider = nowProvider, startedAtMillis = startedAt)
+        var live = TimelineBuilder.LiveRun(runId, nowProvider = nowProvider, startedAtMillis = startedAt, images = images?.forAgent(agentId))
         val state = MutableStateFlow(Snapshot(agentId = agentId, runId = runId, startedAtMillis = startedAt))
         var subscribers = 0
         var job: Job? = null
@@ -375,7 +377,7 @@ class LiveRunHub(
     private fun restartAccumulator(entry: Entry, timed: Boolean) {
         entry.catchUp = entry.live.applied
         entry.catchUpArmedAt = nowProvider()
-        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis)
+        entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis, images = images?.forAgent(entry.agentId))
     }
 
     /**

@@ -24,6 +24,7 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
+import java.io.File
 import java.io.IOException
 
 /** A frame from early in a video plus its length; [frame] is null when the file could not be probed. */
@@ -65,6 +66,7 @@ class MediaLoader(
     suspend fun playbackUrl(ref: MediaRef): String = when (ref) {
         is MediaRef.Remote -> ref.url
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+        is MediaRef.Local -> "file://${ref.path}"
         is MediaRef.Inline -> throw IOException("Embedded videos aren't supported.")
         is MediaRef.Unavailable -> throw IOException("This video isn't available.")
     }
@@ -88,6 +90,11 @@ class MediaLoader(
     private suspend fun dataFor(ref: MediaRef): Any = when (ref) {
         is MediaRef.Remote -> ref.url
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+        // Read here rather than handed to Coil as a file: for a file Coil decodes through ImageDecoder, which the
+        // JVM test renderer lacks, while bytes go through BitmapFactory like an inline image. The files are small.
+        is MediaRef.Local -> withContext(Dispatchers.IO) {
+            File(ref.path).takeIf { it.isFile }?.readBytes() ?: throw IOException("This image is no longer on this device.")
+        }
         is MediaRef.Inline -> ref.bytes
         is MediaRef.Unavailable -> throw IOException("This image isn't available.")
     }
