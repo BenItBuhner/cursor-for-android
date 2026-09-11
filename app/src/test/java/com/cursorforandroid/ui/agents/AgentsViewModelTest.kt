@@ -9,6 +9,7 @@ import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.IdResponseDto
 import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.AgentIndicator
@@ -116,8 +117,15 @@ class AgentsViewModelTest {
         val loaded = vm.loaded()
         assertThat(loaded.recentRows.map { it.agent.id }).isEqualTo(AgentListOrganizer.recentRows(loaded.sections).map { it.agent.id })
         assertThat(loaded.recentRows.map { it.agent.updatedAtMillis }).isInOrder(reverseOrder<Long>())
-        assertThat(loaded.sections.first().title).isEqualTo("Pinned")
-        assertThat(loaded.sections.first().rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
+        // The demo's Project leads, its workers and side chat folded under it; the demo pins its three showcase
+        // chats, which the sidebar lifts out into a Pinned group. The recent list leaves all of them in their place
+        // by recency, the folded chats included.
+        assertThat(loaded.sections.map { it.title }.take(2)).containsExactly("Projects", "Pinned").inOrder()
+        val project = loaded.sections.first().rows.single()
+        assertThat(project.agent.id).isEqualTo(DemoData.PROJECT_ID)
+        assertThat(project.children.map { it.agent.id }).containsExactly("bc-demo-0019", "bc-demo-0020", "bc-demo-0021").inOrder()
+        assertThat(loaded.sections[1].rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
+        assertThat(loaded.recentRows.map { it.agent.id }).containsAtLeast(DemoData.PROJECT_ID, "bc-demo-0019", "bc-demo-0020", "bc-demo-0021")
         assertThat(loaded.recentRows.first().agent.id).isEqualTo("bc-demo-0004")
         assertThat(loaded.recentRows.count { it.indicator == AgentIndicator.Running }).isEqualTo(3)
         assertThat(loaded.runningCount).isEqualTo(3)
@@ -127,7 +135,7 @@ class AgentsViewModelTest {
         val noRunning = vm.uiState.first { StatusFilter.Running !in it.prefs.statuses }
         assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running }).isTrue()
         assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3)
-        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.map { it.agent.id }.toSet())
+        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }.toSet())
 
         vm.toggleStatus(StatusFilter.Running)
         vm.setSortOrder(SortOrder.Name)
@@ -141,6 +149,25 @@ class AgentsViewModelTest {
         assertThat(sidebar).isNotEmpty()
         assertThat(sidebar.all { AgentListOrganizer.matchesQuery(it.agent, "cesium") }).isTrue()
         assertThat(searched.recentRows.map { it.agent.id }).isEqualTo(loaded.recentRows.map { it.agent.id })
+    }
+
+    @Test
+    fun `read all marks every loaded conversation read`() = runBlocking<Unit> {
+        Dispatchers.setMain(Dispatchers.Unconfined)
+        val vm = AgentsViewModel(graph)
+        val loaded = vm.loaded()
+        assertThat(loaded.unreadCount).isGreaterThan(0)
+        assertThat(loaded.sections.flatMap { it.rows }.any { it.isUnread }).isTrue()
+
+        vm.markAllRead()
+        val cleared = withTimeout(10_000) { vm.uiState.first { it.unreadCount == 0 && it.hasLoaded } }
+        assertThat(cleared.allAgents).isNotEmpty()
+        assertThat(cleared.sections.flatMap { it.rows }.none { it.isUnread }).isTrue()
+        assertThat(cleared.sections.flatMap { it.rows }.none { it.indicator == AgentIndicator.Unread }).isTrue()
+        val markers = graph.prefs.localAgentState.first().readMarkers
+        cleared.allAgents.forEach { agent ->
+            assertThat(markers[agent.id] ?: 0L).isAtLeast(agent.updatedAtMillis)
+        }
     }
 
     @Test

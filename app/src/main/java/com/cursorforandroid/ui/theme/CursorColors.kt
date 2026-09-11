@@ -74,13 +74,40 @@ data class CursorColors(
     val blue: Color,
     val purple: Color,
     val cyan: Color,
+    /** `charts.yellow`: the Projects palette's yellow. */
+    val yellow: Color,
+    /** `terminal.ansiMagenta`: the Projects palette's magenta. */
+    val magenta: Color,
+    /** `--cursor-brand`, the Cursor orange; the Projects palette's "Brand" tone, the same in every theme. */
+    val brand: Color,
     /** Sidebar unread marker. */
     val unreadDot: Color,
     val codeString: Color,
     val codeFunction: Color,
     val codeNumber: Color,
     val codeType: Color,
-)
+) {
+    /**
+     * The colour a Cursor Project's `colorId` stands for, as the Agents Window resolves it (`agent-appearance`):
+     * `default` is the secondary icon tone, `brand` the Cursor orange, and every other id one of the theme's chart /
+     * terminal hues (`--cursor-icon-<id>-primary`). An id this build has not heard of reads as `default`.
+     */
+    fun projectTone(colorId: String?): Color = when (colorId?.trim()?.lowercase()) {
+        "green" -> green
+        "cyan" -> cyan
+        "blue" -> blue
+        "purple" -> purple
+        "magenta" -> magenta
+        "orange" -> orange
+        "yellow" -> yellow
+        "red" -> red
+        "brand" -> brand
+        else -> iconSecondary
+    }
+}
+
+/** `--cursor-brand` (#F54E00) in the desktop build, theme-independent. */
+private val Brand = Color(0xFFF54E00)
 
 private val DarkBase = Color(0xFFF0F0F0)
 private val LightBase = Color(0xFF141414)
@@ -124,6 +151,9 @@ val CursorDarkColors = CursorColors(
     blue = Color(0xFF81A1C1),
     purple = Color(0xFFB48EAD),
     cyan = Color(0xFF88C0D0),
+    yellow = Color(0xFFF1B467),
+    magenta = Color(0xFFB48EAD),
+    brand = Brand,
     unreadDot = Color(0xFF6D9BF0),
     codeString = Color(0xFFA8CC7C),
     codeFunction = Color(0xFFEBC88D),
@@ -180,6 +210,9 @@ val CursorLightColors = CursorColors(
     blue = Color(0xFF2778C1),
     purple = Color(0xFF7565CC),
     cyan = Color(0xFF176C74),
+    yellow = Color(0xFFA46700),
+    magenta = Color(0xFF92156A),
+    brand = Brand,
     unreadDot = Color(0xFF2778C1),
     codeString = Color(0xFF007041),
     codeFunction = Color(0xFFA46700),

@@ -200,6 +200,7 @@ class AppGraph(
             attachments,
             caches.agents,
             demoSources = DemoData.sources,
+            demoComposers = DemoData.composers,
             account = accountAgents,
             capabilities = capabilities,
         )

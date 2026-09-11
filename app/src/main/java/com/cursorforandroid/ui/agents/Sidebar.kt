@@ -56,12 +56,15 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
@@ -88,7 +91,8 @@ data class SidebarCallbacks(
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
  * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
- * folded into it), Pinned / date groups of 32dp rows, and the account footer. Surface is `--cursor-sidebar` (#181818).
+ * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
+ * and subagents sit under it as a tree, closed until its count is tapped. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -109,8 +113,22 @@ fun Sidebar(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var searching by rememberSaveable { mutableStateOf(false) }
+    // The field owns what is typed. [state.query] is the organized list's copy, computed off the main thread, and
+    // feeding it back here put the cursor at the start of the box on every keystroke — the next character then
+    // inserted on the left, so a search could not be typed. Closing still clears both.
+    var query by rememberSaveable { mutableStateOf("") }
     var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
+    // opened: a Project can have dozens of workers, and the row's count says they are there.
+    var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
     val focusRequester = remember { FocusRequester() }
+
+    fun setSearchQuery(value: String) {
+        query = value
+        onQueryChange(value)
+    }
+    // A process death restores [searching] and [query] together; the ViewModel starts empty and has to be told.
+    LaunchedEffect(Unit) { if (searching) onQueryChange(query) }
 
     Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
@@ -123,7 +141,7 @@ fun Sidebar(
             FlatIconButton(
                 CursorIcons.Search,
                 "Search chats",
-                onClick = { searching = !searching; if (!searching) onQueryChange("") },
+                onClick = { searching = !searching; if (!searching) setSearchQuery("") },
                 tint = if (searching) colors.iconPrimary else colors.iconSecondary,
             )
             FlatIconButton(
@@ -139,9 +157,9 @@ fun Sidebar(
 
         AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
             SearchField(
-                value = state.query,
-                onValueChange = onQueryChange,
-                onClose = { searching = false; onQueryChange("") },
+                value = query,
+                onValueChange = ::setSearchQuery,
+                onClose = { searching = false; setSearchQuery("") },
                 focusRequester = focusRequester,
             )
         }
@@ -159,7 +177,7 @@ fun Sidebar(
                     item("empty") {
                         Text(
                             when {
-                                state.query.isNotBlank() -> "No chats match \"${state.query}\""
+                                query.isNotBlank() -> "No chats match \"$query\""
                                 !state.prefs.isDefault -> "No chats match the current filters"
                                 else -> "No chats yet"
                             },
@@ -183,14 +201,21 @@ fun Sidebar(
                         )
                     }
                     if (expanded) {
-                        items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                        val expandedIds = expandedParents.toSet()
+                        items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                            val id = row.agent.id
                             AgentRowItem(
                                 row = row,
-                                selected = row.agent.id == selectedAgentId,
+                                selected = id == selectedAgentId,
                                 prefs = state.prefs,
                                 actions = callbacks.rowActions,
                                 modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
+                                depth = depth,
+                                childrenExpanded = if (row.children.isEmpty()) null else id in expandedIds,
+                                onToggleChildren = {
+                                    expandedParents = if (id in expandedIds) expandedParents - id else expandedParents + id
+                                },
                             )
                         }
                     }
@@ -226,6 +251,9 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.base
+    // Selection lives here. The String BasicTextField rebuilds a TextFieldValue from [value] on every
+    // recomposition and loses the cursor; the list above this row recomposes often enough that that was every key.
+    var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -239,8 +267,11 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
         Icon(CursorIcons.Search, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(8.dp))
         BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = field,
+            onValueChange = {
+                field = it
+                if (it.text != value) onValueChange(it.text)
+            },
             singleLine = true,
             textStyle = type.base.copy(color = colors.textPrimary),
             cursorBrush = SolidColor(colors.textPrimary),
@@ -248,7 +279,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onClose:
             keyboardActions = KeyboardActions(onSearch = {}),
             modifier = Modifier.weight(1f).focusRequester(focusRequester),
             decorationBox = { inner ->
-                Box { if (value.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
+                Box { if (field.text.isEmpty()) Text("Search chats", style = type.base, color = colors.textQuaternary); inner() }
             },
         )
         FlatIconButton(CursorIcons.Close, "Close search", onClick = onClose, size = 28.dp, iconSize = 14.dp)

@@ -9,8 +9,11 @@ import androidx.compose.ui.unit.sp
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-/** Covers the inline pass: what becomes a link, what stays text, and the delimiter edge cases agents write. */
-class InlineMarkdownTest {
+/**
+ * The inline pass's guards: what becomes a link and what stays text, that a tap can never throw, and the scans that
+ * have to stay linear on the logs agents paste. The markup itself is covered next to the parser in MarkdownParserTest.
+ */
+class InlineMarkdownSafetyTest {
 
     private fun render(text: String, onLinkClick: ((String) -> Unit)? = null): AnnotatedString =
         InlineMarkdown.render(
@@ -101,7 +104,8 @@ class InlineMarkdownTest {
 
     @Test
     fun `an identifier with underscores is left alone`() {
-        assertThat(render("snake_case_name and __init__")).isEqualTo(AnnotatedString("snake_case_name and __init__"))
+        // `__init__` is CommonMark bold and is pinned as such in MarkdownParserTest; an underscore inside a word never opens.
+        assertThat(render("snake_case_name and MAX_VALUE_")).isEqualTo(AnnotatedString("snake_case_name and MAX_VALUE_"))
     }
 
     @Test
@@ -130,60 +134,5 @@ class InlineMarkdownTest {
         val link = annotated.getLinkAnnotations(0, annotated.length).single().item as LinkAnnotation.Url
         link.linkInteractionListener!!.onClick(link)
         assertThat(opened).isEqualTo("https://cursor.com/docs")
-    }
-
-    @Test
-    fun `a PR link with a hash in the label becomes the label and a url, not raw markup`() {
-        // The shape an agent writes after opening a pull request — the bug in the conversation screenshot.
-        val md = "Opened [PR #66](https://github.com/BenItBuhner/cursor-for-android/pull/66) against `main`."
-        val rendered = render(md)
-        assertThat(rendered.text).isEqualTo("Opened PR #66 against  main .")
-        assertThat(rendered.text).doesNotContain("](")
-        val links = rendered.getLinkAnnotations(0, rendered.length).map { it.item }.filterIsInstance<LinkAnnotation.Url>()
-        assertThat(links.map { it.url }).containsExactly("https://github.com/BenItBuhner/cursor-for-android/pull/66")
-    }
-
-    @Test
-    fun `bold wrapping a link still renders the link, not the markdown`() {
-        val rendered = render("**[PR #66](https://github.com/o/r/pull/66)** against `main`")
-        assertThat(rendered.text).doesNotContain("](")
-        assertThat(rendered.text).contains("PR #66")
-        assertThat(links("**[PR #66](https://github.com/o/r/pull/66)**")).containsExactly("https://github.com/o/r/pull/66")
-    }
-
-    @Test
-    fun `italic wrapping a link still renders the link`() {
-        assertThat(links("See *[the docs](https://cursor.com)* for more.")).containsExactly("https://cursor.com")
-        assertThat(render("See *[the docs](https://cursor.com)* for more.").text).isEqualTo("See the docs for more.")
-    }
-
-    @Test
-    fun `link labels keep their own bold and code`() {
-        val rendered = render("[**PR** `#66`](https://example.com/x)")
-        assertThat(rendered.text).isEqualTo("PR  #66 ")
-        assertThat(links("[**PR** `#66`](https://example.com/x)")).containsExactly("https://example.com/x")
-    }
-
-    @Test
-    fun `titles, angle brackets and a space before the destination still parse`() {
-        assertThat(InlineMarkdown.parseMarkdownLink("[x](https://a.test \"Hi\")", 0)?.url).isEqualTo("https://a.test")
-        assertThat(InlineMarkdown.parseMarkdownLink("[x](<https://a.test>)", 0)?.url).isEqualTo("https://a.test")
-        assertThat(InlineMarkdown.parseMarkdownLink("[x] (https://a.test)", 0)?.url).isEqualTo("https://a.test")
-    }
-
-    @Test
-    fun `autolinks, bare urls and html anchors become links`() {
-        assertThat(links("See <https://cursor.com/docs>.")).containsExactly("https://cursor.com/docs")
-        assertThat(links("See https://cursor.com/docs.")).containsExactly("https://cursor.com/docs")
-        assertThat(render("See https://cursor.com/docs.").text).isEqualTo("See https://cursor.com/docs.")
-        assertThat(links("<a href=\"https://x.test/p\">PR #1</a>")).containsExactly("https://x.test/p")
-        assertThat(render("<a href=\"https://x.test/p\">PR #1</a>").text).isEqualTo("PR #1")
-    }
-
-    @Test
-    fun `strikethrough wraps nested markup`() {
-        val rendered = render("~~old [link](https://x.test)~~")
-        assertThat(rendered.text).isEqualTo("old link")
-        assertThat(links("~~old [link](https://x.test)~~")).containsExactly("https://x.test")
     }
 }
