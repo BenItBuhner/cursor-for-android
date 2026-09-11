@@ -213,6 +213,29 @@ class ToolCallMapperTest {
     }
 
     @Test
+    fun `a coordinator's calls name the workers they create, message, ask about and stop`() {
+        // The worker `create_agent` made is in the result, under the proto's spelling or the SDK's, wrapped or not.
+        assertThat(call("create_agent", """{"prompt":"Build it","name":"Webhooks"}""", """{"agent_id":"bc-w1","message":"Created"}""").linkedAgentIds).containsExactly("bc-w1")
+        assertThat(call("create_agent", """{"prompt":"Build it"}""", """{"success":{"agentId":"bc-w1"}}""").linkedAgentIds).containsExactly("bc-w1")
+        // While the call runs there is no result yet, and nothing to name.
+        assertThat(call("create_agent", """{"prompt":"Build it"}""", status = "running").linkedAgentIds).isEmpty()
+        // A message names the worker in its arguments and, delivered, the one it went to.
+        assertThat(call("send_to_agent", """{"agent_id":"bc-w1","message":"Ship it","delivery":"QUEUE"}""", """{"worker_bc_id":"bc-w1","delivered_as":"QUEUED"}""").linkedAgentIds).containsExactly("bc-w1")
+        assertThat(call("stop_agent", """{"agentId":"bc-w2"}""", """{"workerBcId":"bc-w2"}""").linkedAgentIds).containsExactly("bc-w2")
+        assertThat(call("read_agent_transcript", """{"agent_id":"bc-w2","mode":"SUMMARY"}""", """{"transcript":"...","truncated":false}""").linkedAgentIds).containsExactly("bc-w2")
+        // A status check asks about a list and reports on each.
+        assertThat(
+            call("get_agent_status", """{"agent_ids":["bc-w1","bc-w2"]}""", """{"workers":[{"bc_id":"bc-w1","name":"Webhooks","lifecycle":"IDLE"},{"bcId":"bc-w3"}],"message":"ok"}""").linkedAgentIds,
+        ).containsExactly("bc-w1", "bc-w2", "bc-w3").inOrder()
+        // Every other tool names nothing, whatever ids its payload happens to carry.
+        assertThat(call("fetch_cloud_agent_data", """{"bc_ids":["bc-x"]}""", """{"agents":[{"bc_id":"bc-x"}]}""").linkedAgentIds).isEmpty()
+        assertThat(call("read_file", """{"path":"a.kt","agent_id":"bc-x"}""").linkedAgentIds).isEmpty()
+        // The rows still read as they did: the ids ride along, they do not change the wording.
+        assertThat(line("create_agent", """{"prompt":"Build it"}""", """{"agent_id":"bc-w1"}""")).isEqualTo("Created agent")
+        assertThat(line("send_to_agent", """{"agent_id":"bc-w1"}""", status = "running")).isEqualTo("Messaging agent")
+    }
+
+    @Test
     fun `every name the streams use lands on a kind`() {
         val expected = mapOf(
             "read_file" to ToolKind.Read, "read_file_v2" to ToolKind.Read, "read" to ToolKind.Read,

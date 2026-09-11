@@ -9,12 +9,15 @@ import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
 import com.cursorforandroid.data.api.PinsApi
+import com.cursorforandroid.data.api.ProjectApi
+import com.cursorforandroid.data.api.ProjectLineageApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.CursorLogin
@@ -45,14 +48,17 @@ import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
+import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
+import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -152,6 +158,8 @@ class AppGraph(
     private val lazyAccountAgents = lazy { BackgroundComposerApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyAccountPullRequests = lazy { CursorPullRequestSource(lazyAccountAgents.value) }
     private val lazyAccountSlashCommands = lazy { DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account's Projects: who belongs to whom, and the coordinator's actions. */
+    private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
 
     /**
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
@@ -173,6 +181,10 @@ class AppGraph(
     }
     private val accountPullRequests = PullRequestSource { url -> lazyAccountPullRequests.value.lookup(url) }
     private val gitHubPullRequests = PullRequestSource { url -> lazyGitHubPullRequests.value.lookup(url) }
+    private val projectLineage = object : ProjectLineageApi {
+        override suspend fun workersForManager(managerId: String): List<WorkerMembership> = lazyProjectApi.value.workersForManager(managerId)
+        override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
+    }
     private val accountSlashCommands = object : SlashCommandApi {
         override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forRepository(repoUrl, ref)
         override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forAgent(agentId, repoUrl, ref)
@@ -237,11 +249,22 @@ class AppGraph(
             onList = { list, agentsToken ->
                 agents.applySources(list.sources, agentsToken)
                 pullRequests.seed(list.pullRequests)
+                // Each Project's memberships follow the list read, the way the Agents Window polls them; off the
+                // round, so the pins do not wait on a Project with many workers.
+                projects.scheduleLineageSync(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id })
             },
             capabilities = capabilities,
         )
     }
     val pins: PinRepository get() = lazyPins.value
+
+    /**
+     * Cursor Projects: the lineage that keeps a Project's workers, side chats and subagents inside the Project and
+     * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
+     * lacks in either — and, in Extended mode, what a Project's view shows and does.
+     */
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectLineage, capabilities = capabilities) }
+    val projects: ProjectRepository get() = lazyProjects.value
 
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value
@@ -349,6 +372,7 @@ class AppGraph(
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
+            if (lazyProjects.isInitialized()) projects.reset()
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
             // Signing out of one real account and into another keeps the same backend, so the list must be
@@ -418,6 +442,8 @@ class AppGraph(
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,
             "pins" to lazyPins,
+            "projectApi" to lazyProjectApi,
+            "projects" to lazyProjects,
             "catalog" to lazyCatalog,
             "slashCommands" to lazySlashCommands,
             "liveRuns" to lazyLiveRuns,

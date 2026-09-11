@@ -23,10 +23,20 @@ data class Capabilities(
     val accountSlashCommands: Boolean,
     /** `GetPullRequestMergeStatus` and the list's `prStatus`. Off: GitHub's REST API for GitHub-hosted repositories, nothing for the rest. */
     val accountPullRequests: Boolean,
+    /**
+     * Cursor Projects on the account service: the lineage reads (`ListWorkersForManager`, `ListBackgroundComposerChildren`,
+     * the list's workers and subagents), the coordinator's actions (`CreateProjectWorker`, `SetWorkerManager`,
+     * `ClearWorkerManager`, `ReparentBackgroundComposer`, `UpdateProjectAppearance`, `StartSideChatBackgroundComposer`)
+     * and the Project's shared context (`ListAgentStore*`, `ReadAgentStoreFile`). Off: a Project is told apart only
+     * by what its own transcript says, and its view offers no action.
+     */
+    val projects: Boolean,
+    /** Steering a running chat (`InjectBackgroundComposerContext`) and holding it (`PauseBackgroundComposer` / `ResumeBackgroundComposer`). Off: the public cancel only. */
+    val steering: Boolean,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
-        get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests
+        get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering
 
     companion object {
         /** The default: the documented API only. */
@@ -37,6 +47,8 @@ data class Capabilities(
             accountLifecycle = false,
             accountSlashCommands = false,
             accountPullRequests = false,
+            projects = false,
+            steering = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -47,6 +59,8 @@ data class Capabilities(
             accountLifecycle = true,
             accountSlashCommands = true,
             accountPullRequests = true,
+            projects = true,
+            steering = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

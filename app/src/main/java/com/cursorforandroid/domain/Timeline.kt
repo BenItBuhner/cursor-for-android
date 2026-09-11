@@ -112,6 +112,12 @@ data class ToolCall(
     val output: String? = null,
     /** A command's exit code, when its result reported one. */
     val exitCode: Int? = null,
+    /**
+     * The cloud agents a coordinator's tool call names — the worker `create_agent` made, the one `send_to_agent`
+     * or `stop_agent` addressed, the ones `get_agent_status` reported on — by their ids. The one word about a
+     * Project's workers the documented stream carries (see [CoordinatorLineage]); empty for every other tool.
+     */
+    val linkedAgentIds: List<String> = emptyList(),
 ) : ActivityStep {
     val isRunning: Boolean get() = status == STATUS_RUNNING
 
