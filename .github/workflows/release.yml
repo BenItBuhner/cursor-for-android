@@ -7,9 +7,10 @@ name: Release
 # Signing uses these repository secrets (create them with scripts/release-keystore.sh):
 #   RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
 # All four are required to publish: a runner without them would sign with a throwaway debug key, which no later
-# release can reproduce, so anyone who installed it could never be updated in place again. Optionally pin the
-# expected signer with the RELEASE_CERT_SHA256 repository variable (or secret) - the workflow then refuses to publish
-# an APK signed with anything else.
+# release can reproduce, so anyone who installed it could never be updated in place again. The build bakes its
+# keystore's certificate into BuildConfig.RELEASE_CERT_SHA256 - the only signer the shipped updater will accept a later
+# APK from - and this workflow refuses to publish an APK signed with anything else. Optionally also pin the expected
+# signer with the RELEASE_CERT_SHA256 repository variable (or secret) to catch a swapped keystore secret.
 #
 # "Run workflow" (workflow_dispatch) rebuilds an existing tag, e.g. after adding the signing secrets; tick "dry run"
 # to only attach the artifacts to the workflow run. A dry run is the only case where debug signing is allowed, and
@@ -106,16 +107,25 @@ jobs:
             exit 1
           fi
 
+      # An unsigned release build fails by default (app/build.gradle.kts). Only the dry run, which the step above lets
+      # through without secrets and which never publishes, opts in to the debug key.
       - name: Build release APK and AAB
-        run: ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}"
+        env:
+          UNSIGNED: ${{ steps.signing.outputs.configured != 'true' && '-Papp.allowUnsignedRelease=true' || '' }}
+        run: ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}" $UNSIGNED
 
       - name: Package artifacts
         id: package
         env:
           VERSION: ${{ steps.tag.outputs.version }}
+          UNSIGNED: ${{ steps.signing.outputs.configured != 'true' && '-Papp.allowUnsignedRelease=true' || '' }}
         run: |
-          version_code="$(./gradlew -q :app:printAppVersion -Papp.versionName="$VERSION" | sed -n 's/^versionCode=//p')"
+          ./gradlew -q :app:printAppVersion -Papp.versionName="$VERSION" $UNSIGNED > "$RUNNER_TEMP/version.txt"
+          version_code="$(sed -n 's/^versionCode=//p' "$RUNNER_TEMP/version.txt")"
           [[ -n "$version_code" ]] || { echo "::error::Could not resolve versionCode"; exit 1; }
+          # The certificate the build baked into BuildConfig.RELEASE_CERT_SHA256 - the only one the shipped updater
+          # will accept a future APK signed with. Empty in a dry run that had no keystore.
+          pinned_cert="$(sed -n 's/^releaseCertSha256=//p' "$RUNNER_TEMP/version.txt")"
 
           mkdir -p dist
           cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${VERSION}.apk"
@@ -129,6 +139,7 @@ jobs:
 
           echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
           echo "cert_sha256=${cert_sha256}" >> "$GITHUB_OUTPUT"
+          echo "pinned_cert=${pinned_cert}" >> "$GITHUB_OUTPUT"
           ls -l dist
 
       - name: Write release notes header
@@ -170,6 +181,7 @@ jobs:
         env:
           SIGNED: ${{ steps.signing.outputs.configured }}
           CERT_SHA256: ${{ steps.package.outputs.cert_sha256 }}
+          PINNED_CERT: ${{ steps.package.outputs.pinned_cert }}
           EXPECTED_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 || secrets.RELEASE_CERT_SHA256 }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
@@ -181,6 +193,12 @@ jobs:
           if [[ "$SIGNED" == "true" ]]; then
             if [[ -z "$CERT_SHA256" ]]; then
               echo "::error::apksigner verified the APK but reported no signer certificate; the release identity cannot be confirmed."
+              exit 1
+            fi
+            # The app this release installs will only accept a later APK signed with the certificate it baked in, so
+            # the two have to be the same certificate. They come from one keystore, and a difference means they did not.
+            if [[ "$(normalize "$CERT_SHA256")" != "$(normalize "$PINNED_CERT")" ]]; then
+              echo "::error::The APK is signed with $(normalize "$CERT_SHA256"), but the build pinned $(normalize "${PINNED_CERT:-nothing}") into BuildConfig.RELEASE_CERT_SHA256 as the certificate its updater trusts."
               exit 1
             fi
             if [[ -n "$EXPECTED_CERT_SHA256" ]]; then

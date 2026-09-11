@@ -31,6 +31,7 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
     override val installedVersionName: String = BuildConfig.VERSION_NAME
     override val applicationId: String = BuildConfig.APPLICATION_ID
     override val sdkInt: Int = Build.VERSION.SDK_INT
+    override val releaseCertSha256: String? = BuildConfig.RELEASE_CERT_SHA256.takeIf { it.isNotBlank() }?.lowercase()
 
     override fun canRequestInstalls(): Boolean = packageManager.canRequestPackageInstalls()
 

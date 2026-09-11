@@ -125,9 +125,10 @@ sealed interface UpdateState {
     data class UpToDate(val checkedAtMs: Long) : UpdateState
 
     /**
-     * A newer release exists and has not been downloaded. [signatureMismatch] is true when the release notes name
-     * a signing certificate other than the installed build's, in which case the APK cannot be installed over this
-     * build and the release page is offered instead.
+     * A newer release exists and has not been downloaded. [signatureMismatch] is true when the release and this
+     * install are signed with different keys — the release names a certificate this build does not trust, or this
+     * install predates release signing and carries the debug key. Android cannot update either in place, so the
+     * release page and a manual reinstall are offered instead of a download.
      */
     data class Available(override val release: AppRelease, val checkedAtMs: Long, val signatureMismatch: Boolean = false) : UpdateState
 

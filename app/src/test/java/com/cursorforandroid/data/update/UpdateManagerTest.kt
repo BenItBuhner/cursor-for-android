@@ -227,6 +227,54 @@ class UpdateManagerTest {
     }
 
     @Test
+    fun `a build that pins the release key trusts it rather than whatever the install is signed with`() = runBlocking {
+        // The install carries a foreign certificate; the pin is what decides, and it matches the release.
+        platform.releaseCertSha256 = GitHubFixtures.RELEASE_CERT_SHA256
+        platform.signatures = setOf(GitHubFixtures.RELEASE_CERT_SHA256, "f".repeat(64))
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), setOf(GitHubFixtures.RELEASE_CERT_SHA256), GitHubFixtures.versionNameFor(versionCodeOf(file))) }
+        val manager = manager()
+        val available = manager.check() as UpdateState.Available
+        assertThat(available.signatureMismatch).isFalse()
+        assertThat(manager.download()).isInstanceOf(UpdateState.Downloaded::class.java)
+    }
+
+    @Test
+    fun `an APK signed with anything but the pinned release key is refused, even when the install trusts it`() = runBlocking {
+        // Exactly the debug-key case: without the pin the installed certificate would vouch for this APK.
+        val debugKey = "d".repeat(64)
+        platform.releaseCertSha256 = GitHubFixtures.RELEASE_CERT_SHA256
+        platform.signatures = setOf(GitHubFixtures.RELEASE_CERT_SHA256, debugKey)
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), setOf(debugKey), GitHubFixtures.versionNameFor(versionCodeOf(file))) }
+        val manager = manager()
+        manager.check()
+        val failed = manager.download() as UpdateState.Failed
+        assertThat(failed.message).isEqualTo(UpdateManager.SIGNATURE_MISMATCH_MESSAGE)
+    }
+
+    @Test
+    fun `a pinning build whose install is signed with another key asks for a reinstall before downloading`() = runBlocking {
+        // A v0.1.0-style install: debug-key signed, so no release can ever replace it in place.
+        platform.releaseCertSha256 = GitHubFixtures.RELEASE_CERT_SHA256
+        platform.signatures = setOf("d".repeat(64))
+        val manager = manager()
+        val available = manager.check() as UpdateState.Available
+        assertThat(available.signatureMismatch).isTrue()
+        assertThat(manager.download()).isEqualTo(available)
+        assertThat(downloadRequests).isEmpty()
+    }
+
+    @Test
+    fun `a pinning build refuses an APK whose signers cannot be read`() = runBlocking {
+        platform.releaseCertSha256 = GitHubFixtures.RELEASE_CERT_SHA256
+        platform.signatures = setOf(GitHubFixtures.RELEASE_CERT_SHA256)
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), emptySet(), GitHubFixtures.versionNameFor(versionCodeOf(file))) }
+        val manager = manager()
+        manager.check()
+        val failed = manager.download() as UpdateState.Failed
+        assertThat(failed.message).isEqualTo(UpdateManager.SIGNATURE_MISMATCH_MESSAGE)
+    }
+
+    @Test
     fun `an APK built as another package cannot update this build`() = runBlocking {
         platform.inspection = { ApkInfo("com.cursorforandroid.debug", 20099, platform.signatures) }
         val manager = manager()
