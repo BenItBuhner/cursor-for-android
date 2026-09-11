@@ -155,6 +155,19 @@ class PreferencesStoreTest {
     }
 
     @Test
+    fun `crash reports are off until asked for, and the answer belongs to the device, not the account`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.crashReports.first()).isFalse()
+        prefs.setCrashReports(true)
+        assertThat(prefs.crashReports.first()).isTrue()
+        // A consent given on this phone is not withdrawn by signing out of an account.
+        prefs.clearSession()
+        assertThat(prefs.crashReports.first()).isTrue()
+        prefs.setCrashReports(false)
+        assertThat(prefs.crashReports.first()).isFalse()
+    }
+
+    @Test
     fun `mark all read writes every stamp and does not regress a newer marker`() = runBlocking<Unit> {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
         prefs.markRead("already", 2_000L)
