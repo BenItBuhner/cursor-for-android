@@ -40,8 +40,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * is one line in the composer's own surface — the message verbatim, trailing off where the line ends, with the
  * images it carries as small tiles before it — and three small glyphs on the right: remove, edit, send now. Nothing
  * else: a queue should read as a list of what is about to be said, not as a stack of forms. A message that could not
- * be sent shows a warning where its tiles would be; send-now then retries it. One on its way out shows a ring instead
- * of the glyphs.
+ * be sent shows a warning where its tiles would be and the reason under the message, in red; send-now then retries
+ * it. One on its way out shows a ring instead of the glyphs.
  */
 @Composable
 fun QueuedFollowUps(
@@ -106,15 +106,20 @@ private fun QueuedFollowUpRow(
             }
             Spacer(Modifier.width(8.dp))
         }
-        Text(
-            item.previewText,
-            style = type.input,
-            color = if (item.isSending) colors.textTertiary else colors.textPrimary,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+            Text(
+                item.previewText,
+                style = type.input,
+                color = if (item.isSending) colors.textTertiary else colors.textPrimary,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // Why it did not go, in the server's words or the connection's: without it the warning is only a riddle.
+            item.error?.let { reason ->
+                Text(reason, style = type.small, color = colors.red, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            }
+        }
         Spacer(Modifier.width(8.dp))
         if (item.isSending) {
             Box(Modifier.size(Glyph + 10.dp).semantics { contentDescription = "Sending" }, contentAlignment = Alignment.Center) {
