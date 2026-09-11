@@ -81,4 +81,32 @@ class MessageAttachmentsTest {
         compose.onNodeWithContentDescription("Close").performClick()
         compose.waitUntil(10_000) { countOf("Close") == 0 }
     }
+
+    @Test
+    fun `a decode never spends more memory on one image than the ceiling allows`() {
+        // Asking for every pixel of an image far past the ceiling: the sampling has to step in on its own.
+        val huge = shot("huge.jpg", 5000, 4000)
+        val decoded = requireNotNull(decodeSampled(huge.path, targetEdgePx = 0))
+        assertThat(decoded.width.toLong() * decoded.height * 4).isAtMost(32L * 1024 * 1024)
+        // A request the file already fits is left alone.
+        val small = shot("small.jpg", 400, 300)
+        val exact = requireNotNull(decodeSampled(small.path, targetEdgePx = 800))
+        assertThat(exact.width).isEqualTo(400)
+    }
+
+    @Test
+    fun `a file too broken to decode is missing rather than fatal`() {
+        val broken = File(folder.root, "broken.jpg").apply { writeText("not an image") }
+        assertThat(decodeSampled(broken.path, targetEdgePx = 256)).isNull()
+    }
+
+    @Test
+    fun `signing out drops the decoded attachment cache`() {
+        val shot = shot("cached.jpg", 200, 200)
+        val decoded = requireNotNull(decodeSampled(shot.path, targetEdgePx = 128))
+        AttachmentImages.put("${shot.path}@128", decoded)
+        assertThat(AttachmentImages.get("${shot.path}@128")).isNotNull()
+        AttachmentImages.clear()
+        assertThat(AttachmentImages.get("${shot.path}@128")).isNull()
+    }
 }

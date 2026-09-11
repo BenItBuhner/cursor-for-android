@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
+import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
@@ -227,6 +229,28 @@ class MappersTest {
         val adopted = row.copy(latestRunId = null).withLatestRun(errored.copy(status = "RUNNING"))
         assertThat(adopted.latestRunId).isEqualTo("run-1")
         assertThat(adopted.isRunning).isTrue()
+    }
+
+    @Test
+    fun `one record missing its timestamps does not cost the rest of the list`() {
+        val body = """
+            {"items":[
+              {"id":"bc-1","name":"Good","status":"ACTIVE","createdAt":"2026-04-13T18:30:00.000Z","updatedAt":"2026-04-13T19:00:00.000Z","latestRunId":"run-1"},
+              {"id":"bc-2","name":"Odd"}
+            ]}
+        """.trimIndent()
+
+        val decoded = CursorJson.decodeFromString(ListAgentsResponseDto.serializer(), body)
+
+        assertThat(decoded.items.map { it.id }).containsExactly("bc-1", "bc-2").inOrder()
+        val odd = decoded.items.last().toAgent(previous = null)
+        assertThat(odd.name).isEqualTo("Odd")
+        assertThat(odd.createdAtMillis).isEqualTo(0L)
+        assertThat(odd.updatedAtMillis).isEqualTo(0L)
+
+        // The same for a run: an unrecognised status reads as UNKNOWN, which is at rest.
+        val run = CursorJson.decodeFromString(RunDto.serializer(), """{"id":"run-9","agentId":"bc-2"}""")
+        assertThat(RunStatus.parse(run.status)).isEqualTo(RunStatus.UNKNOWN)
     }
 
     @Test

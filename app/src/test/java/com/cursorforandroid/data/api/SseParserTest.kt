@@ -69,6 +69,158 @@ class SseParserTest {
         assertThat(SseParser.toEvent(SseFrame("interaction_update", null, "{}"))).isNull()
     }
 
+    /**
+     * "Once the end of the file is reached, any pending data must be discarded." A connection cut mid-frame must
+     * not look like a frame the server finished writing — least of all one worth resuming past.
+     */
+    @Test
+    fun `a frame the stream was cut off in the middle of is discarded`() {
+        val source = Buffer().writeUtf8(
+            "id: 10-0\nevent: assistant\ndata: {\"text\":\"first\"}\n\n" +
+                "id: 11-0\nevent: assistant\ndata: {\"text\":\"sec",
+        )
+        val frames = generateSequence { SseParser.readFrame(source) }.toList()
+        assertThat(frames.map { it.id }).containsExactly("10-0")
+    }
+
+    @Test
+    fun `a frame whose data cannot be read is neither delivered nor resumable`() {
+        assertThat(SseParser.parse(SseFrame("assistant", "9-0", "{not json"))).isEqualTo(SseParser.Parsed.Undecodable)
+        assertThat(SseParser.parse(SseFrame("interaction_update", "9-0", "{}"))).isEqualTo(SseParser.Parsed.Ignored)
+        assertThat(SseParser.parse(SseFrame("heartbeat", null, ""))).isEqualTo(SseParser.Parsed.Delivered(RunStreamEvent.Heartbeat))
+    }
+
+    /**
+     * The specification's own rules for `id:` and `retry:`: an empty id says the stream has no resume position (it
+     * is not an id of ""), an id with a NUL in it is not an id at all, and a `retry:` is digits only.
+     */
+    @Test
+    fun `an empty id resets the resume position, a NUL id is ignored and retry is read as digits`() {
+        val source = Buffer().writeUtf8(
+            "id: 10-0\nevent: heartbeat\ndata: {}\n\n" +
+                "id: \nevent: heartbeat\ndata: {}\n\n" +
+                "id: 11\u00000\nevent: heartbeat\ndata: {}\n\n" +
+                "retry: 2500\nevent: heartbeat\ndata: {}\n\n" +
+                "retry: 5s\nevent: heartbeat\ndata: {}\n\n" +
+                "retry: 1\nevent: heartbeat\ndata: {}\n\n" +
+                "retry: 999999\nevent: heartbeat\ndata: {}\n\n",
+        )
+        val frames = generateSequence { SseParser.readFrame(source) }.toList()
+
+        assertThat(frames[0].id).isEqualTo("10-0")
+        assertThat(frames[0].resetId).isFalse()
+        assertThat(frames[1].id).isNull()
+        assertThat(frames[1].resetId).isTrue()
+        // Ignored outright: the position stays whatever the stream last gave, rather than becoming this.
+        assertThat(frames[2].id).isNull()
+        assertThat(frames[2].resetId).isFalse()
+        assertThat(frames[3].retryMillis).isEqualTo(2_500L)
+        assertThat(frames[4].retryMillis).isNull()
+        // Honoured only as far as it is worth honouring: not a reconnect loop, not longer than the caller's own patience.
+        assertThat(frames[5].retryMillis).isEqualTo(1_000L)
+        assertThat(frames[6].retryMillis).isEqualTo(60_000L)
+    }
+
+    /**
+     * An empty id leaves the stream with no position to resume from, and a connection without one replays the run
+     * from its first event — into an accumulator that already holds part of it. The pass has to end instead.
+     */
+    @Test
+    fun `an id reset means a reconnect ends the pass rather than doubling the run`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 10-0\nevent: assistant\ndata: {\"text\":\"part one\"}\n\n" +
+                    "id: \nevent: assistant\ndata: {\"text\":\" part two\"}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() })
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Assistant", "Error").inOrder()
+        val error = events.last() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_unavailable")
+        assertThat(error.resumeFrom).isNull()
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
+    /**
+     * A `result` frame this client cannot read is a frame it never received: the run is not finished as far as it
+     * knows, and the resume position must still point at the last frame that was.
+     */
+    @Test
+    fun `a result that cannot be read is asked for again instead of ending the run`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 10-0\nevent: assistant\ndata: {\"text\":\"part one\"}\n\n" +
+                    "id: 11-0\nevent: result\ndata: {not json\n\n" +
+                    "id: 11-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 11-0\nevent: result\ndata: {\"runId\":\"run-1\",\"status\":\"FINISHED\",\"text\":\"ok\"}\n\n" +
+                    "id: 12-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, waiter = {})
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Result", "Done").inOrder()
+        assertThat((events[1] as RunStreamEvent.Result).text).isEqualTo("ok")
+        // Reconnected from the last frame it could read, so the server sends the result again.
+        assertThat(server.requestCount).isEqualTo(2)
+        server.takeRequest()
+        assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("10-0")
+        server.shutdown()
+    }
+
+    @Test
+    fun `a truncated last frame is not resumed past`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 10-0\nevent: assistant\ndata: {\"text\":\"part one\"}\n\n" +
+                    "id: 11-0\nevent: assistant\ndata: {\"text\":\"part t",
+            ),
+        )
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 1)
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        assertThat(events.map { it::class.simpleName }).containsExactly("Assistant", "Error").inOrder()
+        assertThat((events.first() as RunStreamEvent.Assistant).text).isEqualTo("part one")
+        // The half-written frame neither arrived nor moved the resume position on.
+        assertThat((events.last() as RunStreamEvent.Error).resumeFrom).isEqualTo("10-0")
+        server.takeRequest()
+        assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("10-0")
+        server.shutdown()
+    }
+
+    /**
+     * A connection with nothing to resume from replays the run from its first event, which would double every reply
+     * already accumulated. The pass ends instead, so the caller rebuilds from nothing.
+     */
+    @Test
+    fun `a retry with no resume position ends the pass instead of starting the run over`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, maxAttempts = 4)
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        val error = events.single() as RunStreamEvent.Error
+        assertThat(error.code).isEqualTo("stream_unavailable")
+        assertThat(error.resumeFrom).isNull()
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
+    }
+
     @Test
     fun `streamer reconnects with Last-Event-ID after a dropped connection`() = runTest {
         val server = MockWebServer()

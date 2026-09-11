@@ -14,6 +14,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -24,8 +25,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -141,21 +143,21 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
                     pages using SizeTransform { _, _ -> tween(PageTransitionMillis, easing = LinearOutSlowInEasing) }
                 },
             ) { current ->
-                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 12.dp)) {
+                LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     when (current) {
-                        null -> RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it })
-                        FilterKind.Repo -> RepoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->
+                        null -> rows { RootPage(state.prefs, state.unreadCount, viewModel, onOpen = { page = it }) }
+                        FilterKind.Repo -> repoPage(state.repoSlugs, state.prefs.repos, onSelectAll = { viewModel.setRepos(null) }) { slug ->
                             val selected = state.prefs.repos ?: state.repoSlugs.toSet()
                             val next = if (slug in selected) selected - slug else selected + slug
                             viewModel.setRepos(if (next.size == state.repoSlugs.size) null else next)
                         }
-                        FilterKind.Status -> ChecklistPage(StatusFilter.entries.map { it.label to (it in state.prefs.statuses) }) { viewModel.toggleStatus(StatusFilter.entries[it]) }
-                        FilterKind.Git -> ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) }
-                        FilterKind.Source -> {
+                        FilterKind.Status -> rows { ChecklistPage(StatusFilter.entries.map { it.label to (it in state.prefs.statuses) }) { viewModel.toggleStatus(StatusFilter.entries[it]) } }
+                        FilterKind.Git -> rows { ChecklistPage(GitFilter.entries.map { it.label to (it in state.prefs.git) }) { viewModel.toggleGit(GitFilter.entries[it]) } }
+                        FilterKind.Source -> rows {
                             ChecklistPage(SourceFilter.entries.map { it.label to (it in state.prefs.sources) }) { viewModel.toggleSource(SourceFilter.entries[it]) }
                             PageNote("Where each chat was started, as your Cursor account records it. Chats started from this app count as \"This device\"; the account sees them as API.")
                         }
-                        FilterKind.Environment -> ChecklistPage(EnvironmentFilter.entries.map { it.label to (it in state.prefs.environments) }) { viewModel.toggleEnvironment(EnvironmentFilter.entries[it]) }
+                        FilterKind.Environment -> rows { ChecklistPage(EnvironmentFilter.entries.map { it.label to (it in state.prefs.environments) }) { viewModel.toggleEnvironment(EnvironmentFilter.entries[it]) } }
                     }
                 }
             }
@@ -164,6 +166,9 @@ fun CustomizeSheet(viewModel: AgentsViewModel, onDismiss: () -> Unit) {
 }
 
 private const val PageTransitionMillis = 300
+
+/** A page whose rows are few and fixed: one lazy item holding the lot, so it measures as a plain column would. */
+private fun LazyListScope.rows(content: @Composable ColumnScope.() -> Unit) = item { Column(content = content) }
 
 @Composable
 private fun RootPage(prefs: ListPreferences, unreadCount: Int, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
@@ -315,14 +320,19 @@ private fun PageNote(text: String) {
     )
 }
 
-@Composable
-private fun RepoPage(slugs: List<String>, selected: Set<String>?, onSelectAll: () -> Unit, onToggle: (String) -> Unit) {
-    val colors = CursorTheme.colors
-    Spacer(Modifier.height(6.dp))
-    CheckRow("All repositories", checked = selected == null, onClick = onSelectAll)
-    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-    if (slugs.isEmpty()) Text("No repositories yet", style = CursorTheme.typography.small, color = colors.textQuaternary, modifier = Modifier.padding(20.dp))
-    slugs.forEach { slug ->
+/** An account can have hundreds of repositories, so this page is the one that composes only what is on screen. */
+private fun LazyListScope.repoPage(slugs: List<String>, selected: Set<String>?, onSelectAll: () -> Unit, onToggle: (String) -> Unit) {
+    item(key = "repo-header") {
+        Column {
+            Spacer(Modifier.height(6.dp))
+            CheckRow("All repositories", checked = selected == null, onClick = onSelectAll)
+            HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            if (slugs.isEmpty()) {
+                Text("No repositories yet", style = CursorTheme.typography.small, color = CursorTheme.colors.textQuaternary, modifier = Modifier.padding(20.dp))
+            }
+        }
+    }
+    items(slugs, key = { it }) { slug ->
         CheckRow(
             label = slug.substringAfterLast('/'),
             checked = selected == null || slug in selected,

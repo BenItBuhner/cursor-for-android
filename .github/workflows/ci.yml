@@ -80,9 +80,19 @@ jobs:
 
       - uses: ./.github/actions/android-toolchain
 
+      # The same stamp the build job uses, so AppVersionTest's parity check runs against a resolved dev version name
+      # and not just the base one: a versionCode derived from the base would pass unnoticed otherwise.
+      - name: Stamp dev version
+        id: stamp
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
+
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
       - name: Run JVM unit tests
-        run: ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+        run: >
+          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true
+          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
       - name: Upload test report
         if: failure()

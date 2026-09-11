@@ -225,6 +225,79 @@ class LiveRunMonitorTest {
         assertThat(finished).isEmpty()
     }
 
+    /** The service starts and stops as agents come and go; a run finishing across one restart is still one finish. */
+    @Test
+    fun `a finish across a stop and start is still reported once`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        monitor.start()
+        awaitUntil { running().size == 1 }
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { finished.size == 1 }
+
+        // The run is running again as far as the list is concerned, which is how a restart rediscovers it.
+        monitor.stop()
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "RUNNING")
+        agents.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        streamer.reset("run-1")
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        monitor.start()
+        awaitUntil { monitor.state.value.hasReconciled }
+        delay(200)
+        assertThat(finished.map { it.runId }).containsExactly("run-1")
+    }
+
+    @Test
+    fun `a list that says a run is going is not reconciled until the run is published`() = runBlocking<Unit> {
+        // The tracker reads the run record before it publishes anything, so there is a window where the list says
+        // one agent is running and nothing is being followed yet. The live notification's foreground service reads
+        // this state to decide how long to wait for the first run: called reconciled, the window is indistinguishable
+        // from "nothing is running", the short idle grace runs out, and the service goes down before it ever posts.
+        val recordRead = Job()
+        val release = Job()
+        val slow = RunMonitor(
+            agents,
+            hub,
+            runRecord = { agentId, runId ->
+                recordRead.complete()
+                release.join()
+                api.getRun(agentId, runId)
+            },
+            refreshIntervalMs = 600_000,
+            nowProvider = { now },
+        )
+        try {
+            api.addRunningAgent("bc-1", "Agent", "run-1")
+            agents.refresh()
+            slow.start()
+
+            recordRead.join()
+            with(slow.state.value) {
+                assertThat(runningCount).isEqualTo(1)
+                assertThat(running).isEmpty()
+                assertThat(hasReconciled).isFalse()
+                assertThat(isIdle).isFalse()
+            }
+
+            release.complete()
+            awaitUntil { slow.state.value.running.size == 1 }
+            assertThat(slow.state.value.hasReconciled).isTrue()
+        } finally {
+            release.complete()
+            slow.stop()
+        }
+    }
+
+    @Test
+    fun `an empty list reconciles straight away so nothing waits for a run that is not coming`() = runBlocking<Unit> {
+        agents.refresh()
+        monitor.start()
+        awaitUntil { monitor.state.value.hasReconciled }
+        assertThat(monitor.state.value.isIdle).isTrue()
+    }
+
     @Test
     fun `an agent whose detail could not be read is asked for again rather than given up on`() = runBlocking {
         // A running agent the list knows without its run id, as a summary-only row: the monitor needs the detail to follow it.

@@ -280,7 +280,8 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
             .semantics { this.selected = selected }
             .cursorSurface(if (selected) colors.fillActive else colors.fillFaint, if (selected) colors.strokeStrong else colors.strokeSubtle, shape)
             .pressable(onClick, shape, role = Role.RadioButton)
-            .height(28.dp)
+            // The label is sp: at the system's largest font its line alone is taller than 28dp.
+            .heightIn(min = 28.dp)
             .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

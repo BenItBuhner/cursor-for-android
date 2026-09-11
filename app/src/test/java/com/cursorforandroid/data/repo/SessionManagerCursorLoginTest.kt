@@ -58,7 +58,7 @@ class SessionManagerCursorLoginTest {
             prefs,
             backend,
             CursorBackend(api, FakeRunStreamer(), isDemo = true),
-            browserLogin = CursorLogin(OkHttpClient(), websiteUrl = "https://cursor.test", apiUrl = server.url("/").toString(), sleep = { delay(1) }),
+            browserLogin = lazyOf(CursorLogin(OkHttpClient(), websiteUrl = "https://cursor.test", apiUrl = server.url("/").toString(), sleep = { delay(1) })),
             mintedKeyName = "Cursor for Android (test)",
             mintedKeyTtlMs = 90L * 24 * 60 * 60 * 1000,
         )

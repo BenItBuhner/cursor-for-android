@@ -13,6 +13,7 @@ import androidx.glance.appwidget.GlanceRemoteViews
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -67,7 +68,7 @@ class WidgetScreenshotTest {
 
     @Test
     fun widgets() {
-        val graph = AppGraph(context)
+        val graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
         // The demo pins its three showcase agents, so every list has rows.
         val snapshot = runBlocking {
             graph.session.enterDemo()

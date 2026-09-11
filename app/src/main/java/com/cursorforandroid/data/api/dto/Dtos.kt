@@ -6,6 +6,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
 // ---- v1 ---------------------------------------------------------------------------------------------------
+//
+// Every field below either is nullable or has a default, timestamps and statuses included. `coerceInputValues` only
+// substitutes a *declared* default, so a required field a record happens to omit would throw and fail the whole
+// response: one malformed row would cost the ninety-nine good ones. `parseIsoMillis` reads a blank timestamp as 0
+// and the status parsers read anything they do not know as UNKNOWN, so the row degrades on its own instead.
 
 /**
  * `env` on an agent record and on Create An Agent. [type] is required whenever `env` is sent; it keeps a default so a
@@ -33,8 +38,8 @@ data class AgentSummaryDto(
     val status: String = "ACTIVE",
     val env: AgentEnvDto = AgentEnvDto(),
     val url: String = "",
-    val createdAt: String,
-    val updatedAt: String,
+    val createdAt: String = "",
+    val updatedAt: String = "",
     val latestRunId: String? = null,
 )
 
@@ -45,8 +50,8 @@ data class AgentDto(
     val status: String = "ACTIVE",
     val env: AgentEnvDto = AgentEnvDto(),
     val url: String = "",
-    val createdAt: String,
-    val updatedAt: String,
+    val createdAt: String = "",
+    val updatedAt: String = "",
     val latestRunId: String? = null,
     val repos: List<RepoConfigDto> = emptyList(),
     val workOnCurrentBranch: Boolean? = null,
@@ -74,9 +79,9 @@ data class RunGitDto(val branches: List<RunGitBranchDto> = emptyList())
 data class RunDto(
     val id: String,
     val agentId: String,
-    val status: String,
-    val createdAt: String,
-    val updatedAt: String,
+    val status: String = "UNKNOWN",
+    val createdAt: String = "",
+    val updatedAt: String = "",
     val durationMs: Long? = null,
     val result: String? = null,
     val git: RunGitDto? = null,
@@ -334,7 +339,7 @@ data class SseToolCallDto(
 @Serializable
 data class SseResultDto(
     val runId: String? = null,
-    val status: String,
+    val status: String = "UNKNOWN",
     val text: String? = null,
     val durationMs: Long? = null,
     val git: RunGitDto? = null,

@@ -102,8 +102,9 @@ fun CursorDrawer(
     ) {
         Box { content() }
 
-        // Registered after [content] so that, with the drawer open over a screen that can itself go back, this handler
-        // is the later-registered one and wins the gesture: back closes the drawer before it pops anything.
+        // With the drawer open over a screen that can itself go back, back closes the drawer before it pops anything.
+        // The content is expected to stand its own handler down while the drawer is open, rather than this relying on
+        // being the later-registered of the two.
         PredictiveBackHandler(enabled = state.isOpen) { events ->
             val start = state.fraction
             try {
@@ -170,9 +171,9 @@ class CursorDrawerState(initialValue: DrawerValue) {
 
     /** Animates to [value] from wherever the sheet is now, taking longer the further it has to travel. */
     internal suspend fun slideTo(value: DrawerValue) {
-        targetValue = value
         val target = value.fraction
         mutex.mutate {
+            targetValue = value
             val distance = abs(target - fraction)
             if (distance < 0.001f) {
                 fraction = target
@@ -188,8 +189,14 @@ class CursorDrawerState(initialValue: DrawerValue) {
      * drawer with something else (the rail, when the window turns wide), where a slide would play under the new layout.
      */
     suspend fun snapTo(value: DrawerValue) {
-        targetValue = value
-        mutex.mutate { fraction = value.fraction }
+        // At the finger's own priority, which is enough to take the mutex from it: the surface being dragged is the
+        // one going away, and a snap that lost the mutex would leave the sheet drawn where the drag left it while
+        // everything that reads the target believed it closed. Both fields are written inside the mutation so they
+        // cannot come apart at a cancellation point either.
+        mutex.mutate(MutatePriority.UserInput) {
+            targetValue = value
+            fraction = value.fraction
+        }
     }
 
     /** Puts the sheet at [fraction] for this frame of a back gesture, taking over from any animation in flight. */
@@ -208,8 +215,8 @@ class CursorDrawerState(initialValue: DrawerValue) {
             fraction >= 0.5f -> DrawerValue.Open
             else -> DrawerValue.Closed
         }
-        targetValue = value
         mutex.mutate {
+            targetValue = value
             runAnimation {
                 animate(fraction, value.fraction, initialVelocity = velocity, animationSpec = FlingSpec) { v, _ -> fraction = v.coerceIn(0f, 1f) }
             }

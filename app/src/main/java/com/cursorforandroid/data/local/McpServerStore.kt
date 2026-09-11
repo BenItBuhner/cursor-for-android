@@ -4,31 +4,52 @@ import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.McpServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
 
 /**
  * The user's MCP server definitions, the app-side counterpart of the MCP dropdown on cursor.com/agents. Enabled
  * servers are sent inline with every prompt. The list lives in [SecureKeyStore] because headers and env carry
- * credentials; it is decoded once, on first use, and every change is written straight back.
+ * credentials.
+ *
+ * Both ends of that store cost real time — opening the encrypted prefs takes tens of milliseconds the first time,
+ * and every read and write is an AES pass over JSON — and every caller is a composition or a click lambda, so none
+ * of it happens on the thread that asked. [servers] starts empty and fills in from [scope]; an edit updates it at
+ * once and the write follows. An edit made before the stored list arrived is replayed over it, so a server saved
+ * against a list that was still loading cannot wipe the ones already on disk.
  */
-class McpServerStore(private val secure: SecureKeyStore) {
+class McpServerStore(
+    private val secure: SecureKeyStore,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+) {
 
-    private val state: MutableStateFlow<List<McpServer>> by lazy { MutableStateFlow(load()) }
+    private val state = MutableStateFlow<List<McpServer>>(emptyList())
+    private val lock = Any()
+    private val writeMutex = Mutex()
+    @Volatile private var loaded = false
+    private val replay = mutableListOf<(List<McpServer>) -> List<McpServer>>()
 
-    init {
-        // Opening the encrypted prefs can cost tens of milliseconds the first time; do it off the main thread. A
-        // concurrent first read waits on this initialisation rather than starting its own (lazy is synchronized).
-        CoroutineScope(Dispatchers.IO).launch { state }
+    /** Declared here so the state it fills is already built: an unconfined [scope] runs it before this returns. */
+    private val initialLoad = scope.launch { loadOnce() }
+
+    val servers: StateFlow<List<McpServer>> = state.asStateFlow()
+
+    /**
+     * The servers that go out with the next prompt. A prompt must not silently lose them, so on the vanishing chance
+     * the initial read has not landed yet this awaits it instead of answering empty — suspending, because the caller
+     * is the send lambda on the main thread and opening the encrypted store there is tens of milliseconds of jank.
+     */
+    suspend fun enabled(): List<McpServer> {
+        initialLoad.join()
+        return state.value.filter { it.enabled }
     }
-
-    val servers: StateFlow<List<McpServer>> get() = state
-
-    /** The servers that go out with the next prompt. */
-    fun enabled(): List<McpServer> = state.value.filter { it.enabled }
 
     /** Inserts or replaces by id, keeping the list order for an existing server. */
     fun save(server: McpServer) = edit { list ->
@@ -40,12 +61,38 @@ class McpServerStore(private val secure: SecureKeyStore) {
     fun setEnabled(id: String, enabled: Boolean) = edit { list -> list.map { if (it.id == id) it.copy(enabled = enabled) else it } }
 
     private fun edit(transform: (List<McpServer>) -> List<McpServer>) {
-        state.update(transform)
+        synchronized(lock) {
+            if (!loaded) replay += transform
+            state.update(transform)
+        }
+        scope.launch { persist() }
+    }
+
+    /**
+     * Serialized against itself, and it re-reads [state] under the lock rather than taking a snapshot at the call
+     * site, so whichever write lands last writes the newest list however the two were scheduled.
+     */
+    private suspend fun persist() = writeMutex.withLock {
+        loadOnce()
         secure.setMcpServersJson(state.value.takeIf { it.isNotEmpty() }?.let { CursorJson.encodeToString(serializer, it) })
     }
 
-    private fun load(): List<McpServer> =
-        secure.mcpServersJson()?.let { runCatching { CursorJson.decodeFromString(serializer, it) }.getOrNull() } ?: emptyList()
+    private fun loadOnce() {
+        if (loaded) return
+        synchronized(lock) {
+            if (loaded) return
+            val stored = secure.mcpServersJson()
+                ?.let { runCatching { CursorJson.decodeFromString(serializer, it) }.getOrNull() }
+                ?: emptyList()
+            loaded = true
+            if (replay.isEmpty()) {
+                if (stored.isNotEmpty()) state.value = stored
+            } else {
+                state.value = replay.fold(stored) { list, transform -> transform(list) }
+                replay.clear()
+            }
+        }
+    }
 
     private companion object {
         val serializer = ListSerializer(McpServer.serializer())

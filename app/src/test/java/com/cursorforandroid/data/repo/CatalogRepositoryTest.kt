@@ -7,6 +7,7 @@ import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.dto.ModelListItemDto
 import com.cursorforandroid.data.api.dto.PoolDto
 import com.cursorforandroid.data.api.dto.WorkerDto
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.CatalogCache
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -16,8 +17,15 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -25,6 +33,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import retrofit2.HttpException
+import retrofit2.Response
 import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
@@ -91,6 +101,123 @@ class CatalogRepositoryTest {
         // Without anything saved the failure surfaces.
         api.failRepositories = IOException("down")
         assertThat(catalog.loadRepositories().isFailure).isTrue()
+    }
+
+    @Test
+    fun `a failing repository fetch still spends the minute, so it is not retried without limit`() = runBlocking<Unit> {
+        api.failRepositories = IOException("down")
+        val catalog = CatalogRepository(session, cache)
+
+        assertThat(catalog.loadRepositories().isFailure).isTrue()
+        // The endpoint allows one request a minute whether it answered or not, so the next two are refused here.
+        assertThat(catalog.loadRepositories().exceptionOrNull()!!.userMessage()).isEqualTo("Rate limited by Cursor. Try again in a moment.")
+        assertThat(catalog.loadRepositories(force = true).isFailure).isTrue()
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        // Past the minute the next attempt goes out, and succeeds.
+        now += 65 * 1000
+        api.failRepositories = null
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        assertThat(catalog.loadRepositories().getOrThrow().map { it.shortName }).containsExactly("app")
+        assertThat(api.repositoriesCalls).isEqualTo(2)
+    }
+
+    @Test
+    fun `a forced refresh inside the minute returns what is shown instead of spending a request`() = runBlocking<Unit> {
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        val catalog = CatalogRepository(session, cache)
+
+        assertThat(catalog.loadRepositories().getOrThrow()).hasSize(1)
+        api.repositoryUrls = listOf("https://github.com/acme/app", "https://github.com/acme/web")
+        assertThat(catalog.loadRepositories(force = true).getOrThrow()).hasSize(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        // A forced refresh does skip the half-hour freshness window, once the minute is up.
+        now += 65 * 1000
+        assertThat(catalog.loadRepositories(force = true).getOrThrow()).hasSize(2)
+        assertThat(api.repositoriesCalls).isEqualTo(2)
+    }
+
+    @Test
+    fun `a Retry-After the server sends outlasts the app's own minute`() = runBlocking<Unit> {
+        api.failRepositories = throttled(retryAfterSeconds = 300)
+        val catalog = CatalogRepository(session, cache)
+
+        assertThat(catalog.loadRepositories().isFailure).isTrue()
+        now += 65 * 1000
+        assertThat(catalog.loadRepositories(force = true).isFailure).isTrue()
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        now += 5 * 60 * 1000
+        api.failRepositories = null
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        assertThat(catalog.loadRepositories().getOrThrow()).hasSize(1)
+        assertThat(api.repositoriesCalls).isEqualTo(2)
+    }
+
+    @Test
+    fun `two callers arriving together cost one request between them`() = runBlocking<Unit> {
+        api.repositoryUrls = listOf("https://github.com/acme/app")
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        api.repositoriesGate = CompletableDeferred()
+        api.modelsGate = CompletableDeferred()
+        val catalog = CatalogRepository(session, cache)
+
+        val repos = listOf(async { catalog.loadRepositories() }, async { catalog.loadRepositories() })
+        val models = listOf(async { catalog.loadModels() }, async { catalog.loadModels() })
+        yield()
+
+        // The slow repository fetch does not hold up the models one.
+        api.modelsGate!!.complete(Unit)
+        models.forEach { assertThat(it.await().getOrThrow().map { m -> m.id }).containsExactly("claude") }
+        assertThat(api.modelsCalls).isEqualTo(1)
+
+        api.repositoriesGate!!.complete(Unit)
+        repos.forEach { assertThat(it.await().getOrThrow().map { r -> r.shortName }).containsExactly("app") }
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+    }
+
+    private fun throttled(retryAfterSeconds: Long): HttpException {
+        val raw = okhttp3.Response.Builder()
+            .request(Request.Builder().url("https://api.cursor.com/v1/repositories").build())
+            .protocol(Protocol.HTTP_1_1)
+            .code(429)
+            .message("Too Many Requests")
+            .header("Retry-After", retryAfterSeconds.toString())
+            .build()
+        return HttpException(
+            Response.error<Unit>("""{"error":{"code":"rate_limited","message":"Slow down."}}""".toResponseBody("application/json".toMediaType()), raw),
+        )
+    }
+
+    @Test
+    fun `catalogs fetched for the previous account never reach the next one's pickers or disk`() = runBlocking<Unit> {
+        api.modelItems = listOf(ModelListItemDto(id = "claude", displayName = "Claude"))
+        api.repositoryUrls = listOf("https://github.com/previous/app")
+        api.modelsGate = CompletableDeferred()
+        api.repositoriesGate = CompletableDeferred()
+        val catalog = CatalogRepository(session, cache)
+
+        val models = async { catalog.loadModels() }
+        val repos = async { catalog.loadRepositories() }
+        yield()
+        assertThat(api.modelsCalls).isEqualTo(1)
+        assertThat(api.repositoriesCalls).isEqualTo(1)
+
+        catalog.reset()
+        api.modelsGate!!.complete(Unit)
+        api.repositoriesGate!!.complete(Unit)
+        models.await()
+        repos.await()
+
+        assertThat(catalog.models.value).isEmpty()
+        assertThat(catalog.repositories.value).isEmpty()
+        assertThat(cache.readModels()).isNull()
+        assertThat(cache.readRepositories()).isNull()
+
+        // The next account's own fetch lands as usual.
+        assertThat(catalog.loadModels().getOrThrow().map { it.id }).containsExactly("claude")
+        assertThat(catalog.models.value.map { it.id }).containsExactly("claude")
     }
 
     @Test

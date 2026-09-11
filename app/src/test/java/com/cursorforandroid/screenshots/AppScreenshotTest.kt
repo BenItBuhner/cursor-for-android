@@ -1,5 +1,6 @@
 package com.cursorforandroid.screenshots
 
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
@@ -29,6 +30,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.RunFooter
@@ -86,6 +88,15 @@ class AppScreenshotTest {
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
+    /**
+     * Robolectric has no Android Keystore, so the real [SecureKeyStore] would report itself unavailable and every
+     * capture would carry the warning a device never shows. An ordinary private file stands in for the encrypted one.
+     */
+    private fun appGraph(): AppGraph {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun App(graph: AppGraph) {
@@ -109,7 +120,7 @@ class AppScreenshotTest {
      * (as it is in a process whose session was decided before its activity) and `restoreIfNeeded()` is a no-op.
      */
     private fun launchApp(): AppGraph {
-        val graph = AppGraph(ApplicationProvider.getApplicationContext())
+        val graph = appGraph()
         runBlocking { graph.session.restoreIfNeeded() }
         compose.setContent { App(graph) }
         return graph

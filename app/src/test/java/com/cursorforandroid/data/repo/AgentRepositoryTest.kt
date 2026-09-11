@@ -44,6 +44,7 @@ import org.robolectric.annotation.Config
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -181,6 +182,13 @@ class AgentRepositoryTest {
         repo.applySources(emptyMap())
         repo.applySources(mapOf("bc-slack" to AgentSource.SLACK))
         assertThat(repo.state.value).isSameInstanceAs(before)
+
+        // Read for one account and applied to the next: ids collide across a team, so this must not land.
+        val stale = repo.token()
+        repo.reset()
+        repo.refresh()
+        repo.applySources(mapOf("bc-web" to AgentSource.SLACK), stale)
+        assertThat(repo.state.value.agents.first { it.id == "bc-web" }.source).isNull()
     }
 
     @Test
@@ -461,14 +469,76 @@ class AgentRepositoryTest {
 
         repo.reset()
         assertThat(repo.state.value).isEqualTo(AgentListState())
+
+        // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
+        // run-status pass and the bookkeeping that says a fetch completed. None of it belongs to this session.
         api.v0Gate!!.complete(Unit)
         refresh.join()
         assertThat(repo.state.value).isEqualTo(AgentListState())
+        assertThat(repo.lastRefreshedAt).isEqualTo(0L)
+        // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
+        assertThat(repo.refreshCompleted.value).isEqualTo(0L)
+        // Nor may the old list have reached the disk for the next account to restore.
+        assertThat(cache.read()).isNull()
 
         // The next refresh belongs to the new session and lands normally.
         repo.refresh()
         assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
         assertThat(repo.state.value.isRefreshing).isFalse()
+        assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+    }
+
+    @Test
+    fun `a detail load that outlives a reset does not put its row back`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Previous account", "run-1")
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.state.value.agents).hasSize(1)
+
+        api.getAgentGate = CompletableDeferred()
+        val detail = scope.async { repo.loadDetail("bc-1") }
+        awaitUntil { api.getAgentCalls == 1 }
+        repo.reset()
+        api.getAgentGate!!.complete(Unit)
+        detail.await()
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+    }
+
+    @Test
+    fun `a reset that arrives while a row is being rewritten still empties the list`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Previous account", "run-1")
+        val repo = repository()
+        repo.refresh()
+
+        // The reset is released while the patch is between reading the row and writing it back: whichever order the
+        // two settle in, the row must not be in the list the next account starts from.
+        val inTransform = CountDownLatch(1)
+        val resetting = CountDownLatch(1)
+        val resetter = Thread {
+            inTransform.await()
+            resetting.countDown()
+            repo.reset()
+        }
+        resetter.start()
+        repo.patch("bc-1") { agent ->
+            inTransform.countDown()
+            resetting.await()
+            agent.copy(name = "Renamed")
+        }
+        resetter.join(5_000)
+        assertThat(repo.state.value).isEqualTo(AgentListState())
+    }
+
+    @Test
+    fun `a row a caller collected before a reset is refused afterwards`() = runBlocking<Unit> {
+        val repo = repository()
+        val startedIn = repo.token()
+        repo.reset()
+        repo.upsert(cachedAgent("bc-1", "Previous account"), startedIn)
+        assertThat(repo.state.value.agents).isEmpty()
+
+        repo.upsert(cachedAgent("bc-2", "This account"))
+        assertThat(repo.state.value.agents.map { it.id }).containsExactly("bc-2")
     }
 
     @Test
@@ -642,6 +712,45 @@ class AgentRepositoryTest {
         demoApi.addRunningAgent("bc-demo", "Demo agent", "run-demo")
         realApi.addRunningAgent("bc-real", "Real agent", "run-real")
         return repository()
+    }
+
+    @Test
+    fun `a windowed refresh stops at its window, and a complete listing reconciles what lies beyond it`() = runBlocking<Unit> {
+        val agents = repository()
+        // Twelve agents, two per page: the windowed pass reads its five pages, a complete listing reads all six.
+        api.pageSize = 2
+        val start = now
+        repeat(12) { i -> api.addIdleAgent("bc-%02d".format(i), "Agent $i", "run-$i", createdAt = iso(start - i * 60_000L)) }
+
+        // Nothing has ever been listed to the end, so the first pass does that rather than stopping at the window.
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.state.value.agents).hasSize(12)
+        assertThat(api.listAgentsCalls).isEqualTo(6)
+
+        // Deleted and renamed beyond the window. A windowed pass neither sees nor reconciles them: a row the pass
+        // never reached is not a row the server no longer has.
+        api.agents.remove("bc-11")
+        api.v0.remove("bc-11")
+        api.addIdleAgent("bc-10", "Renamed elsewhere", "run-10", createdAt = iso(start - 10 * 60_000L))
+        now += 60_000
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(api.listAgentsCalls).isEqualTo(11)
+        assertThat(agents.agent("bc-11")).isNotNull()
+        assertThat(agents.agent("bc-10")?.name).isEqualTo("Agent 10")
+
+        // An hour on, the windowed pass is promoted to a complete listing and both land.
+        now += 61 * 60_000
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.agent("bc-11")).isNull()
+        assertThat(agents.agent("bc-10")?.name).isEqualTo("Renamed elsewhere")
+
+        // And a refresh asked for by hand pages to the end whenever it is asked, hour or no hour.
+        api.agents.remove("bc-10")
+        api.v0.remove("bc-10")
+        now += 60_000
+        agents.refresh(depth = RefreshDepth.Deep)
+        assertThat(agents.agent("bc-10")).isNull()
+        assertThat(agents.state.value.agents).hasSize(10)
     }
 
     @Test

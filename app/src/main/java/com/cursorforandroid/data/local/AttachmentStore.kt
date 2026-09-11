@@ -155,11 +155,20 @@ class AttachmentStore(context: Context) {
         return scale(maxOf(1, (width * factor).toInt()), maxOf(1, (height * factor).toInt()))
     }
 
+    /**
+     * Read a band at a time rather than a row: an opaque PNG has to be scanned to the last pixel before it can be
+     * called opaque, and a row at a time is one JNI round trip per row — over a thousand of them for a full-size
+     * preview — for no more certainty than a band gives.
+     */
     private fun Bitmap.hasTransparentPixels(): Boolean {
-        val row = IntArray(width)
-        for (y in 0 until height) {
-            getPixels(row, 0, width, 0, y, width, 1)
-            if (row.any { it ushr 24 != 0xFF }) return true
+        val rows = (PIXEL_BAND_PX / width).coerceIn(1, height)
+        val band = IntArray(width * rows)
+        var y = 0
+        while (y < height) {
+            val take = minOf(rows, height - y)
+            getPixels(band, 0, width, 0, y, width, take)
+            for (i in 0 until width * take) if (band[i] ushr 24 != 0xFF) return true
+            y += take
         }
         return false
     }
@@ -179,6 +188,8 @@ class AttachmentStore(context: Context) {
         /** Only a GIF can arrive both within [MAX_EDGE] and this heavy; its first frame is re-encoded instead. */
         const val PASSTHROUGH_MAX_BYTES = 2 * 1024 * 1024
         const val JPEG_QUALITY = 85
+        /** Pixels held at once while looking for transparency: a quarter of a megabyte, whatever the image's shape. */
+        const val PIXEL_BAND_PX = 64 * 1024
 
         /**
          * IDs are `bc-…` / `run-…` today, but nothing an API returns should be trusted as a path segment: unsafe

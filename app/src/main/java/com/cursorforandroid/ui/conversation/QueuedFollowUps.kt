@@ -85,10 +85,15 @@ private fun QueuedFollowUpRow(
             .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
-            .semantics { contentDescription = if (item.error != null) "Queued follow-up $position of $count, not sent: ${item.error}" else "Queued follow-up $position of $count" },
+            .semantics {
+                contentDescription = when (val note = item.warning) {
+                    null -> "Queued follow-up $position of $count"
+                    else -> "Queued follow-up $position of $count, not sent: $note"
+                }
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (item.error != null) {
+        if (item.warning != null) {
             Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(8.dp))
         } else if (item.images.isNotEmpty()) {
@@ -116,8 +121,8 @@ private fun QueuedFollowUpRow(
                 overflow = TextOverflow.Ellipsis,
             )
             // Why it did not go, in the server's words or the connection's: without it the warning is only a riddle.
-            item.error?.let { reason ->
-                Text(reason, style = type.small, color = colors.red, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+            item.warning?.let { note ->
+                Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -126,10 +131,10 @@ private fun QueuedFollowUpRow(
                 SpinnerRing(size = 11.dp)
             }
         } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
                 GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary, onEdit)
-                GlyphButton(CursorIcons.ArrowUp, if (item.error != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
+                GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
             }
         }
     }

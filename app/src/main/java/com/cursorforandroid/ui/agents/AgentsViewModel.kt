@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.RefreshDepth
+import com.cursorforandroid.data.repo.RefreshOutcome
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -37,6 +40,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 data class AgentListUiState(
     /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
@@ -64,6 +68,16 @@ data class AgentListUiState(
     val nowMillis: Long = AppClock.now(),
 )
 
+/**
+ * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
+ * from the preferences, with the pull request states the account last gave folded in; alongside, the last row action
+ * the server refused, which the list shows where a failed refresh would show its own error.
+ */
+private class DeviceState(
+    val local: LocalAgentState,
+    val actionError: String?,
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AgentsViewModel(
     private val graph: AppGraph,
@@ -73,12 +87,18 @@ class AgentsViewModel(
 
     private val query = MutableStateFlow("")
 
-    /**
-     * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
-     * from the preferences, with the pull request states the account last gave folded in.
-     */
-    private val local: Flow<LocalAgentState> = combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states ->
+    /** An archive / unarchive / delete the server refused, until the next one is attempted. */
+    private val actionError = MutableStateFlow<String?>(null)
+
+    /** Consecutive polls whose fetch could not reach the server; a success or a refresh by hand clears it. */
+    @Volatile private var pollFailures = 0
+
+    private val localState: Flow<LocalAgentState> = combine(graph.prefs.localAgentState, graph.pullRequests.states) { local, states ->
         local.copy(pullRequests = states)
+    }
+
+    private val device: Flow<DeviceState> = combine(localState, actionError) { local, failed ->
+        DeviceState(local = local, actionError = failed)
     }
 
     /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
@@ -93,7 +113,7 @@ class AgentsViewModel(
      * Fires the moment a timed snooze lifts, so a 5-minute mute does not sit around until the next minute tick.
      * Completes while nothing is snoozed on a timer (Forever never wakes on its own).
      */
-    private val snoozeAlarm: Flow<Long> = local.flatMapLatest { state ->
+    private val snoozeAlarm: Flow<Long> = localState.flatMapLatest { state ->
         flow {
             while (true) {
                 val now = AppClock.now()
@@ -112,10 +132,11 @@ class AgentsViewModel(
     val uiState: StateFlow<AgentListUiState> = combine(
         graph.agents.state,
         graph.prefs.listPreferences,
-        local,
+        device,
         query,
         clock,
-    ) { list, prefs, local, q, now ->
+    ) { list, prefs, device, q, now ->
+        val local = device.local
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
@@ -130,7 +151,8 @@ class AgentsViewModel(
             query = q,
             isRefreshing = list.isRefreshing,
             hasLoaded = list.hasLoaded,
-            error = list.error,
+            // A refused row action is the newer news, and the one the user is waiting on.
+            error = device.actionError ?: list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
             nowMillis = now,
@@ -162,10 +184,20 @@ class AgentsViewModel(
                 graph.pullRequests.refresh(urls)
             }
         }
+        viewModelScope.launch {
+            // Every completed list fetch, whoever asked for it — a pull, a poll, coming back to the foreground, the
+            // widget — is also when the pull requests are re-read, so an open one that has since been merged does not
+            // stay open for as long as the app is left running with the same chats in the list. What that costs is
+            // decided by their own re-read intervals, not by how often the list is fetched.
+            graph.agents.refreshCompleted.filter { it > 0L }.collect { refreshPullRequests() }
+        }
     }
 
     fun refresh() = viewModelScope.launch {
-        graph.agents.refresh()
+        // Asking again by hand is also how a user gets out of a backed-off cadence after an outage, and the one
+        // refresh that always pages to the end of the list rather than to the end of its window.
+        pollFailures = 0
+        graph.agents.refresh(depth = RefreshDepth.Deep)
         refreshPullRequests(eager = true)
     }
 
@@ -175,7 +207,7 @@ class AgentsViewModel(
      * merge made elsewhere is looked for.
      */
     fun refreshIfStale() = viewModelScope.launch {
-        graph.agents.refreshIfStale(STALE_AFTER_MS)
+        if (graph.agents.refreshIfStale(STALE_AFTER_MS) == RefreshOutcome.Refreshed) pollFailures = 0
         refreshPullRequests(eager = true)
     }
 
@@ -185,22 +217,41 @@ class AgentsViewModel(
     /**
      * Keeps the list current while it is on screen, without anyone pulling to refresh: a run started on the web, a
      * follow-up sent from the desktop, a finish nobody was streaming. The newest page of each list every
-     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), the whole
-     * list every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent, and
-     * skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Each tick also gives
-     * the pull request states their turn: the account's list, read after each fetch, says where they stand at once,
-     * and the pass re-reads from the SCM whichever are due on their own schedule (cheap when none is). Runs until the
-     * returned job is cancelled; the caller ties it to the list being visible.
+     * [pollIntervalMs] (that is where new chats and fresh activity appear, and it is two small requests), a deeper
+     * pass every [FULL_POLL_EVERY] ticks so a follow-up on an old chat further down is picked up too — all silent,
+     * and skipped when something else (the live-notification monitor, a pull) refreshed moments ago. Each tick also
+     * gives the pull request states their turn: the account's list, read after each fetch, says where they stand at
+     * once, and the pass re-reads from the SCM whichever are due on their own schedule (cheap when none is). While
+     * the server cannot be reached the interval backs off (see [pollDelayMs]) instead of knocking every half minute
+     * for as long as the screen is up. Runs until the returned job is cancelled; the caller ties it to a list surface
+     * actually being on screen.
      */
     fun pollWhileVisible(): Job = viewModelScope.launch {
         var tick = 0
         while (true) {
-            delay(pollIntervalMs)
+            delay(pollDelayMs())
             tick++
             val depth = if (tick % FULL_POLL_EVERY == 0) RefreshDepth.Full else RefreshDepth.Quick
-            graph.agents.refreshIfStale(pollIntervalMs / 2, depth)
+            when (graph.agents.refreshIfStale(pollIntervalMs / 2, depth)) {
+                RefreshOutcome.Refreshed -> pollFailures = 0
+                RefreshOutcome.Failed -> pollFailures++
+                RefreshOutcome.Skipped -> Unit
+            }
             refreshPullRequests()
         }
+    }
+
+    /**
+     * The wait before the next poll: the plain interval while the server answers, doubled per consecutive failure up
+     * to [MAX_POLL_BACKOFF_FACTOR] times it, plus a little jitter so an outage does not leave every client that
+     * weathered it knocking in step afterwards.
+     */
+    private fun pollDelayMs(): Long {
+        val failures = pollFailures
+        if (failures <= 0) return pollIntervalMs
+        val backed = pollIntervalMs * (1L shl minOf(failures, MAX_POLL_BACKOFF_SHIFT))
+        val capped = minOf(backed, pollIntervalMs * MAX_POLL_BACKOFF_FACTOR)
+        return capped + Random.nextLong(capped / 4 + 1)
     }
 
     fun setQuery(value: String) { query.value = value }
@@ -234,13 +285,28 @@ class AgentsViewModel(
     fun setShowRuntime(v: Boolean) = updatePrefs { it.copy(showRuntime = v) }
     fun resetPrefs() = updatePrefs { ListPreferences() }
 
-    fun archive(agentId: String) = viewModelScope.launch { graph.agents.archive(agentId) }
-    fun unarchive(agentId: String) = viewModelScope.launch { graph.agents.unarchive(agentId) }
+    fun archive(agentId: String) = viewModelScope.launch { report(graph.agents.archive(agentId)) }
+    fun unarchive(agentId: String) = viewModelScope.launch { report(graph.agents.unarchive(agentId)) }
     fun rename(agentId: String, name: String) = viewModelScope.launch { graph.agents.rename(agentId, name) }
+
+    /**
+     * Deletes the chat on the server first. The transcript and the retained trace are the only copy of a run whose
+     * server-side event log has expired, so they are dropped only once the server has accepted the delete; a request
+     * that was refused or never went out leaves the chat, its transcript and its trace where they are, and says so.
+     */
+    fun delete(agentId: String) = viewModelScope.launch {
+        if (report(graph.agents.delete(agentId))) graph.conversations.forget(agentId)
+    }
 
     /** Silences notifications for the chat until [untilMillis]; `Long.MAX_VALUE` until they unsnooze. */
     fun snooze(agentId: String, untilMillis: Long) = viewModelScope.launch { graph.prefs.snooze(agentId, untilMillis) }
     fun unsnooze(agentId: String) = viewModelScope.launch { graph.prefs.unsnooze(agentId) }
+
+    /** True when the action went through; a failure is shown in the list until the next action is attempted. */
+    private fun report(result: Result<Unit>): Boolean {
+        actionError.value = result.exceptionOrNull()?.userMessage()
+        return result.isSuccess
+    }
 
     fun filterLabel(kind: FilterKind): String = uiState.value.prefs.summaryFor(kind)
 
@@ -251,6 +317,10 @@ class AgentsViewModel(
         const val POLL_INTERVAL_MS = 30_000L
         const val FULL_POLL_EVERY = 5
         const val CLOCK_TICK_MS = 60_000L
+        /** Doublings of the polling interval a run of failures can reach. */
+        const val MAX_POLL_BACKOFF_SHIFT = 5
+        /** The most the interval can grow to, in multiples of itself: half a minute becomes eight. */
+        const val MAX_POLL_BACKOFF_FACTOR = 16L
     }
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {

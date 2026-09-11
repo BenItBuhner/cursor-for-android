@@ -16,12 +16,14 @@ import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
+import com.cursorforandroid.domain.ToolOutput
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.WorkHeader
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
+import kotlin.system.measureTimeMillis
 
 class TimelineBuilderTest {
 
@@ -424,6 +426,121 @@ class TimelineBuilderTest {
         assertThat(live.finished).isTrue()
     }
 
+    /**
+     * A tool call's JSON is whole files and whole command outputs. Everything the trace needs is read off it while
+     * the call is built; keeping the rest would hold the run's entire payload for as long as the chat is open.
+     */
+    @Test
+    fun `a tool call keeps its line counts and drops the json they came from`() {
+        val live = TimelineBuilder.LiveRun("run-1") { 0L }
+        live.apply(
+            RunStreamEvent.ToolCall(
+                SseToolCallDto(
+                    callId = "e1",
+                    name = "edit_file",
+                    status = "completed",
+                    args = buildJsonObject { put("path", JsonPrimitive("a/One.kt")) },
+                    result = buildJsonObject { put("linesAdded", JsonPrimitive(12)); put("linesRemoved", JsonPrimitive(3)) },
+                ),
+            ),
+        )
+        live.apply(tool("r1", "read_file", "completed", "path" to "b/Two.kt"))
+
+        val calls = live.snapshot().filterIsInstance<ActivityGroup>().single().calls
+        val edit = calls.single { it.callId == "e1" }
+        // The row reads "Edited One.kt", as Cursor's own does, and opens onto the path it was given.
+        assertThat(edit.summary).isEqualTo("One.kt")
+        assertThat(edit.detail).isEqualTo("a/One.kt")
+        assertThat(edit.linesAdded).isEqualTo(12)
+        assertThat(edit.linesRemoved).isEqualTo(3)
+        // A read is not an edit, so nothing was walked for it.
+        assertThat(calls.single { it.callId == "r1" }.linesAdded).isNull()
+    }
+
+    /** A command's output is the other payload a trace would otherwise carry whole: it is clipped as the call is built. */
+    @Test
+    fun `a command keeps the clipped output its row opens onto`() {
+        val live = TimelineBuilder.LiveRun("run-1") { 0L }
+        live.apply(
+            RunStreamEvent.ToolCall(
+                SseToolCallDto(
+                    callId = "s1",
+                    name = "run_terminal_cmd",
+                    status = "completed",
+                    args = buildJsonObject { put("command", JsonPrimitive("ls")) },
+                    result = buildJsonObject { put("stdout", JsonPrimitive((1..60).joinToString("\n") { "line $it" })); put("exitCode", JsonPrimitive(0)) },
+                ),
+            ),
+        )
+
+        val shell = live.snapshot().filterIsInstance<ActivityGroup>().single().calls.single()
+        assertThat(shell.exitCode).isEqualTo(0)
+        assertThat(shell.output!!.lines()).hasSize(ToolOutput.MAX_OUTPUT_LINES + 1)
+        assertThat(shell.output).endsWith("… 20 more lines")
+    }
+
+    /**
+     * Text is only written into its item when something is about to read it, so every reader — a snapshot between
+     * two deltas, a tool call closing a thought, the result — has to see everything that arrived before it.
+     */
+    @Test
+    fun `a snapshot between deltas shows the text so far and loses nothing appended after it`() {
+        val live = TimelineBuilder.LiveRun("run-7") { 1_000L }
+        live.apply(RunStreamEvent.Thinking("Look"))
+        assertThat(live.snapshot().filterIsInstance<ActivityGroup>().single().thoughts.single().text).isEqualTo("Look")
+        live.apply(RunStreamEvent.Thinking("ing around."))
+        live.apply(RunStreamEvent.Assistant("Half "))
+        assertThat(live.snapshot().filterIsInstance<ActivityGroup>().single().thoughts.single().text).isEqualTo("Looking around.")
+        assertThat(live.snapshot().filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Half ")
+        live.apply(RunStreamEvent.Assistant("way."))
+        live.apply(RunStreamEvent.Thinking("More"))
+        live.apply(RunStreamEvent.Thinking(" thought."))
+        live.apply(tool("c1", "read_file", "completed", "path" to "README.md"))
+        live.apply(RunStreamEvent.Assistant("Done."))
+
+        val items = live.snapshot()
+        assertThat(items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Half way.", "Done.").inOrder()
+        assertThat(items.filterIsInstance<ActivityGroup>().flatMap { it.thoughts }.map { it.text })
+            .containsExactly("Looking around.", "More thought.").inOrder()
+        // Taking it twice with nothing in between says exactly the same thing.
+        assertThat(live.snapshot()).isEqualTo(items)
+    }
+
+    /**
+     * A reader pays for the text once per change, not once per read: the reply is only written into its item when
+     * a delta has actually arrived since the last time anyone looked.
+     */
+    @Test
+    fun `reading the same trace twice does not build its text again`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        repeat(200) { live.apply(RunStreamEvent.Assistant("token $it ")) }
+        val first = live.snapshot()
+        val second = live.snapshot()
+        first.indices.forEach { i -> assertThat(second[i]).isSameInstanceAs(first[i]) }
+
+        // One more delta rewrites that item and nothing else.
+        live.apply(RunStreamEvent.Thinking("Hmm."))
+        live.apply(RunStreamEvent.Assistant("and more."))
+        val third = live.snapshot()
+        assertThat(third.first()).isSameInstanceAs(first.first())
+        assertThat(third.filterIsInstance<AssistantMessage>().last().markdown).isEqualTo("and more.")
+    }
+
+    /** The live notification times a run whose outcome carries no duration; the footer used to say nothing at all. */
+    @Test
+    fun `a finished run without a reported duration still says how long it worked`() {
+        var clock = 60_000L
+        val live = TimelineBuilder.LiveRun("run-1", startedAtMillis = 5_000L, nowProvider = { clock })
+        clock = 95_000L
+        live.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", null, null))
+        assertThat((live.snapshot().last() as RunFooter).durationMs).isEqualTo(90_000L)
+
+        // A replay is not happening now, so its clock says nothing about the run and no duration is invented.
+        val replayed = TimelineBuilder.LiveRun("run-2", timed = false, startedAtMillis = 5_000L, nowProvider = { clock })
+        replayed.apply(RunStreamEvent.Result("run-2", RunStatus.FINISHED, "Done.", null, null))
+        assertThat((replayed.snapshot().last() as RunFooter).durationMs).isNull()
+    }
+
     @Test
     fun `result text is used when no assistant deltas arrived`() {
         val live = TimelineBuilder.LiveRun("run-1")
@@ -550,5 +667,45 @@ class TimelineBuilderTest {
         assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
         assertThat((items[2] as AssistantMessage).markdown).isEqualTo("The build failed on a missing dependency.")
         assertThat((items.last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
+    }
+
+    /**
+     * A tool call is reported at least twice and the update has to find the group it went into. Looking for it by
+     * walking the transcript costs the whole chat on every event, so a long chat streams slower and slower; the
+     * budget here is loose enough not to mind a busy machine and far under what that walk takes.
+     */
+    @Test
+    fun `a long chat streams at the cost of its newest work, not of all of it`() {
+        val rounds = 1600
+        val perRound = 20
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        val elapsed = measureTimeMillis {
+            repeat(rounds) { r ->
+                live.apply(RunStreamEvent.Assistant("Round $r."))
+                repeat(perRound) { c ->
+                    live.apply(tool("c-$r-$c", "read_file", "running", "path" to "File$c.kt"))
+                    live.apply(tool("c-$r-$c", "read_file", "completed", "path" to "File$c.kt"))
+                }
+            }
+        }
+        val items = live.snapshot()
+        assertThat(items.filterIsInstance<ActivityGroup>()).hasSize(rounds)
+        // Every update landed on its own call: no group grew past the calls made in its round, and none was lost.
+        assertThat(items.filterIsInstance<ActivityGroup>().map { it.calls.size }.distinct()).containsExactly(perRound)
+        assertThat(items.filterIsInstance<ActivityGroup>().last().calls.none { it.isRunning }).isTrue()
+        assertThat(elapsed).isLessThan(2_500L)
+    }
+
+    @Test
+    fun `what a group adds up to is worked out once`() {
+        val live = TimelineBuilder.LiveRun("run-1", timed = false)
+        live.apply(RunStreamEvent.Thinking("Where does the picker live?"))
+        live.apply(tool("c1", "read_file", "completed", "path" to "ModelSheet.kt"))
+        val group = live.group()
+        assertThat(group.calls).isSameInstanceAs(group.calls)
+        assertThat(group.header).isSameInstanceAs(group.header)
+        assertThat(group.summary).isSameInstanceAs(group.summary)
+        assertThat(group.work).isSameInstanceAs(group.work)
+        assertThat(group.leadingThoughts).isSameInstanceAs(group.leadingThoughts)
     }
 }

@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.local
 
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
@@ -7,9 +8,7 @@ import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.SlashCatalog
-import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.TimelineItem
-import com.cursorforandroid.domain.ToolCall
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -29,6 +28,12 @@ class AppCaches(private val root: JsonDiskCache) {
     val pullRequests = PullRequestCache(root.child("pullrequests"))
     val slashCommands = SlashCommandCache(root.child("slashcommands"))
 
+    /**
+     * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
+     * flight cannot be cancelled, so this is what keeps it from landing behind [clear].
+     */
+    fun invalidate() = root.invalidate()
+
     suspend fun clear() = root.clear()
 }
 
@@ -39,9 +44,12 @@ class AppCaches(private val root: JsonDiskCache) {
 class SlashCommandCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
     suspend fun read(scopeKey: String): JsonDiskCache.Entry<SlashCatalog>? = cache.read(scopeKey, SlashCatalog.serializer(), VERSION)
 
-    suspend fun write(scopeKey: String, catalog: SlashCatalog) {
-        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog)) cache.prune(maxEntries)
+    suspend fun write(scopeKey: String, catalog: SlashCatalog, token: Int = cache.token()) {
+        if (cache.write(scopeKey, SlashCatalog.serializer(), VERSION, catalog, token)) cache.prune(maxEntries)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
@@ -58,9 +66,12 @@ private data class CachedPullRequests(val statuses: Map<String, PullRequestStatu
 class PullRequestCache(private val cache: JsonDiskCache) {
     suspend fun read(): Map<String, PullRequestStatus>? = cache.read(KEY, CachedPullRequests.serializer(), VERSION)?.value?.statuses
 
-    suspend fun write(statuses: Map<String, PullRequestStatus>) {
-        cache.write(KEY, CachedPullRequests.serializer(), VERSION, CachedPullRequests(statuses))
+    suspend fun write(statuses: Map<String, PullRequestStatus>, token: Int = cache.token()) {
+        cache.write(KEY, CachedPullRequests.serializer(), VERSION, CachedPullRequests(statuses), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
@@ -77,9 +88,12 @@ class AgentListCache(private val cache: JsonDiskCache) {
     suspend fun read(): JsonDiskCache.Entry<List<Agent>>? =
         cache.read(KEY, CachedAgentList.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.agents, it.savedAtMillis) }
 
-    suspend fun write(agents: List<Agent>) {
-        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents))
+    suspend fun write(agents: List<Agent>, token: Int = cache.token()) {
+        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 
@@ -121,9 +135,12 @@ class ConversationCache(private val cache: JsonDiskCache, private val maxEntries
     suspend fun read(agentId: String): JsonDiskCache.Entry<CachedConversation>? =
         cache.read(agentId, CachedConversation.serializer(), VERSION)
 
-    suspend fun write(conversation: CachedConversation) {
-        if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation)) cache.prune(maxEntries)
+    suspend fun write(conversation: CachedConversation, token: Int = cache.token()) {
+        if (cache.write(conversation.agentId, CachedConversation.serializer(), VERSION, conversation, token)) cache.prune(maxEntries)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun remove(agentId: String) = cache.remove(agentId)
 
@@ -163,6 +180,7 @@ class TraceCache(
     private val cache: JsonDiskCache,
     private val maxAgents: Int = MAX_AGENTS,
     private val maxRunsPerAgent: Int = MAX_RUNS_PER_AGENT,
+    private val maxBytesPerAgent: Int = MAX_BYTES_PER_AGENT,
 ) {
     /** One writer per agent at a time: adding a run is a read-merge-write of the agent's file. */
     private val locks = ConcurrentHashMap<String, Mutex>()
@@ -172,32 +190,56 @@ class TraceCache(
         cache.read(agentId, CachedTraces.serializer(), VERSION)?.value?.runs?.associateBy { it.runId } ?: emptyMap()
 
     /** Adds [traces] to the agent's file, replacing what it held for the same runs; the newest runs are kept. */
-    suspend fun put(agentId: String, traces: Collection<CachedTrace>) {
+    suspend fun put(agentId: String, traces: Collection<CachedTrace>, token: Int = cache.token()) {
         if (traces.isEmpty()) return
         locks.getOrPut(agentId) { Mutex() }.withLock {
-            val merged = (read(agentId) + traces.associate { it.runId to it.compact() }).values
+            val merged = (read(agentId) + traces.associate { it.runId to it }).values
                 .sortedByDescending { it.createdAtMillis }
                 .take(maxRunsPerAgent)
-            if (cache.write(agentId, CachedTraces.serializer(), VERSION, CachedTraces(agentId, merged))) cache.prune(maxAgents)
+            val kept = CachedTraces(agentId, withinBudget(merged))
+            if (cache.write(agentId, CachedTraces.serializer(), VERSION, kept, token)) cache.prune(maxAgents)
         }
     }
+
+    /**
+     * The newest of [traces] — already ordered newest first — that fit the agent's byte budget. A trace is as long
+     * as the run's log, so a count alone does not bound the file; the oldest are let go of until it does.
+     */
+    private fun withinBudget(traces: List<CachedTrace>): List<CachedTrace> {
+        var used = 0
+        val kept = ArrayList<CachedTrace>(traces.size)
+        for (trace in traces) {
+            used += CursorJson.encodeToString(CachedTrace.serializer(), trace).length
+            if (kept.isNotEmpty() && used > maxBytesPerAgent) break
+            kept += trace
+        }
+        return kept
+    }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun remove(agentId: String) = cache.remove(agentId)
 
     suspend fun clear() = cache.clear()
 
-    private fun CachedTrace.compact() = copy(
-        items = items.map { item ->
-            if (item is ActivityGroup) item.copy(steps = item.steps.map { step -> if (step is ToolCall) step.copy(args = null, result = null) else step }) else item
-        },
-    )
-
     private companion object {
-        /** 2: tool calls carry their Cursor-worded summary, server and stats, and subagents are tool calls. */
-        const val VERSION = 2
+        /**
+         * 2: tool calls carry their Cursor-worded summary, server and stats, and subagents are tool calls.
+         * 3: a call keeps the clipped output it opens onto instead of the raw payload it was read from, so nothing
+         * has to be stripped on the way to disk (see [ToolCall.output]).
+         */
+        const val VERSION = 3
         const val MAX_AGENTS = 200
-        /** Matches the page of runs the conversation loads; older runs are never asked for. */
-        const val MAX_RUNS_PER_AGENT = 50
+        /**
+         * Matches how deep the conversation pages its runs, so every run whose trace the load replays can be kept:
+         * keeping fewer meant a long chat replayed the same logs on every open and then lost them for good once
+         * they expired.
+         */
+        const val MAX_RUNS_PER_AGENT = 400
+
+        /** How much of one agent's traces is worth keeping; past this the oldest go, however few runs that is. */
+        const val MAX_BYTES_PER_AGENT = 2 shl 20
     }
 }
 
@@ -211,16 +253,19 @@ class CatalogCache(private val cache: JsonDiskCache) {
     suspend fun readModels(): JsonDiskCache.Entry<List<ModelOption>>? =
         cache.read(MODELS, CachedModels.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.models, it.savedAtMillis) }
 
-    suspend fun writeModels(models: List<ModelOption>) {
-        cache.write(MODELS, CachedModels.serializer(), VERSION, CachedModels(models))
+    suspend fun writeModels(models: List<ModelOption>, token: Int = cache.token()) {
+        cache.write(MODELS, CachedModels.serializer(), VERSION, CachedModels(models), token)
     }
 
     suspend fun readRepositories(): JsonDiskCache.Entry<List<Repository>>? =
         cache.read(REPOSITORIES, CachedRepositories.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.repositories, it.savedAtMillis) }
 
-    suspend fun writeRepositories(repositories: List<Repository>) {
-        cache.write(REPOSITORIES, CachedRepositories.serializer(), VERSION, CachedRepositories(repositories))
+    suspend fun writeRepositories(repositories: List<Repository>, token: Int = cache.token()) {
+        cache.write(REPOSITORIES, CachedRepositories.serializer(), VERSION, CachedRepositories(repositories), token)
     }
+
+    /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
+    fun token(): Int = cache.token()
 
     suspend fun clear() = cache.clear()
 

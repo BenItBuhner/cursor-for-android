@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
+import com.cursorforandroid.domain.ToolOutput
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -92,6 +93,18 @@ class ToolCallMapperTest {
     }
 
     @Test
+    fun `what a call opens onto is held to a size a row can show`() {
+        val huge = call("run_terminal_cmd", """{"command":"echo ${"x".repeat(200_000)}"}""")
+        assertThat(huge.detail!!.length).isLessThan(ToolOutput.MAX_DETAIL_CHARS + 64)
+        assertThat(huge.detail).startsWith("echo xxx")
+
+        val args = (1..5_000).joinToString(",") { """"k$it":"v$it"""" }
+        val mcp = call("mcp", """{"server":"linear","tool":"list_issues","args":{$args}}""")
+        assertThat(mcp.detail!!.length).isLessThan(ToolOutput.MAX_DETAIL_CHARS + 64)
+        assertThat(mcp.detail).startsWith("""{"k1":"v1",""")
+    }
+
+    @Test
     fun `an MCP call names its tool and server however the stream spells them`() {
         val sdk = call("mcp", """{"providerIdentifier":"user-Github","toolName":"list_pull_requests","args":{"owner":"o"}}""")
         assertThat(sdk.kind).isEqualTo(ToolKind.Mcp)
@@ -151,6 +164,20 @@ class ToolCallMapperTest {
         // A running call is never "attempted", and a result without an error is not one.
         assertThat(call("edit_file", """{"path":"a.kt"}""", status = "running").isError).isFalse()
         assertThat(call("read_file", """{"path":"a.kt"}""", """{"success":{"content":"","totalLines":0,"fileSize":0}}""").isError).isFalse()
+    }
+
+    /** The payloads are tool-specific and unstable: a client that always sends these fields still succeeded. */
+    @Test
+    fun `a rejection is what the field says, not that it is there`() {
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":true}""").isError).isTrue()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"permissionDenied":"true"}""").isError).isTrue()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":false}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"permissionDenied":null}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"rejected":{}}""").isError).isFalse()
+        // An error field the same: reported when it says something.
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":""}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":false}""").isError).isFalse()
+        assertThat(call("edit_file", """{"path":"a.kt"}""", """{"error":null}""").isError).isFalse()
     }
 
     @Test

@@ -1,6 +1,8 @@
 package com.cursorforandroid.ui.navigation
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,7 @@ import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -27,9 +30,11 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.UpdateState
 import com.cursorforandroid.notifications.NotificationPermissionPrompt
+import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.AgentsViewModel
 import com.cursorforandroid.ui.agents.Sidebar
@@ -41,12 +46,20 @@ import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
+
+/** The hosting activity through any number of wrappers (a themed context, a display context); null outside one. */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 /**
  * Same shell as the official app: the New Chat pane is home; the sidebar is a column on wide screens (a [SidebarRail],
@@ -64,8 +77,34 @@ fun AppNavHost(
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
 ) {
-    val activity = LocalContext.current as Activity
-    val wide = calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
+    // The window size class is measured from the activity; without one (a wrapped context) the phone layout stands in
+    // rather than the cast bringing the app down.
+    val activity = LocalContext.current.findActivity()
+    val wide = if (activity == null) false else calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
+    AppShell(
+        graph = graph,
+        user = user,
+        isDemo = isDemo,
+        wide = wide,
+        deepLinkAgentId = deepLinkAgentId,
+        onDeepLinkConsumed = onDeepLinkConsumed,
+        newChatRequested = newChatRequested,
+        onNewChatConsumed = onNewChatConsumed,
+    )
+}
+
+/** [AppNavHost] with the layout decision handed in, so a test can flip it without a configuration change. */
+@Composable
+internal fun AppShell(
+    graph: AppGraph,
+    user: CursorUser,
+    isDemo: Boolean,
+    wide: Boolean,
+    deepLinkAgentId: String?,
+    onDeepLinkConsumed: () -> Unit,
+    newChatRequested: Boolean = false,
+    onNewChatConsumed: () -> Unit = {},
+) {
     val stack = rememberSaveable(saver = NavStack.Saver) { NavStack(Screen.Home) }
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
@@ -135,12 +174,21 @@ fun AppNavHost(
     }
     // Coming back to the foreground (runs that finished meanwhile would otherwise stay "Working" until a manual
     // refresh), and signing in again: the view model is activity-scoped, so its init refresh ran for the previous
-    // session, whose list sign-out cleared. While on screen the list then keeps itself current, so chats started or
-    // finished elsewhere show up without a pull.
+    // session, whose list sign-out cleared.
     LifecycleStartEffect(Unit) {
         agentsViewModel.refreshIfStale()
-        val polling = agentsViewModel.pollWhileVisible()
-        onStopOrDispose { polling.cancel() }
+        onStopOrDispose { }
+    }
+    // A list surface is actually on screen: the New Chat pane's recent cards, the drawer pulled open, or the
+    // permanent sidebar of a wide window. Polling runs while one of them is, and not merely while the app is —
+    // a chat or Settings with the drawer shut has nothing the list would keep current.
+    val listOnScreen = topScreen == Screen.Home ||
+        drawerState.isOpen ||
+        drawerState.fraction > 0f ||
+        (wide && !sidebarCollapsed)
+    LifecycleStartEffect(listOnScreen) {
+        val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
+        onStopOrDispose { polling?.cancel() }
     }
     NotificationPermissionPrompt(graph = graph, hasRunningAgents = listState.runningCount > 0)
 
@@ -198,35 +246,58 @@ fun AppNavHost(
     }
     val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
 
-    @Composable
-    fun detailHost(modifier: Modifier) {
-        CursorNavHost(stack = stack, modifier = modifier) { screen ->
-            when (screen) {
-                Screen.Home -> HomeScreen(
-                    graph = graph,
-                    listState = listState,
-                    onOpenSidebar = openSidebar,
-                    onOpenAgent = rowActions.onOpen,
-                    onLaunchOpen = ::openAgent,
-                    rowActions = rowActions,
-                )
-                Screen.Settings -> SettingsScreen(graph = graph, user = user, isDemo = isDemo, onOpenSidebar = openSidebar, onBack = onBack)
-                is Screen.Agent -> ConversationScreen(
-                    graph = graph,
-                    agentId = screen.id,
-                    onOpenSidebar = if (wide) openSidebar else null,
-                    onBack = onBack,
-                )
+    // The pane is composed under the Row on a wide window and under the drawer on a narrow one, so a rotation that
+    // flips between them would tear the whole navigation stack down and build it again from nothing: its view models,
+    // its saved state, its scroll positions and whatever a screen has open — the full-screen image viewer above all.
+    // Moving the content instead keeps the subtree itself alive across the swap. What the screens read changes from
+    // one recomposition to the next, so it is passed in rather than captured when the movable content is created.
+    val detailHost = remember {
+        movableContentOf<Modifier, DetailPane> { modifier, pane ->
+            CursorNavHost(stack = stack, modifier = modifier, backEnabled = pane.backEnabled) { screen ->
+                when (screen) {
+                    Screen.Home -> HomeScreen(
+                        graph = graph,
+                        listState = pane.listState,
+                        onOpenSidebar = pane.openSidebar,
+                        onOpenAgent = pane.onOpenAgent,
+                        onLaunchOpen = ::openAgent,
+                        rowActions = pane.rowActions,
+                    )
+                    Screen.Settings -> SettingsScreen(
+                        graph = graph,
+                        user = pane.user,
+                        isDemo = pane.isDemo,
+                        onOpenSidebar = pane.openSidebar,
+                        onBack = pane.onBack,
+                    )
+                    is Screen.Agent -> ConversationScreen(
+                        graph = graph,
+                        agentId = screen.id,
+                        onOpenSidebar = if (pane.wide) pane.openSidebar else null,
+                        onBack = pane.onBack,
+                    )
+                }
             }
         }
     }
+    val pane = DetailPane(
+        listState = listState,
+        user = user,
+        isDemo = isDemo,
+        wide = wide,
+        openSidebar = openSidebar,
+        onBack = onBack,
+        onOpenAgent = rowActions.onOpen,
+        rowActions = rowActions,
+        backEnabled = !drawerState.isOpen,
+    )
 
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
             SidebarRail(expanded = !sidebarCollapsed) {
                 sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
             }
-            detailHost(Modifier.weight(1f).fillMaxHeight())
+            detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
         }
     } else {
         CursorDrawer(
@@ -236,7 +307,7 @@ fun AppNavHost(
             contentColor = colors.textPrimary,
             drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
         ) {
-            detailHost(Modifier.fillMaxSize())
+            detailHost(Modifier.fillMaxSize(), pane)
         }
     }
 
@@ -249,7 +320,7 @@ fun AppNavHost(
     val pendingShare = shareOffer
     when {
         shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput(), contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
             }
         }
@@ -272,3 +343,17 @@ fun AppNavHost(
         }
     }
 }
+
+/** What the detail pane's screens read from the shell around them; see the movable content in [AppShell]. */
+private class DetailPane(
+    val listState: AgentListUiState,
+    val user: CursorUser,
+    val isDemo: Boolean,
+    val wide: Boolean,
+    val openSidebar: (() -> Unit)?,
+    val onBack: (() -> Unit)?,
+    val onOpenAgent: (AgentRow) -> Unit,
+    val rowActions: AgentRowActions,
+    /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
+    val backEnabled: Boolean,
+)

@@ -54,7 +54,10 @@ class FinishWatchdog(
     private val runRecord: suspend (agentId: String, runId: String) -> RunDto?,
     /** Whether the service is up in this process, in which case it — not the watchdog — announces the finishes. */
     private val isServiceActive: () -> Boolean,
-    private val announce: (TrackedRun) -> Unit,
+    /** Whether a card posted now would appear at all; see [LiveNotifications.canShowLive]. */
+    private val canShowLive: () -> Boolean,
+    /** Posts the finished card, and says whether it went out. */
+    private val announce: (TrackedRun) -> Boolean,
     private val refreshTimeoutMs: Long = REFRESH_TIMEOUT_MS,
     private val staleAfterMs: Long = STALE_AFTER_MS,
     private val nowProvider: () -> Long = AppClock::now,
@@ -71,13 +74,17 @@ class FinishWatchdog(
         /** Nothing is running any more. */
         data object Done : Outcome
 
-        /** Signed out, or live notifications switched off: nothing to announce, now or later. */
+        /** Signed out, live notifications switched off, or nothing posted here can appear: nothing to announce. */
         data object Off : Outcome
     }
 
     suspend fun check(): Outcome {
         if (isServiceActive()) return Outcome.ServiceUp
-        if (!prefs.liveNotifications.first()) return Outcome.Off
+        // Checking costs a session restore, a list refresh and up to MAX_CHECKED record reads, on a persisted job
+        // that outlives the process. None of it is worth spending on a card the system would drop; the coordinator
+        // disarms on the same grounds, but only while the app is in front, so this is where a permission revoked in
+        // the background is noticed.
+        if (!prefs.liveNotifications.first() || !canShowLive()) return Outcome.Off
         session.restoreIfNeeded()
         if (session.state.value !is SessionState.SignedIn) return Outcome.Off
         // A fresh process knows the list only from disk, which is where the rows that were running last time are.
@@ -113,7 +120,11 @@ class FinishWatchdog(
             if (settled.runStatus == RunStatus.CANCELLED) continue
             val local = prefs.localAgentState.first()
             if (local.isSnoozed(was.id, nowProvider())) continue
-            if (announced.add("${was.id}/$runId")) announce(trackedRun(settled, runId, record))
+            // Claimed first so two checks cannot both announce it, and given back when the card did not go out:
+            // a finish the system dropped is one the next check should still be able to tell.
+            val key = "${was.id}/$runId"
+            if (!announced.add(key)) continue
+            if (!announce(trackedRun(settled, runId, record))) announced.remove(key)
         }
         val running = agents.state.value.agents.count { it.isRunning }
         return if (running > 0) Outcome.Watching(running) else Outcome.Done
@@ -200,6 +211,7 @@ class FinishWatchdogJobService : JobService() {
             prefs = graph.prefs,
             runRecord = { agentId, runId -> graph.session.current.api.getRun(agentId, runId) },
             isServiceActive = { LiveNotificationService.active.value },
+            canShowLive = { LiveNotifications.canShowLive(this) },
             announce = { run -> LiveNotifications.post(this, LiveNotificationRenderer.finishedId(run.agentId), LiveNotificationRenderer.finished(this, run)) },
         ).check()
     }

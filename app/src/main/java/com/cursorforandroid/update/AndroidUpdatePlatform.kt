@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.storage.StorageManager
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
@@ -51,7 +52,12 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
         val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
         val info = runCatching { packageManager.getPackageArchiveInfo(apk.path, flags) }.getOrNull() ?: return null
         val packageName = info.packageName ?: return null
-        return ApkInfo(packageName, PackageInfoCompat.getLongVersionCode(info), info.signingCertificates()?.asList().digests())
+        return ApkInfo(
+            packageName,
+            PackageInfoCompat.getLongVersionCode(info),
+            info.signingCertificates()?.asList().digests(),
+            info.versionName,
+        )
     }
 
     /**
@@ -60,7 +66,12 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
      * "Install unknown apps" is allowed the update applies quietly. When any of that does not hold, the system
      * answers the commit with `STATUS_PENDING_USER_ACTION` and a confirmation to show.
      */
-    override fun install(apk: File, release: AppRelease) {
+    override suspend fun install(
+        apk: File,
+        release: AppRelease,
+        canCommit: suspend () -> Boolean,
+        onSessionCreated: suspend (Int) -> Unit,
+    ): Boolean {
         val installer = packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(applicationId)
@@ -74,12 +85,24 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
                     apk.inputStream().use { it.copyTo(out) }
                     session.fsync(out)
                 }
+                // Copying a release into the session takes seconds, so the answer that allowed this install may no
+                // longer hold; asked again here, and once more with nothing left in between.
+                if (!canCommit()) return abandon(installer, sessionId)
+                onSessionCreated(sessionId)
+                if (!canCommit()) return abandon(installer, sessionId)
+                // The commit below can replace this process before anything after it runs.
                 session.commit(UpdateInstallReceiver.statusReceiver(context, sessionId, release).intentSender)
             }
         } catch (t: Throwable) {
             runCatching { installer.abandonSession(sessionId) }
             throw t
         }
+        return true
+    }
+
+    private fun abandon(installer: PackageInstaller, sessionId: Int): Boolean {
+        runCatching { installer.abandonSession(sessionId) }
+        return false
     }
 
     override fun abandonSessions() {
@@ -87,10 +110,13 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
         installer.mySessions.forEach { runCatching { installer.abandonSession(it.sessionId) } }
     }
 
+    override fun isSessionActive(sessionId: Int): Boolean =
+        runCatching { packageManager.packageInstaller.getSessionInfo(sessionId)?.isActive }.getOrNull() == true
+
     override fun startConfirmation(intent: Intent): Boolean =
         runCatching { context.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess
 
-    override fun notifyReadyToInstall(release: AppRelease) = UpdateNotifications.postReadyToInstall(context, release)
+    override fun notifyReadyToInstall(release: AppRelease): Boolean = UpdateNotifications.postReadyToInstall(context, release)
 
     override fun cancelNotifications() = UpdateNotifications.cancel(context)
 
@@ -105,6 +131,18 @@ open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
+
+/**
+ * Bytes an update download may count on landing in [dir], for
+ * [com.cursorforandroid.data.update.GitHubReleasesClient]. `getAllocatableBytes` rather than `File.getUsableSpace`
+ * because the download goes into the cache directory and the system will clear other apps' cached data to make room:
+ * the usable figure alone would refuse updates on devices that do have space for them. Falls back to the usable
+ * figure when the path is not on a volume the storage manager knows.
+ */
+internal fun allocatableBytes(context: Context, dir: File): Long = runCatching {
+    val storage = context.getSystemService(StorageManager::class.java) ?: return@runCatching dir.usableSpace
+    storage.getAllocatableBytes(storage.getUuidForPath(dir))
+}.getOrElse { dir.usableSpace }
 
 /** `PendingIntent` flags: `PackageInstaller` fills in the status extras, so the intent must stay mutable. */
 internal fun statusPendingIntentFlags(): Int =

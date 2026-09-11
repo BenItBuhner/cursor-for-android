@@ -66,6 +66,12 @@ import kotlinx.coroutines.launch
 fun CursorNavHost(
     stack: NavStack,
     modifier: Modifier = Modifier,
+    /**
+     * Whether back belongs to the stack at all. The sidebar drawer, which is drawn over the stack, takes the gesture
+     * while it is open: which handler was registered last is not something the caller can rely on, since the pane is
+     * moved between the drawer and the wide layout rather than composed afresh in each.
+     */
+    backEnabled: Boolean = true,
     content: @Composable (Screen) -> Unit,
 ) {
     val stores: NavEntryStores = viewModel()
@@ -81,6 +87,22 @@ fun CursorNavHost(
         onDispose { if (activity?.isChangingConfigurations != true) stores.clearAll() }
     }
 
+    // At most two entries are composed, so one dropped from the middle of the stack (resetTo over a deeper stack)
+    // never runs the disposal below: it left composition while it was still on the stack. Release those here, where
+    // the stack itself is what is being observed, and leave whatever is still on screen to finish animating out.
+    val entries = stack.entries.toList()
+    LaunchedEffect(entries) {
+        val live = entries.mapTo(HashSet()) { it.id }
+        live += scene.top.id
+        scene.under?.let { live += it.id }
+        stores.ids().forEach { id ->
+            if (id !in live) {
+                stores.clear(id)
+                stateHolder.removeState(id)
+            }
+        }
+    }
+
     val desired = stack.top
     LaunchedEffect(desired) {
         try {
@@ -90,7 +112,7 @@ fun CursorNavHost(
         }
     }
 
-    PredictiveBackHandler(enabled = stack.canPop) { events ->
+    PredictiveBackHandler(enabled = backEnabled && stack.canPop) { events ->
         val under = stack.underTop
         if (under == null) {
             // The stack emptied out in the frame before the callback's enabled state caught up. The gesture is ours all
@@ -201,6 +223,9 @@ class NavEntryStores : ViewModel() {
     private val stores = HashMap<String, EntryStoreOwner>()
 
     fun owner(id: String): ViewModelStoreOwner = stores.getOrPut(id) { EntryStoreOwner() }
+
+    /** The entries something is being held for, for the host to compare against the stack. */
+    fun ids(): Set<String> = stores.keys.toSet()
 
     fun clear(id: String) {
         stores.remove(id)?.viewModelStore?.clear()

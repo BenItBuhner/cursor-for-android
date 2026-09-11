@@ -4,9 +4,18 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
+import com.cursorforandroid.data.api.dto.CreateAgentResponseDto
+import com.cursorforandroid.data.demo.DemoBackendFactory
+import com.cursorforandroid.data.repo.CursorBackend
+import com.cursorforandroid.data.repo.LaunchIdempotency
+import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.PendingAttachment
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,6 +31,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The composer remembers what the last agent was launched with, opens the chat it launches before the server has
@@ -36,10 +46,24 @@ class NewAgentViewModelTest {
 
     private lateinit var graph: AppGraph
 
+    /** Every create the composer sent, as the API received it. */
+    private val created = CopyOnWriteArrayList<CreateAgentRequestDto>()
+
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
-        graph = AppGraph(ApplicationProvider.getApplicationContext<Context>())
+        // The demo's own catalogue and data, with the requests it is sent recorded.
+        val (demoApi, demoStreamer) = DemoBackendFactory.create()
+        val api = object : CursorApi by demoApi {
+            override suspend fun createAgent(body: CreateAgentRequestDto): CreateAgentResponseDto {
+                created += body
+                return demoApi.createAgent(body)
+            }
+        }
+        graph = AppGraph(
+            ApplicationProvider.getApplicationContext<Context>(),
+            demo = CursorBackend(api, demoStreamer, isDemo = true),
+        )
         runBlocking {
             graph.session.enterDemo()
             // Shared Robolectric prefs outlive a single test; a previous pick must not look like this install's default.
@@ -52,8 +76,8 @@ class NewAgentViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun loaded(): NewAgentViewModel {
-        val vm = NewAgentViewModel(graph)
+    private fun loaded(draftSaveDelayMs: Long = 400L): NewAgentViewModel {
+        val vm = NewAgentViewModel(graph, draftSaveDelayMs)
         runBlocking { withTimeout(10_000) { vm.state.first { it.models.isNotEmpty() && !it.isLoadingRepos && !it.isLoadingDevices } } }
         return vm
     }
@@ -71,9 +95,9 @@ class NewAgentViewModelTest {
     private fun accepted(agentId: String) = graph.agents.agent(agentId)?.latestRunId != null
 
     /** The composer derives its branch list from the agent list, which the sidebar normally loads. */
-    private fun loadedWithAgents(): NewAgentViewModel {
+    private fun loadedWithAgents(draftSaveDelayMs: Long = 400L): NewAgentViewModel {
         runBlocking { graph.agents.refresh() }
-        return loaded()
+        return loaded(draftSaveDelayMs)
     }
 
     private fun NewAgentViewModel.repo(shortName: String) = state.value.repositories.first { it.shortName == shortName }
@@ -369,6 +393,87 @@ class NewAgentViewModelTest {
         second.launchAndWait()
         // Blank means "the repository's default branch", not "never launched": it must not come back as "main".
         assertThat(loaded().state.value.ref).isEmpty()
+    }
+
+    @Test
+    fun `a never-launched composer starts from the repository's default branch, not from main`() {
+        val vm = loaded()
+        // Nothing here knows what a repository's default branch is called: /v1/repositories returns bare URLs.
+        assertThat(vm.state.value.ref).isEmpty()
+        vm.launchAndWait()
+        assertThat(created.single().repos?.single()?.startingRef).isNull()
+
+        // "main" chosen on purpose is a choice: it goes out as the starting ref and comes back next time.
+        val second = loaded()
+        second.setRef("main")
+        second.launchAndWait("Do the other thing")
+        assertThat(created.last().repos?.single()?.startingRef).isEqualTo("main")
+        assertThat(loaded().state.value.ref).isEqualTo("main")
+    }
+
+    /**
+     * The navigation stack survives being killed for memory but the composer's view model does not, so what was
+     * typed is on disk — images included, by reference — together with the nonce the draft was going to go out
+     * under. A draft sent after a restart is therefore the same chat the interrupted attempt would have created.
+     */
+    @Test
+    fun `a draft outlives the process that was typing it, images and chat id included`() = runBlocking {
+        val bytes = byteArrayOf(1, 2, 3, 4, 5)
+        val vm = loadedWithAgents(draftSaveDelayMs = 20)
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.setRef("cursor/cli-exploration-9c1d")
+        vm.selectModel(vm.state.value.models.first { it.id == "composer-2.5" }, null)
+        vm.setPlanMode(true)
+        vm.setAutoCreatePr(true)
+        vm.setPrompt("Half a thought")
+        vm.addAttachments(listOf(PendingAttachment("picked-1", PromptImage(bytes, "image/png"), null)))
+        awaitUntil { graph.drafts.read()?.images?.size == 1 }
+        val saved = graph.drafts.read()!!
+        assertThat(saved.prompt).isEqualTo("Half a thought")
+
+        // The process is killed; the composer opens again on the same disk.
+        val revived = loaded(draftSaveDelayMs = 20)
+        val state = withTimeout(10_000) { revived.state.first { it.prompt.isNotEmpty() && it.models.isNotEmpty() && it.selectedRepo != null } }
+        assertThat(state.attachments.single().image.bytes).isEqualTo(bytes)
+        assertThat(state.attachments.single().image.mimeType).isEqualTo("image/png")
+        assertThat(state.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(state.ref).isEqualTo("cursor/cli-exploration-9c1d")
+        assertThat(state.selectedModel?.id).isEqualTo("composer-2.5")
+        assertThat(state.planMode).isTrue()
+        assertThat(state.autoCreatePr).isTrue()
+
+        var opened: String? = null
+        revived.launch(onOpen = { opened = it })
+        awaitUntil { opened != null }
+        val expected = LaunchIdempotency.agentId(
+            LaunchRequest(
+                prompt = "Half a thought",
+                images = listOf(PromptImage(bytes, "image/png")),
+                repoUrl = state.selectedRepo!!.url,
+                ref = "cursor/cli-exploration-9c1d",
+                modelId = "composer-2.5",
+                modelParams = state.selectedVariant!!.params,
+                autoCreatePr = true,
+                planMode = true,
+            ),
+            saved.nonce,
+        )
+        assertThat(opened).isEqualTo(expected)
+    }
+
+    @Test
+    fun `a composer that has been emptied, or sent, leaves no draft behind`() = runBlocking {
+        val vm = loaded(draftSaveDelayMs = 20)
+        vm.setPrompt("Half a thought")
+        awaitUntil { graph.drafts.read() != null }
+        vm.setPrompt("")
+        awaitUntil { graph.drafts.read() == null }
+
+        vm.setPrompt("Half a thought")
+        awaitUntil { graph.drafts.read() != null }
+        vm.launchAndWait("Half a thought")
+        awaitUntil { graph.drafts.read() == null }
+        assertThat(loaded().state.value.prompt).isEmpty()
     }
 
     @Test

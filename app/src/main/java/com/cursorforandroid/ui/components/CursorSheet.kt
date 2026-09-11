@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -135,7 +134,7 @@ fun SheetHeader(
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     Row(
-        modifier.fillMaxWidth().height(SheetHeaderHeight).padding(start = if (leading != null) 8.dp else 20.dp, end = 10.dp),
+        modifier.fillMaxWidth().heightIn(min = SheetHeaderHeight).padding(start = if (leading != null) 8.dp else 20.dp, end = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (leading != null) {

@@ -7,7 +7,11 @@ import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +23,7 @@ import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 /** How reading one pull request ended. */
 sealed interface PullRequestLookup {
@@ -47,6 +52,9 @@ fun interface PullRequestSource {
  * refresh according to how likely they are to have moved: an open or draft PR every couple of minutes, a closed one
  * a few times a day, a merged one never. What the account would not answer is remembered too, so the same refused
  * request is not repeated at every refresh. The demo answers from its seeds and never touches the disk.
+ *
+ * Everything learned is written under the generation and the cache token the work started with, so an answer that
+ * comes back after a sign-out is neither shown nor saved for the account that has taken its place.
  */
 class PullRequestRepository(
     private val account: PullRequestSource,
@@ -71,13 +79,24 @@ class PullRequestRepository(
     /** The mode of the last pass; states learned for the demo never mix with a real account's. */
     @Volatile private var demoMode: Boolean? = null
 
+    /** Bumped by [reset]; a lookup that started for the previous account may not write what it learned afterwards. */
+    private val generation = AtomicInteger()
+
+    /** Where the passes run, so [reset] can cancel one that is half-way through without taking this scope with it. */
+    @Volatile private var work: CoroutineScope = workScope()
+
+    private fun workScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+
     /** Shows what was saved by the previous session. Idempotent, and a no-op for the demo. */
     suspend fun restoreFromCache() {
         if (cache == null || restored || isDemo()) return
+        val startedIn = generation.get()
         restoreMutex.withLock {
             if (restored) return
             restored = true
             val saved = cache.read() ?: return
+            if (generation.get() != startedIn) return
             // Anything learned in the meantime is newer than the disk.
             _statuses.update { current -> saved + current }
         }
@@ -89,7 +108,7 @@ class PullRequestRepository(
      * Runs in the repository's own scope, so a caller that goes away does not abandon a pass half-way through.
      */
     suspend fun refresh(urls: Collection<String>, eager: Boolean = false) {
-        scope.launch {
+        val pass = work.launch {
             // Best effort, like the legacy enrichment of the list: a pass that fails leaves the states as they were.
             try {
                 pass(urls, eager)
@@ -97,10 +116,18 @@ class PullRequestRepository(
                 throw e
             } catch (_: Throwable) {
             }
-        }.join()
+        }
+        try {
+            pass.join()
+        } catch (e: CancellationException) {
+            // A reset cancelled the pass; only the caller's own cancellation concerns the caller.
+            currentCoroutineContext().ensureActive()
+        }
     }
 
     private suspend fun pass(urls: Collection<String>, eager: Boolean) = passMutex.withLock {
+        val startedIn = generation.get()
+        val token = cache?.token() ?: 0
         val demo = isDemo()
         if (demoMode != demo) {
             if (demoMode != null) {
@@ -126,13 +153,16 @@ class PullRequestRepository(
                     // Offline, or the account service is down: the rest of the pass would end the same way.
                     PullRequestLookup.Failed -> return
                 }
+                // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
+                // account this repository no longer speaks for.
+                if (generation.get() != startedIn) return
                 // Each answer shows as it lands; the disk gets them together, once, below.
                 _statuses.update { it + (url to PullRequestStatus(state, AppClock.now(), live = true)) }
                 dirty = true
             }
             if (!demo && forgetStale(now)) dirty = true
         } finally {
-            if (dirty && !demo) cache?.write(_statuses.value)
+            if (dirty && !demo && generation.get() == startedIn) cache?.write(_statuses.value, token)
         }
     }
 
@@ -146,6 +176,8 @@ class PullRequestRepository(
      */
     suspend fun seed(states: Map<String, PullRequestState>) {
         if (states.isEmpty() || isDemo()) return
+        val startedIn = generation.get()
+        val token = cache?.token() ?: 0
         if (demoMode == true) {
             // Leaving the demo: its seeded states never mix with the account's.
             _statuses.value = emptyMap()
@@ -153,6 +185,7 @@ class PullRequestRepository(
         }
         demoMode = false
         restoreFromCache()
+        if (generation.get() != startedIn) return
         val at = AppClock.now()
         var changed = false
         val next = _statuses.updateAndGet { all ->
@@ -170,7 +203,7 @@ class PullRequestRepository(
             changed = adopted.isNotEmpty()
             if (changed) all + adopted else all
         }
-        if (changed) cache?.write(next)
+        if (changed && generation.get() == startedIn) cache?.write(next, token)
     }
 
     private fun PullRequestStatus?.isDue(now: Long, eager: Boolean): Boolean {
@@ -201,8 +234,15 @@ class PullRequestRepository(
         return dropped
     }
 
-    /** Forgets everything on sign-out; the disk copy goes with the other caches. */
+    /**
+     * Forgets everything on sign-out; the disk copy goes with the other caches. The pass in flight is cancelled and
+     * the generation it captured invalidated, so a lookup already on its way back cannot restore what it learned for
+     * the previous account into the state or the cache this has just cleared.
+     */
     fun reset() {
+        generation.incrementAndGet()
+        work.cancel()
+        work = workScope()
         _statuses.value = emptyMap()
         restored = false
         demoMode = null

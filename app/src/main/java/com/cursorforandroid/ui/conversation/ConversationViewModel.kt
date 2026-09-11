@@ -133,7 +133,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             var retries = 0
             while (catalog.pending && retries++ < PENDING_RETRIES) {
                 delay(SlashCommandRepository.PENDING_TTL_MS)
-                catalog = graph.slashCommands.load(commandScope(agent.value))
+                catalog = graph.slashCommands.load(commandScope(agent.value), force = true)
             }
         }
         viewModelScope.launch {
@@ -271,9 +271,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 if (it.toCursorError()?.code == "agent_busy") {
                     enqueue(text, images, options)
                 } else {
-                    draft.value = text
-                    graph.followUps.setDraftText(agentId, text)
-                    setAttachments(images)
+                    // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
+                    // prompt that did not go out only comes back to an empty one.
+                    if (draft.value.isBlank()) {
+                        draft.value = text
+                        graph.followUps.setDraftText(agentId, text)
+                    }
+                    if (attachments.value.isEmpty()) setAttachments(images)
                     toast.value = it.userMessage()
                 }
             }
@@ -322,8 +326,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun reload() = graph.conversations.reload(agentId)
 
-    /** The screen is back in the foreground: catch up on whatever the run did while the app was away. */
-    fun revalidate() = graph.conversations.revalidate(agentId)
+    /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
+    fun resume() = graph.conversations.resume(agentId)
+
+    /** The screen stopped. The run keeps going — the notification service is what watches it now. */
+    fun pause() = graph.conversations.pause(agentId)
 
     fun togglePinned() = viewModelScope.launch {
         // The pin is applied either way; the toast only says when the account has not been told yet.

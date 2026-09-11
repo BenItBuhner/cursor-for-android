@@ -44,9 +44,10 @@ class AttachmentStoreTest {
         encode(Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }, Bitmap.CompressFormat.JPEG, "image/jpeg")
 
     /** Random opaque pixels compress to nothing, so a modest bitmap becomes a multi-megabyte PNG. */
-    private fun noisyPng(width: Int, height: Int): PromptImage {
+    private fun noisyPng(width: Int, height: Int, tweak: (IntArray, Int, Int) -> Unit = { _, _, _ -> }): PromptImage {
         val random = Random(7)
         val pixels = IntArray(width * height) { random.nextInt() or 0xFF000000.toInt() }
+        tweak(pixels, width, height)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { setPixels(pixels, 0, width, 0, 0, width, height) }
         return encode(bitmap, Bitmap.CompressFormat.PNG, "image/png")
     }
@@ -117,6 +118,20 @@ class AttachmentStoreTest {
         assertThat(kept.path).endsWith(".jpg")
         assertThat(kept.width to kept.height).isEqualTo(1200 to 1200)
         assertThat(File(kept.path).length()).isLessThan(noisy.sizeBytes.toLong())
+    }
+
+    @Test
+    fun `transparency is found wherever it is, including the last pixel`() = runBlocking {
+        // Read in bands, the check has to reach the far corner of an otherwise opaque image to call it transparent.
+        val corner = noisyPng(1200, 1200) { pixels, width, height -> pixels[width * height - 1] = Color.TRANSPARENT }
+        val opaque = noisyPng(1200, 1200)
+        assertThat(corner.sizeBytes).isGreaterThan(2 * 1024 * 1024)
+
+        val kept = store.save("bc-1", "run-1", listOf(corner, opaque))
+
+        assertThat(kept[0].path).endsWith(".png")
+        assertThat(kept[1].path).endsWith(".jpg")
+        assertThat(dimensions(kept[0].path)).isEqualTo(1200 to 1200)
     }
 
     @Test

@@ -32,6 +32,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -47,6 +48,10 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Opening a chat: what renders before each network answer, what is written back, and what is warmed in advance. And
@@ -71,6 +76,8 @@ class ConversationRepositoryTest {
     private lateinit var hub: LiveRunHub
     private lateinit var cache: ConversationCache
     private lateinit var traces: TraceCache
+    private lateinit var traceDisk: JsonDiskCache
+    private val traceWrites = AtomicInteger()
 
     @Before
     fun setUp() {
@@ -83,7 +90,10 @@ class ConversationRepositoryTest {
         agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         cache = ConversationCache(disk.child("conversations"))
-        traces = TraceCache(disk.child("traces"))
+        // The cache stamps each write with the clock, so counting the stamps counts the writes to the trace file.
+        traceWrites.set(0)
+        traceDisk = JsonDiskCache(folder.newFolder("traces"), nowProvider = { traceWrites.incrementAndGet(); now }, dispatcher = Dispatchers.Unconfined)
+        traces = TraceCache(traceDisk)
         AppClock.nowMillis = { now }
     }
 
@@ -567,7 +577,8 @@ class ConversationRepositoryTest {
         val saved = traces.read("bc-1").getValue("run-2").items.filterIsInstance<ActivityGroup>().single().calls
         assertThat(saved.map { it.summary }).containsExactly("Composer.kt", "Composer.kt")
         assertThat(saved.map { it.detail }).containsExactly("app/src/Composer.kt", "app/src/Composer.kt")
-        assertThat(saved.all { it.args == null && it.result == null }).isTrue()
+        // An edit's row opens onto its path, so there is no output behind it to have been written out.
+        assertThat(saved.all { it.output == null }).isTrue()
 
         // A later process opens the chat: both traces come from disk and no stream is opened for either run.
         val next = repository()
@@ -763,6 +774,304 @@ class ConversationRepositoryTest {
     }
 
     @Test
+    fun `a run list that fails to load leaves the footers and the cached runs alone`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"), Triple("run-2", "Prompt 2", "Reply 2"))
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 2 }
+        awaitUntil { cache.read("bc-1")?.value?.runs?.size == 2 }
+
+        // The transcript answers, the run list times out: the turn footers and the run state must survive it.
+        api.failListRuns = CursorApiException(503, "unavailable", "Try again later.")
+        val before = api.conversationCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.conversationCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        val degraded = state(conversations)
+        assertThat(degraded.items.count { it is RunFooter }).isEqualTo(2)
+        assertThat(degraded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
+        assertThat(degraded.activeRunId).isEqualTo("run-2")
+        assertThat(degraded.runStatus).isEqualTo(RunStatus.FINISHED)
+        // And the degraded shape is never the one written back.
+        assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2").inOrder()
+    }
+
+    @Test
+    fun `a transcript that fails to load does not erase the cached one`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && prompts(conversations, "bc-1").size == 1 }
+        awaitUntil { cache.read("bc-1")?.value?.messages?.size == 2 }
+
+        api.failConversation = CursorApiException(500, "internal_error", "Server error.")
+        val before = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        val kept = state(conversations)
+        assertThat(kept.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1")
+        assertThat(kept.items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Reply 1")
+        assertThat(kept.transcriptUnavailable).isFalse()
+        assertThat(cache.read("bc-1")!!.value.messages.map { it.text }).containsExactly("Prompt 1", "Reply 1").inOrder()
+    }
+
+    /**
+     * The run list is paged until it covers the transcript's prompts. A transcript that failed has none to cover,
+     * so the first page must not pass for the whole list: the older turns would lose their footers, traces and
+     * images, on screen and on disk, and the ones left would pair with the wrong prompts.
+     */
+    @Test
+    fun `a transcript that fails does not cut a long chat's run list down to one page`() = runBlocking<Unit> {
+        val turns = Array(60) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        api.addFinishedAgent("bc-1", "Agent", *turns)
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 60 }
+        awaitUntil { cache.read("bc-1")?.value?.runs?.size == 60 }
+
+        api.failConversation = CursorApiException(500, "internal_error", "Server error.")
+        val before = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > before && !state(conversations).isLoading }
+        delay(100)
+
+        assertThat(state(conversations).items.count { it is RunFooter }).isEqualTo(60)
+        assertThat(state(conversations).items.filterIsInstance<UserMessage>()).hasSize(60)
+        assertThat(cache.read("bc-1")!!.value.runs).hasSize(60)
+    }
+
+    /**
+     * A streamed event may only cost what the live run itself costs. The turns that have settled keep the very
+     * items they had — so the derivation stays proportional to the run rather than to the whole chat, the list can
+     * reuse the rows, and the reply keeps one id while it grows, which is what a markdown parse cache keys on.
+     */
+    @Test
+    fun `a streamed event keeps the settled turns' items identical instead of rebuilding the timeline`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"), Triple("run-2", "Prompt 2", "Reply 2"))
+        agents.refresh()
+        expireStream("run-1")
+        expireStream("run-2")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 2 }
+
+        val runId = "run-followup-1"
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 3").isSuccess).isTrue()
+        awaitUntil { state(conversations).isStreaming }
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, RunStreamEvent.Assistant("Reply"))
+        awaitUntil { state(conversations).items.lastOrNull() is AssistantMessage }
+
+        val opening = state(conversations).items
+        val settled = opening.subList(0, opening.size - 1).toList()
+        assertThat(settled.map { it::class.simpleName }).containsExactly(
+            "UserMessage", "AssistantMessage", "RunFooter", "UserMessage", "AssistantMessage", "RunFooter", "UserMessage",
+        ).inOrder()
+        val replyIds = mutableSetOf((opening.last() as AssistantMessage).id)
+
+        repeat(16) { n ->
+            streamer.emit(runId, RunStreamEvent.Assistant(" $n"))
+            awaitUntil { (state(conversations).items.lastOrNull() as? AssistantMessage)?.markdown?.endsWith(" $n") == true }
+            val grown = state(conversations).items
+            assertThat(grown).hasSize(settled.size + 1)
+            settled.forEachIndexed { i, item -> assertThat(grown[i]).isSameInstanceAs(item) }
+            replyIds += (grown.last() as AssistantMessage).id
+        }
+
+        assertThat(replyIds).hasSize(1)
+        assertThat((state(conversations).items.last() as AssistantMessage).markdown)
+            .isEqualTo("Reply" + (0..15).joinToString("") { " $it" })
+    }
+
+    /**
+     * The transcript pairs its prompts with the runs by position, so a run list that stops at one page pairs the
+     * older turns with the wrong run and leaves the newest ones without one at all.
+     */
+    @Test
+    fun `a chat with more turns than one page of runs still pairs each turn with its own run`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+            Triple("run-3", "Prompt 3", "Reply 3"),
+        )
+        agents.refresh()
+        listOf("run-1", "run-2", "run-3").forEach { expireStream(it) }
+        api.pageSize = 2
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 3 }
+
+        val items = state(conversations).items
+        assertThat(items.map { it::class.simpleName }).containsExactly(
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+            "UserMessage", "AssistantMessage", "RunFooter",
+        ).inOrder()
+        assertThat(items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly("run-1", "run-2", "run-3").inOrder()
+        assertThat(items.filterIsInstance<RunFooter>().map { it.durationMs }).containsExactly(60_000L, 120_000L, 180_000L).inOrder()
+        // Two pages were enough to cover the three prompts; a third was not asked for.
+        assertThat(api.listRunsCalls).isEqualTo(2)
+    }
+
+    /**
+     * The traces of one agent share a file, and writing it is a read-merge-write of everything already in it. A
+     * chat with fifty finished runs must not turn its opening into fifty of those.
+     */
+    @Test
+    fun `opening a chat writes the traces it replayed in one pass over the file`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+            Triple("run-3", "Prompt 3", "Reply 3"),
+        )
+        agents.refresh()
+        listOf("run-1", "run-2", "run-3").forEach { runId ->
+            streamer.emit(runId, RunStreamEvent.Thinking("Looking at $runId."))
+            streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply", 1_000, null))
+            streamer.emit(runId, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { traces.read("bc-1").size == 3 }
+        delay(150)
+
+        assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
+        assertThat(traceWrites.get()).isEqualTo(1)
+    }
+
+    /**
+     * A replay pass keeps what it found even when the screen leaves half-way through, which it does in a
+     * NonCancellable block — so a sign-out that cancels it can see that write arrive once the wipe is over and the
+     * cache open again for the next account.
+     */
+    @Test
+    fun `a trace pass a sign-out cancelled does not write back into the wiped cache`() = runBlocking<Unit> {
+        api.addFinishedAgent(
+            "bc-1", "Agent",
+            Triple("run-1", "Prompt 1", "Reply 1"),
+            Triple("run-2", "Prompt 2", "Reply 2"),
+        )
+        agents.refresh()
+        // run-1's log reads to its end; run-2's never does, so the pass is still under way when the sign-out lands.
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        assertThat(traces.read("bc-1")).isEmpty()
+
+        traceDisk.invalidate()
+        traceDisk.clear()
+        conversations.resetAll()
+
+        delay(200)
+        assertThat(traces.read("bc-1")).isEmpty()
+    }
+
+    @Test
+    fun `a paused chat stops following and picks the run up again on resume`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        streamer.emit("run-1", RunStreamEvent.Assistant("Working"))
+        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+
+        // The screen stopped: nothing publishes into it, and the fragment the stream had gone with the follow.
+        conversations.pause("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        streamer.emit("run-1", RunStreamEvent.Assistant(" on it."))
+        delay(100)
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+
+        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch.
+        val fetches = api.conversationCalls
+        conversations.resume("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown)
+            .isEqualTo("Working on it.")
+    }
+
+    /**
+     * The screen can go away while the load is still waiting on the network. Nothing can see the chat by the time
+     * that answer arrives, so the load must not be the thing that opens a stream or replays a log behind it.
+     */
+    @Test
+    fun `a load that answers after the screen went away opens nothing until it is back`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        val startedAt = "2026-04-13T20:00:00.000Z"
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = startedAt, updatedAt = startedAt)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = startedAt)
+        agents.refresh()
+        // run-1's retained log reads to its end, so a replay pass would settle and write its trace.
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+
+        val conversations = repository()
+        api.conversationGate = CompletableDeferred()
+        conversations.attach("bc-1")
+        awaitUntil { api.conversationCalls == 1 }
+        conversations.pause("bc-1")
+        api.conversationGate!!.complete(Unit)
+
+        // The inputs the load fetched are still worth having; the stream and the replay are not started for them.
+        awaitUntil { conversations.state("bc-1").value.items.any { it is UserMessage } }
+        delay(150)
+        assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+        assertThat(streamer.connections).doesNotContain("run-2")
+        assertThat(traces.read("bc-1")).isEmpty()
+
+        // Back on screen: the run is followed and the replay the pause turned away runs now.
+        conversations.resume("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        awaitUntil { traces.read("bc-1").keys == setOf("run-1") }
+    }
+
+    @Test
+    fun `a run whose status this build cannot read does not leave the chat working`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+
+        // The record starts answering with a status this build has never heard of, and the stream is gone for good.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { !conversations.state("bc-1").value.isStreaming }
+        assertThat(conversations.state("bc-1").value.runStatus?.isActive).isNotEqualTo(true)
+
+        // A reopen reads the same record and still shows the turn as over, with a footer closing it.
+        now += 60_000
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        val reopened = conversations.state("bc-1").value
+        assertThat(reopened.isStreaming).isFalse()
+        assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+    }
+
+    @Test
     fun `the first screen to open a chat is reported once, and again after the last one leaves`() {
         val opened = mutableListOf<String>()
         val conversations = ConversationRepository(
@@ -789,5 +1098,75 @@ class ConversationRepositoryTest {
         conversations.detach("bc-1")
         conversations.forget("bc-1")
         awaitUntil { cache.read("bc-1") == null }
+    }
+
+    @Test
+    fun `forgetting a chat a screen still shows empties it in place and leaves its flow alive`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"))
+        agents.refresh()
+        val conversations = repository()
+        // The screen captures the flow once, at construction, exactly as the ViewModel does.
+        val screen = conversations.state("bc-1")
+        conversations.attach("bc-1")
+        awaitUntil { screen.value.items.isNotEmpty() }
+
+        conversations.forget("bc-1")
+        awaitUntil { screen.value.items.isEmpty() }
+        assertThat(screen.value.isLoading).isFalse()
+        awaitUntil { cache.read("bc-1") == null }
+
+        // Refresh still reaches the flow the screen is collecting rather than a replacement nobody watches.
+        conversations.reload("bc-1")
+        awaitUntil { screen.value.items.filterIsInstance<UserMessage>().map { it.text } == listOf("Prompt 1") }
+    }
+
+    /**
+     * [ConversationRepository.resume] and [ConversationRepository.revalidate] are called from the composition, and
+     * the entry's monitor is held by the load and the live stream while they rebuild the timeline. Neither may do
+     * its work on the caller's thread: with the entry's own thread occupied, both must still return, and what they
+     * asked for must happen once it is free.
+     */
+    @Test
+    fun `resuming and revalidating hand their work to the entry rather than doing it on the caller's thread`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val entryThread = Executors.newSingleThreadExecutor()
+        val conversations = ConversationRepository(
+            session, agents, prefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+            entryDispatcher = entryThread.asCoroutineDispatcher(),
+        )
+        try {
+            conversations.attach("bc-1")
+            awaitUntil { conversations.state("bc-1").value.isStreaming }
+            conversations.pause("bc-1")
+            awaitUntil { !conversations.state("bc-1").value.isStreaming }
+            streamer.reset("run-1")
+
+            // The entry's thread is taken, standing in for the load that holds its monitor across a timeline rebuild.
+            val busy = CountDownLatch(1)
+            val occupied = CountDownLatch(1)
+            entryThread.execute {
+                occupied.countDown()
+                busy.await()
+            }
+            assertThat(occupied.await(5, TimeUnit.SECONDS)).isTrue()
+
+            now += 60_000
+            val fetches = api.conversationCalls
+            // Both return while the entry is unreachable, and neither has done anything yet.
+            withTimeout(1_000) { launch(Dispatchers.Default) { conversations.resume("bc-1") }.join() }
+            withTimeout(1_000) { launch(Dispatchers.Default) { conversations.revalidate("bc-1") }.join() }
+            assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+            assertThat(api.conversationCalls).isEqualTo(fetches)
+
+            // Released: the run is followed again and the history is fetched, as the resume asked.
+            busy.countDown()
+            awaitUntil { conversations.state("bc-1").value.isStreaming }
+            awaitUntil { api.conversationCalls > fetches }
+        } finally {
+            entryThread.shutdownNow()
+        }
     }
 }

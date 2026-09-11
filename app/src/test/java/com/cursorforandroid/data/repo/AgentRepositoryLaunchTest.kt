@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.api.toCursorError
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.JsonDiskCache
@@ -25,6 +27,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -32,6 +36,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import retrofit2.HttpException
+import retrofit2.Response
 import java.net.SocketTimeoutException
 
 /**
@@ -214,6 +220,27 @@ class AgentRepositoryLaunchTest {
         api.failNextCreate = CursorApiException(409, "agent_id_conflict", "Exists.")
         val anonymous = agents.launch(request, null)
         assertThat((anonymous.exceptionOrNull() as CursorApiException).code).isEqualTo("agent_id_conflict")
+        assertThat(agents.state.value.agents).isEmpty()
+    }
+
+    @Test
+    fun `a refused launch reports what the server said, not the status line`() = runBlocking<Unit> {
+        val id = LaunchIdempotency.agentId(request, "nonce")
+        // A real HTTP failure, whose body Retrofit buffers once: the conflict check reads it before the composer does.
+        api.failNextCreate = HttpException(
+            Response.error<Unit>(
+                403,
+                """{"error":{"code":"usage_limit_exceeded","message":"You've used all of this month's agents."}}"""
+                    .toResponseBody("application/json".toMediaType()),
+            ),
+        )
+
+        val failed = agents.launch(request.copy(agentId = id), "Auto")
+
+        val error = failed.exceptionOrNull()!!
+        assertThat(error.toCursorError()!!.code).isEqualTo("usage_limit_exceeded")
+        // What ChatLauncher hands back to the composer as FailedLaunch.reason.
+        assertThat(error.userMessage()).isEqualTo("Your Cursor usage limit has been reached.")
         assertThat(agents.state.value.agents).isEmpty()
     }
 

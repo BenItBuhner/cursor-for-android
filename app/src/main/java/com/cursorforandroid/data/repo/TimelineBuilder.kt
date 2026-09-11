@@ -52,14 +52,16 @@ object TimelineBuilder {
                 return
             }
             items += replies
-            if (run != null && run.statusEnum().isTerminal) items += footer(run)
+            // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
+            // a footer says so, where none would leave the turn looking unfinished forever.
+            if (run != null && !run.statusEnum().isActive) items += footer(run)
         }
 
         fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
 
         if (messages.isEmpty()) {
             ordered.forEach { run -> closeRun(run, resultReply(run)) }
-            return items
+            return items.withUniqueIds()
         }
         var userIndex = -1
         var replies = mutableListOf<TimelineItem>()
@@ -88,9 +90,12 @@ object TimelineBuilder {
     /**
      * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
      * above come straight from the transcript and run records; a repeated server id gets a positional suffix.
+     *
+     * [taken] are the ids of a list this one is appended to, so appending a tail to a prefix already made unique
+     * gives the same result as making the whole thing unique in one pass.
      */
-    fun List<TimelineItem>.withUniqueIds(): List<TimelineItem> {
-        val seen = HashSet<String>(size)
+    fun List<TimelineItem>.withUniqueIds(taken: Set<String> = emptySet()): List<TimelineItem> {
+        val seen: HashSet<String> = if (taken.isEmpty()) HashSet(size) else HashSet(taken)
         return map { item ->
             var id = item.id
             var n = 1
@@ -117,7 +122,7 @@ object TimelineBuilder {
         branches = run.git.toBranches(),
     )
 
-    /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording. */
+    /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording and for what is not kept. */
     fun toolCall(dto: SseToolCallDto): ToolCall = ToolCallMapper.from(dto)
 
     /**
@@ -133,15 +138,35 @@ object TimelineBuilder {
     class LiveRun(
         private val runId: String,
         private val timed: Boolean = true,
+        /** When the run started, for the footer of a run whose outcome reports no duration of its own. */
+        private val startedAtMillis: Long? = null,
         private val nowProvider: () -> Long = AppClock::now,
     ) {
         private val items = mutableListOf<TimelineItem>()
         private var seq = 0
         private var thinkingStartedAt: Long? = null
-        private var assistantText = StringBuilder()
         private var streamError: RunStreamEvent.Error? = null
+        /**
+         * Text arrives a token at a time, so it accumulates in a builder and is written into its item only when
+         * something is about to read it. Materialising the reply on every delta copies the whole of it each time,
+         * which over a long answer costs more than everything else the run does put together.
+         */
+        private var assistantText = StringBuilder()
+        private var assistantIndex = -1
+        private var assistantPending = false
+        private var thinkingText = StringBuilder()
+        private var thinkingGroup = -1
+        private var thinkingPending = false
         /** The agent's to-do list as of its last update, so the next update can say what changed. */
         private var todos: List<ToolCallMapper.Todo>? = null
+
+        /**
+         * Where each tool call's group sits in [items]. A call is reported at least twice — running, then its
+         * outcome — and the update has to find the group it went into; without this, every one of those events walks
+         * the whole transcript, so streaming a run costs more the longer the chat already is. Items are only ever
+         * appended or replaced in place, so an index once taken stays right.
+         */
+        private val callGroup = HashMap<String, Int>()
         var status: RunStatus = RunStatus.RUNNING
             private set
         var finished: Boolean = false
@@ -150,9 +175,32 @@ object TimelineBuilder {
         var applied: Int = 0
             private set
 
-        fun snapshot(): List<TimelineItem> = items.toList()
+        fun snapshot(): List<TimelineItem> {
+            flushText()
+            return items.toList()
+        }
 
         private fun nextId(prefix: String) = "$prefix-$runId-${seq++}"
+
+        private fun flushText() {
+            flushAssistant()
+            flushThinking()
+        }
+
+        private fun flushAssistant() {
+            if (!assistantPending) return
+            assistantPending = false
+            val last = items.getOrNull(assistantIndex) as? AssistantMessage ?: return
+            items[assistantIndex] = last.copy(markdown = assistantText.toString())
+        }
+
+        private fun flushThinking() {
+            if (!thinkingPending) return
+            thinkingPending = false
+            val group = items.getOrNull(thinkingGroup) as? ActivityGroup ?: return
+            val last = group.steps.lastOrNull() as? ThinkingBlock ?: return
+            items[thinkingGroup] = group.copy(steps = group.steps.dropLast(1) + last.copy(text = thinkingText.toString()))
+        }
 
         fun apply(event: RunStreamEvent) {
             when (event) {
@@ -170,11 +218,13 @@ object TimelineBuilder {
             if (text.isEmpty()) return
             closeThinking()
             val last = items.lastOrNull()
-            if (last is AssistantMessage && last.isStreaming) {
+            if (last is AssistantMessage && last.isStreaming && assistantIndex == items.lastIndex) {
                 assistantText.append(text)
-                items[items.lastIndex] = last.copy(markdown = assistantText.toString())
+                assistantPending = true
             } else {
+                flushAssistant()
                 assistantText = StringBuilder(text)
+                assistantIndex = items.size
                 items += AssistantMessage(nextId("asst"), text, isStreaming = true)
             }
         }
@@ -188,9 +238,11 @@ object TimelineBuilder {
         }
 
         private fun addStep(step: ActivityStep) {
+            flushThinking()
             val idx = openGroupIndex()
             val group = items.getOrNull(idx) as? ActivityGroup
             if (group != null) items[idx] = group.copy(steps = group.steps + step) else items += ActivityGroup(nextId("activity"), listOf(step))
+            if (step is ToolCall) callGroup[step.callId] = items.lastIndex
         }
 
         private fun appendThinking(text: String) {
@@ -198,15 +250,19 @@ object TimelineBuilder {
             val idx = openGroupIndex()
             val group = items.getOrNull(idx) as? ActivityGroup
             val last = group?.steps?.lastOrNull()
-            if (group != null && last is ThinkingBlock && last.isStreaming) {
-                replaceLastStep(idx, group, last.copy(text = last.text + text))
+            if (group != null && last is ThinkingBlock && last.isStreaming && thinkingGroup == idx) {
+                thinkingText.append(text)
+                thinkingPending = true
             } else {
                 thinkingStartedAt = nowProvider()
                 addStep(ThinkingBlock(text, isStreaming = true))
+                thinkingText = StringBuilder(text)
+                thinkingGroup = openGroupIndex()
             }
         }
 
         private fun closeThinking() {
+            flushThinking()
             val idx = openGroupIndex()
             val group = items.getOrNull(idx) as? ActivityGroup ?: return
             val last = group.steps.lastOrNull() as? ThinkingBlock ?: return
@@ -222,7 +278,7 @@ object TimelineBuilder {
             val call = ToolCallMapper.from(dto, todos)
             if (!call.isRunning) ToolCallMapper.todos(dto)?.let { todos = it }
             // A status update lands on the call it reports on, wherever that is; a new call joins the open group.
-            val idx = items.indexOfLast { it is ActivityGroup && it.calls.any { c -> c.callId == call.callId } }
+            val idx = callGroup[call.callId] ?: -1
             if (idx >= 0) {
                 val group = items[idx] as ActivityGroup
                 items[idx] = group.copy(steps = group.steps.map { if (it is ToolCall && it.callId == call.callId) call else it })
@@ -238,6 +294,7 @@ object TimelineBuilder {
          */
         private fun closeStreaming(status: RunStatus) {
             closeThinking()
+            flushAssistant()
             val toolStatus = if (status == RunStatus.FINISHED) ToolCall.STATUS_COMPLETED else ToolCall.STATUS_INTERRUPTED
             items.replaceAll {
                 when (it) {
@@ -268,7 +325,10 @@ object TimelineBuilder {
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
-            items += RunFooter(nextId("run"), runId, event.status, event.durationMs, event.git.toBranches())
+            // The notification computes a duration from the run's own timestamps when the outcome carries none; the
+            // footer said nothing at all about the same run. Only for a run ending now: a replay's clock is not its.
+            val elapsed = startedAtMillis?.takeIf { timed && it > 0 }?.let { nowProvider() - it }?.takeIf { it > 0 }
+            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
         }
 
         /**

@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -46,6 +47,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -54,6 +56,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isFinite
@@ -62,6 +65,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -75,14 +80,64 @@ import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CancellationException
+import kotlin.math.sqrt
 
 /**
- * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to and the
- * loader that fetches them. Provided by the conversation screen; absent elsewhere.
+ * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to, the
+ * loader that fetches them, and where a tapped figure opens. Provided by the conversation screen; absent elsewhere.
  */
-class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader)
+class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader, val lightbox: LightboxState)
 
 val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null }
+
+/**
+ * Which figure is open full-screen, held by the screen rather than by the row it was tapped in. A row is disposed
+ * whenever the transcript scrolls it out of the lazy list, and the viewer must not go with it.
+ */
+class LightboxState internal constructor(
+    private val src: MutableState<String?>,
+    private val alt: MutableState<String?>,
+    private val preview: MutableState<ImageBitmap?>,
+) {
+    internal val openSrc: String? get() = src.value
+    internal val openAlt: String? get() = alt.value
+
+    /** The inline decode the row already had, shown until the screen-sized one lands. */
+    internal val seen: ImageBitmap? get() = preview.value
+
+    internal fun open(src: String, alt: String?, seen: ImageBitmap?) {
+        preview.value = seen
+        this.alt.value = alt
+        this.src.value = src
+    }
+
+    fun close() {
+        src.value = null
+        alt.value = null
+        preview.value = null
+    }
+}
+
+/** Survives rotation and the row it was opened from; a new agent starts with nothing open. */
+@Composable
+fun rememberLightboxState(agentId: String?): LightboxState {
+    // Only the source is worth saving: a bitmap is not state, and the screen-sized decode is fetched again anyway.
+    val src = rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val alt = rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val preview = remember(agentId) { mutableStateOf<ImageBitmap?>(null) }
+    return remember(src, alt, preview) { LightboxState(src, alt, preview) }
+}
+
+/**
+ * The full-screen viewer for whatever figure [state] has open. Composed by the screen so that scrolling the
+ * transcript, or a window that changes shape, cannot tear it down mid-view.
+ */
+@Composable
+fun FigureLightbox(state: LightboxState, loader: MediaLoader, agentId: String?) {
+    val src = state.openSrc ?: return
+    val ref = remember(src, agentId) { MediaRef.parse(src, agentId) }
+    ImageLightbox(ref, state.seen, state.openAlt, loader, onDismiss = state::close)
+}
 
 /** Figures never grow past this (or 45 % of the screen on short displays); taller media is fitted and opens full size on tap. */
 private val MediaMaxHeightCap = 420.dp
@@ -113,21 +168,22 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
         val maxHeight = mediaMaxHeight()
-        val density = LocalDensity.current
-        val maxWidthPx = with(density) { maxWidth.roundToPx() }
-        val maxHeightPx = with(density) { maxHeight.roundToPx() }
+        val request = inlineDecodeBounds()
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
-        var lightbox by rememberSaveable(ref.cacheKey) { mutableStateOf(false) }
 
-        LaunchedEffect(ref, attempt, maxWidthPx) {
+        // Keyed on the artifact, not on the measured width: the column is re-measured whenever the device is
+        // rotated (configChanges absorbs it) or the sidebar appears, and that must not throw the decoded bitmap
+        // away and blank the figure back to a placeholder. The decode is sized for the device instead, and the
+        // layout fits it to whatever width it ends up with.
+        LaunchedEffect(ref, attempt) {
             if (media == null || ref is MediaRef.Unavailable) {
                 state = ImageLoad.Failed("Image isn't available", retryable = false)
                 return@LaunchedEffect
             }
             state = ImageLoad.Loading
             state = try {
-                ImageLoad.Ready(media.loader.image(ref, maxWidthPx, maxHeightPx).asImageBitmap())
+                ImageLoad.Ready(media.loader.image(ref, request.width, request.height).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 ImageLoad.Failed("Couldn't load image", retryable = true)
@@ -142,23 +198,30 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
                 detail = alt ?: ref.label,
                 onRetry = if (s.retryable) ({ attempt++ }) else null,
             )
-            is ImageLoad.Ready -> {
-                val size = fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight)
-                Image(
-                    bitmap = s.bitmap,
-                    contentDescription = alt ?: "Image",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .size(size)
-                        .cursorSurface(Color.Transparent, colors.strokeSubtle, shape)
-                        .pressable({ lightbox = true }, shape, role = Role.Image),
-                )
-                if (lightbox && media != null) {
-                    ImageLightbox(ref, s.bitmap, alt, media.loader, onDismiss = { lightbox = false })
-                }
-            }
+            is ImageLoad.Ready -> Image(
+                bitmap = s.bitmap,
+                contentDescription = alt ?: "Image",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(fitted(s.bitmap.width, s.bitmap.height, maxWidth, maxHeight))
+                    .cursorSurface(Color.Transparent, colors.strokeSubtle, shape)
+                    .pressable({ media?.lightbox?.open(src, alt, s.bitmap) }, shape, role = Role.Image),
+            )
         }
     }
+}
+
+/**
+ * How large an inline figure is decoded. Bounded by the device's short edge rather than by the measured column:
+ * that is the widest a message column ever is in portrait, it does not change when the display is re-measured, and
+ * a figure is never laid out taller than [MediaMaxHeightCap] anyway.
+ */
+@Composable
+private fun inlineDecodeBounds(): IntSize {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val edge = minOf(configuration.screenWidthDp, configuration.screenHeightDp).dp
+    return with(density) { boundedPixels(edge.roundToPx(), MediaMaxHeightCap.roundToPx()) }
 }
 
 /** A `<video>` from a reply: poster frame with a play button; tapping swaps in an inline player. */
@@ -287,6 +350,46 @@ private fun MediaErrorRow(icon: ImageVector, title: String, detail: String?, onR
     }
 }
 
+/** ARGB_8888 at [MaxDecodePixels] is about 12 MB; no single figure may ask for more than that. */
+private const val MaxDecodePixels = 3_000_000L
+
+/** Shrinks a decode request, keeping its proportions, until it fits inside [MaxDecodePixels]. */
+internal fun boundedPixels(widthPx: Int, heightPx: Int): IntSize {
+    val width = widthPx.coerceAtLeast(1)
+    val height = heightPx.coerceAtLeast(1)
+    val pixels = width.toLong() * height
+    if (pixels <= MaxDecodePixels) return IntSize(width, height)
+    val scale = sqrt(MaxDecodePixels.toDouble() / pixels)
+    return IntSize((width * scale).toInt().coerceAtLeast(1), (height * scale).toInt().coerceAtLeast(1))
+}
+
+/**
+ * Where a zoomed figure may be dragged to. The image is drawn `Fit` inside [viewport], so only the part of it that
+ * hangs off an edge once scaled is pannable; beyond that the drag would pull the picture off the screen and leave
+ * the viewer showing nothing but black with no way back other than closing it.
+ */
+internal fun clampedPan(offset: Offset, scale: Float, imageWidth: Int, imageHeight: Int, viewport: IntSize): Offset {
+    if (viewport.width <= 0 || viewport.height <= 0) return Offset.Zero
+    val fit = minOf(
+        viewport.width.toFloat() / imageWidth.coerceAtLeast(1),
+        viewport.height.toFloat() / imageHeight.coerceAtLeast(1),
+    )
+    val maxX = (imageWidth * fit * scale - viewport.width) / 2f
+    val maxY = (imageHeight * fit * scale - viewport.height) / 2f
+    return Offset(withinOverhang(offset.x, maxX), withinOverhang(offset.y, maxY))
+}
+
+private fun withinOverhang(value: Float, max: Float): Float = if (max <= 0f) 0f else value.coerceIn(-max, max)
+
+/**
+ * Where a figure the user had dragged belongs once the viewport or the decoded bitmap changed under it: an in-place
+ * rotation, or the screen-sized decode replacing the inline one. An unzoomed figure is centred; anything else is
+ * pulled back inside the bounds the new dimensions allow.
+ */
+internal fun reclampedPan(offset: Offset, scale: Float, image: IntSize, viewport: IntSize): Offset =
+    if (scale <= 1f || image.width <= 0 || image.height <= 0) Offset.Zero
+    else clampedPan(offset, scale, image.width, image.height, viewport)
+
 /** One source pixel per dp, shrunk (never enlarged) to fit [maxWidth] x [maxHeight] while keeping the aspect ratio. */
 private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): DpSize {
     val w = widthPx.coerceAtLeast(1).toFloat()
@@ -297,46 +400,77 @@ private fun fitted(widthPx: Int, heightPx: Int, maxWidth: Dp, maxHeight: Dp): Dp
 
 /** Full-screen viewer: pinch to zoom, drag to pan, double-tap to toggle 2.5x, close button or back to leave. */
 @Composable
-private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap, alt: String?, loader: MediaLoader, onDismiss: () -> Unit) {
+private fun ImageLightbox(ref: MediaRef, initial: ImageBitmap?, alt: String?, loader: MediaLoader, onDismiss: () -> Unit) {
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     var bitmap by remember(ref) { mutableStateOf(initial) }
+    LaunchedEffect(initial) { if (bitmap == null) bitmap = initial }
     // The inline copy was decoded for the message width; fetch one sized for the screen (Coil serves it from cache
-    // when the inline decode already was full resolution).
-    LaunchedEffect(ref) {
-        val targetW = with(density) { (configuration.screenWidthDp * 2).dp.roundToPx() }
-        val targetH = with(density) { (configuration.screenHeightDp * 2).dp.roundToPx() }
-        runCatching { loader.image(ref, targetW, targetH) }.onSuccess { if (it.width >= bitmap.width) bitmap = it.asImageBitmap() }
+    // when the inline decode already was full resolution). Bounded by the screen rather than by twice its pixels:
+    // the old request was 2x the screen in each direction, four times its area, and a screenshot close to that
+    // shape decoded to tens of megabytes of software bitmap with nothing between it and OutOfMemoryError.
+    val target = with(density) {
+        boundedPixels(configuration.screenWidthDp.dp.roundToPx(), configuration.screenHeightDp.dp.roundToPx())
     }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    // Keyed on the target as well as the figure: the activity handles rotation itself, so this composable lives on
+    // through one with new screen dimensions, and a portrait-sized decode would stay on screen in landscape.
+    LaunchedEffect(ref, target) {
+        runCatching { loader.image(ref, target.width, target.height) }
+            .onSuccess { if (it.width >= (bitmap?.width ?: 0)) bitmap = it.asImageBitmap() }
+    }
+    var scale by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(1f) }
+    var offsetX by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
+    var offsetY by rememberSaveable(ref.cacheKey) { mutableFloatStateOf(0f) }
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    // A rotation, or the sharper decode landing, changes what the offsets were clamped against; without this they
+    // stay where the old bounds allowed until the next gesture, which for a zoomed image is off the screen.
+    val shownSize = bitmap?.let { IntSize(it.width, it.height) } ?: IntSize.Zero
+    LaunchedEffect(viewport, shownSize) {
+        val panned = reclampedPan(Offset(offsetX, offsetY), scale, shownSize, viewport)
+        offsetX = panned.x
+        offsetY = panned.y
+    }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 6f)
-        offset = if (scale == 1f) Offset.Zero else offset + panChange
+        val shown = bitmap
+        val panned = if (scale == 1f || shown == null) {
+            Offset.Zero
+        } else {
+            clampedPan(Offset(offsetX + panChange.x, offsetY + panChange.y), scale, shown.width, shown.height, viewport)
+        }
+        offsetX = panned.x
+        offsetY = panned.y
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = alt,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .transformable(transform)
-                    .pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = {
-                            scale = if (scale > 1f) 1f else 2.5f
-                            offset = Offset.Zero
-                        })
-                    }
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    },
-            )
+            val shown = bitmap
+            if (shown == null) {
+                SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.Center))
+            } else {
+                Image(
+                    bitmap = shown,
+                    contentDescription = alt,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { viewport = it }
+                        .transformable(transform)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onDoubleTap = {
+                                scale = if (scale > 1f) 1f else 2.5f
+                                offsetX = 0f
+                                offsetY = 0f
+                            })
+                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offsetX
+                            translationY = offsetY
+                        },
+                )
+            }
             Box(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape)) {
                 FlatIconButton(CursorIcons.Close, "Close", onClick = onDismiss, tint = Color.White)
             }
@@ -379,7 +513,19 @@ private fun InlineVideoPlayer(ref: MediaRef, loader: MediaLoader, onAspect: (Flo
 
     DisposableEffect(url) {
         val playbackUrl = url ?: return@DisposableEffect onDispose { }
-        val exo = ExoPlayer.Builder(context).build().apply {
+        // Audio focus so a recording ducks the user's music instead of playing over it and pauses when another app
+        // takes over, and becoming-noisy so unplugging headphones stops it rather than putting it on the speaker.
+        // The lifecycle pause below covers leaving the screen, not an interruption while it is still in front.
+        val exo = ExoPlayer.Builder(context)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build(),
+                true,
+            )
+            .setHandleAudioBecomingNoisy(true)
+            .build().apply {
             setMediaItem(MediaItem.fromUri(playbackUrl))
             addListener(object : Player.Listener {
                 override fun onPlayerError(e: PlaybackException) {

@@ -65,12 +65,17 @@ open class FakeCursorApi : CursorApi {
     /** Fails every cancel with this, for failures other than the run being over already. */
     @Volatile var failCancelWith: Throwable? = null
     var failCreateRun = false
+    /** When set, [delete] throws it, as the real API does for a chat the account may not delete. */
+    @Volatile var failDelete: Throwable? = null
+    val deleted = CopyOnWriteArrayList<String>()
     /** When set, [createRun] throws it once (after recording the request), like a server that stumbled on one request. */
     @Volatile var failNextCreateRun: Throwable? = null
     /** When set, every [createRun] throws it (after recording the request) for as long as it is set. */
     @Volatile var createRunError: Throwable? = null
     /** Answers every follow-up with `409 agent_busy`, the way the server does while a run is still going. */
     @Volatile var busyCreateRun = false
+    /** When set, [createRun] waits for it (after recording the request) before filing anything, like a slow server. */
+    @Volatile var createRunGate: CompletableDeferred<Unit>? = null
     /** When set, [createAgent] throws it once (after recording the request) instead of creating anything. */
     @Volatile var failNextCreate: Throwable? = null
     /** When set, [createAgent] waits for it (after recording the request) before creating anything, like a slow server. */
@@ -117,6 +122,13 @@ open class FakeCursorApi : CursorApi {
     @Volatile var getAgentGate: CompletableDeferred<Unit>? = null
     /** When set, [getAgent] throws it, like a server that is down. */
     @Volatile var failGetAgent: Throwable? = null
+
+    /** Holds every run-record read until it is completed; the call is counted before it waits. */
+    @Volatile var getRunGate: CompletableDeferred<Unit>? = null
+    /** When set, the model list waits for it before answering. */
+    @Volatile var modelsGate: CompletableDeferred<Unit>? = null
+    /** When set, the repository list waits for it before answering, like the slow endpoint it is. */
+    @Volatile var repositoriesGate: CompletableDeferred<Unit>? = null
     var modelItems: List<ModelListItemDto> = emptyList()
     var repositoryUrls: List<String> = emptyList()
     private val ids = AtomicInteger()
@@ -177,11 +189,13 @@ open class FakeCursorApi : CursorApi {
     }
     override suspend fun models(): ListModelsResponseDto {
         modelsCalls++
+        modelsGate?.await()
         failModels?.let { throw it }
         return ListModelsResponseDto(items = modelItems)
     }
     override suspend fun repositories(): ListRepositoriesResponseDto {
         repositoriesCalls++
+        repositoriesGate?.await()
         failRepositories?.let { throw it }
         return ListRepositoriesResponseDto(items = repositoryUrls.map(::RepositoryDto))
     }
@@ -245,17 +259,26 @@ open class FakeCursorApi : CursorApi {
         agents[id]?.let { agents[id] = it.copy(status = "IDLE") }
         return IdResponseDto(id)
     }
-    override suspend fun delete(id: String) = IdResponseDto(id)
+    override suspend fun delete(id: String): IdResponseDto {
+        failDelete?.let { throw it }
+        deleted += id
+        agents.remove(id)
+        return IdResponseDto(id)
+    }
     override suspend fun usage(id: String) = AgentUsageResponseDto()
     override suspend fun artifacts(id: String) = ListArtifactsResponseDto()
     open override suspend fun artifactUrl(id: String, path: String) = DownloadArtifactResponseDto(url = "")
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
-        return ListRunsResponseDto(items = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList })
+        // Oldest first and paged, like the endpoint: with fewer runs than the limit that is one page and no cursor.
+        val all = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList }.sortedWith(compareBy({ it.createdAt }, { it.id }))
+        val (items, next) = page(all, { it.id }, limit, cursor)
+        return ListRunsResponseDto(items = items, nextCursor = next)
     }
     override suspend fun getRun(id: String, runId: String): RunDto {
         getRunCalls++
+        getRunGate?.await()
         return runs[runId] ?: throw notFound()
     }
     /**
@@ -264,6 +287,7 @@ open class FakeCursorApi : CursorApi {
      */
     override suspend fun createRun(id: String, body: CreateRunRequestDto): CreateRunResponseDto {
         runRequests += body
+        createRunGate?.await()
         failNextCreateRun?.let { failNextCreateRun = null; throw it }
         createRunError?.let { throw it }
         if (failCreateRun) throw CursorApiException(503, "unavailable", "Try again later.")

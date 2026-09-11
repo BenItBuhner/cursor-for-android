@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.components
 
+import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -24,21 +25,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
-import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.placeCursorAtEnd
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +56,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.SlashCatalog
@@ -109,12 +115,24 @@ fun ComposerBox(
     onModel: (() -> Unit)? = null,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
-    focusRequester: FocusRequester? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
-    var focused by remember { mutableStateOf(false) }
+    // Saved alongside the text and the caret, so a composer rebuilt from instance state is left the way the reader
+    // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
+    // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
+    var focused by rememberSaveable(saver = FocusedSaver) { mutableStateOf(false) }
+    var wantsFocus by remember { mutableStateOf(focused) }
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    // Waits for the "+" menu to be gone: its popup holds focus while it is up, and a request made under it is lost.
+    LaunchedEffect(wantsFocus, menuOpen) {
+        if (wantsFocus && !menuOpen) {
+            wantsFocus = false
+            focus.requestFocus()
+        }
+    }
     var cancelOffered by remember { mutableStateOf(false) }
     LaunchedEffect(isSending, onCancelSend != null) {
         cancelOffered = false
@@ -125,13 +143,22 @@ fun ComposerBox(
     }
     val pad = CursorDimens.composerPadding
     val border by animateColorAsState(if (focused) colors.strokeStrong else colors.strokeSubtle, tween(160), label = "border")
-    // The field owns the selection. Text that changes from outside (a slash command from the "+" menu, the draft
-    // being cleared after send) is adopted with the cursor at the end, so typing continues after the command instead
-    // of wherever the cursor happened to be. TextFieldState is required for image paste; the value/onValueChange
-    // BasicTextField cannot advertise image MIME types to the IME or receive clipboard images.
-    val field = remember { TextFieldState(initialText = value, initialSelection = TextRange(value.length)) }
+    // The field owns the text and the selection; [value] only says what the owner last made of it. Comparing the two
+    // directly would mean rewriting the field whenever they disagree, which is wrong while they are meant to: the
+    // owner may answer onValueChange a frame late — a debounce, a trim, a length cap, a flow — and the rewrite would
+    // put the stale text back and throw the caret to the end mid-word. So what is tracked is the last value that came
+    // from outside, and only a change in that is adopted, with the cursor at the end so typing continues after a
+    // slash command from the "+" menu instead of wherever the cursor happened to be. Both are saved: the field keeps
+    // its caret across a rotation, and adopted keeps a restored draft from outliving the owner that cleared it.
+    // A TextFieldState field is also what makes image paste possible at all: a value/onValueChange BasicTextField
+    // cannot advertise image MIME types to the IME or receive clipboard images.
+    val field = rememberTextFieldState(initialText = value, initialSelection = TextRange(value.length))
+    var adopted by rememberSaveable { mutableStateOf(value) }
     SideEffect {
-        if (field.text.toString() != value) field.setTextAndPlaceCursorAtEnd(value)
+        if (value != adopted) {
+            adopted = value
+            if (value != field.text.toString()) field.setTextAndPlaceCursorAtEnd(value)
+        }
     }
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
@@ -181,6 +208,7 @@ fun ComposerBox(
             BasicTextField(
                 state = field,
                 textStyle = type.input.copy(color = colors.textPrimary),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 cursorBrush = SolidColor(colors.textPrimary),
                 lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = minLines, maxHeightInLines = 10),
                 inputTransformation = InputTransformation {
@@ -192,11 +220,13 @@ fun ComposerBox(
                     // One line of `input` at the default font scale, so the box does not shrink under a small system font.
                     .heightIn(min = 22.dp)
                     .then(if (receiveImages != null) Modifier.contentReceiver(receiveImages) else Modifier)
-                    .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                    .focusRequester(focus)
                     .onFocusChanged { focused = it.isFocused },
                 decorator = { inner ->
                     Box {
-                        if (value.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
+                        // back over the first character typed.
+                        if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         inner()
                     }
                 },
@@ -210,9 +240,10 @@ fun ComposerBox(
             )
         }
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth().height(CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
+        // The footer's designed height is a minimum: the model chip and anything [footerExtra] adds are sp-sized, and
+        // an exact constraint here would hold them to 28dp however much taller they asked to be.
+        Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.composerFooter), verticalAlignment = Alignment.CenterVertically) {
             if (plusMenu != null) {
-                var menuOpen by remember { mutableStateOf(false) }
                 // The Box is the anchor: the menu drops from the "+" like the web's popover.
                 Box {
                     ComposerRoundButton(CursorIcons.Plus, "Add to prompt", onClick = { menuOpen = true })
@@ -220,7 +251,12 @@ fun ComposerBox(
                         expanded = menuOpen,
                         onDismiss = { menuOpen = false },
                         prompt = value,
-                        onPromptChange = onValueChange,
+                        onPromptChange = { next ->
+                            onValueChange(next)
+                            // The command goes in at the front of the prompt and the caret follows the adopted text
+                            // to the end, which is where the reader carries on writing; the field is handed back with it.
+                            wantsFocus = true
+                        },
                         actions = plusMenu,
                         commands = commands,
                     )
@@ -265,13 +301,22 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 private const val CancelOfferDelayMillis = 2_500L
 
 /**
+ * Saves whether the field had focus, rather than the state it is held in. `rememberSaveable { mutableStateOf(…) }`
+ * puts the holder itself into the saved state, and the field is blurred as the composition comes down — after the
+ * save has been taken but while the holder is still the live one, which turns a focused composer into an unfocused
+ * one on the way back.
+ */
+private val FocusedSaver = Saver<MutableState<Boolean>, Boolean>(save = { it.value }, restore = { mutableStateOf(it) })
+
+/**
  * Advertises image MIME types to the IME and turns clipboard / keyboard / drag-and-drop images into attachments.
- * Bytes are read before [ReceiveContentListener.onReceive] returns so a clipboard URI grant cannot expire on the
- * hop to IO; decode and downscale happen off the main thread afterwards.
+ * [ReceiveContentListener.onReceive] is called on the main thread, so only the URIs are taken there; the bytes go
+ * through the photo picker's bounded reader on IO, which refuses an oversized selection before it is all in memory
+ * instead of freezing the composer for the length of a cloud provider's download.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun rememberImagePasteReceiver(
+internal fun rememberImagePasteReceiver(
     enabled: Boolean,
     currentCount: Int,
     onAddAttachments: ((List<PendingAttachment>) -> Unit)?,
@@ -287,34 +332,24 @@ private fun rememberImagePasteReceiver(
         ReceiveContentListener { transferableContent ->
             val resolver = context.contentResolver
             val clipIsImage = transferableContent.hasMediaType(MediaType.Image)
-            val payloads = mutableListOf<ImagePayload>()
-            var readFailed = false
+            val uris = mutableListOf<Uri>()
             val remaining = transferableContent.consume { item ->
                 val uri = item.uri ?: return@consume false
                 if (!isImageUri(resolver, uri, clipIsImage)) return@consume false
-                val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                if (bytes == null) {
-                    readFailed = true
-                    true
-                } else {
-                    payloads += ImagePayload(
-                        id = uri.toString() + "@" + System.nanoTime(),
-                        bytes = bytes,
-                        declaredMime = resolver.getType(uri),
-                    )
-                    true
-                }
+                uris += uri
+                true
             }
-            if (payloads.isEmpty()) {
-                if (readFailed || clipIsImage) {
+            if (uris.isEmpty()) {
+                if (clipIsImage) {
                     attachmentError.value?.invoke("Couldn't read the image.")
                     return@ReceiveContentListener remaining
                 }
                 return@ReceiveContentListener transferableContent
             }
             val add = addAttachments.value
+            val taken = count.value
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importPayloads(payloads, count.value) }
+                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, taken) }
                 if (imported.attachments.isNotEmpty()) add(imported.attachments)
                 imported.error?.let { attachmentError.value?.invoke(it) }
             }

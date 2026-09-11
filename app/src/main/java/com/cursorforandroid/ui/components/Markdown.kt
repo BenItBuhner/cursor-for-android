@@ -26,10 +26,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
@@ -49,6 +52,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.JetBrainsMono
 
 object InlineMarkdown {
+    private val schemeRegex = Regex("[a-zA-Z][a-zA-Z0-9+.-]*:")
     private val htmlAnchor = Regex(
         """<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>""",
         setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
@@ -83,7 +87,37 @@ object InlineMarkdown {
         "laquo" to "«", "raquo" to "»", "lsquo" to "‘", "rsquo" to "’", "ldquo" to "“", "rdquo" to "”", "check" to "✓",
     )
 
-    private class Palette(val base: TextStyle, codeColor: Color, codeBackground: Color, linkColor: Color, boldColor: Color) {
+    /** Schemes a phone reliably has a handler for. Everything else — `file:`, `javascript:`, a bare path — is text. */
+    private val openableSchemes = setOf("http", "https", "mailto", "tel", "sms")
+
+    /**
+     * The address `[text](target)` should open, or null when the target is not something the system can be asked
+     * for. Agents write repository-relative links constantly (`./diff.patch`, `app/src/main/…`), and a scheme-less
+     * URI resolves to no activity at all: those stay plain text instead of becoming a link that fails on tap.
+     */
+    fun linkTarget(raw: String): String? {
+        val target = raw.trim()
+        // Protocol-relative, as written in copied HTML.
+        if (target.startsWith("//")) return "https:$target"
+        val scheme = schemeRegex.matchAt(target, 0) ?: return null
+        if (scheme.value.dropLast(1).lowercase() !in openableSchemes) return null
+        return target.takeIf { it.length > scheme.value.length }
+    }
+
+    /**
+     * Opens a tapped link. `AndroidUriHandler` throws when no activity handles the address — a `mailto:` on a device
+     * with no mail app — and the throw would come out of the click handler on the main thread, so it is swallowed.
+     */
+    fun opener(uriHandler: UriHandler): (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
+
+    private class Palette(
+        val base: TextStyle,
+        codeColor: Color,
+        codeBackground: Color,
+        linkColor: Color,
+        boldColor: Color,
+        val onLinkClick: ((String) -> Unit)?,
+    ) {
         val code = SpanStyle(fontFamily = JetBrainsMono, color = codeColor, background = codeBackground, fontSize = base.fontSize * 0.9f)
         val bold = SpanStyle(fontWeight = FontWeight.SemiBold, color = boldColor)
         val italic = SpanStyle(fontStyle = FontStyle.Italic)
@@ -100,6 +134,9 @@ object InlineMarkdown {
      * (`<br>`, `<b>`, `<code>`, `<sub>`…) to an AnnotatedString. Nested markup is parsed (a bold wrap around a
      * `[label](url)` is still a link); inline code stays literal. Links use Cursor's textLink blue, matching the
      * desktop chat renderer.
+     *
+     * [onLinkClick] receives the target of a tapped link. Without one the annotation falls back to Compose's
+     * `LocalUriHandler`, which throws when nothing on the device handles the address.
      */
     fun render(
         text: String,
@@ -108,18 +145,29 @@ object InlineMarkdown {
         codeBackground: Color,
         linkColor: Color,
         boldColor: Color,
+        onLinkClick: ((String) -> Unit)? = null,
     ): AnnotatedString {
-        val palette = Palette(base, codeColor, codeBackground, linkColor, boldColor)
+        val palette = Palette(base, codeColor, codeBackground, linkColor, boldColor, onLinkClick)
         return buildAnnotatedString { appendInline(text, palette, insideLink = false) }
     }
 
     private fun AnnotatedString.Builder.appendInline(text: String, p: Palette, insideLink: Boolean) {
         var i = 0
         val n = text.length
+        // Where a search for an emphasis closer last ran off the end, per delimiter and run length: a later opener
+        // of the same kind cannot find one either, so a paragraph of unclosed `*item` is read once, not once per star.
+        val noCloserFrom = IntArray(8) { Int.MAX_VALUE }
         fun recurse(inner: String) = appendInline(inner, p, insideLink)
         fun emitLink(url: String, label: String) {
-            // Labels keep bold/code/italic, but not nested links — a bare-URL label would recurse forever.
-            withLink(LinkAnnotation.Url(url = url, styles = p.link)) {
+            // Labels keep bold/code/italic, but not nested links — a bare-URL label would recurse forever. An address
+            // nothing on the device can open is not made into a link at all (see [linkTarget]).
+            val target = linkTarget(url)
+            if (target == null) {
+                appendInline(label, p, insideLink = true)
+                return
+            }
+            val listener = p.onLinkClick?.let { click -> LinkInteractionListener { click(target) } }
+            withLink(LinkAnnotation.Url(url = target, styles = p.link, linkInteractionListener = listener)) {
                 appendInline(label, p, insideLink = true)
             }
         }
@@ -163,8 +211,13 @@ object InlineMarkdown {
                     var closed = false
                     if (canOpen) {
                         for (len in run downTo 1) {
+                            val memo = (if (c == '*') 0 else 4) + len
+                            if (i + len >= noCloserFrom[memo]) continue
                             val close = findEmphasisCloser(text, i + len, c, len)
-                            if (close < 0) continue
+                            if (close < 0) {
+                                noCloserFrom[memo] = i + len
+                                continue
+                            }
                             val inner = text.substring(i + len, close)
                             when (len) {
                                 3 -> withStyle(p.bold) { withStyle(p.italic) { recurse(inner) } }
@@ -441,24 +494,21 @@ fun MarkdownText(
     color: Color = CursorTheme.colors.textPrimary,
     streaming: Boolean = false,
 ) {
+    // Re-reads only the tail of a reply that is still arriving; see [IncrementalMarkdown].
+    val parser = remember { IncrementalMarkdown() }
     val blocks = remember(markdown, streaming) {
-        val source = if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown
-        keyed(MarkdownParser.parse(source))
+        parser.parse(if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown)
     }
     MarkdownBlocks(blocks, style, color, modifier, spacing = 10.dp)
 }
 
-/** Each block paired with how many equal blocks precede it, so a media block keeps its loaded state while text streams in above it. */
-private fun keyed(blocks: List<MdBlock>): List<Pair<MdBlock, Int>> {
-    val seen = HashMap<MdBlock, Int>()
-    return blocks.map { block -> block to (seen[block] ?: 0).also { seen[block] = it + 1 } }
-}
-
 @Composable
-private fun MarkdownBlocks(blocks: List<Pair<MdBlock, Int>>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp) {
+private fun MarkdownBlocks(blocks: List<MdBlock>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(spacing)) {
-        blocks.forEach { (block, occurrence) ->
-            key(block, occurrence) { MarkdownBlock(block, style, color) }
+        // Keyed on position rather than content: streaming only appends, so every block but the last keeps its
+        // index, and a code block being written keeps the horizontal scroll the reader put it at.
+        blocks.forEachIndexed { index, block ->
+            key(index, block::class) { MarkdownBlock(block, style, color) }
         }
     }
 }
@@ -481,9 +531,8 @@ private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color) {
         is MdBlock.Quote -> {
             // The bar is drawn into the content's start padding, so it spans exactly what is quoted.
             val bar = colors.strokeStrong
-            val inner = remember(block.blocks) { keyed(block.blocks) }
             MarkdownBlocks(
-                inner,
+                block.blocks,
                 style,
                 colors.textTertiary,
                 Modifier
@@ -518,8 +567,7 @@ private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color) {
                     block.ordered -> Text("${block.start + index}.", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                     else -> Text("•", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                 }
-                val inner = remember(item.blocks) { keyed(item.blocks) }
-                MarkdownBlocks(inner, style, color, Modifier.weight(1f), spacing = 6.dp)
+                MarkdownBlocks(item.blocks, style, color, Modifier.weight(1f), spacing = 6.dp)
             }
         }
     }
@@ -565,7 +613,9 @@ private fun TaskCheckbox(checked: Boolean, style: TextStyle, modifier: Modifier)
 @Composable
 internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    val annotated = remember(text, style, color) {
+    val uriHandler = LocalUriHandler.current
+    val openLink = remember(uriHandler) { InlineMarkdown.opener(uriHandler) }
+    val annotated = remember(text, style, color, openLink) {
         InlineMarkdown.render(
             text = text,
             base = style,
@@ -573,6 +623,7 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
             codeBackground = colors.fillMedium,
             linkColor = colors.link,
             boldColor = colors.textPrimary,
+            onLinkClick = openLink,
         )
     }
     Text(text = annotated, style = style.copy(color = color), modifier = modifier)

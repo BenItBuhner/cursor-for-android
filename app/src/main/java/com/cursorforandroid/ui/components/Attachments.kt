@@ -4,8 +4,10 @@ import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ContentResolver
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +37,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.UUID
 
 /** An image the user attached to the composer, kept with a small decoded thumbnail for the strip. */
@@ -80,28 +85,37 @@ fun rememberImagePicker(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(1)
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2))) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, currentCount) }
-            if (imported.attachments.isNotEmpty()) onPicked(imported.attachments)
-            imported.error?.let(onError)
+    // Remembered: the contract has no equals, and rememberLauncherForActivityResult keys its DisposableEffect on it,
+    // so a fresh one unregisters and re-registers the launcher on every recomposition — which is every SSE delta on
+    // the conversation screen.
+    val contract = remember(remaining) { ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2)) }
+    val singleContract = remember { ActivityResultContracts.PickVisualMedia() }
+    val deliver: (List<Uri>) -> Unit = { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, currentCount) }
+                if (imported.attachments.isNotEmpty()) onPicked(imported.attachments)
+                imported.error?.let(onError)
+            }
         }
     }
+    val launcher = rememberLauncherForActivityResult(contract) { uris -> deliver(uris) }
+    // PickMultipleVisualMedia insists on a limit above one, so with a single slot left it would let the user choose
+    // two and then discard one of them after the fact. The single-item picker asks for exactly what will fit.
+    val single = rememberLauncherForActivityResult(singleContract) { uri -> deliver(listOfNotNull(uri)) }
     return {
-        if (currentCount >= PromptImage.MAX_COUNT) onError(attachmentLimitMessage())
-        else launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        when {
+            currentCount >= PromptImage.MAX_COUNT -> onError(attachmentLimitMessage())
+            remaining == 1 -> single.launch(request)
+            else -> launcher.launch(request)
+        }
     }
 }
 
-/** Bytes read from a picker or the clipboard, still identified by the URI they came from. */
-internal class ImagePayload(
-    val id: String,
-    val bytes: ByteArray,
-    val declaredMime: String?,
-)
+private const val TooLargeMessage = "Images must be 15 MB or smaller."
 
-/** What [importAttachments] / [importPayloads] made of a batch: the ones that loaded, and the first reason the rest did not. */
+/** What [importAttachments] made of a batch: the ones that loaded, and the first reason the rest did not. */
 internal class AttachmentImport(
     val attachments: List<PendingAttachment>,
     val error: String? = null,
@@ -172,7 +186,7 @@ internal fun imageUrisFromClip(resolver: ContentResolver, clip: ClipData): List<
 }
 
 internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String): Result<PendingAttachment> = runCatching {
-    if (bytes.size > PromptImage.MAX_BYTES) error("Images must be 15 MB or smaller.")
+    if (bytes.size > PromptImage.MAX_BYTES) error(TooLargeMessage)
     val mime = resolveImageMime(declaredMime, bytes)
         ?: error("Unsupported image type (${declaredMime ?: "unknown"}). Use PNG, JPEG, GIF or WebP.")
     // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
@@ -186,8 +200,8 @@ internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String)
  */
 fun loadAttachment(context: Context, uri: Uri, fallbackMime: String? = null): Result<PendingAttachment> {
     val resolver = context.contentResolver
-    val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-        ?: return Result.failure(IllegalStateException("Couldn't read the image."))
+    val bytes = runCatching { readBoundedBytes(declaredSize(resolver, uri)) { resolver.openInputStream(uri) } }
+        .getOrElse { return Result.failure(IllegalStateException(it.message ?: "Couldn't read the image.")) }
     return loadAttachment(bytes, resolver.getType(uri) ?: fallbackMime, uri.toString() + "@" + System.nanoTime())
 }
 
@@ -199,19 +213,49 @@ internal fun importAttachments(context: Context, uris: List<Uri>, currentCount: 
     return attachmentImport(uris.take(remaining).map { loadAttachment(context, it) }, overflow)
 }
 
-internal fun importPayloads(payloads: List<ImagePayload>, currentCount: Int): AttachmentImport {
-    if (payloads.isEmpty()) return AttachmentImport(emptyList())
-    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(0)
-    if (remaining == 0) return AttachmentImport(emptyList(), attachmentLimitMessage())
-    val overflow = payloads.size > remaining
-    return attachmentImport(payloads.take(remaining).map { loadAttachment(it.bytes, it.declaredMime, it.id) }, overflow)
-}
-
 private fun attachmentImport(results: List<Result<PendingAttachment>>, overflow: Boolean): AttachmentImport {
     val ok = results.mapNotNull { it.getOrNull() }
     val error = results.firstOrNull { it.isFailure }?.exceptionOrNull()?.message
         ?: if (overflow) attachmentLimitMessage() else null
     return AttachmentImport(ok, error)
+}
+
+/** What the provider says the selection weighs, or -1 when it will not say — which a picker is free to do. */
+private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
+    val queried = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            val column = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getLong(column) else -1L
+        }
+    }.getOrNull() ?: -1L
+    if (queried >= 0) return queried
+    return runCatching { resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } }
+        .getOrNull()
+        ?.takeIf { it != AssetFileDescriptor.UNKNOWN_LENGTH } ?: -1L
+}
+
+/**
+ * The selection's bytes, refused before they are all in memory when there are more than [PromptImage.MAX_BYTES] of
+ * them. A declared size is only a hint — a provider may give none at all, and a document provider streaming a
+ * 100 MB original is allowed to be wrong about it — so the copy stops one byte past the cap regardless. Reading the
+ * whole stream first risked an OutOfMemoryError, which `runCatching` does not make safe, in place of the size
+ * message the user is promised.
+ */
+internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): ByteArray {
+    if (declaredSize > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    val stream = open() ?: error("Couldn't read the selected image.")
+    val limit = PromptImage.MAX_BYTES + 1
+    val out = ByteArrayOutputStream(if (declaredSize in 1..PromptImage.MAX_BYTES) declaredSize.toInt() else 256 * 1024)
+    stream.use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (out.size() < limit) {
+            val n = input.read(buffer, 0, minOf(buffer.size.toLong(), limit - out.size()).toInt())
+            if (n < 0) break
+            out.write(buffer, 0, n)
+        }
+    }
+    if (out.size() > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    return out.toByteArray()
 }
 
 /** 40px thumbnails with a remove control, shown above the composer text once something is attached. */

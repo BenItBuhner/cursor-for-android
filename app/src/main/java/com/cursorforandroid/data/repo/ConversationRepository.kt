@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.toCursorError
@@ -22,6 +24,7 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -47,6 +50,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -115,6 +119,8 @@ class ConversationRepository(
     private val prefetchLimit: Int = PREFETCH_LIMIT,
     private val prefetchSpacingMs: Long = PREFETCH_SPACING_MS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** Where one agent's own work runs; a seam for tests that need to hold it up and see what the caller did meanwhile. */
+    private val entryDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -129,12 +135,33 @@ class ConversationRepository(
     /** What the stream of the run being followed has told so far. */
     private data class LiveTrace(val runId: String, val items: List<TimelineItem>)
 
+    /** A run list fetched page by page, and whether the paging ran out of cursor rather than out of budget. */
+    private class FetchedRuns(val items: List<RunDto>, val exhausted: Boolean)
+
+    /**
+     * A built timeline with nothing yet from the run being followed, and the inputs it was built from. Every
+     * mutation replaces the collection it changes, so identity is all it takes to tell whether the build still
+     * stands — which it does for the whole of a run, however many events it streams.
+     */
+    private class Prefix(entry: Entry, private val liveRunId: String, val items: List<TimelineItem>) {
+        private val messages = entry.messages
+        private val runs = entry.runs
+        private val local = entry.local
+        private val traces = entry.traces
+        private val promptImages = entry.promptImages
+        val ids: Set<String> = items.mapTo(HashSet(items.size)) { it.id }
+
+        fun matches(entry: Entry, runId: String): Boolean = liveRunId == runId &&
+            messages === entry.messages && runs === entry.runs && local === entry.local &&
+            traces === entry.traces && promptImages === entry.promptImages
+    }
+
     /**
      * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
      * or a live snapshot that arrives all rebuild the same way. Mutations happen under the entry's monitor.
      */
     private inner class Entry(val agentId: String) {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val scope = CoroutineScope(SupervisorJob() + entryDispatcher)
         val state = MutableStateFlow(ConversationState(agentId))
         /** The legacy transcript as the server returned it (or as the disk remembered it). */
         var messages: List<V0ConversationMessageDto> = emptyList()
@@ -175,7 +202,25 @@ class ConversationRepository(
         var launch: Deferred<Result<Launched>>? = null
         @Volatile var launching = false
         var attached = 0
+        /**
+         * Nothing can see the chat although a screen is still attached (see [pause]). A load that was already in
+         * flight when this went up finishes — its inputs are worth having — but must not open a stream or replay a
+         * log behind a screen nobody is looking at.
+         */
+        @Volatile var paused = false
+        /**
+         * Bumped by every [pause] and [detach]. [resume] and [revalidate] hand their work to [scope] rather than
+         * doing it under the entry's monitor, so the screen can have stopped again by the time it runs; the count
+         * taken when they were called is what tells them the entry has moved on since.
+         */
+        @Volatile var stops = 0
+        /** The terminal runs whose traces [pause] turned away, replayed by [resume]. */
+        var deferredTraceRuns: List<RunDto> = emptyList()
         var lastUsedAt = AppClock.now()
+        private var builtPrefix: Prefix? = null
+        private var orderedFromRuns: List<RunDto>? = null
+        private var orderedFromLocal: List<LocalPrompt>? = null
+        private var orderedRuns: List<RunDto> = emptyList()
 
         val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty()
         val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && !launching
@@ -196,9 +241,20 @@ class ConversationRepository(
          * the list that renders these.
          */
         fun items(): List<TimelineItem> {
-            val shown = shownTraces()
+            val current = live
             val ordered = allRuns()
             val covered = coveredCount()
+            // A followed run is always the newest one there is, so it sorts last and everything the transcript
+            // renders before it is untouched by an event. That part is built once and kept until an input actually
+            // changes; a streamed event only re-appends the run's own items.
+            val tail = current?.takeIf { ordered.size > covered && ordered.lastOrNull()?.id == it.runId && it.runId !in traces }
+                ?: return build(shownTraces(), ordered, covered)
+            val prefix = builtPrefix?.takeIf { it.matches(this, tail.runId) } ?: buildPrefix(tail.runId, ordered, covered)
+            return prefix.items + tail.items.withUniqueIds(prefix.ids)
+        }
+
+        /** The timeline with [shown] standing in for the runs that have a trace. */
+        private fun build(shown: Map<String, List<TimelineItem>>, ordered: List<RunDto>, covered: Int): List<TimelineItem> {
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
             val items = TimelineBuilder.fromHistory(messages, ordered.take(covered), shown, promptImages, pending).toMutableList()
@@ -209,6 +265,12 @@ class ConversationRepository(
             return items.withUniqueIds()
         }
 
+        /** Everything but the followed run's own items: an empty trace makes the builder contribute nothing for it. */
+        private fun buildPrefix(liveRunId: String, ordered: List<RunDto>, covered: Int): Prefix {
+            val items = build(traces + (liveRunId to emptyList()), ordered, covered)
+            return Prefix(this, liveRunId, items).also { builtPrefix = it }
+        }
+
         /** The complete traces, plus the story so far of the followed run unless it already has a complete one. */
         private fun shownTraces(): Map<String, List<TimelineItem>> {
             val current = live?.takeUnless { it.runId in traces } ?: return traces
@@ -217,8 +279,12 @@ class ConversationRepository(
 
         /** Every run known, oldest first: the server's, then the runs of prompts sent from here that its list lacks — placeholders included. */
         fun allRuns(): List<RunDto> {
+            if (orderedFromRuns === runs && orderedFromLocal === local) return orderedRuns
             val listed = runs.mapTo(HashSet()) { it.id }
-            return (runs + local.map { it.run }.filter { it.id !in listed }).sortedBy { parseIsoMillis(it.createdAt) }
+            orderedRuns = (runs + local.map { it.run }.filter { it.id !in listed }).sortedBy { parseIsoMillis(it.createdAt) }
+            orderedFromRuns = runs
+            orderedFromLocal = local
+            return orderedRuns
         }
 
         /** How many runs, oldest first, the server's transcript has a prompt for. */
@@ -304,7 +370,10 @@ class ConversationRepository(
         val e = entry(agentId)
         val firstScreen = synchronized(e) {
             e.attached++
+            // A screen attaching can see the chat, whatever the last one that left had done.
+            e.paused = false
             if (e.attached == 1 && !e.launching) {
+                e.deferredTraceRuns = emptyList()
                 e.loadJob?.cancel()
                 e.loadJob = e.scope.launch {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
@@ -326,6 +395,9 @@ class ConversationRepository(
         synchronized(e) {
             e.attached = (e.attached - 1).coerceAtLeast(0)
             if (e.attached == 0) {
+                e.stops++
+                e.paused = false
+                e.deferredTraceRuns = emptyList()
                 e.loadJob?.cancel()
                 e.loadJob = null
                 e.traceJob?.cancel()
@@ -335,14 +407,109 @@ class ConversationRepository(
         }
     }
 
-    /** Drops everything known about an agent, on disk too; used when it is deleted. */
+    /**
+     * Drops everything known about an agent, on disk too; used when it is deleted. A screen still showing it keeps
+     * its entry, emptied in place: it captured that state flow once, so dropping the entry would leave it collecting
+     * a flow nothing can ever publish to again — and a reload would silently build a second one.
+     */
     fun forget(agentId: String) {
-        synchronized(entries) { entries.remove(agentId) }?.scope?.cancel()
+        val attached = synchronized(entries) {
+            val e = entries[agentId] ?: return@synchronized null
+            if (e.attached > 0) return@synchronized e
+            entries.remove(agentId)
+            e.scope.cancel()
+            null
+        }
+        attached?.emptyInPlace()
         diskIndex[agentId] = ABSENT
         scope.launch {
             cache?.remove(agentId)
             traceCache?.remove(agentId)
         }
+    }
+
+    private fun Entry.emptyInPlace() {
+        streamJob?.cancel()
+        traceJob?.cancel()
+        loadJob?.cancel()
+        publish(
+            mutate = {
+                messages = emptyList()
+                runs = emptyList()
+                local = emptyList()
+                traces = emptyMap()
+                promptImages = emptyMap()
+                live = null
+                streamJob = null
+                traceJob = null
+                loadJob = null
+                paused = false
+                deferredTraceRuns = emptyList()
+                recordedFinishes.clear()
+                tracesRestored = false
+                transcriptUnavailable = false
+                fetched = false
+                fetchedAt = 0L
+                inputsUpdatedAt = 0L
+            },
+            transform = { ConversationState(agentId, isLoading = false) },
+        )
+    }
+
+    /**
+     * The screen stopped without its ViewModel going with it — the app was backgrounded, or a destination that keeps
+     * it alive came up. Nothing can see the chat, so the stream and the replays stop; the reference count is
+     * untouched, so this is not a [detach] and the entry stays warm for [resume].
+     *
+     * The run itself carries on: the hub keeps the shared stream alive for the live-notification monitor and for its
+     * release grace, so a quick app switch tears nothing down, and a longer absence is caught up by [resume].
+     */
+    fun pause(agentId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        synchronized(e) {
+            if (e.attached == 0) return
+            e.stops++
+            e.paused = true
+            e.traceJob?.cancel()
+            e.traceJob = null
+            e.stopFollowing()
+        }
+    }
+
+    /**
+     * The screen is back. A run still going is followed again straight away rather than waiting on [revalidate],
+     * which skips the fetch when the history was read moments ago — after a short absence that would otherwise
+     * leave the chat paused with a run streaming behind it.
+     *
+     * The caller is the composition, so nothing of this is done on its thread: the entry's monitor is held by the
+     * background load and the live stream while they rebuild the timeline, and waiting for it there is a stall on
+     * the main thread. What the screen coming back means for the entry is settled on [Entry.scope] instead.
+     */
+    fun resume(agentId: String) = offload(agentId) { e -> resumeNow(e) }
+
+    private fun resumeNow(e: Entry) {
+        val (run, deferred) = synchronized(e) {
+            if (e.attached == 0) return
+            e.paused = false
+            val deferred = e.deferredTraceRuns
+            e.deferredTraceRuns = emptyList()
+            val active = if (e.streamJob != null || e.launching) null else e.latestRun()?.takeIf { it.statusEnum().isActive }
+            active to deferred
+        }
+        if (run != null) startStreaming(e, e.agentId, run)
+        if (deferred.isNotEmpty()) loadTraces(e, e.agentId, deferred)
+        revalidateNow(e)
+    }
+
+    /**
+     * Runs [work] for the agent's entry on that entry's own scope. The count of stops taken here is checked again
+     * before [work] runs: the screen can have stopped, or the last one left, while this was waiting to be dispatched,
+     * and the entry must not be brought back up behind it.
+     */
+    private fun offload(agentId: String, work: (Entry) -> Unit) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        val seen = e.stops
+        e.scope.launch { if (e.stops == seen) work(e) }
     }
 
     fun reload(agentId: String) {
@@ -357,15 +524,17 @@ class ConversationRepository(
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
-     * moments ago (the first open), is left alone.
+     * moments ago (the first open), is left alone. Called from the composition, so it is settled off that thread for
+     * the same reason [resume] is.
      */
-    fun revalidate(agentId: String) {
-        val e = synchronized(entries) { entries[agentId] } ?: return
+    fun revalidate(agentId: String) = offload(agentId) { e -> revalidateNow(e) }
+
+    private fun revalidateNow(e: Entry) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.loadJob?.isActive == true || e.launching) return
             if (AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
-            e.loadJob = e.scope.launch { load(e, agentId) }
+            e.loadJob = e.scope.launch { load(e, e.agentId) }
         }
     }
 
@@ -385,32 +554,48 @@ class ConversationRepository(
 
     private suspend fun load(e: Entry, agentId: String) {
         val backend = session.current
+        val tokens = cacheTokens()
         val api = backend.api
         if (!e.hasInputs) restoreFromCache(e, agentId)
         e.state.update { it.copy(isLoading = true, error = null) }
         try {
             coroutineScope {
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
-                val runPage = async { runCatching { api.listRuns(agentId, limit = 50).items } }
+                val runPage = async { runCatching { api.listRuns(agentId, limit = RUN_PAGE_SIZE) } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 val convResult = conversation.await()
-                val runList = runPage.await().getOrElse { emptyList() }
+                val prompts = convResult.getOrNull()?.messages?.count { it.type == USER_MESSAGE } ?: 0
+                val known = synchronized(e) { e.runs.size }
+                // A transcript that failed has no prompts to pair, so paging would stop at the first page and that
+                // page would then pass for the whole list. Page at least as deep as what is already shown instead.
+                val target = if (convResult.isSuccess) prompts else maxOf(prompts, known)
+                val runResult = runPage.await().mapCatching { runsCovering(api, agentId, it, target) }
                 val onDevice = stored.await()
-                val transcript = convResult.getOrNull()?.messages ?: emptyList()
-                val transcriptUnavailable = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
-                val fetched = convResult.isSuccess || runList.isNotEmpty()
+                // Each endpoint answers for itself: what one of them could not read is left as it was rather than
+                // reported as absent, so a timeout on the run list does not strip the footers and traces off an
+                // otherwise healthy transcript — nor write that shape to disk.
+                val transcript = convResult.getOrNull()?.messages
+                // Without the transcript the runs replace the list only when the fetch is provably at least as
+                // complete as it: shorter would strip the footers, traces and images off the older turns, on screen
+                // and on disk, and pair what is left with the wrong prompts.
+                val fetchedRuns = runResult.getOrNull()?.takeIf { convResult.isSuccess || it.exhausted || it.items.size >= known }?.items
+                val transcriptFailed = convResult.isFailure && convResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
+                val fetched = convResult.isSuccess || fetchedRuns?.isNotEmpty() == true
                 // The newest run once the inputs are merged: usually the server's, but a follow-up sent from here
                 // that the list has not caught up with yet is newer, and a reload must keep following it rather
                 // than declare the previous run the active one.
                 var latest: RunDto? = null
+                var merged: List<RunDto> = emptyList()
+                var unavailable = false
                 if (fetched) {
                     // The traces are kept: they are complete, and a finished run's log does not change. Local prompts
                     // hand over to the server once it reports them in full.
                     e.publish(
                         mutate = {
-                            messages = transcript
-                            runs = runList
-                            this.transcriptUnavailable = transcriptUnavailable && transcript.isEmpty()
+                            transcript?.let { messages = it }
+                            fetchedRuns?.let { runs = it }
+                            unavailable = transcriptFailed && messages.isEmpty()
+                            this.transcriptUnavailable = unavailable
                             inputsUpdatedAt = agents.agent(agentId)?.updatedAtMillis ?: 0L
                             pruneLocal()
                             // The disk knows every filed prompt; only prompts still in flight exist solely in memory.
@@ -418,6 +603,7 @@ class ConversationRepository(
                             this.fetched = true
                             fetchedAt = AppClock.now()
                             latest = latestRun()
+                            merged = runs
                         },
                         transform = {
                             copy(
@@ -427,7 +613,7 @@ class ConversationRepository(
                                 runStatus = latest?.statusEnum(),
                                 isStreaming = false,
                                 isReconnecting = false,
-                                transcriptUnavailable = transcriptUnavailable && transcript.isEmpty(),
+                                transcriptUnavailable = unavailable,
                             )
                         },
                     )
@@ -441,7 +627,7 @@ class ConversationRepository(
                 launch { agents.loadDetail(agentId, latest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
-                    persist(e, backend)
+                    persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
                         startStreaming(e, agentId, active)
@@ -450,15 +636,36 @@ class ConversationRepository(
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
                         // longer — the transcript has the reply now, and the replay below brings the whole trace.
                         val followed = synchronized(e) { e.live?.runId }
-                        if (followed != null && runList.any { it.id == followed && it.statusEnum().isTerminal }) e.stopFollowing()
+                        if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
                     }
-                    loadTraces(e, agentId, runList.filter { it.statusEnum().isTerminal })
+                    loadTraces(e, agentId, merged.filter { it.statusEnum().isTerminal })
                 }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             e.reportLoadFailure(t)
         }
+    }
+
+    /**
+     * The transcript pairs its prompts with the runs by position, oldest first, so a run list that stops short of
+     * the transcript's prompts pairs every turn with the wrong run — footers, traces and images all one turn out.
+     * Further pages are fetched until the list covers the prompts, within a bound: a chat longer than that has
+     * older turns whose logs expired long ago, and the join is only ever asked about what is on screen.
+     */
+    private suspend fun runsCovering(api: CursorApi, agentId: String, first: ListRunsResponseDto, prompts: Int): FetchedRuns {
+        var cursor = first.nextCursor
+        if (first.items.size >= prompts || cursor == null) return FetchedRuns(first.items, cursor == null)
+        val all = first.items.toMutableList()
+        var pages = 1
+        while (all.size < prompts && cursor != null && pages < MAX_RUN_PAGES) {
+            val page = api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor)
+            if (page.items.isEmpty()) break
+            all += page.items
+            cursor = page.nextCursor
+            pages++
+        }
+        return FetchedRuns(all, cursor == null)
     }
 
     /**
@@ -484,13 +691,21 @@ class ConversationRepository(
 
     /** Shows the transcript and traces saved by an earlier visit, if any, while the network answers. */
     private suspend fun restoreFromCache(e: Entry, agentId: String) {
+        // An entry that already has its inputs and its traces has nothing to restore, and reading the files to find
+        // that out is the biggest single I/O on the path that opens a chat the prefetch had warmed.
+        if (synchronized(e) { e.tracesRestored && (e.hasInputs || e.fetched) }) return
         val cached = readCache(agentId)
         val savedTraces = if (e.tracesRestored) emptyMap() else readTraces(agentId)
         if (cached == null && savedTraces.isEmpty()) {
             e.publish(mutate = { tracesRestored = true })
             return
         }
-        if (e.hasInputs || e.fetched) return
+        // The inputs arrived while the files were being read. Traces are additive and the memory copy wins, so what
+        // was read still counts — and marks the file read, which spares [loadTraces] a second parse of it.
+        if (e.hasInputs || e.fetched) {
+            e.publish(mutate = { foldSavedTraces(savedTraces) })
+            return
+        }
         val latest = cached?.let { it.runs + it.local.map { saved -> saved.run } }?.maxByOrNull { parseIsoMillis(it.createdAt) }
         // A run that was still active when the cache was written has very likely finished since; the live state
         // ("Working…", Stop) waits for the network unless a fetched agent row confirms the run is still going.
@@ -536,17 +751,35 @@ class ConversationRepository(
         return runCatching { store.read(agentId) }.getOrDefault(emptyMap())
     }
 
-    private suspend fun persist(e: Entry, backend: CursorBackend) {
+    /**
+     * The cache generations the work started under. Sampling them inside the write instead would let a pass that a
+     * sign-out cancelled — one that finishes its file after the wipe, as the trace replay deliberately does — write
+     * the signed-out account's chat back to a cache that has since been reopened for the next one.
+     */
+    private data class CacheTokens(val conversations: Int, val traces: Int)
+
+    private fun cacheTokens() = CacheTokens(cache?.token() ?: 0, traceCache?.token() ?: 0)
+
+    private suspend fun persist(e: Entry, backend: CursorBackend, tokens: CacheTokens = cacheTokens()) {
         val store = cache ?: return
         if (backend.isDemo) return
         val snapshot = synchronized(e) { if (e.hasInputs || e.local.isNotEmpty()) e.toCached() else null } ?: return
-        store.write(snapshot)
+        store.write(snapshot, tokens.conversations)
         diskIndex[snapshot.agentId] = snapshot.agentUpdatedAtMillis
     }
 
-    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>) {
+    private suspend fun writeTrace(agentId: String, runId: String, createdAtMillis: Long, items: List<TimelineItem>, tokens: CacheTokens = cacheTokens()) =
+        writeTraces(agentId, listOf(CachedTrace(runId, createdAtMillis, items)), tokens)
+
+    /**
+     * One read-merge-write of the agent's trace file. Written in batches: the file holds every trace of the agent,
+     * so writing it per run turns opening a long chat into fifty parse-and-serialise cycles of a file growing
+     * toward its full size, all through the same per-agent lock.
+     */
+    private suspend fun writeTraces(agentId: String, traces: List<CachedTrace>, tokens: CacheTokens = cacheTokens()) {
+        if (traces.isEmpty()) return
         val store = traceCache?.takeIf { !session.isDemo } ?: return
-        runCatching { store.put(agentId, listOf(CachedTrace(runId, createdAtMillis, items))) }.onFailure { if (it is CancellationException) throw it }
+        runCatching { store.put(agentId, traces, tokens.traces) }.onFailure { if (it is CancellationException) throw it }
     }
 
     /**
@@ -557,7 +790,16 @@ class ConversationRepository(
      * asked. Every trace that lands is written back, so it is asked for exactly once in the life of the install.
      */
     private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
+        // A load that was in flight when the screen went away arrives here; the replays wait for it to come back.
+        synchronized(e) {
+            if (e.paused) {
+                val held = e.deferredTraceRuns
+                e.deferredTraceRuns = held + finishedRuns.filterNot { run -> held.any { it.id == run.id } }
+                return
+            }
+        }
         e.traceJob?.cancel()
+        val tokens = cacheTokens()
         e.traceJob = e.scope.launch {
             if (!e.tracesRestored) {
                 val saved = readTraces(agentId)
@@ -570,27 +812,35 @@ class ConversationRepository(
             val knownExpired = pending.filter { hub.current(agentId, it.id)?.expired == true }.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: Long.MIN_VALUE
             val next = AtomicInteger(0)
             val newestExpired = AtomicLong(knownExpired)
-            repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
-                launch {
-                    while (true) {
-                        val run = pending.getOrNull(next.getAndIncrement()) ?: return@launch
-                        val createdAt = parseIsoMillis(run.createdAt)
-                        if (createdAt < newestExpired.get()) continue
-                        val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
-                        when {
-                            snapshot.hasTrace -> settleTrace(e, run, snapshot.items)
-                            snapshot.expired -> newestExpired.updateAndGet { maxOf(it, createdAt) }
+            val settled = ConcurrentLinkedQueue<CachedTrace>()
+            try {
+                coroutineScope {
+                    repeat(minOf(MAX_PARALLEL_REPLAYS, pending.size)) {
+                        launch {
+                            while (true) {
+                                val run = pending.getOrNull(next.getAndIncrement()) ?: return@launch
+                                val createdAt = parseIsoMillis(run.createdAt)
+                                if (createdAt < newestExpired.get()) continue
+                                val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
+                                when {
+                                    snapshot.hasTrace -> settled += settleTrace(e, run, snapshot.items)
+                                    snapshot.expired -> newestExpired.updateAndGet { maxOf(it, createdAt) }
+                                }
+                            }
                         }
                     }
                 }
+            } finally {
+                // Whatever this pass found is kept, including when a screen left half-way through it.
+                withContext(NonCancellable) { writeTraces(agentId, settled.toList(), tokens) }
             }
         }
     }
 
-    /** Files a run's complete trace and keeps it on disk. */
-    private suspend fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>) {
+    /** Shows a run's complete trace and hands it to the caller for the file. */
+    private fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>): CachedTrace {
         e.publish(mutate = { traces = traces + (run.id to items) })
-        writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt), items)
+        return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 
     private fun startStreaming(e: Entry, agentId: String, run: RunDto) {
@@ -616,9 +866,9 @@ class ConversationRepository(
                 }
         }
         val following = synchronized(e) {
-            // The last screen may have left while the load that got here was wrapping up: then nobody is looking,
-            // and the next attach decides afresh.
-            if (e.attached == 0) return@synchronized false
+            // The last screen may have left, or the one still attached been covered, while the load that got here
+            // was wrapping up: then nobody is looking, and the next attach or resume decides afresh.
+            if (e.attached == 0 || e.paused) return@synchronized false
             e.publish(mutate = { streamJob = job; live = null }, transform = { copy(activeRunId = run.id, runStatus = RunStatus.parse(run.status), isStreaming = true) })
             true
         }
@@ -709,7 +959,9 @@ class ConversationRepository(
         val terminal = run.copy(
             status = snapshot.status.name,
             updatedAt = Instant.ofEpochMilli(finishedAt).toString(),
-            durationMs = result?.durationMs ?: run.durationMs,
+            // What the run reports of itself, else how long it was actually watched for: the footer of a run whose
+            // outcome carries no duration would otherwise say nothing, about a run the notification timed.
+            durationMs = result?.durationMs ?: run.durationMs ?: (finishedAt - snapshot.startedAtMillis).takeIf { it > 0 },
             result = text.ifEmpty { run.result },
             git = result?.git ?: run.git,
         )
@@ -743,6 +995,29 @@ class ConversationRepository(
                 // nothing for the chat to show as an error.
                 discardStaged(agentId, staged, t.userMessage().takeUnless { t.toCursorError()?.code == AGENT_BUSY })
             }
+    }
+
+    /**
+     * Whether [text] is the newest prompt the server holds for this chat, filed no earlier than [sinceMillis]. This
+     * is what a follow-up whose send the app did not live to see the end of has to ask before it goes out again: the
+     * runs API takes no idempotency key, so nothing else can tell a message that arrived from one that did not.
+     *
+     * A follow-up the server accepted is, by construction, the last prompt of the chat and the newest run of it. The
+     * run's stamp is the server's and [sinceMillis] this device's, so the two are compared with room for the clocks
+     * disagreeing — being a little generous costs a duplicate that would not have been sent, never a message shown
+     * as sent that was not.
+     *
+     * A failure is not an answer of no: the caller has to tell "it did not arrive" from "nobody could say".
+     */
+    suspend fun wasSentSince(agentId: String, text: String, sinceMillis: Long): Result<Boolean> = runCatching {
+        val api = session.current.api
+        coroutineScope {
+            val conversation = async { api.conversationV0(agentId) }
+            val runs = async { api.listRuns(agentId, limit = RUN_PAGE_SIZE) }
+            val newest = conversation.await().messages.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
+            val newestRunAt = runs.await().items.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
+            newest == text.trim() && newestRunAt >= sinceMillis - CLOCK_SKEW_ALLOWANCE_MS
+        }
     }
 
     /**
@@ -1027,6 +1302,7 @@ class ConversationRepository(
 
     private suspend fun prefetch(candidates: List<Agent>) {
         val backend = session.current
+        val tokens = cacheTokens()
         val api = backend.api
         for (agent in candidates) {
             if (!isForeground()) return
@@ -1034,9 +1310,9 @@ class ConversationRepository(
             val ok = runCatching {
                 coroutineScope {
                     val conversation = async { api.conversationV0(agent.id) }
-                    val runs = async { api.listRuns(agent.id, limit = 50).items }
+                    val runs = async { api.listRuns(agent.id, limit = RUN_PAGE_SIZE) }
                     val transcript = conversation.await().messages
-                    val runList = runs.await()
+                    val runList = runsCovering(api, agent.id, runs.await(), transcript.count { it.type == USER_MESSAGE }).items
                     val latest = runList.maxByOrNull { parseIsoMillis(it.createdAt) }
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
@@ -1055,7 +1331,7 @@ class ConversationRepository(
                             },
                             transform = { copy(isLoading = false, activeRunId = latest?.id, runStatus = latest?.statusEnum()) },
                         )
-                        persist(e, backend)
+                        persist(e, backend, tokens)
                     }
                 }
             }.isSuccess
@@ -1082,6 +1358,11 @@ class ConversationRepository(
         const val ABSENT = -1L
         /** Finished runs replayed at once; older logs mostly answer with `410 stream_expired`, which is cheap. */
         const val MAX_PARALLEL_REPLAYS = 3
+        const val RUN_PAGE_SIZE = 50
+        /** Room for device and server clocks to disagree when matching a send marker to a run stamp. */
+        const val CLOCK_SKEW_ALLOWANCE_MS = 60_000L
+        /** Pages of runs one load will read to cover the transcript's prompts before giving the join up. */
+        const val MAX_RUN_PAGES = 8
         /** A chat opened this recently is not fetched again when the app comes to the foreground. */
         const val REVALIDATE_MIN_INTERVAL_MS = 5_000L
         /** The two message types of `/v0/agents/{id}/conversation`. */

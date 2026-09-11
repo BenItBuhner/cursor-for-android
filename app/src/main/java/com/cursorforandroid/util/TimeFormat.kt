@@ -6,9 +6,27 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 object TimeFormat {
-    // Resolved on every call so a runtime locale change is honoured.
-    private val dateFormatter get() = DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())
-    private val dateYearFormatter get() = DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.getDefault())
+    /**
+     * Built once per locale rather than per call: a row's timestamp is formatted on every recomposition of the
+     * agent list, the recents carousel and the widget, and compiling a pattern allocates a whole printer chain. The
+     * locale is still read every time, so a runtime change is honoured on the first format after it.
+     */
+    @Volatile private var formatters: Formatters = Formatters(Locale.getDefault())
+
+    private class Formatters(val locale: Locale) {
+        val date: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d", locale)
+        val dateYear: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yyyy", locale)
+    }
+
+    private fun formatters(): Formatters {
+        val locale = Locale.getDefault()
+        val current = formatters
+        if (current.locale == locale) return current
+        return Formatters(locale).also { formatters = it }
+    }
+
+    private val dateFormatter: DateTimeFormatter get() = formatters().date
+    private val dateYearFormatter: DateTimeFormatter get() = formatters().dateYear
 
     /** Compact relative age for list rows: "now", "4m", "3h", "2d", "Sep 4". */
     fun relativeShort(epochMillis: Long, nowMillis: Long = AppClock.now(), zone: ZoneId = ZoneId.systemDefault()): String {

@@ -14,7 +14,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.local.JsonDiskCache
-import com.cursorforandroid.data.update.CachedUpdateCheck
+import com.cursorforandroid.data.update.PendingInstall
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.AppVersion
@@ -24,9 +24,13 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /** The Android-side plumbing around the update manager, on Robolectric's shadows of the platform services. */
 @RunWith(AndroidJUnit4::class)
@@ -55,6 +59,11 @@ class UpdateGlueTest {
         assertThat(scheduler.allPendingJobs).hasSize(1)
         assertThat(job.isPeriodic).isTrue()
         assertThat(job.intervalMillis).isEqualTo(UpdateJobService.PERIOD_MS)
+        // The run belongs in a slice at the end of the period, never in the one that starts the moment the job is
+        // scheduled: that window opens during the launch doing the scheduling, and onStartJob is dispatched into a
+        // main thread that is still building the first screen. A flex equal to the period is what makes it immediate.
+        assertThat(job.flexMillis).isEqualTo(UpdateJobService.FLEX_MS)
+        assertThat(job.flexMillis).isLessThan(job.intervalMillis)
         assertThat(job.networkType).isEqualTo(JobInfo.NETWORK_TYPE_ANY)
         assertThat(job.isPersisted).isTrue()
         assertThat(job.isRequireBatteryNotLow).isTrue()
@@ -65,14 +74,34 @@ class UpdateGlueTest {
     }
 
     @Test
-    fun `an install writes the APK into a session for our own package and commits it to the status receiver`() {
+    fun `the scheduled run happens off the main thread the scheduler starts the job on`() {
+        runBlocking { app.appGraph.prefs.setAutoUpdate(false) }
+        val service = Robolectric.buildService(UpdateJobService::class.java).create().get()
+        val finishedOn = AtomicReference<Thread>()
+        val finished = CountDownLatch(1)
+
+        service.startRun {
+            finishedOn.set(Thread.currentThread())
+            finished.countDown()
+        }
+
+        // The main looper is never pumped: a run that needed it would be a run the scheduler is still waiting for.
+        assertThat(finished.await(10, TimeUnit.SECONDS)).isTrue()
+        assertThat(finishedOn.get()).isNotSameInstanceAs(Looper.getMainLooper().thread)
+    }
+
+    @Test
+    fun `an install writes the APK into a session for our own package and commits it to the status receiver`() = runBlocking {
         val apk = File(app.cacheDir, "9000099.apk").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         val platform = AndroidUpdatePlatform(app)
         val installer = app.packageManager.packageInstaller
+        val recorded = mutableListOf<Int>()
 
-        platform.install(apk, release)
+        assertThat(platform.install(apk, release, canCommit = { true }) { recorded += it }).isTrue()
 
         val session = installer.allSessions.single()
+        // Recorded before the commit: the callback can start a process that has nothing else to go on.
+        assertThat(recorded).containsExactly(session.sessionId)
         assertThat(session.appPackageName).isEqualTo(BuildConfig.APPLICATION_ID)
         assertThat(installer.mySessions).hasSize(1)
 
@@ -83,8 +112,31 @@ class UpdateGlueTest {
         val status = shadowOf(app).broadcastIntents.last { it.action == UpdateInstallReceiver.ACTION_INSTALL_STATUS }
         assertThat(status.component?.className).isEqualTo(UpdateInstallReceiver::class.java.name)
         assertThat(status.getIntExtra(UpdateInstallReceiver.EXTRA_VERSION_CODE, -1)).isEqualTo(release.versionCode)
+        assertThat(status.getIntExtra(UpdateInstallReceiver.EXTRA_SESSION_ID, -1)).isEqualTo(session.sessionId)
 
         platform.abandonSessions()
+        assertThat(installer.mySessions).isEmpty()
+        assertThat(platform.isSessionActive(session.sessionId)).isFalse()
+    }
+
+    @Test
+    fun `an install whose window closes while the APK is staged commits nothing and leaves no session behind`() = runBlocking {
+        val apk = File(app.cacheDir, "9000099.apk").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val platform = AndroidUpdatePlatform(app)
+        val installer = app.packageManager.packageInstaller
+        val recorded = mutableListOf<Int>()
+
+        // Closed by the time the bytes are down: nothing is committed and nothing is recorded, because there is no
+        // verdict for a record to be about.
+        assertThat(platform.install(apk, release, canCommit = { false }) { recorded += it }).isFalse()
+        assertThat(recorded).isEmpty()
+        assertThat(installer.mySessions).isEmpty()
+
+        // Closed in the moment between the record and the commit — the last look before the point of no return.
+        var asked = 0
+        assertThat(platform.install(apk, release, canCommit = { asked++ == 0 }) { recorded += it }).isFalse()
+        assertThat(asked).isEqualTo(2)
+        assertThat(recorded).hasSize(1)
         assertThat(installer.mySessions).isEmpty()
     }
 
@@ -95,25 +147,17 @@ class UpdateGlueTest {
     }
 
     @Test
-    fun `the receiver hands the installer's verdict to the manager, which asks the user through a notification when the app is in the background`() = runBlocking {
+    fun `the receiver serves a verdict that arrives in a process holding nothing about the install`() = runBlocking {
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        // Seed what the app's own manager restores from: a verified download of the release, waiting to be installed.
+        // What the process that committed the session left behind, and nothing else: no manager has run here yet.
         val cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check")))
-        cache.write(CachedUpdateCheck(etag = null, checkedAtMs = 1L, candidate = release, includePreReleases = false))
-        File(app.cacheDir, "updates").apply { mkdirs() }.let { File(it, "${release.versionCode}.apk").writeBytes(byteArrayOf(1)) }
+        cache.writePending(PendingInstall(SESSION_ID, release, committedAtMs = System.currentTimeMillis()))
         val updates = app.appGraph.updates
-        updates.ensureRestored()
-        assertThat(updates.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+        assertThat(updates.state.value).isEqualTo(UpdateState.Idle)
 
-        val confirmation = Intent("android.content.pm.action.CONFIRM_INSTALL").putExtra(PackageInstaller.EXTRA_SESSION_ID, 7)
-        UpdateInstallReceiver().onReceive(
-            app,
-            Intent(app, UpdateInstallReceiver::class.java)
-                .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS)
-                .putExtra(UpdateInstallReceiver.EXTRA_VERSION_CODE, release.versionCode)
-                .putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_PENDING_USER_ACTION)
-                .putExtra(Intent.EXTRA_INTENT, confirmation),
-        )
+        val confirmation = Intent("android.content.pm.action.CONFIRM_INSTALL").putExtra(PackageInstaller.EXTRA_SESSION_ID, SESSION_ID)
+        deliver(PackageInstaller.STATUS_PENDING_USER_ACTION) { it.putExtra(Intent.EXTRA_INTENT, confirmation) }
+        settle { updates.state.value is UpdateState.Installing }
         assertThat(updates.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
 
         // No activity is started in the background; a notification carries the user back to the app instead.
@@ -127,15 +171,37 @@ class UpdateGlueTest {
         assertThat(open.component?.className).isEqualTo("com.cursorforandroid.MainActivity")
         assertThat(shadowOf(app).nextStartedActivity).isNull()
 
-        // Declining keeps the download and clears the notification.
+        // Declining clears the notification and leaves the release to be offered again.
+        deliver(PackageInstaller.STATUS_FAILURE_ABORTED)
+        settle { updates.state.value !is UpdateState.Installing }
+        assertThat(manager.getNotification(UpdateNotifications.READY_ID)).isNull()
+        assertThat(updates.state.value.release).isEqualTo(release)
+    }
+
+    private fun deliver(status: Int, extras: (Intent) -> Unit = {}) {
         UpdateInstallReceiver().onReceive(
             app,
             Intent(app, UpdateInstallReceiver::class.java)
                 .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS)
                 .putExtra(UpdateInstallReceiver.EXTRA_VERSION_CODE, release.versionCode)
-                .putExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE_ABORTED),
+                .putExtra(UpdateInstallReceiver.EXTRA_SESSION_ID, SESSION_ID)
+                .putExtra(PackageInstaller.EXTRA_STATUS, status)
+                .also(extras),
         )
-        assertThat(updates.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
-        assertThat(manager.getNotification(UpdateNotifications.READY_ID)).isNull()
+    }
+
+    /** The receiver finishes its work off the main thread, so the looper is pumped until it lands. */
+    private fun settle(condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            if (condition()) return
+            Thread.sleep(10)
+        }
+        throw AssertionError("The receiver's work never landed")
+    }
+
+    private companion object {
+        const val SESSION_ID = 7
     }
 }

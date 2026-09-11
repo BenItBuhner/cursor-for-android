@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -35,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,8 +90,11 @@ fun ComposerPlusMenu(
 ) {
     val colors = CursorTheme.colors
     var page by remember(expanded) { mutableStateOf(MenuPage.Root) }
-    var editorOpen by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<McpServer?>(null) }
+    // The editor is a form the user fills in by pasting from another app, which is exactly when the process is most
+    // likely to be killed. Only the edited server's id is saved, not the server: it is re-read from the store below
+    // so credentials never reach the instance-state bundle.
+    var editorOpen by rememberSaveable { mutableStateOf(false) }
+    var editingId by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun toggleCommand(name: String) {
         onPromptChange(SlashCommands.toggle(prompt, name))
@@ -141,8 +144,8 @@ fun ComposerPlusMenu(
                         servers = actions.mcpServers,
                         onBack = { page = MenuPage.Root },
                         onToggle = actions.onToggleMcpServer,
-                        onAdd = { onDismiss(); editing = null; editorOpen = true },
-                        onEdit = { onDismiss(); editing = it; editorOpen = true },
+                        onAdd = { onDismiss(); editingId = null; editorOpen = true },
+                        onEdit = { onDismiss(); editingId = it.id; editorOpen = true },
                     )
                 }
             }
@@ -150,7 +153,7 @@ fun ComposerPlusMenu(
     }
 
     if (editorOpen) {
-        val server = editing
+        val server = editingId?.let { id -> actions.mcpServers.firstOrNull { it.id == id } }
         McpServerSheet(
             server = server,
             others = actions.mcpServers,
@@ -256,7 +259,7 @@ private fun McpServersPage(
 
 @Composable
 private fun PageHeader(title: String, onBack: () -> Unit) {
-    Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.headerHeight).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack)
         Spacer(Modifier.width(2.dp))
         Text(title, style = CursorTheme.typography.title, color = CursorTheme.colors.textPrimary)
@@ -308,7 +311,7 @@ private fun MenuSearchField(value: String, onValueChange: (String) -> Unit, plac
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .background(colors.fillFaint, CursorTheme.shapes.base)
-            .height(30.dp)
+            .heightIn(min = 30.dp)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -343,14 +346,16 @@ fun McpServerSheet(
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    var name by remember { mutableStateOf(server?.name ?: "") }
-    var transport by remember { mutableStateOf(server?.transport ?: McpTransport.Http) }
-    var url by remember { mutableStateOf(server?.url ?: "") }
-    var headers by remember { mutableStateOf(server?.let { McpServerForm.formatHeaders(it.headers) } ?: "") }
-    var command by remember { mutableStateOf(server?.command ?: "") }
-    var args by remember { mutableStateOf(server?.let { McpServerForm.formatArgs(it.args) } ?: "") }
-    var env by remember { mutableStateOf(server?.let { McpServerForm.formatEnv(it.env) } ?: "") }
-    var error by remember { mutableStateOf<String?>(null) }
+    // Saved, so tabbing away to a password manager mid-form does not come back to an empty sheet. Headers and env
+    // deliberately are not: they carry bearer tokens and API keys, and the instance-state bundle is written to disk.
+    var name by rememberSaveable(server?.id) { mutableStateOf(server?.name ?: "") }
+    var transport by rememberSaveable(server?.id) { mutableStateOf(server?.transport ?: McpTransport.Http) }
+    var url by rememberSaveable(server?.id) { mutableStateOf(server?.url ?: "") }
+    var headers by remember(server?.id) { mutableStateOf(server?.let { McpServerForm.formatHeaders(it.headers) } ?: "") }
+    var command by rememberSaveable(server?.id) { mutableStateOf(server?.command ?: "") }
+    var args by rememberSaveable(server?.id) { mutableStateOf(server?.let { McpServerForm.formatArgs(it.args) } ?: "") }
+    var env by remember(server?.id) { mutableStateOf(server?.let { McpServerForm.formatEnv(it.env) } ?: "") }
+    var error by rememberSaveable(server?.id) { mutableStateOf<String?>(null) }
 
     fun submit() {
         val parsedHeaders = McpServerForm.parseHeaders(headers).getOrElse { error = it.message; return }
@@ -372,7 +377,7 @@ fun McpServerSheet(
 
     CursorSheet(onDismiss = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().imePadding().padding(bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().heightIn(min = CursorDimens.headerHeight).padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(if (server == null) "New MCP server" else "Edit MCP server", style = type.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
                 if (onDelete != null) {
                     Text("Delete", style = type.base, color = colors.red, modifier = Modifier.pressable(onDelete, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 4.dp))

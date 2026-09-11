@@ -22,6 +22,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -50,6 +54,9 @@ class LiveRunHubTest {
     private lateinit var agents: AgentRepository
     private lateinit var hub: LiveRunHub
 
+    /** The grace the hub waits before releasing a pass nobody is collecting any more. */
+    private val releaseGrace = 50L
+
     @Before
     fun setUp() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
@@ -58,7 +65,7 @@ class LiveRunHubTest {
         session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
         session.enterDemo()
         agents = AgentRepository(session, prefs, AttachmentStore(context))
-        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
     }
 
     @After
@@ -219,6 +226,25 @@ class LiveRunHubTest {
     }
 
     @Test
+    fun `a record whose status this build cannot read settles the run instead of polling forever`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Assistant("Half a reply."))
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+
+        awaitUntil { snapshot()?.finished == true }
+        assertThat(current().status).isEqualTo(RunStatus.UNKNOWN)
+        // What did arrive stands; the run is simply over as far as this build can tell.
+        assertThat((current().items.first() as AssistantMessage).markdown).isEqualTo("Half a reply.")
+        val polls = api.getRunCalls
+        delay(300)
+        assertThat(api.getRunCalls).isEqualTo(polls)
+        subscription.cancel()
+    }
+
+    @Test
     fun `a rejected resume position starts the story over without ever showing it twice`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
@@ -264,5 +290,101 @@ class LiveRunHubTest {
         assertThat(sizes.toSet()).containsExactly(2)
         assertThat(current().items.filterIsInstance<ActivityGroup>().single().thoughts).hasSize(1)
         second.cancel()
+    }
+
+    /**
+     * Nothing is published until a pass that started over has caught up with what the last one had applied, so the
+     * trace never collapses and grows back. A replay that is shorter than that — a log the server trimmed — must
+     * not leave the trace and "Reconnecting…" frozen for the rest of the run.
+     */
+    @Test
+    fun `a replay shorter than the pass before it stops holding the trace still`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        listOf("One ", "two ", "three ", "four").forEach { streamer.emit("run-1", RunStreamEvent.Assistant(it)) }
+        val first = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "One two three four" }
+        first.cancel()
+        delay(150)
+
+        // The retained log has been trimmed: the fresh connection replays less than the last pass had applied.
+        streamer.reset("run-1")
+        streamer.emit("run-1", RunStreamEvent.Assistant("One "))
+        val second = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { connections() == 2 }
+        delay(150)
+        assertThat((current().items.last() as AssistantMessage).markdown).isEqualTo("One two three four")
+
+        // Past the bound the rebuilt story is published, short as it is, rather than never.
+        now += 30_000
+        streamer.emit("run-1", RunStreamEvent.Assistant("again"))
+        awaitUntil { (snapshot()?.items?.lastOrNull() as? AssistantMessage)?.markdown == "One again" }
+        assertThat(current().reconnecting).isFalse()
+        second.cancel()
+    }
+
+    /**
+     * A reset is not a cancel: cancellation is cooperative, so a pass suspended inside a record read resumes and
+     * carries on. What it must not do is finish the run into the list the next account starts from.
+     */
+    @Test
+    fun `a pass that resumes after a reset does not settle the run it was following`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val finishes = CopyOnWriteArrayList<LiveRunHub.Snapshot>()
+        scope.launch { hub.finishes.collect { finishes += it } }
+        // The log is gone, so the record is the only source left and the pass settles the run from it.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Previous account")
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        awaitUntil { api.getRunCalls > 0 }
+
+        hub.resetAll()
+        api.getRunGate!!.complete(Unit)
+        delay(200)
+
+        assertThat(finishes).isEmpty()
+        assertThat(agents.agent("bc-1")?.summary).isNotEqualTo("Previous account")
+        assertThat(agents.agent("bc-1")?.isRunning).isTrue()
+        subscription.cancel()
+    }
+
+    /**
+     * Cancelling a coroutine does not stop it: a released pass can still be applying events when the next
+     * subscriber restarts the stream. Whatever the scheduling, it must not write into the accumulator that
+     * replaced its own — the trace would read as the agent saying everything twice.
+     */
+    @Test
+    fun `resubscribing while the released pass is still winding down never doubles the trace`() = runTest {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        // The hub runs on the test scheduler, so the release grace passes on the virtual clock: the pass is provably
+        // released before the next subscriber arrives, rather than probably released after a few milliseconds.
+        val hubScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = releaseGrace, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = hubScope)
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hello"))
+
+        repeat(8) { pass ->
+            val subscription = hubScope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+            advanceUntilIdle()
+            assertThat(connections()).isEqualTo(pass + 1)
+            assertThat(snapshot()!!.items).isNotEmpty()
+            subscription.cancel()
+            advanceTimeBy(releaseGrace)
+            advanceUntilIdle()
+        }
+
+        val settled = hubScope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        advanceUntilIdle()
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Hello", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        advanceUntilIdle()
+        assertThat(snapshot()!!.finished).isTrue()
+
+        val replies = current().items.filterIsInstance<AssistantMessage>()
+        assertThat(replies.map { it.markdown }).containsExactly("Hello")
+        settled.cancel()
+        hubScope.cancel()
     }
 }

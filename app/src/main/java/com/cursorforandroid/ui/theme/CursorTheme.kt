@@ -13,7 +13,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
+import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.WindowCompat
 
 enum class ThemeMode { System, Dark, Light }
@@ -57,6 +59,10 @@ fun CursorTheme(
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
             WindowCompat.setDecorFitsSystemWindows(window, false)
+            // The window background is a resource, so it can only follow the system's night mode; someone running
+            // Cursor Light on a dark phone would keep a dark frame behind every transition and under the recents
+            // thumbnail. Repaint it with the theme actually in force.
+            window.setBackgroundDrawable(colors.canvas.toArgb().toDrawable())
             val controller = WindowCompat.getInsetsController(window, view)
             controller.isAppearanceLightStatusBars = !dark
             controller.isAppearanceLightNavigationBars = !dark

@@ -6,15 +6,20 @@ import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 class PullRequestRepositoryTest {
 
@@ -57,7 +62,7 @@ class PullRequestRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(withCache: Boolean = true) = PullRequestRepository(
+    private fun repository(withCache: Boolean = true, account: PullRequestSource = this.account) = PullRequestRepository(
         account = account,
         demo = demoSource,
         isDemo = { demo },
@@ -69,6 +74,26 @@ class PullRequestRepositoryTest {
     private fun askedCount() = synchronized(asked) { asked.size }
 
     private suspend fun PullRequestRepository.known() = states.first()
+
+    @Test
+    fun `an answer that arrives after a sign-out is neither shown nor saved`() = runBlocking<Unit> {
+        val asked = CompletableDeferred<Unit>()
+        var release: Continuation<Unit>? = null
+        val account = PullRequestSource { _ ->
+            suspendCoroutine<Unit> { release = it; asked.complete(Unit) }
+            PullRequestLookup.Found(PullRequestState.Open)
+        }
+        val repo = repository(account = account)
+
+        val pass = launch(Dispatchers.Default) { repo.refresh(listOf(gitlab)) }
+        asked.await()
+        repo.reset()
+        release!!.resume(Unit)
+        pass.join()
+
+        assertThat(repo.statuses.value).isEmpty()
+        assertThat(cache.read()).isNull()
+    }
 
     @Test
     fun `reads each state from the account, remembers what it refused and saves the lot`() = runBlocking<Unit> {

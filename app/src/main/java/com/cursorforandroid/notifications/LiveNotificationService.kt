@@ -50,7 +50,16 @@ class LiveNotificationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val graph: AppGraph by lazy { appGraph }
     private var inForeground = false
+
+    /**
+     * The collectors following the runs, or null when nothing is being followed. Kept apart from [inForeground],
+     * which says only that the platform's `startForeground` promise has been answered: a shutdown stops watching
+     * at once, while the destroy it asked for arrives later, and a start delivered in between is handed to this
+     * same instance and has to start the watching over.
+     */
+    private var watch: CoroutineScope? = null
     private var idleJob: Job? = null
+    private var latestStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -60,23 +69,42 @@ class LiveNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val firstStart = !inForeground
+        latestStartId = startId
+        // The only reason to follow runs from the background is the notification. Without one the service would hold
+        // a dataSync budget open and keep up to eight streams alive to produce nothing the user can see.
+        if (!LiveNotifications.canShowLive(this)) {
+            // Giving up is still a foreground start that has to be answered first: see [keepForegroundPromise].
+            keepForegroundPromise()
+            shutdown(keepWatching = false, force = true)
+            return START_NOT_STICKY
+        }
+        val firstStart = watch == null
         if (!enterForeground()) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP_RUN) {
             val agentId = intent.getStringExtra(EXTRA_AGENT_ID)
             val runId = intent.getStringExtra(EXTRA_RUN_ID)
             if (agentId != null && runId != null) stopRun(agentId, runId)
         } else if (!firstStart) {
-            // Re-issued start (running set changed, or notification permission was just granted): show the current state.
-            audible(graph.runMonitor.state.value).takeIf { it.running.isNotEmpty() }?.let { post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, it)) }
+            // Re-issued start (running set changed, or notification permission was just granted): show the current
+            // state, or start the wait over if this arrived just as a shutdown was declining to stop the service.
+            val state = audible(graph.runMonitor.state.value)
+            if (state.running.isNotEmpty()) post(LiveNotificationRenderer.LIVE_ID, LiveNotificationRenderer.live(this, state)) else scheduleIdleShutdown(state)
         }
         return START_NOT_STICKY
     }
 
-    private fun enterForeground(): Boolean {
+    /**
+     * Answers the `startForeground()` that [start]'s `startForegroundService()` promised the platform.
+     *
+     * Every way out of [onStartCommand] has to come through here, including the ones that only want to stop:
+     * a service brought down while that promise is outstanding does not just stop, it takes the process with it
+     * (`ForegroundServiceDidNotStartInTimeException`), so bailing out without answering *is* the crash. Answering
+     * it costs one notification that is removed in the same breath, and that the paths which bail out could not
+     * have shown anyway.
+     */
+    private fun keepForegroundPromise(): Boolean {
         if (inForeground) return true
-        val monitor = graph.runMonitor
-        val initial = audible(monitor.state.value).takeIf { it.running.isNotEmpty() }
+        val initial = audible(graph.runMonitor.state.value).takeIf { it.running.isNotEmpty() }
             ?.let { LiveNotificationRenderer.live(this, it) }
             ?: LiveNotificationRenderer.connecting(this)
         try {
@@ -84,9 +112,10 @@ class LiveNotificationService : Service() {
             ServiceCompat.startForeground(this, LiveNotificationRenderer.LIVE_ID, initial, type)
         } catch (e: Exception) {
             // ForegroundServiceStartNotAllowedException (a background start, or Android 15's dataSync budget spent
-            // before the app was in front again) or a missing permission. Not fatal: [active] stays false, and the
-            // coordinator tries again from the foreground. Logged, because a refused start is exactly what "the
-            // notification never showed up" looks like from the outside.
+            // before the app was in front again) or a missing permission. Not fatal, and nothing is left owing: the
+            // promise dies with the start that was refused. [active] stays false and the coordinator tries again from
+            // the foreground. Logged, because a refused start is exactly what "the notification never showed up"
+            // looks like from the outside.
             Log.w(TAG, "Foreground start refused", e)
             stopSelf()
             return false
@@ -95,8 +124,17 @@ class LiveNotificationService : Service() {
         _active.value = true
         // The safety net for the finished cards, in case this process does not live to post them.
         FinishWatchdogJobService.arm(this, FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
+        return true
+    }
+
+    private fun enterForeground(): Boolean {
+        if (!keepForegroundPromise()) return false
+        if (watch != null) return true
+        val monitor = graph.runMonitor
+        val watching = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+        watch = watching
         // Subscribe before the monitor starts so no finish can slip past the (replay-less) shared flow.
-        scope.launch {
+        watching.launch {
             monitor.finished.collect { run ->
                 val local = graph.prefs.localAgentState.first()
                 if (local.isSnoozed(run.agentId, AppClock.now())) return@collect
@@ -104,7 +142,7 @@ class LiveNotificationService : Service() {
             }
         }
         monitor.start()
-        scope.launch {
+        watching.launch {
             combine(monitor.state, graph.prefs.liveNotifications, graph.prefs.localAgentState) { state, enabled, local ->
                 Triple(audible(state, local.quietIds(AppClock.now())), enabled, local)
             }
@@ -167,18 +205,27 @@ class LiveNotificationService : Service() {
     /**
      * Stops following the runs and takes the live notification down. With [keepWatching] the runs are believed to be
      * still going, so the watchdog is armed to announce their finishes; without it there is nothing left to watch.
+     *
+     * [force] stops the service whatever else is in flight, for the cases where staying is not an option. Otherwise
+     * `stopSelfResult` is asked: a start command that arrived while this shutdown was being decided means the service
+     * is wanted again, and then nothing is torn down. The start that is already on its way re-posts the notification
+     * or starts the idle wait over.
      */
-    private fun shutdown(keepWatching: Boolean) {
+    private fun shutdown(keepWatching: Boolean, force: Boolean = false) {
         idleJob?.cancel()
         idleJob = null
+        if (!force && !stopSelfResult(latestStartId)) return
         graph.runMonitor.stop()
+        watch?.cancel()
+        watch = null
+        inForeground = false
         if (keepWatching) {
             FinishWatchdogJobService.arm(this, FinishWatchdogJobService.AFTER_SERVICE_LOSS_MS)
         } else {
             FinishWatchdogJobService.disarm(this)
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (force) stopSelf()
     }
 
     /**
@@ -188,12 +235,14 @@ class LiveNotificationService : Service() {
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.w(TAG, "dataSync time budget spent; handing the running agents to the watchdog")
-        shutdown(keepWatching = true)
+        // Forced, and not optional: the platform kills the process instead if the service is still up when this returns.
+        shutdown(keepWatching = true, force = true)
     }
 
     override fun onDestroy() {
         scope.cancel()
         graph.runMonitor.stop()
+        watch = null
         inForeground = false
         _active.value = false
         super.onDestroy()
@@ -218,7 +267,7 @@ class LiveNotificationService : Service() {
          * start that is accepted can still fail in `startForeground`, which [active] reports.
          */
         fun start(context: Context): Boolean = try {
-            ContextCompat.startForegroundService(context, Intent(context, LiveNotificationService::class.java))
+            ContextCompat.startForegroundService(context, serviceIntent(context))
             true
         } catch (e: Exception) {
             Log.w(TAG, "Start refused", e)
@@ -226,11 +275,13 @@ class LiveNotificationService : Service() {
         }
 
         fun stop(context: Context) {
-            runCatching { context.stopService(Intent(context, LiveNotificationService::class.java)) }
+            runCatching { context.stopService(serviceIntent(context)) }
         }
 
+        private fun serviceIntent(context: Context) = Intent(context, LiveNotificationService::class.java)
+
         fun stopRunIntent(context: Context, agentId: String, runId: String): Intent =
-            Intent(context, LiveNotificationService::class.java)
+            serviceIntent(context)
                 .setAction(ACTION_STOP_RUN)
                 .putExtra(EXTRA_AGENT_ID, agentId)
                 .putExtra(EXTRA_RUN_ID, runId)

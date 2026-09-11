@@ -2,6 +2,7 @@ package com.cursorforandroid.data.auth
 
 import com.cursorforandroid.data.api.ConnectRpc
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.data.api.await
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -9,6 +10,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -25,8 +27,9 @@ object CursorLoginEndpoints {
 }
 
 /**
- * One browser-login attempt. The [verifier] never leaves the device except in the body of `/auth/poll`; the page only
- * ever sees its SHA-256 [challenge][loginUrl], so nothing that can observe the browser can redeem the login.
+ * One browser-login attempt. The [verifier] never leaves the device except to `/auth/poll` — in its body, or in the
+ * query string of the GET a backend without that route falls back to; the page only ever sees its SHA-256
+ * [challenge][loginUrl], so nothing that can observe the browser can redeem the login.
  */
 data class LoginHandshake(val uuid: String, val verifier: String, val loginUrl: String)
 
@@ -40,6 +43,9 @@ class CursorLoginException(message: String, cause: Throwable? = null) : IOExcept
  *
  * 1. [startHandshake] derives a PKCE pair and the `cursor.com/loginDeepControl` URL the user opens in a browser.
  * 2. [awaitTokens] polls `POST /auth/poll` with the verifier until the page has confirmed the login (`404` = pending).
+ *    That is the primary form; a backend that has no such route falls back, once, to `GET /auth/poll?uuid&verifier`,
+ *    which carries the verifier in the query string. Nothing may log the URLs of this client — see
+ *    [com.cursorforandroid.data.api.CursorApiFactory.loginClient], which has no logging interceptor on any build.
  * 3. [mintApiKey] spends the short-lived session token once on `DashboardService/CreateUserApiKey`; the returned
  *    key is the only credential the app keeps, and it is an ordinary key the Cloud Agents API already accepts.
  *
@@ -84,7 +90,7 @@ class CursorLogin(
             val wait = (baseDelayMs * 1.2.pow(attempt)).toLong().coerceAtMost(maxDelayMs)
             attempt++
             val response = try {
-                client.newCall(pollRequest(handshake, useGet)).execute()
+                client.newCall(pollRequest(handshake, useGet)).await()
             } catch (e: IOException) {
                 if (++consecutiveErrors >= POLL_MAX_CONSECUTIVE_ERRORS) {
                     throw CursorLoginException("Couldn't reach Cursor to finish signing in. Check your connection and try again.", e)
@@ -142,8 +148,11 @@ class CursorLogin(
             CreateUserApiKeyRequestDto(name = name, expiresAt = expiresAtMs?.toString()),
         )
         val request = ConnectRpc.request(apiUrl, "aiserver.v1.DashboardService", "CreateUserApiKey", accessToken, body)
+        // Minting leaves a key on the account whether or not anyone is still waiting for it, so a sign-in already
+        // abandoned must not go through with one.
+        currentCoroutineContext().ensureActive()
         val response = try {
-            client.newCall(request).execute()
+            client.newCall(request).await()
         } catch (e: IOException) {
             throw CursorLoginException("Signed in, but the connection dropped before Cursor could issue a key for this app. Try again.", e)
         }
@@ -166,19 +175,27 @@ class CursorLogin(
         val base = "${apiUrl.trimEnd('/')}/auth/poll"
         val builder = Request.Builder().header("Accept", "application/json")
         return if (useGet) {
-            builder.url("$base?uuid=${handshake.uuid}&verifier=${handshake.verifier}").get().build()
+            val url = base.toHttpUrl().newBuilder()
+                .addQueryParameter("uuid", handshake.uuid)
+                .addQueryParameter("verifier", handshake.verifier)
+                .build()
+            builder.url(url).get().build()
         } else {
             val json = CursorJson.encodeToString(PollRequestDto.serializer(), PollRequestDto(handshake.uuid, handshake.verifier))
             builder.url(base).post(ConnectRpc.jsonBody(json)).build()
         }
     }
 
-    /** Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text. */
+    /**
+     * Fastify's `{"message":"Route POST:/auth/poll not found", …}`, as opposed to the pending login's plain text.
+     * Anchored on the whole shape — the word, the route this actually is, and the verdict — so a message that merely
+     * mentions a missing route somewhere else cannot send the poll down the fallback.
+     */
     private fun isRouteNotFound(body: String): Boolean {
         if (!body.startsWith("{")) return false
         val message = runCatching { CursorJson.parseToJsonElement(body).jsonObject["message"]?.jsonPrimitive?.content }.getOrNull()
             ?: return false
-        return Regex("""^Route \w+:""").containsMatchIn(message) && message.contains("not found")
+        return message.startsWith("Route ") && message.contains("/auth/poll") && message.contains("not found")
     }
 
     private fun ByteArray.base64Url(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(this)

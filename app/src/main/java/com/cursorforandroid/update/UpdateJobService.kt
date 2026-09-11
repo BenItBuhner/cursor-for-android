@@ -6,6 +6,7 @@ import android.app.job.JobScheduler
 import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import com.cursorforandroid.appGraph
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -23,21 +24,28 @@ import java.util.concurrent.TimeUnit
  */
 class UpdateJobService : JobService() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /**
+     * Never a main-thread dispatcher: the scheduler calls [onStartJob] on the main thread and holds the process to a
+     * deadline for returning from it, so no part of the run may happen on the way out of it.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
 
     override fun onStartJob(params: JobParameters): Boolean {
-        job = scope.launch {
-            try {
-                appGraph.updates.runScheduled()
-            } catch (e: CancellationException) {
-                throw e // onStopJob already told the scheduler; jobFinished must not follow.
-            } catch (_: Throwable) {
-                // A failed run is recorded in the update state; the next period tries again.
-            }
-            jobFinished(params, false)
-        }
+        job = startRun { jobFinished(params, false) }
         return true
+    }
+
+    @VisibleForTesting
+    internal fun startRun(onFinished: () -> Unit): Job = scope.launch {
+        try {
+            appGraph.updates.runScheduled()
+        } catch (e: CancellationException) {
+            throw e // onStopJob already told the scheduler; jobFinished must not follow.
+        } catch (_: Throwable) {
+            // A failed run is recorded in the update state; the next period tries again.
+        }
+        onFinished()
     }
 
     /** The system wants the slot back (constraints lost, or the run took too long): stop and let it reschedule. */
@@ -56,6 +64,18 @@ class UpdateJobService : JobService() {
         const val JOB_ID = 0x55504431
         val PERIOD_MS: Long = TimeUnit.HOURS.toMillis(12)
 
+        /**
+         * The slice at the *end* of each period the run may fall in. Without it the period is its own flex, and a
+         * freshly scheduled job's first window opens immediately: the scheduler dispatches [onStartJob] into the
+         * main thread of the launch that just scheduled it, seconds after the first frame. That callback has a
+         * deadline, and a launch that is still hydrating its first screen can miss it — an ANR, not a slow start.
+         * With a flex the first window cannot open until [PERIOD_MS] minus this, long after any launch is over.
+         *
+         * Nothing waits on it: [UpdateCoordinator] checks for updates whenever the app comes forward, so the job
+         * only matters for a device the app is not opened on, where an eleven-hour-later first check costs nothing.
+         */
+        val FLEX_MS: Long = TimeUnit.HOURS.toMillis(1)
+
         fun isScheduled(context: Context): Boolean = scheduler(context)?.getPendingJob(JOB_ID) != null
 
         /** Idempotent: an already scheduled job keeps its timing rather than being reset. */
@@ -63,7 +83,7 @@ class UpdateJobService : JobService() {
             val scheduler = scheduler(context) ?: return
             if (scheduler.getPendingJob(JOB_ID) != null) return
             val job = JobInfo.Builder(JOB_ID, ComponentName(context, UpdateJobService::class.java))
-                .setPeriodic(PERIOD_MS)
+                .setPeriodic(PERIOD_MS, FLEX_MS)
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .setRequiresBatteryNotLow(true)
                 .setPersisted(true)

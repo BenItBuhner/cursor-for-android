@@ -20,6 +20,16 @@
     <!-- The periodic update check is a persisted JobScheduler job, which needs this to survive a reboot. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!--
+      Android 11 hides other packages unless they are declared here. Settings pages are resolved before they are
+      offered, so without this the Live Updates entry would look absent on every device from Android 11 on.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.MANAGE_APP_PROMOTED_NOTIFICATIONS" />
+        </intent>
+    </queries>
+
     <application
         android:name=".CursorApp"
         android:allowBackup="false"
@@ -50,6 +60,7 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
                 <data android:host="cursor.com" />
+                <data android:host="www.cursor.com" />
                 <data android:pathPrefix="/agents/" />
             </intent-filter>
             <!-- Appear in the system share sheet. Separate filters per type: some OEMs drop a SEND filter that lists both. -->
@@ -69,6 +80,21 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <!--
+          CursorApp supplies WorkManager's configuration (see its workManagerConfiguration), which the default
+          initializer would ignore. The other initializers in this provider are still wanted.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
 
         <!-- Streams the active runs and owns the live notification while at least one agent is running. -->
         <service

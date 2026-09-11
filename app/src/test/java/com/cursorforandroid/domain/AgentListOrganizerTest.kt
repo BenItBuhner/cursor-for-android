@@ -468,6 +468,24 @@ class AgentListOrganizerTest {
     }
 
     @Test
+    fun `the source and environment pages pick agents apart on their own`() {
+        val agents = listOf(
+            agent("cloud", source = AgentSource.WEBSITE),
+            agent("mine-on-machine", source = AgentSource.API, env = EnvType.MACHINE),
+            agent("theirs-on-machine", source = AgentSource.WEBSITE, env = EnvType.MACHINE),
+        )
+        val local = LocalAgentState(launchedHereIds = setOf("mine-on-machine"))
+        fun ids(prefs: ListPreferences) =
+            AgentListOrganizer.organize(agents, prefs, local, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
+        // "This device" is where a chat was started, so it holds the one launched here whatever that one runs on...
+        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.ThisDevice)))).containsExactly("mine-on-machine")
+        // ...while the environment page is what a chat runs on, this device's launches included.
+        assertThat(ids(ListPreferences(environments = setOf(EnvironmentFilter.Machine)))).containsExactly("mine-on-machine", "theirs-on-machine")
+        // Either page narrows what the other left, so each can be picked apart on its own.
+        assertThat(ids(ListPreferences(sources = setOf(SourceFilter.Web), environments = setOf(EnvironmentFilter.Machine)))).containsExactly("theirs-on-machine")
+    }
+
+    @Test
     fun `search matches name, repo and branch case-insensitively`() {
         val a = agent("a", name = "Fix login bug", branch = "cursor/login-fix")
         assertThat(AgentListOrganizer.matchesQuery(a, "LOGIN")).isTrue()

@@ -103,30 +103,34 @@ class WorkHeaderTest {
 
     @Test
     fun `tool output is read from the shapes the streams use`() {
-        val shell = ToolCall(
-            "c", "run_terminal_cmd", ToolKind.Shell, "completed", "ls", detail = "ls -la",
-            result = Json.parseToJsonElement("""{"success":{"exitCode":2,"stdout":"total 8\nREADME.md","stderr":"warn","executionTime":3}}"""),
+        val shell = ToolOutput.from(
+            ToolKind.Shell,
+            "ls -la",
+            Json.parseToJsonElement("""{"success":{"exitCode":2,"stdout":"total 8\nREADME.md","stderr":"warn","executionTime":3}}"""),
         )
-        val out = ToolOutput.of(shell)
-        assertThat(out.input).isEqualTo("ls -la")
-        assertThat(out.output).isEqualTo("total 8\nREADME.md\nwarn")
-        assertThat(out.exitCode).isEqualTo(2)
+        assertThat(shell.input).isEqualTo("ls -la")
+        assertThat(shell.output).isEqualTo("total 8\nREADME.md\nwarn")
+        assertThat(shell.exitCode).isEqualTo(2)
 
-        val mcp = ToolCall(
-            "c", "mcp", ToolKind.Mcp, "completed", "run-info", server = "cursor-cloud", detail = """{"a":1}""",
-            result = Json.parseToJsonElement("""{"resultType":"mcpResult","value":{"selectedTool":"run-info","result":"Cursor Cloud MCP identity"}}"""),
+        val mcp = ToolOutput.from(
+            ToolKind.Mcp,
+            """{"a":1}""",
+            Json.parseToJsonElement("""{"resultType":"mcpResult","value":{"selectedTool":"run-info","result":"Cursor Cloud MCP identity"}}"""),
         )
-        assertThat(ToolOutput.of(mcp)).isEqualTo(ToolOutput("""{"a":1}""", "Cursor Cloud MCP identity"))
-        val sdkMcp = ToolCall("c", "mcp", ToolKind.Mcp, "completed", "t", result = Json.parseToJsonElement("""{"content":[{"text":{"text":"one"}},{"text":{"text":"two"}}]}"""))
-        assertThat(ToolOutput.of(sdkMcp).output).isEqualTo("one\ntwo")
+        assertThat(mcp).isEqualTo(ToolOutput("""{"a":1}""", "Cursor Cloud MCP identity"))
+        val sdkMcp = ToolOutput.from(ToolKind.Mcp, null, Json.parseToJsonElement("""{"content":[{"text":{"text":"one"}},{"text":{"text":"two"}}]}"""))
+        assertThat(sdkMcp.output).isEqualTo("one\ntwo")
 
-        val read = ToolCall("c", "read_file", ToolKind.Read, "completed", "A.kt", detail = "app/A.kt", result = buildJsonObject { })
-        assertThat(ToolOutput.of(read)).isEqualTo(ToolOutput("app/A.kt", null))
-        assertThat(ToolOutput.of(ToolCall("c", "grep", ToolKind.Grep, "completed", "")).isEmpty).isTrue()
+        assertThat(ToolOutput.from(ToolKind.Read, "app/A.kt", buildJsonObject { })).isEqualTo(ToolOutput("app/A.kt", null))
+        assertThat(ToolOutput.from(ToolKind.Grep, null, null).isEmpty).isTrue()
 
         val long = (1..60).joinToString("\n") { "line $it" }
-        val clipped = ToolOutput.of(ToolCall("c", "shell", ToolKind.Shell, "completed", "x", result = Json.parseToJsonElement("""{"stdout":${Json.encodeToString(kotlinx.serialization.serializer<String>(), long)}}""")))
+        val clipped = ToolOutput.from(ToolKind.Shell, null, Json.parseToJsonElement("""{"stdout":${Json.encodeToString(kotlinx.serialization.serializer<String>(), long)}}"""))
         assertThat(clipped.output!!.lines()).hasSize(ToolOutput.MAX_OUTPUT_LINES + 1)
         assertThat(clipped.output).endsWith("… 20 more lines")
+
+        // A built call opens onto exactly what was read for it, the reading itself long since done.
+        val built = ToolCall("c", "run_terminal_cmd", ToolKind.Shell, "completed", "ls", detail = "ls -la", output = "total 8", exitCode = 2)
+        assertThat(ToolOutput.of(built)).isEqualTo(ToolOutput("ls -la", "total 8", 2))
     }
 }

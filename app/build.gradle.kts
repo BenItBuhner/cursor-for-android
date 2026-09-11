@@ -19,15 +19,20 @@ plugins {
 //     STAGE: alpha.N -> N (0..24), beta.N -> 25 + N, rc.N -> 50 + N, stable (no pre-release) -> 99
 //
 // e.g. 0.2.0-alpha.1 -> 20001, 0.2.0-beta.1 -> 20026, 0.2.0-rc.1 -> 20051, 0.2.0 -> 20099. Build metadata after `+`
-// is ignored. `-Papp.versionCode=N` overrides the derived value; `-Papp.versionNameSuffix=...` is appended to the
-// versionName only (CI uses it to stamp dev builds with the run number and commit).
+// is ignored. `-Papp.versionCode=N` overrides the derived value.
+//
+// `-Papp.versionNameSuffix=...` is appended to the versionName (CI uses it to stamp dev builds with the run number
+// and commit) and the code is derived from the result, not from the base: a `0.2.0-dev.148+gabc1234` build has to
+// report 20024, or the updater would refuse the stable 0.2.0 (20099) it leads up to as "not newer".
 //
 // The in-app updater (domain/AppUpdate.kt, AppVersion.versionCode) reproduces this scheme to compare a release tag
-// with the installed BuildConfig.VERSION_CODE; AppVersionTest pins both to the same examples. Change them together.
+// with the installed BuildConfig.VERSION_CODE; AppVersionTest pins both to the same examples, and asserts that this
+// script's own output for the build under test agrees with it. Change them together.
 // ---------------------------------------------------------------------------------------------------------------------
-val appVersionName: String = providers.gradleProperty("app.versionName").get()
-val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appVersionName))
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
+val appVersionName: String = providers.gradleProperty("app.versionName").get()
+val appResolvedVersionName: String = appVersionName + (appVersionNameSuffix ?: "")
+val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appResolvedVersionName))
 // The GitHub repository whose releases the app updates itself from (`owner/name`); a fork points this at its own.
 val appGitHubRepo: String = providers.gradleProperty("app.githubRepo").get().also {
     require(Regex("""^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$""").matches(it)) { "app.githubRepo must be 'owner/name', got '$it'" }
@@ -214,7 +219,7 @@ if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).g
 tasks.register("printAppVersion") {
     group = "help"
     description = "Prints the resolved versionName and versionCode."
-    val resolvedName = appVersionName + (appVersionNameSuffix ?: "")
+    val resolvedName = appResolvedVersionName
     val resolvedCode = appVersionCode
     doLast {
         println("versionName=$resolvedName")

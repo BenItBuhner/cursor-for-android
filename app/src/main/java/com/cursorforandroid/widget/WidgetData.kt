@@ -1,5 +1,11 @@
 package com.cursorforandroid.widget
 
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.BatteryManager
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.SessionState
@@ -45,6 +51,15 @@ data class WidgetSnapshot(
     fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now()): List<AgentRow> = WidgetList.rows(mode, agents, prefs, local, nowMillis)
 }
 
+/**
+ * What a widget render is allowed to spend on the network. A platform widget tick arrives every half hour whether or
+ * not the app is being used, and it starts the process to do it, so it must not be the thing that reaches for a
+ * connection that is not there or spends the last of the battery.
+ */
+data class WidgetRefreshBudget(val connected: Boolean, val batteryLow: Boolean) {
+    val allowsRefresh: Boolean get() = connected && !batteryLow
+}
+
 /** The widget's view of the app graph: what to render, and how to get the list ready in a process that just started. */
 object WidgetData {
 
@@ -75,15 +90,21 @@ object WidgetData {
      * does what the app's start does: decides the session (stored key, demo, or signed out), shows the list saved on
      * disk, and revalidates it in the background. With nothing on disk it waits a moment for the first page instead,
      * so the widget's first frame has rows rather than "Loading…".
+     *
+     * Only ever the first page ([RefreshDepth.Quick]): the deeper passes exist so the app can tell a row that is gone
+     * from a row beyond where the last pass stopped, which is worth several requests when a person is looking at the
+     * list and nothing at all on a timer. Revalidation also waits for a connection and for the battery to recover.
      */
-    suspend fun prepare(graph: AppGraph) {
+    suspend fun prepare(graph: AppGraph, budget: WidgetRefreshBudget) {
         graph.session.restoreIfNeeded()
         if (graph.session.state.value !is SessionState.SignedIn) return
         graph.agents.restoreFromCache()
         graph.pullRequests.restoreFromCache()
         if (graph.agents.state.value.hasLoaded) {
-            scope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS) }
-        } else {
+            if (budget.allowsRefresh) scope.launch { graph.agents.refreshIfStale(STALE_AFTER_MS, RefreshDepth.Quick) }
+        } else if (budget.connected) {
+            // Nothing to show yet, so this one is worth a low battery: the alternative is a widget that says
+            // "Loading…" until the battery is charged.
             withTimeoutOrNull(FIRST_PAGE_WAIT_MS) { graph.agents.refresh(silent = true, depth = RefreshDepth.Quick) }
         }
     }
@@ -143,3 +164,26 @@ object WidgetData {
         )
     }
 }
+
+/** What the device says right now, for the render to pass to [WidgetData.prepare]. */
+internal fun deviceRefreshBudget(context: Context): WidgetRefreshBudget =
+    WidgetRefreshBudget(connected = hasInternet(context), batteryLow = isBatteryLow(context))
+
+private fun hasInternet(context: Context): Boolean = runCatching {
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return@runCatching false
+    val active = manager.activeNetwork ?: return@runCatching false
+    manager.getNetworkCapabilities(active)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+}.getOrDefault(false)
+
+/** The same threshold `JobInfo.setRequiresBatteryNotLow` uses, read from the sticky battery broadcast. */
+private fun isBatteryLow(context: Context): Boolean = runCatching {
+    val status = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return@runCatching false
+    if (status.getBooleanExtra(BatteryManager.EXTRA_BATTERY_LOW, false)) return@runCatching true
+    // Not low while charging, however little is in it: what goes back in outweighs a page of a list.
+    if (status.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0) return@runCatching false
+    val level = status.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+    val scale = status.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+    level >= 0 && scale > 0 && level * 100 / scale <= LOW_BATTERY_PERCENT
+}.getOrDefault(false)
+
+private const val LOW_BATTERY_PERCENT = 15

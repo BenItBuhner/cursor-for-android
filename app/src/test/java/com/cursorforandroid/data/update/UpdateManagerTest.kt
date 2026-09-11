@@ -10,10 +10,12 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
@@ -114,8 +116,14 @@ class UpdateManagerTest {
         server.shutdown()
     }
 
-    private fun manager(): UpdateManager = UpdateManager(
-        client = GitHubReleasesClient(OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(), GitHubFixtures.OWNER_REPO, apiBaseUrl = server.url("/").toString()),
+    private fun manager(backgroundIdleMs: Long = 0L, sleep: suspend (Long) -> Unit = { delay(it) }): UpdateManager = UpdateManager(
+        client = GitHubReleasesClient(
+            OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(),
+            GitHubFixtures.OWNER_REPO,
+            apiBaseUrl = server.url("/").toString(),
+            // Free space is GitHubReleasesClientTest's subject; here every download has room.
+            freeSpace = { Long.MAX_VALUE / 2 },
+        ),
         prefs = prefs,
         cache = cache,
         platform = platform,
@@ -123,11 +131,19 @@ class UpdateManagerTest {
         agentsRunning = { agentsRunning },
         scope = scope,
         now = { now },
+        backgroundIdleMs = backgroundIdleMs,
+        sleep = sleep,
     )
 
     private var agentsRunning = false
 
     private fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    /** The versionCode a download's name carries, whether it is still a `.part` or the checked file. */
+    private fun versionCodeOf(file: File) = file.name.removeSuffix(".part").removeSuffix(".apk").toLong()
+
+    /** The session the fake's last install created, which is what its verdict will name. */
+    private fun lastSession() = platform.sessions.last()
 
     private suspend fun UpdateManager.awaitState(timeoutMs: Long = 10_000, predicate: (UpdateState) -> Boolean): UpdateState =
         withTimeout(timeoutMs) { state.first(predicate) }
@@ -163,7 +179,7 @@ class UpdateManagerTest {
         assertThat(platform.installs.single().first).isEqualTo(apk(20099))
         assertThat(prefs.pendingUpdateVersionCode.first()).isEqualTo(20099)
 
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_SUCCESS, null, null)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_SUCCESS, null, null)
         assertThat(manager.state.value).isEqualTo(UpdateState.Installed("0.2.0"))
         assertThat(apk(20099).exists()).isFalse()
         withTimeout(5_000) { while (prefs.pendingUpdateVersionCode.first() != null) delay(10) }
@@ -222,11 +238,57 @@ class UpdateManagerTest {
 
     @Test
     fun `an APK whose own certificate differs from the installed one is refused after download`() = runBlocking {
-        platform.inspection = { file -> ApkInfo(platform.applicationId, file.nameWithoutExtension.toLong(), setOf("e".repeat(64))) }
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), setOf("e".repeat(64))) }
         val manager = manager()
         manager.check()
         val failed = manager.download() as UpdateState.Failed
         assertThat(failed.message).isEqualTo(UpdateManager.SIGNATURE_MISMATCH_MESSAGE)
+    }
+
+    @Test
+    fun `an APK that is not the build its release tag stands for is refused`() = runBlocking {
+        // A mispackaged release: correctly signed, this package, newer than what is installed — and not v0.2.0.
+        platform.inspection = { ApkInfo(platform.applicationId, 9_000_099L, platform.signatures, "9.0.0") }
+        val manager = manager()
+        manager.check()
+        val failed = manager.download() as UpdateState.Failed
+        assertThat(failed.message).contains("is build 9000099, not the 20099")
+        assertThat(downloads.listFiles()!!.toList()).isEmpty()
+        assertThat(platform.installs).isEmpty()
+    }
+
+    @Test
+    fun `an APK that calls itself another version is refused, build metadata aside`() = runBlocking {
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), platform.signatures, "0.2.0-rc.1") }
+        val manager = manager()
+        manager.check()
+        assertThat((manager.download() as UpdateState.Failed).message).contains("calls itself 0.2.0-rc.1")
+
+        // The same version with the commit it was built from is the same release.
+        platform.inspection = { file -> ApkInfo(platform.applicationId, versionCodeOf(file), platform.signatures, "0.2.0+g1a2b3c4") }
+        assertThat(manager.download()).isInstanceOf(UpdateState.Downloaded::class.java)
+    }
+
+    @Test
+    fun `a downloaded file is only ready once something vouches for it, and is re-checked before it is installed`() = runBlocking {
+        val manager = manager()
+        manager.check()
+        manager.download()
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+
+        // What a process killed between the rename and the checks would leave: the final name, nothing vouching for it.
+        cache.clearVerified()
+        val restored = manager()
+        restored.ensureRestored()
+        assertThat(restored.state.value).isInstanceOf(UpdateState.Available::class.java)
+        assertThat(apk(20099).exists()).isFalse()
+
+        // Downloaded again, then altered on disk: the digest recorded then is what the install is checked against.
+        restored.download()
+        apk(20099).writeBytes(stableApk.copyOf().also { it[0] = (it[0] + 1).toByte() })
+        val failed = restored.install() as UpdateState.Failed
+        assertThat(failed.message).contains("changed on disk")
+        assertThat(platform.installs).isEmpty()
     }
 
     @Test
@@ -268,6 +330,27 @@ class UpdateManagerTest {
         assertThat(listRequests).hasSize(2)
         assertThat(listRequests[1].getHeader("If-None-Match")).isEqualTo(releasesEtag)
         assertThat(cache.read()!!.etag).isEqualTo(releasesEtag)
+    }
+
+    @Test
+    fun `a stable release only reachable on a later page is still found`() = runBlocking {
+        fun releaseList(vararg tags: Pair<String, Boolean>) = tags.joinToString(",", "[", "]") { (tag, prerelease) ->
+            val version = tag.removePrefix("v")
+            """{"tag_name":"$tag","prerelease":$prerelease,"assets":[
+                {"name":"cursor-for-android-$version.apk","size":1,"browser_download_url":"${server.url("/download")}/$tag/x.apk"}]}"""
+        }
+        val firstPage = releaseList(*(1..20).map { "v0.3.0-rc.$it" to true }.toTypedArray())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path!!.startsWith("/repos/${GitHubFixtures.OWNER_REPO}/releases") ->
+                    MockResponse().setHeader("Link", """<${server.url("/page2")}>; rel="next"""").setBody(firstPage)
+                request.path == "/page2" -> MockResponse().setBody(releaseList("v0.2.0" to false))
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        // The stable channel would otherwise be told it is up to date: twenty release candidates fill page one.
+        val available = manager().check() as UpdateState.Available
+        assertThat(available.release.tagName).isEqualTo("v0.2.0")
     }
 
     @Test
@@ -357,6 +440,8 @@ class UpdateManagerTest {
         gate.countDown()
         pass.join()
         manager.awaitState { it is UpdateState.Installing }
+        // The state flips before the session is recorded and written, so the session list is what to wait on.
+        withTimeout(5_000) { while (platform.installs.isEmpty()) delay(10) }
         assertThat(platform.installs).hasSize(1)
     }
 
@@ -410,6 +495,94 @@ class UpdateManagerTest {
         manager.onAppStopped()
         assertThat(platform.installs).isEmpty()
         assertThat(platform.notified).hasSize(2)
+    }
+
+    @Test
+    fun `a notification the system would not show is not remembered as shown`() = runBlocking {
+        platform.sdkInt = 30
+        platform.notificationsPost = false
+        val manager = manager()
+        manager.runScheduled()
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+        assertThat(platform.notified).isEmpty()
+        assertThat(prefs.notifiedUpdateVersionCode.first()).isNull()
+
+        // Notifications allowed later: the offer is made again rather than counted as already announced.
+        platform.notificationsPost = true
+        manager.onAppStopped()
+        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
+        assertThat(prefs.notifiedUpdateVersionCode.first()).isEqualTo(20099)
+        manager.onAppStopped()
+        assertThat(platform.notified).hasSize(1)
+    }
+
+    @Test
+    fun `an install the app decided on is abandoned when the user comes back, or a run starts, while it settles`() = runBlocking {
+        val manager = manager(backgroundIdleMs = 300)
+        manager.check()
+        manager.download()
+
+        // The app is off screen when the decision is made and on screen a moment later: nothing is committed.
+        val pass = launch(Dispatchers.Default) { manager.onAppStopped() }
+        delay(100)
+        platform.visible = true
+        pass.join()
+        assertThat(platform.installs).isEmpty()
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+
+        // Same for a stream that begins while the window is being waited out.
+        platform.visible = false
+        val second = launch(Dispatchers.Default) { manager.onAppStopped() }
+        delay(100)
+        agentsRunning = true
+        second.join()
+        assertThat(platform.installs).isEmpty()
+
+        agentsRunning = false
+        manager.onAppStopped()
+        assertThat(platform.installs).hasSize(1)
+    }
+
+    @Test
+    fun `an install the app decided on is abandoned when the window closes while the APK is being staged`() = runBlocking {
+        val manager = manager()
+        manager.check()
+        manager.download()
+        val release = manager.state.value.release!!
+
+        // Off screen and idle when the window was decided, and the user is back by the time the bytes are down.
+        // Copying a release into the session is the slow part, and the old check was over before it began.
+        platform.staging = { platform.visible = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
+
+        // A run that starts while the APK is being staged is the other half of the same contract.
+        platform.visible = false
+        platform.staging = { agentsRunning = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.abandoned).isEqualTo(2)
+
+        // And the last look, after the session has been recorded and with nothing left between it and the commit.
+        agentsRunning = false
+        platform.staging = null
+        platform.beforeCommit = { platform.visible = true }
+        manager.onAppStopped()
+        assertThat(platform.installs).isEmpty()
+        assertThat(platform.abandoned).isEqualTo(3)
+        assertThat(cache.readPending()).isNull()
+        assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+
+        // With the window still open at the commit, the same install goes through.
+        platform.visible = false
+        platform.beforeCommit = null
+        manager.onAppStopped()
+        assertThat(platform.installs).hasSize(1)
+        assertThat(cache.readPending()!!.commitIssued).isTrue()
     }
 
     @Test
@@ -471,19 +644,139 @@ class UpdateManagerTest {
         before.check()
         before.download()
         before.install()
+        val release = before.state.value.release!!
 
-        // Still 0.1.0: the confirmation was never answered before the process died.
+        // Still 0.1.0: the confirmation was never answered before the process died. The session was committed, though,
+        // and its verdict may be moments away (it may even be what started this process), so it is left alone.
         val after = manager()
         after.ensureRestored()
-        assertThat(after.state.value).isEqualTo(UpdateState.Downloaded(before.state.value.release!!, apk(20099)))
-        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(after.state.value).isEqualTo(UpdateState.Installing(release))
+        assertThat(platform.abandoned).isEqualTo(0)
         assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
 
-        // Opening from the notification starts a new session. The state flips before the session is written, so the
-        // session list is what to wait on.
+        // Opening from the notification gives up on it and starts a new session. The state flips before the session is
+        // written, so the session list is what to wait on.
         after.resumePendingInstall()
         after.awaitState { it is UpdateState.Installing }
         withTimeout(5_000) { while (platform.installs.size < 2) delay(10) }
+        assertThat(platform.abandoned).isEqualTo(1)
+    }
+
+    @Test
+    fun `a session whose verdict never came is abandoned once it is too old to expect one`() = runBlocking {
+        val before = manager()
+        before.check()
+        before.download()
+        before.install()
+
+        now += UpdateManager.PENDING_INSTALL_TTL_MS + 1
+        val after = manager()
+        after.ensureRestored()
+        assertThat(after.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+        assertThat(platform.abandoned).isEqualTo(1)
+    }
+
+    @Test
+    fun `a verdict that never arrives is given up on by the process that is waiting for it`() = runBlocking {
+        val waited = CopyOnWriteArrayList<Long>()
+        val deadline = CompletableDeferred<Unit>()
+        val manager = manager(sleep = { waited += it; deadline.await() })
+        manager.check()
+        manager.download()
+        manager.install()
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Installing::class.java)
+        withTimeout(5_000) { while (waited.isEmpty()) delay(10) }
+        assertThat(waited.single()).isEqualTo(UpdateManager.PENDING_INSTALL_TTL_MS)
+
+        // Ten minutes on, the installer has no such session: no verdict is coming, so this process — not the next
+        // one, ten minutes after a restart — puts the ready download back in front of the user.
+        now += UpdateManager.PENDING_INSTALL_TTL_MS + 1
+        platform.forgetSessions()
+        deadline.complete(Unit)
+        val recovered = manager.awaitState { it is UpdateState.Downloaded } as UpdateState.Downloaded
+        assertThat(recovered.apk).isEqualTo(apk(20099))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+        withTimeout(5_000) { while (prefs.pendingUpdateVersionCode.first() != null) delay(10) }
+
+        // Installing is what an `Installing` state turns into a no-op, so it is the proof the manager is unstuck.
+        manager.installNow()
+        withTimeout(5_000) { while (platform.installs.size < 2) delay(10) }
+    }
+
+    @Test
+    fun `a session the installer is still working on is left alone at the deadline, and can still be given up on`() = runBlocking {
+        val deadline = CompletableDeferred<Unit>()
+        val manager = manager(sleep = { deadline.await() })
+        manager.check()
+        manager.download()
+        manager.install()
+        val release = manager.state.value.release!!
+
+        now += UpdateManager.PENDING_INSTALL_TTL_MS + 1
+        deadline.complete(Unit)
+        withTimeout(5_000) { while (platform.sessionQueries.isEmpty()) delay(10) }
+        assertThat(platform.sessionQueries).containsExactly(lastSession())
+        assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release))
+        assertThat(platform.abandoned).isEqualTo(0)
+
+        // Settings offers Cancel for exactly this state, and it is the only way out of a session that never ends.
+        manager.cancelInstall()
+        assertThat(manager.awaitState { it is UpdateState.Downloaded }).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(platform.abandoned).isEqualTo(1)
+        assertThat(cache.readPending()).isNull()
+    }
+
+    @Test
+    fun `a process that died before its commit is not mistaken for an install in flight`() = runBlocking {
+        val staged = CompletableDeferred<Unit>()
+        val stuck = CompletableDeferred<Unit>()
+        platform.beforeCommit = {
+            staged.complete(Unit)
+            stuck.await()
+        }
+        val before = manager()
+        before.check()
+        before.download()
+        val release = before.state.value.release!!
+
+        // The session is recorded and the process goes away on its way to the commit.
+        val dying = launch(Dispatchers.Default) { before.install() }
+        withTimeout(5_000) { staged.await() }
+        assertThat(cache.readPending()!!.commitIssued).isFalse()
+        dying.cancelAndJoin()
+
+        // Nothing will ever report on that session, so the fresh process must not wait ten minutes for it.
+        platform.beforeCommit = null
+        val after = manager()
+        after.ensureRestored()
+        assertThat(after.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
+        assertThat(cache.readPending()).isNull()
+        assertThat(prefs.pendingUpdateVersionCode.first()).isNull()
+        assertThat(after.install()).isInstanceOf(UpdateState.Installing::class.java)
+    }
+
+    @Test
+    fun `a cold process serves the verdict from what was recorded before the commit`() = runBlocking {
+        val before = manager()
+        before.check()
+        before.download()
+        before.install()
+        val release = before.state.value.release!!
+        val session = lastSession()
+
+        // The process that committed is gone and nothing was restored yet: this manager has never seen the release.
+        val after = manager()
+        assertThat(after.state.value).isEqualTo(UpdateState.Idle)
+        after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_PENDING_USER_ACTION, null, Intent("confirm"))
+        assertThat(after.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
+        assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
+
+        // The installer redelivering a verdict must not undo the one already acted on.
+        after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_SUCCESS, null, null)
+        assertThat(after.state.value).isEqualTo(UpdateState.Installed("0.2.0"))
+        after.onInstallStatus(release.versionCode, session, PackageInstaller.STATUS_SUCCESS, null, null)
+        assertThat(platform.cancelledNotifications).isEqualTo(1)
     }
 
     @Test
@@ -512,13 +805,13 @@ class UpdateManagerTest {
         val confirmation = Intent("android.content.pm.action.CONFIRM_INSTALL")
 
         platform.visible = true
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
         assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release, awaitingConfirmation = true))
         assertThat(platform.confirmations).containsExactly(confirmation)
         assertThat(platform.notified).isEmpty()
 
         platform.visible = false
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_PENDING_USER_ACTION, null, confirmation)
         assertThat(platform.notified.map { it.tagName }).containsExactly("v0.2.0")
 
         // Back in the app from the notification: the same confirmation comes up again.
@@ -527,7 +820,7 @@ class UpdateManagerTest {
         assertThat(platform.installs).hasSize(1)
 
         // Declined: the download is kept and offered again.
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_FAILURE_ABORTED, "user cancelled", null)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_FAILURE_ABORTED, "user cancelled", null)
         assertThat(manager.state.value).isEqualTo(UpdateState.Downloaded(release, apk(20099)))
         assertThat(apk(20099).exists()).isTrue()
     }
@@ -540,20 +833,20 @@ class UpdateManagerTest {
         manager.install()
         val release = manager.state.value.release!!
 
-        manager.onInstallStatus(99999, PackageInstaller.STATUS_FAILURE, "stale", null)
+        manager.onInstallStatus(99999, lastSession(), PackageInstaller.STATUS_FAILURE, "stale", null)
         assertThat(manager.state.value).isEqualTo(UpdateState.Installing(release))
 
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_FAILURE_CONFLICT, "INSTALL_FAILED_UPDATE_INCOMPATIBLE", null)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_FAILURE_CONFLICT, "INSTALL_FAILED_UPDATE_INCOMPATIBLE", null)
         val conflict = manager.state.value as UpdateState.Failed
         assertThat(conflict.phase).isEqualTo(UpdatePhase.Install)
         assertThat(conflict.message).isEqualTo(UpdateManager.SIGNATURE_MISMATCH_MESSAGE)
 
         manager.install()
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_FAILURE_STORAGE, null, null)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_FAILURE_STORAGE, null, null)
         assertThat((manager.state.value as UpdateState.Failed).message).contains("storage")
 
         manager.install()
-        manager.onInstallStatus(20099, PackageInstaller.STATUS_FAILURE_INVALID, null, null)
+        manager.onInstallStatus(20099, lastSession(), PackageInstaller.STATUS_FAILURE_INVALID, null, null)
         assertThat((manager.state.value as UpdateState.Failed).message).contains("valid")
         assertThat(apk(20099).exists()).isFalse()
         // Retrying an install without its file means downloading again.

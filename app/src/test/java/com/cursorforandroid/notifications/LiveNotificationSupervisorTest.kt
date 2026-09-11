@@ -11,6 +11,7 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -59,10 +60,11 @@ class LiveNotificationSupervisorTest {
         isFromCache = false,
     )
 
-    private fun TestScope.supervise(): Job = launch {
+    private fun TestScope.supervise(now: () -> Long = { currentTime }): Job = launch {
         LiveNotificationSupervisor(
             start = { starts += currentTime; acceptStart },
             stop = { stops++ },
+            now = now,
         ).run(liveDecisions(session, list, enabled, serviceActive))
     }
 
@@ -254,8 +256,79 @@ class LiveNotificationSupervisorTest {
     }
 
     @Test
+    fun `a notification that could not appear stops the service instead of starting it`() = runTest {
+        val canShow = MutableStateFlow(false)
+        val job = launch {
+            LiveNotificationSupervisor(
+                start = { starts += currentTime; acceptStart },
+                stop = { stops++ },
+            ).run(liveDecisions(session, list, enabled, serviceActive, canShowLive = { canShow.value }))
+        }
+        list.value = fetched("bc-1")
+        tick(60 * 60_000)
+        assertThat(starts).isEmpty()
+        assertThat(stops).isEqualTo(1)
+
+        // The user allowed them while the app was away; the collection restarts, and this time the service is asked for.
+        canShow.value = true
+        list.value = fetched("bc-1", "bc-2")
+        runCurrent()
+        assertThat(starts).hasSize(1)
+        job.cancel()
+    }
+
+    @Test
+    fun `churn in the running set still resets the loss count after a healthy spell`() = runTest {
+        val job = supervise()
+        list.value = fetched("bc-1")
+        runCurrent()
+        serviceActive.value = true
+        runCurrent()
+
+        // The running set changes many times, but the service stays up long enough to count as healthy.
+        tick(30_000)
+        list.value = fetched("bc-1", "bc-2")
+        runCurrent()
+        tick(31_000)
+        list.value = fetched("bc-2", "bc-3")
+        runCurrent()
+
+        serviceActive.value = false
+        runCurrent()
+        val lostAt = currentTime
+        tick(4_999)
+        assertThat(starts.last()).isLessThan(lostAt + LiveNotificationSupervisor.RESTART_BASE_MS)
+        tick(1)
+        assertThat(starts.last()).isEqualTo(lostAt + LiveNotificationSupervisor.RESTART_BASE_MS)
+        job.cancel()
+    }
+
+    @Test
+    fun `signing out clears only the live notifications for agents that were being tracked`() = runTest {
+        var cleared: Set<String>? = null
+        val job = launch {
+            LiveNotificationSupervisor(
+                start = { true },
+                stop = { stops++ },
+                clearPosted = { cleared = it },
+            ).run(
+                flowOf(
+                    LiveDecision.Track(setOf("bc-1", "bc-2"), serviceActive = true),
+                    LiveDecision.SignedOut,
+                ),
+            )
+        }
+        runCurrent()
+        assertThat(cleared).isEqualTo(setOf("bc-1", "bc-2"))
+        assertThat(stops).isEqualTo(1)
+        job.cancel()
+    }
+
+    @Test
     fun `decisions are pure functions of what the app knows`() {
         val signedIn = SessionState.SignedIn(user, isDemo = false)
+        assertThat(liveDecision(signedIn, fetched("bc-1"), enabled = true, serviceActive = false, canShowLive = false))
+            .isEqualTo(LiveDecision.Blocked)
         assertThat(liveDecision(SessionState.SignedOut, fetched("bc-1"), enabled = true, serviceActive = false)).isEqualTo(LiveDecision.SignedOut)
         assertThat(liveDecision(SessionState.Loading, fetched("bc-1"), enabled = true, serviceActive = false)).isEqualTo(LiveDecision.Idle)
         assertThat(liveDecision(signedIn, fetched("bc-1").copy(isFromCache = true), enabled = true, serviceActive = false)).isEqualTo(LiveDecision.Idle)

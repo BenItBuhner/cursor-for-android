@@ -66,9 +66,27 @@ class RunMonitor(
     private val trackers = ConcurrentHashMap<String, Tracker>()
     private val detailRequested: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val stopping: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    private val finishedEmitted: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /**
+     * Runs already reported on [finished]. Kept across [stop] — the service comes and goes as agents do, and a run
+     * that finishes over a restart would otherwise be announced twice — and bounded, since nothing else would ever
+     * take an id out of it.
+     */
+    private val finishedEmitted = RecentIds(MAX_REMEMBERED_FINISHES)
 
     private class Tracker(val runId: String, val job: Job)
+
+    /** Remembers the last [max] ids it was shown, so "have I seen this?" cannot grow without end. */
+    private class RecentIds(private val max: Int) {
+        private val ids = LinkedHashSet<String>()
+
+        /** True the first time an id is offered, false every time after. */
+        @Synchronized
+        fun add(id: String): Boolean {
+            if (!ids.add(id)) return false
+            if (ids.size > max) ids.iterator().run { next(); remove() }
+            return true
+        }
+    }
 
     val isRunning: Boolean get() = scope != null
 
@@ -102,7 +120,6 @@ class RunMonitor(
         trackers.clear()
         detailRequested.clear()
         stopping.clear()
-        finishedEmitted.clear()
         _state.value = LiveActivityState()
     }
 
@@ -128,6 +145,8 @@ class RunMonitor(
         // Agents without a known run id come from a summary-only list: load the detail record to learn it. One request
         // per agent at a time; a failed one (offline, a launch the server has not finished creating) is asked for again
         // at the next reconcile rather than never, or the agent would go unfollowed for as long as the monitor runs.
+        // The note is dropped once an agent stops running, so the set tracks the list rather than everything ever seen.
+        detailRequested.retainAll(running.mapTo(HashSet()) { it.id })
         running.filter { it.latestRunId == null && detailRequested.add(it.id) }.forEach { agent ->
             scope.launch { agents.loadDetail(agent.id).onFailure { detailRequested.remove(agent.id) } }
         }
@@ -149,9 +168,17 @@ class RunMonitor(
             trackers[agent.id] = Tracker(runId, scope.launch { track(agent, runId) })
         }
         _state.update { st ->
+            val published = st.running.map { run -> wanted[run.agentId]?.let { run.withAgent(it) } ?: run }
             st.copy(
-                running = st.running.map { run -> wanted[run.agentId]?.let { run.withAgent(it) } ?: run },
-                hasReconciled = true,
+                running = published,
+                // This pass only *starts* the trackers it wants; each publishes its run once it has read the run
+                // record, which is a network round trip away. So a list with a tracker still to report has not been
+                // caught up with — it is settling, not idle — and saying otherwise here is what let the live
+                // notification's short idle grace expire before the first run arrived, taking the foreground service
+                // down with it and leaving no notification at all. An agent nothing is being waited for — no run id,
+                // and the detail read that would learn it failed — is not a tracker in flight: the pass is as caught
+                // up as it can be, and that agent is asked about again at the next one.
+                hasReconciled = st.hasReconciled || published.isNotEmpty() || trackers.isEmpty(),
             )
         }
     }
@@ -229,7 +256,9 @@ class RunMonitor(
     private fun upsert(run: TrackedRun) {
         _state.update { st ->
             val list = if (st.running.any { it.agentId == run.agentId }) st.running.map { if (it.agentId == run.agentId) run else it } else st.running + run
-            st.copy(running = list.sortedBy { it.startedAtMillis })
+            // A published run is the other way the monitor is caught up with the list: the tracker the reconcile
+            // was waiting for has arrived.
+            st.copy(running = list.sortedBy { it.startedAtMillis }, hasReconciled = true)
         }
     }
 
@@ -241,5 +270,7 @@ class RunMonitor(
          */
         const val MAX_TRACKED = 8
         private const val FULL_REFRESH_EVERY = 5
+        /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
+        private const val MAX_REMEMBERED_FINISHES = 256
     }
 }

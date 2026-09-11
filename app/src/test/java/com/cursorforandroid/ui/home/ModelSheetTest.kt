@@ -1,18 +1,23 @@
 package com.cursorforandroid.ui.home
 
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -86,6 +91,7 @@ class ModelSheetTest {
         onAutoCreatePr: ((Boolean) -> Unit)? = {},
         pinnedIds: List<String> = emptyList(),
         noModelRow: NoModelRow? = null,
+        referenceLine: Boolean = false,
     ) {
         compose.setContent {
             // The host applies what the sheet reports; mirror that so the sheet re-renders against the new selection.
@@ -93,6 +99,10 @@ class ModelSheetTest {
             var selectedVariant by remember { mutableStateOf(selected?.defaultVariant) }
             var pins by remember { mutableStateOf(pinnedIds) }
             CursorTheme(mode = ThemeMode.Dark) {
+                // One unconstrained line of a chip's own style: what its label asks for at this font scale.
+                if (referenceLine) {
+                    Text("Reference line", style = CursorTheme.typography.base, maxLines = 1, modifier = Modifier.testTag("line"))
+                }
                 ModelSheet(
                     models = models,
                     selectedModel = selectedModel,
@@ -276,5 +286,32 @@ class ModelSheetTest {
         assertAbsent("Auto-create PR")
         assertAbsent("Default")
         assertAbsent("Current model")
+    }
+
+    private fun chipHeight(): Float =
+        compose.onNodeWithText("High").getUnclippedBoundsInRoot().let { (it.bottom - it.top).value }
+
+    private fun lineHeight(): Float =
+        compose.onNodeWithTag("line").getUnclippedBoundsInRoot().let { (it.bottom - it.top).value }
+
+    /**
+     * A chip is a 28dp tap target around an sp label, and that label's line outgrows 28dp at the system's largest
+     * font — so 28dp has to be the chip's minimum rather than its height, or the value is cut off. The scale is set
+     * on the configuration because the sheet's content lives in a dialog window of its own, which a locally provided
+     * density would not reach; the line is measured rather than assumed so the chip is held to its own content.
+     */
+    @Test
+    @Config(fontScale = 2f)
+    fun `a parameter chip grows at the largest system font`() {
+        show(listOf(grok), referenceLine = true)
+        assertThat(lineHeight()).isGreaterThan(28f)
+        assertThat(chipHeight()).isWithin(0.5f).of(lineHeight())
+    }
+
+    @Test
+    fun `a parameter chip keeps its designed height at the default font`() {
+        show(listOf(grok), referenceLine = true)
+        assertThat(lineHeight()).isLessThan(28f)
+        assertThat(chipHeight()).isWithin(1f).of(28f)
     }
 }

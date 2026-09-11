@@ -52,15 +52,18 @@ class CursorApiException(
  * Converts Retrofit's HttpException into the API's standardized `{ error: { code, message } }` shape. An exception
  * that already is one (the demo backend raises them directly) passes through.
  *
- * The same exception is looked at more than once on its way up — a repository decides by the code, then a screen
- * words it — so the body is peeked at rather than read: Retrofit buffers it once, and `string()` would drain that
- * buffer, leaving every later look with an empty body and a code that is only the status (`http_409`), which is how
- * a `409 agent_busy` stopped being recognised as one.
+ * The same exception is looked at more than once on its way up — a repository decides by the code (the launch path
+ * checks for `agent_id_conflict`, the follow-up queue for `agent_busy`), then a screen words it — so the body is
+ * peeked at rather than read: Retrofit buffers it once, and `string()` would drain that buffer, leaving every later
+ * look with an empty body and a code that is only the status (`http_409`), which is how a `409 agent_busy` stopped
+ * being recognised as one.
  */
 fun Throwable.toCursorError(): CursorApiException? {
     if (this is CursorApiException) return this
     val http = this as? HttpException ?: return null
-    val body = runCatching { http.response()?.errorBody()?.source()?.peek()?.readUtf8() }.getOrNull()
+    val body = runCatching {
+        http.response()?.errorBody()?.let { it.source().peek().readString(it.contentType()?.charset() ?: Charsets.UTF_8) }
+    }.getOrNull()
     val parsed = body?.let { runCatching { CursorJson.decodeFromString(ApiErrorBodyDto.serializer(), it) }.getOrNull() }?.error
     return CursorApiException(
         httpCode = http.code(),
@@ -69,6 +72,19 @@ fun Throwable.toCursorError(): CursorApiException? {
         helpUrl = parsed?.helpUrl,
     )
 }
+
+/**
+ * How long the server asked us to wait, from a `Retry-After` on a throttled response. Delta-seconds only — the HTTP-date
+ * form would need the server's clock — and capped, so a header we cannot make sense of cannot wedge a picker shut.
+ */
+fun Throwable.retryAfterMillis(): Long? {
+    val http = this as? HttpException ?: return null
+    if (http.code() != 429 && http.code() != 503) return null
+    val seconds = http.response()?.headers()?.get("Retry-After")?.trim()?.toLongOrNull() ?: return null
+    return seconds.takeIf { it > 0 }?.coerceAtMost(MAX_RETRY_AFTER_SECONDS)?.times(1000L)
+}
+
+private const val MAX_RETRY_AFTER_SECONDS = 15 * 60L
 
 /**
  * True for a failure worth asking again about in a moment: the server slow or unreachable (a timeout, a dropped
@@ -128,7 +144,9 @@ object CursorApiFactory {
 
     /**
      * For the browser login's `/auth/poll` and the dashboard RPC that mints the key: no stored credential may ride
-     * along, and nothing is logged, because the poll carries the verifier that redeems the login.
+     * along, and nothing is logged on any build, not even on debug — the poll carries the verifier that redeems the
+     * login, in its body, and in the query string of the GET an older backend falls back to, which even
+     * [HttpLoggingInterceptor.Level.BASIC] would write to logcat as part of the request line.
      */
     fun loginClient(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)

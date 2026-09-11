@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -36,6 +37,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The follow-ups of each chat that have not reached the server: the composer's draft, and the queue.
@@ -61,7 +63,7 @@ class FollowUpRepository(
     private val conversations: ConversationRepository,
     private val agents: AgentRepository,
     private val hub: LiveRunHub,
-    private val mcpServers: () -> List<McpServer>,
+    private val mcpServers: suspend () -> List<McpServer>,
     private val store: FollowUpStore? = null,
     /** False (the demo) keeps everything in memory. */
     private val persist: () -> Boolean = { true },
@@ -84,8 +86,36 @@ class FollowUpRepository(
 
     private val entries = HashMap<String, Entry>()
 
+    /**
+     * The account everything held here belongs to. Captured when an operation starts and checked again before it
+     * sends anything or writes anything to disk, so a send or a save that was in flight across a sign-out cannot
+     * reach the next account's server or re-create the previous one's files behind [FollowUpStore.clear].
+     */
+    private val generation = AtomicInteger()
+
+    /** Everything this repository has in flight, so [resetAll] can cancel all of it at once. */
+    @Volatile private var work: CoroutineScope = workScope()
+
+    private fun workScope(): CoroutineScope =
+        CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
+
     private fun entry(agentId: String): Entry = synchronized(entries) {
+        evictIdleEntries()
         entries.getOrPut(agentId) { Entry(agentId).also { restore(it) } }
+    }
+
+    /** Drops empty entries nobody is using, like [ConversationRepository.evictIdleEntries]. */
+    private fun evictIdleEntries() {
+        if (entries.size < MAX_ENTRIES) return
+        entries.values.filter { e ->
+            val s = e.state.value
+            s.restored && s.draft.isEmpty && s.queue.isEmpty()
+        }.take(entries.size - MAX_ENTRIES + 1).forEach { victim ->
+            victim.dispatcher?.cancel()
+            victim.saveJob?.cancel()
+            victim.restoreJob?.cancel()
+            entries.remove(victim.agentId)
+        }
     }
 
     fun state(agentId: String): StateFlow<FollowUpComposerState> = entry(agentId).state.asStateFlow()
@@ -150,7 +180,9 @@ class FollowUpRepository(
     /** Takes a queued follow-up away. One in flight, or steered, stays until the server has answered. */
     fun remove(agentId: String, id: String) {
         val e = entry(agentId)
-        e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
+        synchronized(e) {
+            e.update { copy(queue = queue.filterNot { it.id == id && !it.isSending && !it.isSteered }) }
+        }
         e.scheduleSave()
     }
 
@@ -161,16 +193,18 @@ class FollowUpRepository(
     fun takeForEdit(agentId: String, id: String): QueuedFollowUp? {
         val e = entry(agentId)
         var taken: QueuedFollowUp? = null
-        e.update {
-            val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
-            taken = item
-            val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
-                item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
+        synchronized(e) {
+            e.update {
+                val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
+                taken = item
+                val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
+                    item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
+                }
+                copy(
+                    draft = FollowUpDraft(item.text, item.images),
+                    queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
+                )
             }
-            copy(
-                draft = FollowUpDraft(item.text, item.images),
-                queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
-            )
         }
         e.scheduleSave()
         return taken
@@ -180,7 +214,9 @@ class FollowUpRepository(
     fun retry(agentId: String, id: String) {
         val e = entry(agentId)
         synchronized(e) {
-            e.update { copy(queue = queue.map { if (it.id == id) it.copy(error = null) else it }) }
+            e.update {
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null) else it })
+            }
             e.ensureDispatcher()
         }
     }
@@ -195,6 +231,7 @@ class FollowUpRepository(
      * queued message that could be steered.
      */
     fun sendNow(agentId: String, id: String): Boolean {
+        val startedIn = generation.get()
         val e = entry(agentId)
         val item = synchronized(e) {
             val found = e.state.value.queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@synchronized null
@@ -204,18 +241,19 @@ class FollowUpRepository(
             steered
         } ?: return false
         e.scheduleSave()
-        scope.launch { steer(e, item) }
+        work.launch { steer(e, item, startedIn) }
         return true
     }
 
-    private suspend fun steer(e: Entry, item: QueuedFollowUp) {
+    private suspend fun steer(e: Entry, item: QueuedFollowUp, startedIn: Int) {
+        if (generation.get() != startedIn) return
         val staged = conversations.stageFollowUp(e.agentId, item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }, item.images.map { it.image })
         stopTurn(e).exceptionOrNull()?.let { t ->
             if (t is CancellationException) throw t
             unsteer(e, item, staged, t)
             return
         }
-        sendSteered(e, item, staged)
+        sendSteered(e, item, staged, startedIn)
     }
 
     /**
@@ -268,11 +306,16 @@ class FollowUpRepository(
      * A send that fails for a passing reason — the agent still winding down the turn that was cancelled for it, the
      * server slow — is tried again a few times, with a pause that doubles each time, before the steer is given up.
      */
-    private suspend fun sendSteered(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp) {
+    private suspend fun sendSteered(e: Entry, item: QueuedFollowUp, staged: StagedFollowUp, startedIn: Int) {
         var retries = 0
         var busyStreak = 0
         while (true) {
             awaitIdle(e.agentId)
+            // The account this steer belongs to has been signed out; the message is not the next one's to send.
+            if (generation.get() != startedIn) return
+            val startedAt = AppClock.now()
+            e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(sendStartedAtMillis = startedAt) else it }) }
+            e.scheduleSave()
             val result = conversations.sendStaged(
                 e.agentId,
                 staged,
@@ -365,17 +408,20 @@ class FollowUpRepository(
         e.dispatcher?.cancel()
         e.saveJob?.cancel()
         e.restoreJob?.cancel()
-        scope.launch { store?.remove(agentId) }
+        work.launch { store?.remove(agentId) }
     }
 
-    /** Signing out: nothing of the account stays in memory; the disk is cleared by the caller alongside the other stores. */
+    /**
+     * Signing out: nothing of the account stays in memory. Every dispatcher, save, restore and steer is cancelled
+     * together — a steer is launched on the same scope rather than tracked one job at a time — and the generation is
+     * bumped first, so work that is already past a cancellation point cannot send into the account signing in or
+     * write the previous one's draft back behind the [FollowUpStore.clear] the caller does next.
+     */
     fun resetAll() {
-        val all = synchronized(entries) { entries.values.toList().also { entries.clear() } }
-        all.forEach { e ->
-            e.dispatcher?.cancel()
-            e.saveJob?.cancel()
-            e.restoreJob?.cancel()
-        }
+        generation.incrementAndGet()
+        synchronized(entries) { entries.clear() }
+        work.cancel()
+        work = workScope()
     }
 
     // -- persistence -------------------------------------------------------------------------------------------------
@@ -389,8 +435,10 @@ class FollowUpRepository(
      */
     private fun restore(e: Entry) {
         val store = store?.takeIf { persist() } ?: return
-        e.restoreJob = scope.launch {
+        val startedIn = generation.get()
+        e.restoreJob = work.launch {
             val saved = runCatching { store.read(e.agentId) }.getOrNull()
+            if (generation.get() != startedIn) return@launch
             synchronized(e) {
                 e.update {
                     val known = queue.mapTo(HashSet()) { it.id }
@@ -400,19 +448,49 @@ class FollowUpRepository(
                         restored = true,
                     )
                 }
-                if (e.state.value.queue.isNotEmpty()) e.ensureDispatcher()
+            }
+            reconcileInflight(e, startedIn)
+            synchronized(e) {
+                if (e.state.value.queue.any { it.error == null && !it.needsConfirmation }) e.ensureDispatcher()
             }
             // Whatever changed while the file was being read is now written on top of it (a no-op when nothing did).
             e.scheduleSave()
         }
     }
 
+    /**
+     * A send marker on disk means the request may have got through before the process died. Ask the server before
+     * anything goes out again; drop the item when the answer is yes, flag it when the answer is no or unknown.
+     */
+    private suspend fun reconcileInflight(e: Entry, startedIn: Int) {
+        val pending = synchronized(e) { e.state.value.queue.filter { it.sendStartedAtMillis != null } }
+        for (item in pending) {
+            if (generation.get() != startedIn) return
+            val since = item.sendStartedAtMillis ?: continue
+            val text = item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }
+            val sent = conversations.wasSentSince(e.agentId, text, since)
+            synchronized(e) {
+                if (generation.get() != startedIn) return
+                when {
+                    sent.getOrNull() == true -> e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                    else -> e.update {
+                        copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, needsConfirmation = true) else it })
+                    }
+                }
+            }
+        }
+    }
+
     private fun Entry.scheduleSave(delayMs: Long = 0L) {
         val store = store?.takeIf { persist() } ?: return
+        val startedIn = generation.get()
         saveJob?.cancel()
-        saveJob = scope.launch {
+        saveJob = work.launch {
             if (delayMs > 0) delay(delayMs)
             val snapshot = state.first { it.restored }
+            // The file this would write belongs to an account that has been signed out, and whose directory the
+            // sign-out has already deleted.
+            if (generation.get() != startedIn) return@launch
             runCatching { store.write(agentId, snapshot.draft, snapshot.queue) }.onFailure { if (it is CancellationException) throw it }
         }
     }
@@ -450,10 +528,11 @@ class FollowUpRepository(
     /** Called under the entry's monitor. */
     private fun Entry.ensureDispatcher() {
         if (dispatcher?.isActive == true) return
-        dispatcher = scope.launch { dispatchLoop(this@ensureDispatcher) }
+        val startedIn = generation.get()
+        dispatcher = work.launch { dispatchLoop(this@ensureDispatcher, startedIn) }
     }
 
-    private suspend fun dispatchLoop(e: Entry) = coroutineScope {
+    private suspend fun dispatchLoop(e: Entry, startedIn: Int) = coroutineScope {
         // Following the active run is what turns the end of the turn into an idle row when nothing else is watching.
         val follower = launch {
             runToFollow(e.agentId).collectLatest { runId ->
@@ -469,7 +548,12 @@ class FollowUpRepository(
             while (isActive) {
                 val done = synchronized(e) {
                     val s = e.state.value
-                    if (s.restored && s.queue.isEmpty()) { e.dispatcher = null; true } else false
+                    if (s.restored && (s.queue.isEmpty() || s.queue.all { it.error != null || it.needsConfirmation })) {
+                        e.dispatcher = null
+                        true
+                    } else {
+                        false
+                    }
                 }
                 if (done) break
                 // The head can go once it is restored, free of a failure, not already out, and the agent is free.
@@ -480,23 +564,38 @@ class FollowUpRepository(
                     if (e.state.value.let { it.restored && it.headMayGo }) settleRow(e.agentId)
                     continue
                 }
-                // As of now, not as of the emission: a steered message that was just accepted has marked the row
-                // running, and the next in line must not follow it out on a stale reading.
-                val head = e.state.value.takeIf { it.restored && it.headMayGo && isIdleNow(e.agentId) }?.queue?.firstOrNull() ?: continue
-                busyStreak = if (dispatch(e, head, busyStreak)) busyStreak + 1 else 0
+                // Claiming the head and marking it sending are one step, under the monitor every other queue
+                // operation takes: a steer, an edit or a removal either gets there first and this finds nothing to
+                // claim, or arrives to a message that already reads as in flight and leaves it alone. The agent's
+                // idleness is read as of now too, not as of the emission: a steered message that was just accepted
+                // has marked the row running, and the next in line must not follow it out on a stale reading.
+                val head = synchronized(e) {
+                    val h = e.state.value.takeIf { it.restored && it.headMayGo && isIdleNow(e.agentId) }?.queue?.firstOrNull()
+                        ?: return@synchronized null
+                    val startedAt = AppClock.now()
+                    e.update {
+                        copy(queue = queue.map { if (it.id == h.id) it.copy(isSending = true, sendStartedAtMillis = startedAt) else it })
+                    }
+                    h.copy(isSending = true, sendStartedAtMillis = startedAt)
+                } ?: continue
+                e.scheduleSave()
+                busyStreak = if (dispatch(e, head, startedIn, busyStreak)) busyStreak + 1 else 0
             }
         } finally {
             follower.cancel()
         }
     }
 
-    /** True when the message at the head is one the dispatcher may send: not failed, not already out, not steered. */
+    /** True when the message at the head is one the dispatcher may send: not failed, not already out, not steered, not awaiting the user's word. */
     private val FollowUpComposerState.headMayGo: Boolean
-        get() = queue.firstOrNull()?.let { it.error == null && !it.isSending && !it.isSteered } == true
+        get() = queue.firstOrNull()?.let { it.error == null && !it.isSending && !it.isSteered && !it.needsConfirmation } == true
 
-    /** Sends the head of the queue. True when the server refused it as busy and the message is waiting its turn again. */
-    private suspend fun dispatch(e: Entry, item: QueuedFollowUp, busyStreak: Int): Boolean {
-        e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = true) else it }) }
+    /**
+     * Sends [item], which [dispatchLoop] has already claimed and marked sending. True when the server refused it as
+     * busy and the message is waiting its turn again.
+     */
+    private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int, busyStreak: Int): Boolean {
+        if (generation.get() != startedIn) return false
         val result = conversations.sendFollowUp(
             e.agentId,
             item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
@@ -507,6 +606,7 @@ class FollowUpRepository(
             modelParams = item.modelParams,
             modelDisplayName = item.modelDisplayName,
         )
+        if (generation.get() != startedIn) return false
         return result.fold(
             onSuccess = {
                 e.update { copy(queue = queue.filterNot { it.id == item.id }) }
@@ -517,11 +617,17 @@ class FollowUpRepository(
                 if (t is CancellationException) throw t
                 if (t.toCursorError()?.code == AGENT_BUSY) {
                     // The message waits its turn again.
-                    e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false) else it }) }
+                    e.update {
+                        copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null) else it })
+                    }
                     awaitBusyTurn(e.agentId, busyStreak)
                     true
                 } else {
-                    e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, error = t.userMessage()) else it }) }
+                    e.update {
+                        copy(queue = queue.map {
+                            if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage()) else it
+                        })
+                    }
                     false
                 }
             },
@@ -529,6 +635,7 @@ class FollowUpRepository(
     }
 
     private companion object {
+        const val MAX_ENTRIES = 24
         const val DRAFT_SAVE_DELAY_MS = 400L
         const val BUSY_RECHECK_MS = 20_000L
         const val IDLE_SETTLE_MS = 10_000L

@@ -50,13 +50,48 @@ object MarkdownParser {
     /** A paragraph that is nothing but the HTML wrappers agents put around a section (`<details>`, `<div>`, `<p>`). */
     private val htmlWrapperOnly = Regex("""^(?:\s*</?(?:details|summary|div|p|center|br)\b[^>]*/?>\s*)+$""", RegexOption.IGNORE_CASE)
 
-    fun parse(markdown: String): List<MdBlock> = parseBlocks(markdown.replace("\r\n", "\n").replace('\r', '\n').lines())
+    fun parse(markdown: String): List<MdBlock> = parseBlocks(splitLines(markdown))
 
-    private fun parseBlocks(lines: List<String>): List<MdBlock> {
+    /** Blocks plus, for each, the offset in [markdown] of the line its construct started on; see [IncrementalMarkdown]. */
+    class Parsed internal constructor(val blocks: List<MdBlock>, val starts: IntArray)
+
+    fun parseWithStarts(markdown: String): Parsed {
+        val lines = splitLines(markdown)
+        // Offsets are into the text as given, so a `\r\n` counts two characters where `lines` saw one line break.
+        val lineStart = IntArray(lines.size)
+        var at = 0
+        for (index in lines.indices) {
+            lineStart[index] = at
+            at += lines[index].length
+            if (at < markdown.length) at += if (markdown.startsWith("\r\n", at)) 2 else 1
+        }
+        val startLines = mutableListOf<Int>()
+        val blocks = parseBlocks(lines, startLines)
+        return Parsed(blocks, IntArray(blocks.size) { lineStart[startLines[it]] })
+    }
+
+    private fun splitLines(markdown: String): List<String> = markdown.replace("\r\n", "\n").replace('\r', '\n').lines()
+
+    /**
+     * Parses [lines] into blocks. When [startLines] is given, the index of the line each block's construct began on
+     * is appended to it, one entry per block emitted, in order.
+     */
+    private fun parseBlocks(lines: List<String>, startLines: MutableList<Int>? = null): List<MdBlock> {
         val blocks = mutableListOf<MdBlock>()
         val paragraph = StringBuilder()
+        var paragraphStart = 0
         // The last line appended to the paragraph ended with two spaces or a backslash: a hard line break follows it.
         var hardBreak = false
+
+        fun emit(block: MdBlock, startLine: Int) {
+            blocks += block
+            startLines?.add(startLine)
+        }
+
+        /** Records [startLine] for every block a sub-parser appended to [blocks] since it held [sizeBefore] blocks. */
+        fun emitted(sizeBefore: Int, startLine: Int) {
+            if (startLines != null) repeat(blocks.size - sizeBefore) { startLines.add(startLine) }
+        }
 
         fun flushParagraph() {
             val text = paragraph.toString().trim()
@@ -65,19 +100,22 @@ object MarkdownParser {
             if (text.isEmpty() || htmlWrapperOnly.matches(text)) return
             // Media tags sit in running text; each becomes its own block so it can be laid out as a figure.
             MediaMarkup.split(text).forEach { segment ->
-                blocks += when (segment) {
-                    is MediaSegment.Text -> MdBlock.Paragraph(segment.text)
-                    is MediaSegment.Image -> MdBlock.Image(segment.src, segment.alt)
-                    is MediaSegment.Video -> MdBlock.Video(segment.src, segment.poster)
-                }
+                emit(
+                    when (segment) {
+                        is MediaSegment.Text -> MdBlock.Paragraph(segment.text)
+                        is MediaSegment.Image -> MdBlock.Image(segment.src, segment.alt)
+                        is MediaSegment.Video -> MdBlock.Video(segment.src, segment.poster)
+                    },
+                    paragraphStart,
+                )
             }
         }
 
-        fun appendParagraphLine(raw: String) {
+        fun appendParagraphLine(raw: String, lineIndex: Int) {
             var content = raw.trim()
             val breakAfter = raw.endsWith("  ") || (content.endsWith("\\") && !content.endsWith("\\\\"))
             if (breakAfter && content.endsWith("\\")) content = content.dropLast(1).trimEnd()
-            if (paragraph.isNotEmpty()) paragraph.append(if (hardBreak) '\n' else ' ')
+            if (paragraph.isEmpty()) paragraphStart = lineIndex else paragraph.append(if (hardBreak) '\n' else ' ')
             paragraph.append(content)
             hardBreak = breakAfter
         }
@@ -96,40 +134,49 @@ object MarkdownParser {
                 }
                 fence != null -> {
                     flushParagraph()
+                    val before = blocks.size
+                    val start = i
                     i = parseFence(lines, i, fence, blocks)
+                    emitted(before, start)
                 }
                 heading != null -> {
                     flushParagraph()
-                    blocks += MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2].trim())
+                    emit(MdBlock.Heading(heading.groupValues[1].length, heading.groupValues[2].trim()), i)
                     i++
                 }
                 inParagraph && setextUnderline.matches(line) -> {
-                    blocks += MdBlock.Heading(1, paragraph.toString().trim())
+                    emit(MdBlock.Heading(1, paragraph.toString().trim()), paragraphStart)
                     paragraph.setLength(0)
                     hardBreak = false
                     i++
                 }
                 thematicBreak.matches(line) -> {
                     flushParagraph()
-                    blocks += MdBlock.Rule
+                    emit(MdBlock.Rule, i)
                     i++
                 }
                 isQuote(line) -> {
                     flushParagraph()
+                    val before = blocks.size
+                    val start = i
                     i = parseQuote(lines, i, blocks)
+                    emitted(before, start)
                 }
                 marker != null && (!inParagraph || marker.canInterruptParagraph) -> {
                     flushParagraph()
+                    val before = blocks.size
+                    val start = i
                     i = parseList(lines, i, marker, blocks)
+                    emitted(before, start)
                 }
                 else -> {
                     val table = tableAt(lines, i)
                     if (table != null) {
                         flushParagraph()
-                        blocks += table.first
+                        emit(table.first, i)
                         i = table.second
                     } else {
-                        appendParagraphLine(line)
+                        appendParagraphLine(line, i)
                         i++
                     }
                 }
@@ -415,5 +462,50 @@ object MarkdownParser {
             i++
         }
         return line.substring(i)
+    }
+}
+
+/**
+ * The parse of a message that is still being written. A streamed reply only ever gains text at the end, so every
+ * block above the one being written is final: this keeps those and re-reads only the open tail, instead of parsing
+ * the whole reply from character zero on every delta.
+ *
+ * The tail starts at the second-to-last block, not the last: the line being written can still re-shape the block
+ * above it — a `#` that was a heading becomes prose once `hashtag` follows it and rejoins the paragraph before it, a
+ * table's delimiter row that stops being one turns the header back into that paragraph's next line. It can never
+ * reach further back than that: once a block has another block after it, every line that decided where it starts
+ * (its own first line, and for a table the delimiter row under it) has been terminated, and this parser reads nothing
+ * else — a list continuing across a blank line, a quote's or item's lazy continuation and a setext underline all look
+ * only at the lines they are on. So the blocks before the second-to-last one are kept as they are.
+ *
+ * Not thread safe; one instance belongs to one [MarkdownText].
+ */
+class IncrementalMarkdown {
+    private var source: String? = null
+    private var blocks: List<MdBlock> = emptyList()
+    private var settled: List<MdBlock> = emptyList()
+    /** The prefix of the source [settled] was parsed from; it ends where the second-to-last block began. */
+    private var settledText: String = ""
+
+    fun parse(markdown: String): List<MdBlock> {
+        val previous = source
+        if (previous != null && (previous === markdown || previous == markdown)) return blocks
+        if (!markdown.startsWith(settledText)) {
+            settled = emptyList()
+            settledText = ""
+        }
+        val tail = if (settledText.isEmpty()) markdown else markdown.substring(settledText.length)
+        val parsed = MarkdownParser.parseWithStarts(tail)
+        val all = if (settled.isEmpty()) parsed.blocks else settled + parsed.blocks
+        val open = parsed.starts.lastOrNull() ?: 0
+        val openFrom = parsed.starts.lastOrNull { it < open } ?: 0
+        if (openFrom > 0) {
+            val complete = parsed.starts.count { it < openFrom }
+            settled = all.subList(0, settled.size + complete).toList()
+            settledText = markdown.substring(0, settledText.length + openFrom)
+        }
+        source = markdown
+        blocks = all
+        return all
     }
 }

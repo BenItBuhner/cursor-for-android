@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -50,6 +51,7 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
@@ -60,6 +62,7 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
@@ -67,6 +70,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
@@ -74,6 +78,17 @@ import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
+
+/**
+ * Whether the working row belongs above the transcript. It is redundant while the reply itself is arriving — the
+ * text is the progress — but a dropped connection is not visible anywhere else, and the window in which one can
+ * drop while a reply is the newest item is the longest there is. So a reconnect always brings the row back, which
+ * is what stops a reply that stopped mid-sentence from looking like an agent that stopped thinking.
+ */
+internal fun ConversationState.showsWorkingRow(): Boolean {
+    val active = runStatus?.isActive == true || isStreaming
+    return active && (isReconnecting || items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming })
+}
 
 /**
  * One chat: header with the agent's name and repo · branch (and a button to its pull request once it has one), the
@@ -119,10 +134,10 @@ fun ConversationScreen(
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    var menuOpen by remember { mutableStateOf(false) }
-    var modelSheet by remember { mutableStateOf(false) }
-    var renameOpen by remember { mutableStateOf(false) }
-    var snoozeOpen by remember { mutableStateOf(false) }
+    var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var modelSheet by rememberSaveable { mutableStateOf(false) }
+    var renameOpen by rememberSaveable { mutableStateOf(false) }
+    var snoozeOpen by rememberSaveable { mutableStateOf(false) }
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
 
@@ -133,17 +148,19 @@ fun ConversationScreen(
         }
     }
     // Coming back to the foreground: the network may have taken the stream down while the app was away, or the run
-    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op.
+    // finished meanwhile. On the first composition the initial load is still in flight and this is a no-op. Stopping
+    // lets the run go for the notification service to watch, rather than streaming into a screen nobody can see.
     LifecycleStartEffect(agentId) {
-        viewModel.revalidate()
-        onStopOrDispose { }
+        viewModel.resume()
+        onStopOrDispose { viewModel.pause() }
     }
 
     val items = conversation.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val showWorking = isActive && items.lastOrNull().let { it !is AssistantMessage || !it.isStreaming }
+    val showWorking = conversation.showsWorkingRow()
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
-    val markdownMedia = remember(agentId) { MarkdownMediaContext(agentId, graph.media) }
+    val lightbox = rememberLightboxState(agentId)
+    val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -205,53 +222,57 @@ fun ConversationScreen(
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
-                // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                // flat against the header or the composer.
-                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                if (showWorking) {
-                    item("working") {
-                        // A dropped connection is not the run's problem: the agent keeps working while the stream is
-                        // re-established, so the caption keeps shimmering and only its wording says what is going on.
-                        // The caption is the whole indicator, as in the web chat: no glyph beside it.
-                        val caption = when {
-                            conversation.runStatus == RunStatus.CREATING -> "Starting…"
-                            conversation.isReconnecting -> "Reconnecting…"
-                            else -> "Working…"
-                        }
-                        Box(paneWidth) {
-                            ShimmerText(caption, style = type.base)
+            // The media context is the same for every row, so it is provided once around the list rather than
+            // opening a provider scope per item.
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
+                    // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
+                    // flat against the header or the composer.
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (showWorking) {
+                        item("working") {
+                            // A dropped connection is not the run's problem: the agent keeps working while the stream
+                            // is re-established, so the caption keeps shimmering and only its wording says what is
+                            // going on. The caption is the whole indicator, as in the web chat: no glyph beside it.
+                            val caption = when {
+                                conversation.runStatus == RunStatus.CREATING -> "Starting…"
+                                conversation.isReconnecting -> "Reconnecting…"
+                                else -> "Working…"
+                            }
+                            Box(paneWidth) {
+                                ShimmerText(caption, style = type.base)
+                            }
                         }
                     }
-                }
-                items(items.asReversed(), key = { it.id }) { item ->
-                    CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+                    // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
+                    // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
+                    items(items.asReversed(), key = { it.id }, contentType = { it::class }) { item ->
                         TimelineItemView(item, paneWidth)
                     }
-                }
-                if (!conversation.isLoading && items.isEmpty()) {
-                    item("empty") {
-                        Text(
-                            if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
-                            style = type.base,
-                            color = colors.textQuaternary,
-                            modifier = Modifier.padding(top = 32.dp),
-                        )
+                    if (!conversation.isLoading && items.isEmpty()) {
+                        item("empty") {
+                            Text(
+                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
+                                style = type.base,
+                                color = colors.textQuaternary,
+                                modifier = Modifier.padding(top = 32.dp),
+                            )
+                        }
                     }
-                }
-                if (conversation.isLoading && items.isEmpty()) {
-                    item("loading") {
-                        Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing(size = 14.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Loading…", style = type.base, color = colors.textQuaternary)
+                    if (conversation.isLoading && items.isEmpty()) {
+                        item("loading") {
+                            Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                                SpinnerRing(size = 14.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Loading…", style = type.base, color = colors.textQuaternary)
+                            }
                         }
                     }
                 }
@@ -335,6 +356,10 @@ fun ConversationScreen(
             )
         }
     }
+
+    // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
+    // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
+    FigureLightbox(lightbox, graph.media, agentId)
 
     if (modelSheet) {
         ModelSheet(

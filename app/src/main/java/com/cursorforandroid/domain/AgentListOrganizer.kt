@@ -140,8 +140,9 @@ object AgentListOrganizer {
         }
         if (!gitOk) return false
 
-        // A chat launched from this app is the account's API chat like any other; the launch this device remembers
-        // is what makes it "This device" rather than "API".
+        // One exclusive bucket per page, so either page's checkboxes can be picked apart on their own: where the chat
+        // was started from, and what it runs on. A chat launched from this app is the account's API chat like any
+        // other; the launch this device remembers is what makes it "This device" rather than "API".
         val source = if (row.launchedFromThisDevice) SourceFilter.ThisDevice else SourceFilter.of(agent.source)
         if (source !in prefs.sources) return false
 

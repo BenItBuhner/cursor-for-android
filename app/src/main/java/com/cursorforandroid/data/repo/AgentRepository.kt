@@ -66,10 +66,21 @@ data class AgentListState(
 
 /**
  * How much of the list a refresh fetches. [Quick] reads the newest page of each endpoint, which is where agents
- * started elsewhere appear (the API lists newest first); [Full] pages through everything so deletions and
- * follow-ups on old agents are picked up too.
+ * started elsewhere appear (the API lists newest first); [Full] reads the newest few hundred, which is what a poll
+ * every few minutes can afford; [Deep] pages to the end of both endpoints, which is the only pass that can tell
+ * that an old agent was deleted elsewhere. A [Full] pass is promoted to a [Deep] one when the last complete
+ * listing was over an hour ago.
  */
-enum class RefreshDepth { Quick, Full }
+enum class RefreshDepth { Quick, Full, Deep }
+
+/** What [AgentRepository.refreshIfStale] did, so a poller can tell "nothing to do" from "could not be done". */
+enum class RefreshOutcome {
+    /** The list was fetched recently enough, or a fetch is already in flight. */
+    Skipped,
+    Refreshed,
+    /** The server could not be reached or would not answer; what was shown stands. */
+    Failed,
+}
 
 data class LaunchRequest(
     val prompt: String,
@@ -183,6 +194,12 @@ class AgentRepository(
     @Volatile private var restoredFor: CursorBackend? = null
     /** Bumped by [reset]; a fetch that started before a reset must not publish into the list that replaced it. */
     private val generation = AtomicInteger()
+    /**
+     * Serializes every generation check with the publication it guards, and with [reset] / [clear]. Without it the
+     * two are a check and a separate write: a reset could land in between and the old account's page would be
+     * applied to the list that replaced it.
+     */
+    private val publishLock = Any()
     /** The backend the published list belongs to; a switch only clears a list that still belongs to the old one. */
     @Volatile private var owner: CursorBackend? = null
     /**
@@ -194,6 +211,9 @@ class AgentRepository(
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
         private set
+
+    /** Epoch millis of the last pass that reached the end of the list — the only one that can reconcile deletions. */
+    @Volatile private var lastCompleteListingAt: Long = 0L
 
     private val _refreshCompleted = MutableStateFlow(0L)
     /** Completed fetches for the current backend, counted: the cue for work that follows each one (the account's pins, for one). */
@@ -222,18 +242,44 @@ class AgentRepository(
 
     /** Forgets the list on sign-out, so the next account never sees the previous one's agents, not even from a fetch still in flight. */
     fun reset() {
-        generation.incrementAndGet()
-        clear()
-        restoredFor = null
-        pendingLaunches.clear()
+        synchronized(publishLock) {
+            generation.incrementAndGet()
+            clear()
+            restoredFor = null
+            pendingLaunches.clear()
+        }
     }
 
-    private fun clear() {
+    private fun clear() = synchronized(publishLock) {
         owner = null
         lastRefreshedAt = 0L
+        lastCompleteListingAt = 0L
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
     }
+
+    /**
+     * The account the list belongs to right now. Captured when an operation starts and handed to every publication
+     * it makes, so a sign-out in between is what decides whether the result lands — not the moment the write happens
+     * to be scheduled.
+     */
+    fun token(): Int = generation.get()
+
+    /**
+     * Applies [transform] to the list, but only while it still belongs to [startedIn] (and, when given, to
+     * [backend]). The check and the write are one critical section shared with [reset], so nothing can be published
+     * into a list that has since been replaced.
+     */
+    private fun publish(backend: CursorBackend?, startedIn: Int, transform: (AgentListState) -> AgentListState): Boolean =
+        synchronized(publishLock) {
+            if (generation.get() != startedIn) return false
+            if (backend != null) {
+                if (session.current !== backend) return false
+                owner = backend
+            }
+            _state.value = transform(_state.value)
+            true
+        }
 
     /**
      * Drops a list that belongs to another backend before anything is published for the current one. The switch
@@ -249,10 +295,14 @@ class AgentRepository(
      * already in flight or the current backend's list was fetched less than [maxAgeMs] ago. A list from another
      * backend, or none, is always stale.
      */
-    suspend fun refreshIfStale(maxAgeMs: Long, depth: RefreshDepth = RefreshDepth.Full) {
-        if (synchronized(this) { inFlight?.job?.isActive == true }) return
-        if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return
+    suspend fun refreshIfStale(maxAgeMs: Long, depth: RefreshDepth = RefreshDepth.Full): RefreshOutcome {
+        if (synchronized(this) { inFlight?.job?.isActive == true }) return RefreshOutcome.Skipped
+        if (owner === session.current && lastRefreshedAt != 0L && AppClock.now() - lastRefreshedAt < maxAgeMs) return RefreshOutcome.Skipped
+        val before = _refreshCompleted.value
         refresh(silent = true, depth = depth)
+        // A silent refresh keeps its failure to itself while there is something to show, so the completed count —
+        // not the error — is what says whether the fetch got through.
+        return if (_refreshCompleted.value != before) RefreshOutcome.Refreshed else RefreshOutcome.Failed
     }
 
     /**
@@ -264,15 +314,17 @@ class AgentRepository(
         if (cache == null || backend.isDemo || restoredFor === backend) return
         restoreMutex.withLock {
             if (restoredFor === backend) return
+            val startedIn = token()
             restoredFor = backend
             dropForeignList(backend)
             val entry = cache.read() ?: return
-            if (session.current !== backend) return
-            owner = backend
-            _state.update { s ->
+            val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else s.copy(agents = entry.value, hasLoaded = true, isFromCache = true)
             }
+            // A sign-out landed while the file was being read: this disk copy is not the current account's, and the
+            // one that is has still to be restored.
+            if (!landed) restoredFor = null
         }
     }
 
@@ -283,11 +335,20 @@ class AgentRepository(
      * shown, keep their failures to themselves.
      */
     suspend fun refresh(silent: Boolean = false, depth: RefreshDepth = RefreshDepth.Full) {
+        val startedIn = token()
         restoreFromCache()
-        val (job, joined) = startOrJoin(silent, depth)
-        if (joined && !silent) _state.update { it.copy(isRefreshing = true) }
+        val (job, joined) = startOrJoin(silent, deepIfDue(depth))
+        if (joined && !silent) publish(null, startedIn) { it.copy(isRefreshing = true) }
         job.join()
     }
+
+    /**
+     * Promotes a [RefreshDepth.Full] pass to a complete listing when the last one was over
+     * [COMPLETE_LISTING_EVERY_MS] ago. The windowed pass is what a poll every few minutes can afford; reconciling
+     * deletions and old activity beyond the window needs the whole list, which is worth an hourly pass.
+     */
+    private fun deepIfDue(depth: RefreshDepth): RefreshDepth =
+        if (depth == RefreshDepth.Full && AppClock.now() - lastCompleteListingAt >= COMPLETE_LISTING_EVERY_MS) RefreshDepth.Deep else depth
 
     /**
      * Fetches run in the repository's own scope so a caller that goes away (a ViewModel being cleared) never
@@ -318,12 +379,7 @@ class AgentRepository(
         val knownBefore = before.keys
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
-        fun publish(transform: (AgentListState) -> AgentListState): Boolean {
-            if (session.current !== backend || generation.get() != startedIn) return false
-            owner = backend
-            _state.update(transform)
-            return true
-        }
+        fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
         try {
             var truncated = false
@@ -346,15 +402,22 @@ class AgentRepository(
             // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
             // ones the window never returned, and this keeps the next complete listing from dropping them again.
             val pinned = prefs.localAgentState.first().pinnedIds
+            // Only a pass that reached the end of the list knows that a row the server did not return is gone
+            // rather than merely beyond where the pass stopped.
+            val complete = depth != RefreshDepth.Quick && !truncated
             val landed = publish { s ->
-                val complete = depth == RefreshDepth.Full && !truncated
                 (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
             }
-            if (landed) {
-                lastRefreshedAt = AppClock.now()
-                _refreshCompleted.update { it + 1 }
+            // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
+            // on, and the previous account's must not give it.
+            if (landed) synchronized(publishLock) {
+                if (generation.get() == startedIn) {
+                    lastRefreshedAt = AppClock.now()
+                    if (complete) lastCompleteListingAt = lastRefreshedAt
+                    _refreshCompleted.update { it + 1 }
+                }
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -379,7 +442,11 @@ class AgentRepository(
         }
     }.getOrDefault(emptyMap())
 
-    private fun maxPages(depth: RefreshDepth) = if (depth == RefreshDepth.Quick) 1 else MAX_PAGES
+    private fun maxPages(depth: RefreshDepth) = when (depth) {
+        RefreshDepth.Quick -> 1
+        RefreshDepth.Full -> MAX_PAGES
+        RefreshDepth.Deep -> MAX_DEEP_PAGES
+    }
 
     /**
      * Settles the execution state the lists could not. The v1 list has no run state at all (its `status` is a
@@ -454,9 +521,9 @@ class AgentRepository(
      * learned it is kept across refreshes and on disk with the row, like the model. The account list is read after
      * every completed fetch (by the pin sync), so a new row's source lands a moment after the row itself.
      */
-    fun applySources(sources: Map<String, AgentSource>) {
+    fun applySources(sources: Map<String, AgentSource>, startedIn: Int = token()) {
         if (sources.isEmpty()) return
-        _state.update { it.withSources(sources) }
+        publish(null, startedIn) { it.withSources(sources) }
     }
 
     /**
@@ -470,9 +537,14 @@ class AgentRepository(
 
     private suspend fun persist() {
         val backend = session.current
-        val s = _state.value
-        if (cache == null || backend.isDemo || !s.hasLoaded || s.isFromCache) return
-        cache.write(s.agents.filterNot { it.id in pendingLaunches })
+        if (cache == null || backend.isDemo) return
+        // The cache generation belongs to the list being written, so a wipe between here and the file refuses it.
+        val (token, agents) = synchronized(publishLock) {
+            val s = _state.value
+            if (!s.hasLoaded || s.isFromCache) return
+            cache.token() to s.agents.filterNot { it.id in pendingLaunches }
+        }
+        cache.write(agents, token)
     }
 
     /**
@@ -480,6 +552,7 @@ class AgentRepository(
      * already holds (from the runs list) is used instead of fetching it again when it is still the latest.
      */
     suspend fun loadDetail(id: String, knownRun: RunDto? = null): Result<Agent> = runCatching {
+        val startedIn = token()
         val api = session.current.api
         val dto = api.getAgent(id)
         val run: RunDto? = if (knownRun != null && (dto.latestRunId == null || dto.latestRunId == knownRun.id)) {
@@ -488,7 +561,7 @@ class AgentRepository(
             dto.latestRunId?.let { runId -> runCatching { api.getRun(id, runId) }.getOrNull() }
         }
         val merged = dto.mergeInto(agent(id), run)
-        upsert(merged)
+        upsert(merged, startedIn)
         merged
     }
 
@@ -531,9 +604,9 @@ class AgentRepository(
     }
 
     /** Takes a [beginLaunch] row back out of the list; a no-op once the server has confirmed the chat. */
-    fun discardLaunch(agentId: String) {
+    fun discardLaunch(agentId: String, startedIn: Int = token()) {
         if (!pendingLaunches.remove(agentId)) return
-        _state.update { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
+        publish(null, startedIn) { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
     }
 
     /**
@@ -544,6 +617,7 @@ class AgentRepository(
      * [saveImages] is off for a caller that staged the prompt's images itself and files them under the run.
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true): Result<Launched> {
+        val startedIn = token()
         val result = runCatching {
             val api = session.current.api
             val (dto, run) = try {
@@ -565,7 +639,7 @@ class AgentRepository(
                 source = AgentSource.API,
             )
             pendingLaunches -= agent.id
-            upsert(agent)
+            upsert(agent, startedIn)
             // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
             // already created files the images under the same run, so this stays idempotent.
             if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images) } }
@@ -575,7 +649,7 @@ class AgentRepository(
             Launched(agent, run)
         }
         if (result.isFailure) {
-            request.agentId?.let(::discardLaunch)
+            request.agentId?.let { discardLaunch(it, startedIn) }
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
         }
         return result
@@ -598,6 +672,7 @@ class AgentRepository(
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
     ): Result<RunDto> = runCatching {
+        val startedIn = token()
         val api = session.current.api
         val response = withContext(Dispatchers.IO) {
             api.createRun(
@@ -610,21 +685,22 @@ class AgentRepository(
                 ),
             )
         }
-        agent(agentId)?.let { current ->
+        patch(agentId, startedIn) { current ->
             // The old label would describe the old model, so without a new one the id stands in.
             val switched = if (modelId != null) {
                 current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
             } else {
                 current
             }
-            upsert(switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now()))
+            switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
         }
         response.run
     }
 
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
+        val startedIn = token()
         session.current.api.cancelRun(agentId, runId)
-        agent(agentId)?.let { upsert(it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE)) }
+        patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
     }
 
     suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)
@@ -637,6 +713,7 @@ class AgentRepository(
      * mode only has the in-memory public API.
      */
     private suspend fun setArchived(agentId: String, archived: Boolean): Result<Unit> = runCatching {
+        val startedIn = token()
         var wrote = false
         var lastError: Throwable? = null
         if (!session.isDemo && account != null) {
@@ -656,7 +733,7 @@ class AgentRepository(
             lastError = t
         }
         if (!wrote) throw lastError ?: IllegalStateException(if (archived) "Couldn't archive this chat." else "Couldn't unarchive this chat.")
-        agent(agentId)?.let { upsert(it.copy(lifecycle = if (archived) AgentLifecycle.ARCHIVED else AgentLifecycle.IDLE)) }
+        patch(agentId, startedIn) { it.copy(lifecycle = if (archived) AgentLifecycle.ARCHIVED else AgentLifecycle.IDLE) }
     }
 
     /**
@@ -664,16 +741,16 @@ class AgentRepository(
      * no rename; demo mode only updates the in-memory row.
      */
     suspend fun rename(agentId: String, name: String): Result<Unit> = runCatching {
+        val startedIn = token()
         val trimmed = name.trim()
         if (trimmed.isEmpty()) throw IllegalArgumentException("Give the chat a name.")
         if (trimmed.length > MAX_NAME_LENGTH) throw IllegalArgumentException("Name must be $MAX_NAME_LENGTH characters or less.")
-        val current = agent(agentId)
-        if (current?.name == trimmed) return@runCatching
+        if (agent(agentId)?.name == trimmed) return@runCatching
         if (!session.isDemo) {
             val api = account ?: throw IllegalStateException("Can't rename this chat from here.")
             api.rename(agentId, trimmed)
         }
-        current?.let { upsert(it.copy(name = trimmed)) }
+        patch(agentId, startedIn) { it.copy(name = trimmed) }
     }
 
     /**
@@ -683,9 +760,9 @@ class AgentRepository(
      * how it looks and whose child it is are the account's alone to say (the public list has no notion of them), so
      * the snapshot's word replaces the row's; a row the list did not mention keeps what it had.
      */
-    fun applyAccountSnapshots(composers: List<ComposerSnapshot>) {
+    fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
-        _state.update { it.withAccountSnapshots(composers) }
+        publish(null, startedIn) { it.withAccountSnapshots(composers) }
     }
 
     private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
@@ -713,27 +790,36 @@ class AgentRepository(
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
+        val startedIn = token()
         session.current.api.delete(agentId)
-        _state.update { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
+        publish(null, startedIn) { s -> s.copy(agents = s.agents.filterNot { it.id == agentId }) }
         attachments.delete(agentId)
     }
 
-    fun upsert(agent: Agent) {
-        _state.update { s ->
+    /** [startedIn] is the account the caller's operation started under; a reset since then drops the row. */
+    fun upsert(agent: Agent, startedIn: Int = token()) {
+        publish(null, startedIn) { s ->
             val exists = s.agents.any { it.id == agent.id }
             val list = if (exists) s.agents.map { if (it.id == agent.id) agent else it } else listOf(agent) + s.agents
             s.copy(agents = list)
         }
     }
 
-    fun patch(agentId: String, transform: (Agent) -> Agent) {
-        agent(agentId)?.let { upsert(transform(it)) }
+    /** Read and write in one critical section, so the row [transform] saw is the row it replaces. */
+    fun patch(agentId: String, startedIn: Int = token(), transform: (Agent) -> Agent) {
+        synchronized(publishLock) {
+            val current = _state.value.agents.firstOrNull { it.id == agentId } ?: return
+            upsert(transform(current), startedIn)
+        }
     }
 
     private companion object {
         const val PAGE_SIZE = 100
-        /** 500 agents per full refresh; the newest come first, and older ones stay in the cache beyond that. */
+        /** 500 agents per windowed refresh; the newest come first, and older ones wait for a complete listing. */
         const val MAX_PAGES = 5
+        /** The safety bound on a complete listing: 3000 agents, past which the app stops asking for more. */
+        const val MAX_DEEP_PAGES = 30
+        const val COMPLETE_LISTING_EVERY_MS = 60 * 60 * 1000L
         const val PERSIST_DELAY_MS = 1_500L
         const val RECENT_WINDOW_MS = 5 * 60 * 1000L
         /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */

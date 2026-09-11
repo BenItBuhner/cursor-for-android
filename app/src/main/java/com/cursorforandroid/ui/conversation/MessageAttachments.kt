@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -85,7 +86,12 @@ private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float, onC
 /** Full-screen view of one attachment on a near-black scrim; tapping anywhere or the close button dismisses it. */
 @Composable
 private fun AttachmentViewer(attachment: MessageAttachment, onDismiss: () -> Unit) {
-    val image = rememberAttachmentImage(attachment.path, targetEdgePx = 0)
+    // Twice the screen's long edge is more than a pinch can show; the file itself may be any size at all (a GIF
+    // skips the capture-time downscale entirely), and decoding that is how the viewer used to run out of memory.
+    val configuration = LocalConfiguration.current
+    val targetPx = with(LocalDensity.current) { maxOf(configuration.screenWidthDp, configuration.screenHeightDp).dp.roundToPx() * 2 }
+    // One of these is the size of every thumbnail in the chat put together, so it stays out of their cache.
+    val image = rememberAttachmentImage(attachment.path, targetPx, cache = false)
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(
             Modifier
@@ -119,19 +125,26 @@ private sealed interface LoadedImage {
 /**
  * Decodes the file at [path] off the main thread, sampled down to roughly [targetEdgePx] on its long side (0 for the
  * full file), and keeps the result in a small in-memory cache so scrolling a list of bubbles does not decode twice.
+ * A decode too big for that cache to hold sensibly passes [cache] as false and is dropped as soon as it is unused.
  */
 @Composable
-private fun rememberAttachmentImage(path: String, targetEdgePx: Int): LoadedImage {
+private fun rememberAttachmentImage(path: String, targetEdgePx: Int, cache: Boolean = true): LoadedImage {
     val key = "$path@$targetEdgePx"
     return produceState<LoadedImage>(initialValue = AttachmentImages.get(key)?.let { LoadedImage.Ready(it) } ?: LoadedImage.Loading, key) {
         if (value is LoadedImage.Loading) {
             val decoded = withContext(Dispatchers.IO) { decodeSampled(path, targetEdgePx) }
-            value = if (decoded == null) LoadedImage.Missing else LoadedImage.Ready(decoded.also { AttachmentImages.put(key, it) })
+            value = if (decoded == null) LoadedImage.Missing else LoadedImage.Ready(decoded.also { if (cache) AttachmentImages.put(key, it) })
         }
     }.value
 }
 
-private fun decodeSampled(path: String, targetEdgePx: Int): ImageBitmap? {
+/**
+ * [targetEdgePx] is what the caller can show; [MAX_DECODE_BYTES] is what this process will spend on one bitmap
+ * whatever the caller asked for, since a stored attachment's dimensions are only capped for the formats the
+ * capture-time downscale handles. Running out of memory here throws an `Error`, which no `runCatching` upstream
+ * would catch, so a file too big to decode is reported as a missing one instead of taking the app down.
+ */
+internal fun decodeSampled(path: String, targetEdgePx: Int): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(path, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -139,11 +152,16 @@ private fun decodeSampled(path: String, targetEdgePx: Int): ImageBitmap? {
     if (targetEdgePx > 0) {
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetEdgePx) sample *= 2
     }
-    return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    while (bounds.outWidth.toLong() / sample * (bounds.outHeight / sample) * 4 > MAX_DECODE_BYTES) sample *= 2
+    return try {
+        BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
+    } catch (_: OutOfMemoryError) {
+        null
+    }
 }
 
 /** Decoded attachment bitmaps, bounded by pixel bytes (24 MB), keyed by path and requested size. */
-private object AttachmentImages {
+internal object AttachmentImages {
     private val cache = object : LruCache<String, ImageBitmap>(24 * 1024) {
         override fun sizeOf(key: String, value: ImageBitmap): Int = (value.width * value.height * 4 / 1024).coerceAtLeast(1)
     }
@@ -153,7 +171,15 @@ private object AttachmentImages {
     fun put(key: String, bitmap: ImageBitmap) {
         cache.put(key, bitmap)
     }
+
+    /** Signing out deletes the attachment files; the pixels decoded from them must not outlive the account either. */
+    fun clear() {
+        cache.evictAll()
+    }
 }
+
+/** 32 MB of pixels: over the largest bitmap a phone will render happily, under what a decode should risk. */
+private const val MAX_DECODE_BYTES = 32L * 1024 * 1024
 
 private val THUMB_HEIGHT = 88.dp
 private val THUMB_MIN_WIDTH = 44.dp

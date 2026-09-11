@@ -58,19 +58,34 @@ object UpdateNotifications {
             .build()
     }
 
-    fun postReadyToInstall(context: Context, release: AppRelease) {
+    /**
+     * Whether the card is now on screen. The caller records a release as announced only when it is: a notification the
+     * system dropped has not been seen, and the offer has to be made again once notifications are allowed.
+     */
+    fun postReadyToInstall(context: Context, release: AppRelease): Boolean {
         // Checked inline (as the live notifications do) so lint's MissingPermission analysis can see it.
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            return
+            return false
         }
         ensureChannel(context)
-        try {
+        if (!canShow(context)) return false
+        return try {
             NotificationManagerCompat.from(context).notify(READY_ID, readyToInstall(context, release))
+            true
         } catch (_: SecurityException) {
             // Permission revoked between the check and the call; Settings still shows the update.
+            false
         }
+    }
+
+    /** Notifications on for the app, and this channel not the one the user switched off. */
+    private fun canShow(context: Context): Boolean {
+        val manager = NotificationManagerCompat.from(context)
+        if (!manager.areNotificationsEnabled()) return false
+        val channel = runCatching { manager.getNotificationChannelCompat(CHANNEL) }.getOrNull() ?: return true
+        return channel.importance != NotificationManagerCompat.IMPORTANCE_NONE
     }
 
     fun cancel(context: Context) {
