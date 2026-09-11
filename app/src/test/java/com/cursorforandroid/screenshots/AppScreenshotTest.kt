@@ -148,6 +148,10 @@ class AppScreenshotTest {
         // because the slug also occurs inside a workspace name in the list.
         waitForText("Claude Fable 5.1", 30_000)
         compose.waitUntil(30_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
+        // Rows are published page by page; what the demo's account list says about them — which chats are Projects,
+        // which hang off which — lands with the publish that completes the fetch. The tablet's permanent sidebar is
+        // captured straight after this, so wait for that publish, not just for the rows.
+        compose.waitUntil(30_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
         scrollListTo("Cesium Revenue Strategy")
     }
 
