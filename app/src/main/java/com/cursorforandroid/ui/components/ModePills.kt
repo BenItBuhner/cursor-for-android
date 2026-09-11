@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -119,19 +120,32 @@ object ModePills {
 }
 
 /**
+ * The violet cursor.com/agents paints its Multitask pill in, measured off the official capture: glyph, label and
+ * cross at #A296EC on a 12 % wash of the same over the composer's surface (the wash reads #272532 on #181818, as
+ * the reference does). Not the theme's `purple` — the Anysphere mauve, #B48EAD — which is grey at that alpha. The
+ * light theme keeps the hue two steps darker so the label holds its contrast on the light surface.
+ */
+internal val PillVioletDark = Color(0xFFA296EC)
+internal val PillVioletLight = Color(0xFF6A5ACD)
+
+/** How much of the violet the pill's wash carries over the surface, dark or light. */
+private const val PillWashAlpha = 0.12f
+
+/**
  * A mode the message goes out under, worn in the composer footer the way cursor.com/agents wears Multitask: a wash
- * of the theme's purple with the mode's glyph and name, and a cross that takes it off again. The label never wraps
- * and yields no width: the model chip beside send is what gives way when the footer is tight.
+ * of the web's violet ([PillVioletDark] / [PillVioletLight]) with the mode's glyph and name in the same violet, and a
+ * cross that takes it off again. The label never wraps and yields no width: the model chip beside send is what gives
+ * way when the footer is tight.
  */
 @Composable
 fun ModePill(pill: ModePills.Pill, onClear: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val tint = colors.purple
+    val tint = if (colors.isDark) PillVioletDark else PillVioletLight
     Row(
         modifier
             .heightIn(min = CursorDimens.roundButton)
-            .background(tint.copy(alpha = 0.14f), CursorTheme.shapes.base)
+            .background(tint.copy(alpha = PillWashAlpha), CursorTheme.shapes.base)
             .padding(start = 8.dp, end = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
