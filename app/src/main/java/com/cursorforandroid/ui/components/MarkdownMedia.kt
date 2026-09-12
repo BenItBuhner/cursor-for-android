@@ -159,7 +159,7 @@ private fun mediaMaxHeight(): Dp = minOf(MediaMaxHeightCap, (LocalConfiguration.
  * message width and [mediaMaxHeight]. Tapping opens a zoomable full-screen view.
  */
 @Composable
-fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
+fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightCap: Dp? = null) {
     val media = LocalMarkdownMedia.current
     val ref = remember(src, media?.agentId) { MediaRef.parse(src, media?.agentId) }
     val colors = CursorTheme.colors
@@ -167,7 +167,8 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier) {
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
-        val maxHeight = mediaMaxHeight()
+        // A tile in a gallery is held to the height its caller gives it; a figure in a reply to the screen's share.
+        val maxHeight = heightCap ?: mediaMaxHeight()
         val request = inlineDecodeBounds()
         var attempt by remember(ref) { mutableIntStateOf(0) }
         var state by remember(ref) { mutableStateOf<ImageLoad>(ImageLoad.Loading) }
@@ -226,7 +227,7 @@ private fun inlineDecodeBounds(): IntSize {
 
 /** A `<video>` from a reply: poster frame with a play button; tapping swaps in an inline player. */
 @Composable
-fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier) {
+fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier, heightCap: Dp? = null) {
     val media = LocalMarkdownMedia.current
     val loader = media?.loader
     val ref = remember(src, media?.agentId) { MediaRef.parse(src, media?.agentId) }
@@ -241,7 +242,7 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier) {
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
-        val maxHeight = mediaMaxHeight()
+        val maxHeight = heightCap ?: mediaMaxHeight()
         val density = LocalDensity.current
         val maxPx = with(density) { maxOf(maxWidth, maxHeight).roundToPx() }
         var frame by remember(ref) { mutableStateOf<ImageBitmap?>(null) }
