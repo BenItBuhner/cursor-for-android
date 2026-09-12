@@ -221,6 +221,11 @@ data class Agent(
      * primary list.
      */
     val knownScope: AgentScope? = null,
+    /**
+     * The agent has asked a question and is waiting on the answer (`hasPendingInteraction` on the account's record):
+     * a Project's view marks such a primary as needing input. Only the account says; false until it has.
+     */
+    val hasPendingInteraction: Boolean = false,
 ) {
     /**
      * Where the chat belongs (see [AgentScope]): what a lineage source last decided ([knownScope]), else what the

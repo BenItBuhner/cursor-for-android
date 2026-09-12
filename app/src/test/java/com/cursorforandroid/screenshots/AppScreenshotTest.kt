@@ -402,6 +402,26 @@ class AppScreenshotTest {
     }
 
     @Test
+    fun projectView() {
+        val graph = launchApp()
+        enterDemo(graph)
+        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
+        waitForSidebarSections()
+        // The Project's row in the sidebar (the recent card behind the drawer names it too) opens the Project's view.
+        compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
+        waitForText("Plans the work and delegates it")
+        waitForText("Stripe webhook handler")
+        // The demo stands in for the account: its actions are offered, its context is the named empty state.
+        waitForText("New primary")
+        waitForText("No shared context for this Project yet.")
+        compose.waitForIdle()
+        capture("38_project_view")
+        Espresso.pressBack()
+        compose.waitForIdle()
+    }
+
+    @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
     fun tabletTwoPane() {
         val graph = launchApp()

@@ -31,6 +31,8 @@ data class ComposerSnapshot(
     val parent: AgentParent? = null,
     /** Where the chat was started, when the record said (see [AgentSource]). */
     val source: AgentSource? = null,
+    /** The agent is waiting on an answer to a question it asked (`hasPendingInteraction`). */
+    val hasPendingInteraction: Boolean = false,
 ) {
     /** Where the chat belongs by this record's own lineage facts (see [AgentScope.of]). */
     val scope: AgentScope get() = AgentScope.of(isProject, parent, source)
@@ -211,6 +213,8 @@ class BackgroundComposerApi(
         val sideChatInfo: SideChatInfoDto? = null,
         /** `aiserver.v1.CloudSubagentParentReference`: the agent that spawned this one as a cloud subagent. */
         val cloudSubagentParent: CloudSubagentParentDto? = null,
+        /** The agent asked a question and waits on the answer. */
+        val hasPendingInteraction: Boolean? = null,
     )
 
     @Serializable
@@ -298,6 +302,7 @@ class BackgroundComposerApi(
                 projectAppearance = appearance,
                 parent = parent,
                 source = AgentSource.parse(composer.source?.contentOrNull),
+                hasPendingInteraction = composer.hasPendingInteraction == true,
             )
         }
 
