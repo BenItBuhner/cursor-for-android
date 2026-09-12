@@ -419,7 +419,9 @@ class FollowUpRepositoryTest {
         // the same — and the row must not be left saying running by that, since the stream will not say the run
         // ended a second time.
         finish("run-1", text = "")
-        awaitUntil { api.runRequests.size >= 2 }
+        // The second attempt comes after the record has been read and the row settled from the hub, a few round
+        // trips through the fake API; a loaded CI runner has taken longer than the default wait to get there.
+        awaitUntil(15_000) { api.runRequests.size >= 2 }
         delay(300)
         assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
 
