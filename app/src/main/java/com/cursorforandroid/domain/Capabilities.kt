@@ -33,10 +33,23 @@ data class Capabilities(
     val projects: Boolean,
     /** Steering a running chat (`InjectBackgroundComposerContext`) and holding it (`PauseBackgroundComposer` / `ResumeBackgroundComposer`). Off: the public cancel only. */
     val steering: Boolean,
+    /** The agent's live workspace: `ListWorkspaceFiles` and `ReadBinaryFile`. Off: only the files the stream carried, and the repository's tree. */
+    val workspaceFiles: Boolean,
+    /** The branch's diff against its base before a pull request exists: `GetBackgroundComposerDiffDetails`. Off: the edits the stream carried. */
+    val diffDetails: Boolean,
+    /**
+     * A pull request on any host Cursor connects, read through the account (`SCMService/GetPullRequest`,
+     * `GetPullRequestDiff`, `GetDetailedPullRequestStatus`, `GetPullRequestDiscussions`) and opened from here
+     * (`MakePRBackgroundComposer` / `OpenPRBackgroundComposer`). Off: GitHub's REST API for GitHub-hosted repositories, the browser for the rest.
+     */
+    val scmPullRequests: Boolean,
+    /** The agent's VM desktop over noVNC: `GetMachine` for the pod and its ticket. Off: nothing; the machine's own state stays public. */
+    val remoteDesktop: Boolean,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
-        get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering
+        get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop
 
     companion object {
         /** The default: the documented API only. */
@@ -49,6 +62,10 @@ data class Capabilities(
             accountPullRequests = false,
             projects = false,
             steering = false,
+            workspaceFiles = false,
+            diffDetails = false,
+            scmPullRequests = false,
+            remoteDesktop = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -61,6 +78,10 @@ data class Capabilities(
             accountPullRequests = true,
             projects = true,
             steering = true,
+            workspaceFiles = true,
+            diffDetails = true,
+            scmPullRequests = true,
+            remoteDesktop = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

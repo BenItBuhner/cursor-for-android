@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.panel
 
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.projects.ProjectPanelSection
@@ -32,15 +33,24 @@ object DefaultPanelSections {
         content = { state, actions -> PendingQuestionSection(state, actions) },
     )
 
+    /**
+     * The pull request's files once it has them; else the branch's diff against its base from the account (Extended,
+     * `GetBackgroundComposerDiffDetails`), whole; else the edits the stream carried.
+     */
     val changes = PanelSection(
         id = PanelSectionId.Changes,
         icon = CursorIcons.Code,
         hint = { state ->
-            val files = state.pullRequest.valueOrNull?.files?.size?.takeIf { it > 0 } ?: state.content.changes.size
+            val files = state.pullRequest.valueOrNull?.files?.size?.takeIf { it > 0 }
+                ?: state.branchDiffFiles.size.takeIf { it > 0 }
+                ?: state.content.changes.size
             files.takeIf { it > 0 }?.let { "$it ${if (it == 1) "file" else "files"}" }
         },
         expandedByDefault = true,
-        onOpen = { it.loadPullRequest() },
+        onOpen = {
+            it.loadPullRequest()
+            it.loadDiff()
+        },
         content = { state, actions -> ChangesSection(state, actions) },
     )
 
@@ -102,11 +112,26 @@ object DefaultPanelSections {
         },
     )
 
+    /**
+     * A Remote Control chat's machine — name, connection state, the documented floors — from the fleet endpoint in
+     * either mode; the agent's VM desktop over noVNC behind the `remoteDesktop` capability. The section is always
+     * there: for a cloud chat with the mode off, its body is the named "Needs Extended mode" state.
+     */
     val remote = PanelSection(
         id = PanelSectionId.Remote,
         icon = CursorIcons.Desktop,
-        availability = { _, _ -> SectionAvailability.RequiresExtended(REMOTE_REASON) },
-        content = { state, _ -> PlaceholderSection(REMOTE_REASON, state) },
+        hint = { state ->
+            val agent = state.agent
+            when {
+                agent == null -> null
+                agent.envType == EnvType.MACHINE -> state.machine.valueOrNull?.let { if (it.connected) "Remote Control · online" else "Remote Control · offline" } ?: "Remote Control"
+                state.desktop is DesktopState.Open -> "Desktop open"
+                !state.capabilities.remoteDesktop -> "Extended mode"
+                else -> "Desktop"
+            }
+        },
+        onOpen = { it.loadMachine() },
+        content = { state, actions -> RemoteSection(state, actions) },
     )
 
     val usage = PanelSection(
@@ -127,5 +152,4 @@ object DefaultPanelSections {
 
     const val QUEUE_REASON = "The account's follow-up queue, steering a running turn, pausing and resuming all go through undocumented endpoints (ListPendingFollowups, InjectBackgroundComposerContext, PauseBackgroundComposer)"
     const val PROJECT_REASON = "A Project's workers, side chats and shared context come from undocumented endpoints (ListWorkersForManager, ListBackgroundComposerChildren, the Agent Store)"
-    const val REMOTE_REASON = "Viewing or taking control of the agent's desktop needs GetMachine and the VM's VNC endpoint, which are undocumented; Remote Control agents themselves already list and stream here"
 }

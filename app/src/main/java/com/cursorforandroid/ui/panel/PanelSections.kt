@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.panel
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.TranscriptContent
@@ -59,6 +60,25 @@ interface PanelActions {
     /** The panel's own toast. */
     fun notify(message: String)
 
+    // -- the agent's VM and the account (Extended mode) ---------------------------------------------------------------
+
+    /** The branch's diff against its base (`GetBackgroundComposerDiffDetails`). */
+    fun loadDiff(force: Boolean = false)
+    fun openBranchDiffFile(file: AgentDiffFile)
+    /** The agent's workspace tree (`ListWorkspaceFiles`), walked locally; a file opens through `ReadBinaryFile`. */
+    fun loadWorkspace(force: Boolean = false)
+    fun browseWorkspace(path: String = "")
+    fun browseWorkspaceUp()
+    fun openWorkspaceFile(path: String)
+    /** A Remote Control chat's machine, from the fleet endpoint. */
+    fun loadMachine(force: Boolean = false)
+    /** The agent's desktop (`GetMachine`, then noVNC in a WebView), viewing or in control. */
+    fun openDesktop(viewOnly: Boolean = true)
+    fun setDesktopViewOnly(viewOnly: Boolean)
+    fun closeDesktop()
+    /** Opens the agent's pull request from here (`MakePRBackgroundComposer`). */
+    fun createPullRequest()
+
     companion object {
         /** Does nothing; for previews and tests of the sections' rendering. */
         val None: PanelActions = object : PanelActions {
@@ -78,6 +98,17 @@ interface PanelActions {
             override fun openAgent(agentId: String) = Unit
             override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
+            override fun loadDiff(force: Boolean) = Unit
+            override fun openBranchDiffFile(file: AgentDiffFile) = Unit
+            override fun loadWorkspace(force: Boolean) = Unit
+            override fun browseWorkspace(path: String) = Unit
+            override fun browseWorkspaceUp() = Unit
+            override fun openWorkspaceFile(path: String) = Unit
+            override fun loadMachine(force: Boolean) = Unit
+            override fun openDesktop(viewOnly: Boolean) = Unit
+            override fun setDesktopViewOnly(viewOnly: Boolean) = Unit
+            override fun closeDesktop() = Unit
+            override fun createPullRequest() = Unit
         }
     }
 }

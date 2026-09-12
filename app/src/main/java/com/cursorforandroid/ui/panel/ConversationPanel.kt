@@ -35,6 +35,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorIcons
@@ -60,6 +61,17 @@ fun ConversationPanel(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val file = state.browser.file
+    // The desktop takes the whole screen in its own window, over the panel and the chat alike, for as long as the
+    // session is open; back or the X ends the session.
+    (state.desktop as? DesktopState.Open)?.let { open ->
+        DesktopDialog(
+            session = open.session,
+            agentName = state.agent?.name,
+            onViewOnlyChange = actions::setDesktopViewOnly,
+            onReconnect = { actions.openDesktop(open.session.viewOnly) },
+            onClose = actions::closeDesktop,
+        )
+    }
     Column(modifier.fillMaxSize().testTag("conversation-panel")) {
         if (file != null) {
             FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl)
@@ -175,6 +187,17 @@ fun rememberPanelActions(
             override fun notify(message: String) {
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
+            override fun loadDiff(force: Boolean) = viewModel.loadDiff(force)
+            override fun openBranchDiffFile(file: AgentDiffFile) = viewModel.openBranchDiffFile(file)
+            override fun loadWorkspace(force: Boolean) = viewModel.loadWorkspace(force)
+            override fun browseWorkspace(path: String) = viewModel.browseWorkspace(path)
+            override fun browseWorkspaceUp() = viewModel.browseWorkspaceUp()
+            override fun openWorkspaceFile(path: String) = viewModel.openWorkspaceFile(path)
+            override fun loadMachine(force: Boolean) = viewModel.loadMachine(force)
+            override fun openDesktop(viewOnly: Boolean) = viewModel.openDesktop(viewOnly)
+            override fun setDesktopViewOnly(viewOnly: Boolean) = viewModel.setDesktopViewOnly(viewOnly)
+            override fun closeDesktop() = viewModel.closeDesktop()
+            override fun createPullRequest() = viewModel.createPullRequest()
         }
     }
 }

@@ -1,13 +1,26 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.OriginApi
+import com.cursorforandroid.data.api.PullRequestCreationApi
+import com.cursorforandroid.data.api.PullRequestStatusDetails
+import com.cursorforandroid.data.api.ScmPullRequestApi
 import com.cursorforandroid.data.api.dto.AgentUsageResponseDto
 import com.cursorforandroid.data.api.dto.RunUsageDto
 import com.cursorforandroid.data.api.dto.UsageTokensDto
+import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.ChangedFile
+import com.cursorforandroid.domain.ChangedFileStatus
 import com.cursorforandroid.domain.CheckConclusion
+import com.cursorforandroid.domain.CheckRun
+import com.cursorforandroid.domain.CheckStatus
+import com.cursorforandroid.domain.PullRequestDetails
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RepoContents
+import com.cursorforandroid.domain.ReviewComment
+import com.cursorforandroid.domain.ReviewThread
 import com.cursorforandroid.domain.ReviewVerdict
 import com.cursorforandroid.domain.ScmHost
 import com.cursorforandroid.domain.TokenUsage
@@ -158,6 +171,110 @@ class ReviewRepositoryTest {
         assertThat(repo.describe(other.exceptionOrNull()!!)).contains("Extended mode")
         val origin = repo.contents("https://origin.cursor.com/acme/rocket", null, "")
         assertThat(repo.describe(origin.exceptionOrNull()!!)).contains("access token")
+    }
+
+    // ---- the account's SCM view (Extended) ---------------------------------------------------------------------------
+
+    private var scmCalls = mutableListOf<String>()
+    private var scmFails = false
+    private val scm = object : ScmPullRequestApi {
+        override suspend fun pullRequest(prUrl: String): PullRequestDetails {
+            scmCalls += "record"
+            if (scmFails) throw ConnectRpcException(200, "not_found", "no such pull request")
+            return PullRequestDetails(prUrl, ScmHost.of(prUrl), 3, "From the account", "Body", PullRequestState.Open, "cursor[bot]", headRef = "cursor/x", baseRef = "main")
+        }
+        override suspend fun files(prUrl: String): List<ChangedFile> { scmCalls += "files"; return listOf(ChangedFile("a.kt", ChangedFileStatus.Modified, 1, 0, "@@ -1 +1 @@\n+a")) }
+        override suspend fun status(prUrl: String): PullRequestStatusDetails {
+            scmCalls += "status"
+            return PullRequestStatusDetails(listOf(CheckRun("CI", CheckStatus.Completed, CheckConclusion.Success)), ReviewVerdict.Approved, headSha = "h", additions = 5, deletions = 2, commits = 1)
+        }
+        override suspend fun discussions(prUrl: String): List<ReviewThread> { scmCalls += "threads"; return listOf(ReviewThread("a.kt", 1, listOf(ReviewComment(1, "b", "Hm", null)))) }
+    }
+    private var created = CreatedPullRequest("https://github.com/acme/app/pull/50", "cursor/x")
+    private val creation = object : PullRequestCreationApi {
+        override suspend fun makePullRequest(agentId: String, branchName: String?): CreatedPullRequest { scmCalls += "make:$branchName"; return created }
+        override suspend fun openPullRequest(agentId: String, title: String?, body: String?, baseBranch: String?, draft: Boolean): CreatedPullRequest = created
+    }
+
+    private fun accountRepo(capabilities: Capabilities = Capabilities.EXTENDED, demo: Boolean = false) = ReviewRepository(
+        gitHub = { GitHubApi(OkHttpClient(), baseUrl = server.url("/").toString(), now = { now }) },
+        origin = { OriginApi(OkHttpClient(), tokenProvider = { null }, baseUrl = server.url("/origin/").toString()) },
+        usageApi = { error("not here") },
+        isDemo = { demo },
+        demo = { null },
+        now = { now },
+        scm = { scm },
+        creation = { creation },
+        capabilities = { capabilities },
+    )
+
+    @Test
+    fun `with the capability on, a pull request on any other host is read through the account, three secondary reads folded in`() = runBlocking<Unit> {
+        val view = (accountRepo().pullRequest("https://gitlab.com/acme/app/-/merge_requests/3") as PullRequestLoad.Loaded).view
+        assertThat(view.details.title).isEqualTo("From the account")
+        assertThat(view.details.host).isEqualTo(ScmHost.Other)
+        assertThat(view.files.single().path).isEqualTo("a.kt")
+        assertThat(view.checks.single().name).isEqualTo("CI")
+        assertThat(view.threads.single().comments.single().body).isEqualTo("Hm")
+        // The verdict the host declared outranks the one derived from reviews (none here).
+        assertThat(view.reviewDecision).isEqualTo(ReviewVerdict.Approved)
+        assertThat(view.details.headSha).isEqualTo("h")
+        assertThat(view.details.lineStats).isEqualTo("+5 -2")
+        assertThat(view.missing).isEmpty()
+        assertThat(scmCalls).containsExactly("record", "files", "status", "threads")
+        // Origin too, with the token this app cannot mint left out of it.
+        val origin = accountRepo().pullRequest("https://origin.cursor.com/acme/rocket/pulls/17")
+        assertThat(origin).isInstanceOf(PullRequestLoad.Loaded::class.java)
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `with the capability off the account is never asked, whatever was wired`() = runBlocking<Unit> {
+        val load = accountRepo(Capabilities.DOCUMENTED).pullRequest("https://gitlab.com/acme/app/-/merge_requests/3")
+        assertThat(load).isInstanceOf(PullRequestLoad.Unsupported::class.java)
+        assertThat(scmCalls).isEmpty()
+        val create = accountRepo(Capabilities.DOCUMENTED).createPullRequest("bc-1", "cursor/x")
+        assertThat(create.isFailure).isTrue()
+        assertThat(create.exceptionOrNull()).hasMessageThat().isEqualTo(ReviewRepository.NEEDS_EXTENDED_MODE)
+        assertThat(scmCalls).isEmpty()
+    }
+
+    @Test
+    fun `GitHub is still read first, and the account stands in only where GitHub will not answer`() = runBlocking<Unit> {
+        githubRoutes()
+        val fromGitHub = (accountRepo().pullRequest(prUrl) as PullRequestLoad.Loaded).view
+        assertThat(fromGitHub.details.title).isEqualTo("Add the panel")
+        assertThat(scmCalls).isEmpty()
+
+        // A private repository: GitHub answers 404 anonymously, the account has the record.
+        val privately = (accountRepo().pullRequest("https://github.com/acme/private/pull/1") as PullRequestLoad.Loaded).view
+        assertThat(privately.details.title).isEqualTo("From the account")
+        assertThat(scmCalls).contains("record")
+    }
+
+    @Test
+    fun `the account's own refusals are named and a missing record is not retried`() = runBlocking<Unit> {
+        scmFails = true
+        val repo = accountRepo()
+        val load = repo.pullRequest("https://gitlab.com/acme/app/-/merge_requests/3") as PullRequestLoad.Failed
+        assertThat(load.message).contains("no record")
+        assertThat(load.notFound).isTrue()
+        repo.pullRequest("https://gitlab.com/acme/app/-/merge_requests/3")
+        assertThat(scmCalls.count { it == "record" }).isEqualTo(1)
+    }
+
+    @Test
+    fun `opening the pull request goes through the account with the chat's branch, and a branch with no commits is a named failure`() = runBlocking<Unit> {
+        val repo = accountRepo()
+        val opened = repo.createPullRequest("bc-1", "cursor/x").getOrThrow()
+        assertThat(opened.url).isEqualTo("https://github.com/acme/app/pull/50")
+        assertThat(scmCalls).containsExactly("make:cursor/x")
+
+        created = CreatedPullRequest(null, "cursor/x", hasCommits = false)
+        val empty = repo.createPullRequest("bc-1", "cursor/x")
+        assertThat(empty.exceptionOrNull()).hasMessageThat().contains("no commits")
+
+        assertThat(accountRepo(demo = true).createPullRequest("bc-1", null).exceptionOrNull()).hasMessageThat().contains("demo")
     }
 
     @Test

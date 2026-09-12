@@ -228,10 +228,13 @@ data class ListRepositoriesResponseDto(val items: List<RepositoryDto> = emptyLis
 @Serializable
 data class WorkerDto(
     val id: String? = null,
+    val workerId: String? = null,
     val name: String? = null,
     val displayName: String? = null,
     val machineDisplayName: String? = null,
     val isInUse: Boolean = false,
+    /** The cloud agent the worker is busy with, when the endpoint says (`activeBcId` in the fleet docs). */
+    val activeBcId: String? = null,
     val repoOwner: String? = null,
     val repoName: String? = null,
     val repoUrl: String? = null,
@@ -243,6 +246,12 @@ data class WorkerDto(
         ?: displayName?.trim()?.takeIf { it.isNotEmpty() }
         ?: machineDisplayName?.trim()?.takeIf { it.isNotEmpty() }
         ?: id?.trim()?.takeIf { it.isNotEmpty() }
+        ?: workerId?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** Every name the worker goes by, lowercased, so a chat's `env.name` can be matched against any of them. */
+    fun names(): Set<String> = listOfNotNull(name, displayName, machineDisplayName, id, workerId)
+        .map { it.substringBefore('#').trim().lowercase() }
+        .filterTo(LinkedHashSet()) { it.isNotEmpty() }
 }
 
 @Serializable

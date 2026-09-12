@@ -156,6 +156,8 @@ data class ReviewThread(
     val line: Int?,
     val comments: List<ReviewComment>,
     val diffHunk: String? = null,
+    /** The thread was marked resolved on its host, when the host says (GitHub's REST comments do not). */
+    val isResolved: Boolean = false,
 ) {
     val name: String? get() = path?.let(ToolNames::basename)
 }
@@ -168,9 +170,15 @@ enum class ReviewVerdict(val label: String) {
             "APPROVED" -> Approved
             "CHANGES_REQUESTED" -> ChangesRequested
             "COMMENTED" -> Commented
-            "PENDING" -> Pending
+            "PENDING", "REVIEW_REQUIRED" -> Pending
             "DISMISSED" -> Dismissed
             else -> Other
+        }
+
+        /** A host's `reviewDecision` field: null for none (an empty string, or a value that says nothing was decided). */
+        fun parseDecision(raw: String?): ReviewVerdict? {
+            val token = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            return parse(token).takeIf { it != Other }
         }
     }
 }
@@ -193,10 +201,15 @@ data class PullRequestView(
     val reviews: List<Review> = emptyList(),
     /** Whichever of the four secondary reads did not come back, by name, so the section can say so. */
     val missing: Set<String> = emptySet(),
+    /**
+     * The host's own verdict on the pull request (`reviewDecision`: approved, changes requested, review required),
+     * when the source reported one outright rather than the reviews it is derived from; it outranks the derivation.
+     */
+    val declaredReviewDecision: ReviewVerdict? = null,
 ) {
     val checksSummary: ChecksSummary get() = ChecksSummary.of(checks)
     val reviewDecision: ReviewVerdict?
-        get() = reviews.groupBy { it.author }.values.mapNotNull { byAuthor -> byAuthor.maxByOrNull { it.submittedAtMillis ?: 0L } }
+        get() = declaredReviewDecision ?: reviews.groupBy { it.author }.values.mapNotNull { byAuthor -> byAuthor.maxByOrNull { it.submittedAtMillis ?: 0L } }
             .map { it.verdict }
             .let { latest ->
                 when {

@@ -2,6 +2,8 @@ package com.cursorforandroid.ui.panel
 
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentDiff
+import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.Artifact
@@ -13,6 +15,7 @@ import com.cursorforandroid.domain.CheckRun
 import com.cursorforandroid.domain.CheckStatus
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
+import com.cursorforandroid.domain.MachineStatus
 import com.cursorforandroid.domain.PullRequestDetails
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestView
@@ -32,6 +35,7 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.domain.WorkspaceTree
 
 /** Synthetic panel states for the Compose and screenshot tests: one agent, its transcript's payloads, a pull request. */
 object PanelFixtures {
@@ -189,5 +193,53 @@ object PanelFixtures {
         agent = agent.copy(id = "bc-empty", name = "New chat", branches = emptyList(), repoUrl = null, runStatus = RunStatus.RUNNING),
         runStatus = RunStatus.RUNNING,
         isStreaming = true,
+    )
+
+    // ---- Extended mode: the agent's VM and the account -----------------------------------------------------------
+
+    /** The agent's workspace as `ListWorkspaceFiles` would list it. */
+    val workspaceTree = WorkspaceTree(
+        listOf(
+            ".github/workflows/ci.yml",
+            "app/build.gradle.kts",
+            "app/src/main/java/com/cursorforandroid/ui/settings/SettingsScreen.kt",
+            "app/src/main/java/com/cursorforandroid/ui/settings/ThemeToggle.kt",
+            "app/src/main/java/com/cursorforandroid/ui/theme/CursorTheme.kt",
+            "app/src/main/res/values/strings.xml",
+            "gradle/libs.versions.toml",
+            "screenshots/01_home.png",
+            "README.md",
+            "build.gradle.kts",
+            "settings.gradle.kts",
+        ),
+    )
+
+    /** The branch's diff against main as `GetBackgroundComposerDiffDetails` would report it. */
+    val branchDiff = AgentDiff(
+        branchName = "cursor/theme-toggle-4f2a",
+        baseBranch = "main",
+        files = listOf(
+            AgentDiffFile("app/src/main/java/com/cursorforandroid/ui/settings/SettingsScreen.kt", ChangedFileStatus.Modified, 5, 2, settingsDiff.diff),
+            AgentDiffFile("app/src/main/java/com/cursorforandroid/ui/settings/ThemeToggle.kt", ChangedFileStatus.Added, 4, 0, "@@ -0,0 +1,4 @@\n+package com.cursorforandroid.ui.settings\n+\n+@Composable\n+fun ThemeToggle(checked: Boolean, onChange: (Boolean) -> Unit) = CursorToggle(checked, onChange)", modifiedContent = toggleWrite.content),
+            AgentDiffFile("app/src/main/java/com/cursorforandroid/ui/settings/OldToggle.kt", ChangedFileStatus.Removed, 0, 10, null, originalContent = "// gone\n"),
+            AgentDiffFile("app/src/main/res/drawable/toggle.png", ChangedFileStatus.Added, 0, 0, null),
+        ),
+    )
+
+    /** The same chat in Extended mode, its workspace listed and its branch diff read, before a pull request exists. */
+    fun extended(): PanelState = loaded().copy(
+        agent = agent.copy(branches = listOf(GitBranch(agent.repoUrl!!, "cursor/theme-toggle-4f2a", prUrl = null))),
+        capabilities = Capabilities.EXTENDED,
+        pullRequest = RemoteLoad.Idle,
+        diff = RemoteLoad.Loaded(branchDiff),
+        workspace = WorkspaceBrowserState(path = "", tree = RemoteLoad.Loaded(workspaceTree)),
+    )
+
+    /** A Remote Control chat: one that runs on the user's own machine through Cursor's managed worker. */
+    fun remoteControl(): PanelState = loaded().copy(
+        agent = agent.copy(id = "bc-machine", envType = EnvType.MACHINE, envName = "studio-mac#/Users/bennett/app", runStatus = RunStatus.RUNNING),
+        agentId = "bc-machine",
+        runStatus = RunStatus.RUNNING,
+        machine = RemoteLoad.Loaded(MachineStatus("studio-mac", connected = true, isInUse = true, activeAgentId = "bc-machine")),
     )
 }
