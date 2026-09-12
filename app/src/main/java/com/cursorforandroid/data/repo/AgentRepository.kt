@@ -819,6 +819,7 @@ class AgentRepository(
                 projectAppearance = snap.projectAppearance,
                 parent = snap.parent,
                 knownScope = snap.scope,
+                hasPendingInteraction = snap.hasPendingInteraction,
             )
             if (updated == agent) agent else updated.also { changed = true }
         }

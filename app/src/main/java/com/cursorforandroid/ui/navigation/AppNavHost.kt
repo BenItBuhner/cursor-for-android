@@ -48,6 +48,7 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
+import com.cursorforandroid.ui.projects.ProjectScreen
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
@@ -110,7 +111,11 @@ internal fun AppShell(
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
     val topScreen = stack.top.screen
-    val selectedAgentId = (topScreen as? Screen.Agent)?.id
+    val selectedAgentId = when (topScreen) {
+        is Screen.Agent -> topScreen.id
+        is Screen.Project -> topScreen.id
+        else -> null
+    }
     val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
@@ -144,6 +149,16 @@ internal fun AppShell(
         stack.openAgent(id)
     }
 
+    fun openProject(id: String) {
+        closeDrawer()
+        stack.openProject(id)
+    }
+
+    /** A Project's row opens the Project; every other row, the chat. Decided from the row as it is now. */
+    fun openRow(row: AgentRow) {
+        if (row.agent.isProjectRoot) openProject(row.agent.id) else openAgent(row.agent.id)
+    }
+
     fun navigateTop(screen: Screen) {
         closeDrawer()
         stack.resetTo(screen)
@@ -161,8 +176,9 @@ internal fun AppShell(
     }
 
     LaunchedEffect(deepLinkAgentId) {
-        deepLinkAgentId?.let {
-            openAgent(it)
+        deepLinkAgentId?.let { id ->
+            // A Project's rolled-up notification names the Project; its view is where the workers are.
+            if (graph.agents.agent(id)?.isProjectRoot == true) openProject(id) else openAgent(id)
             onDeepLinkConsumed()
         }
     }
@@ -210,7 +226,7 @@ internal fun AppShell(
     val rowActions = AgentRowActions(
         onOpen = { row ->
             agentsViewModel.markRead(row.agent)
-            openAgent(row.agent.id)
+            openRow(row)
         },
         onTogglePin = { agentsViewModel.togglePinned(it.agent.id) },
         onArchive = { agentsViewModel.archive(it.agent.id) },
@@ -223,7 +239,7 @@ internal fun AppShell(
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
-        is Screen.Agent -> null
+        is Screen.Agent, is Screen.Project -> null
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
@@ -292,6 +308,14 @@ internal fun AppShell(
                         agentId = screen.id,
                         onOpenSidebar = if (pane.wide) pane.openSidebar else null,
                         onBack = pane.onBack,
+                    )
+                    is Screen.Project -> ProjectScreen(
+                        graph = graph,
+                        projectId = screen.id,
+                        onOpenSidebar = if (pane.wide) pane.openSidebar else null,
+                        onBack = pane.onBack,
+                        onOpenAgent = ::openAgent,
+                        onOpenProject = ::openProject,
                     )
                 }
             }

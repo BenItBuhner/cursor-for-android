@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.toggleableState
@@ -114,15 +115,18 @@ fun FlatIconButton(
     tint: Color = CursorTheme.colors.iconSecondary,
     enabled: Boolean = true,
 ) {
-    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier) {
-        Icon(icon, contentDescription, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
+    // The label sits on the control that takes the tap, not on the glyph: inside a tappable row the glyph's own node
+    // would merge into the row's, and the button would read as part of the row rather than as one of its own.
+    TouchTarget(size = size, touchSize = CursorDimens.touchTarget, shape = CursorTheme.shapes.lg, onClick = onClick, enabled = enabled, modifier = modifier, contentDescription = contentDescription) {
+        Icon(icon, null, tint = if (enabled) tint else tint.copy(alpha = tint.alpha * 0.4f), modifier = Modifier.size(iconSize))
     }
 }
 
 /**
  * A control that occupies [size] in the layout but accepts touches over [touchSize]: the larger hit layer uses
  * `requiredSize`, so it overflows the visual box symmetrically without changing measured bounds. The press
- * ripple stays on the visual box.
+ * ripple stays on the visual box. [contentDescription] names the control itself (the hit layer), so it stays a
+ * node of its own wherever it sits.
  */
 @Composable
 fun TouchTarget(
@@ -133,6 +137,7 @@ fun TouchTarget(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     role: Role? = Role.Button,
+    contentDescription: String? = null,
     content: @Composable () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -140,6 +145,7 @@ fun TouchTarget(
         Box(
             Modifier
                 .requiredSize(maxOf(size, touchSize))
+                .then(if (contentDescription != null) Modifier.semantics { this.contentDescription = contentDescription } else Modifier)
                 .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = role, onClick = onClick),
         )
         Box(

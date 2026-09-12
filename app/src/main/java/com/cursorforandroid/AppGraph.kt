@@ -15,11 +15,14 @@ import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
+import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.PinsApi
+import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
+import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
@@ -56,9 +59,13 @@ import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
+import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
+import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -181,9 +188,21 @@ class AppGraph(
     }
     private val accountPullRequests = PullRequestSource { url -> lazyAccountPullRequests.value.lookup(url) }
     private val gitHubPullRequests = PullRequestSource { url -> lazyGitHubPullRequests.value.lookup(url) }
-    private val projectLineage = object : ProjectLineageApi {
+    private val projectAccount = object : ProjectLineageApi, ProjectActionsApi, AgentStoreApi {
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> = lazyProjectApi.value.workersForManager(managerId)
         override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
+        override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
+        override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
+        override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)
+        override suspend fun reparent(agentId: String, parentId: String, subagentType: String?) = lazyProjectApi.value.reparent(agentId, parentId, subagentType)
+        override suspend fun updateAppearance(projectId: String, appearance: ProjectAppearance): ProjectAppearance? = lazyProjectApi.value.updateAppearance(projectId, appearance)
+        override suspend fun startSideChat(parentId: String, name: String?): ComposerSnapshot = lazyProjectApi.value.startSideChat(parentId, name)
+        override suspend fun steer(agentId: String, text: String, expectedRunId: String?): SteerOutcome = lazyProjectApi.value.steer(agentId, text, expectedRunId)
+        override suspend fun pause(agentId: String, runId: String?) = lazyProjectApi.value.pause(agentId, runId)
+        override suspend fun resume(agentId: String) = lazyProjectApi.value.resume(agentId)
+        override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
+        override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
+        override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
     }
     private val accountSlashCommands = object : SlashCommandApi {
         override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forRepository(repoUrl, ref)
@@ -263,7 +282,7 @@ class AppGraph(
      * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
      * lacks in either — and, in Extended mode, what a Project's view shows and does.
      */
-    private val lazyProjects = lazy { ProjectRepository(session, agents, projectLineage, capabilities = capabilities) }
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities) }
     val projects: ProjectRepository get() = lazyProjects.value
 
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }

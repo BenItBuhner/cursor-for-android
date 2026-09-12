@@ -6,7 +6,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import java.util.UUID
 
-/** The three destinations of the app. `route` is the string form the stack is saved as. */
+/** The four destinations of the app. `route` is the string form the stack is saved as. */
 sealed interface Screen {
     val route: String
 
@@ -22,11 +22,17 @@ sealed interface Screen {
         override val route: String get() = "agent/$id"
     }
 
+    /** A Cursor Project's view: its coordinator, primaries, side chats and shared context. */
+    data class Project(val id: String) : Screen {
+        override val route: String get() = "project/$id"
+    }
+
     companion object {
         fun fromRoute(route: String): Screen? = when {
             route == Home.route -> Home
             route == Settings.route -> Settings
             route.startsWith("agent/") -> route.removePrefix("agent/").takeIf { it.isNotBlank() }?.let(::Agent)
+            route.startsWith("project/") -> route.removePrefix("project/").takeIf { it.isNotBlank() }?.let(::Project)
             else -> null
         }
     }
@@ -91,6 +97,19 @@ class NavStack private constructor(initial: List<NavEntry>) {
             current is Screen.Agent && current.id == id -> Unit
             current is Screen.Agent -> replaceTop(Screen.Agent(id))
             else -> push(Screen.Agent(id))
+        }
+    }
+
+    /**
+     * Opens a Project's view: in place of a Project view on top (one Project from another), over anything else — a
+     * chat included, so a primary opened from the Project goes back to it. Nothing happens when it is already on top.
+     */
+    fun openProject(id: String) {
+        val current = top.screen
+        when {
+            current is Screen.Project && current.id == id -> Unit
+            current is Screen.Project -> replaceTop(Screen.Project(id))
+            else -> push(Screen.Project(id))
         }
     }
 
