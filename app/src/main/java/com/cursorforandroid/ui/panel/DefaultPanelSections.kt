@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.panel
 
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.projects.ProjectPanelSection
 
 /**
  * The sections the documented API feeds, plus a named placeholder for each Extended-mode section (spec §7), in the
@@ -81,11 +82,24 @@ object DefaultPanelSections {
         content = { state, _ -> PlaceholderSection(QUEUE_REASON, state) },
     )
 
+    /**
+     * The Project section is the Projects work's [ProjectPanelSection], mounted here behind the `projects` capability:
+     * a coordinator's primaries and actions, a primary's way back to its Project, or "not part of a Project". It
+     * owns its view model, so it needs the graph the panel lives in ([LocalPanelGraph]) and the host's navigation.
+     */
     val project = PanelSection(
         id = PanelSectionId.Project,
         icon = CursorIcons.Lightning,
-        availability = { _, _ -> SectionAvailability.RequiresExtended(PROJECT_REASON) },
-        content = { state, _ -> PlaceholderSection(PROJECT_REASON, state) },
+        availability = { capabilities, _ -> if (capabilities.projects) SectionAvailability.Available else SectionAvailability.RequiresExtended(PROJECT_REASON, ready = true) },
+        hint = { state -> state.agent?.let { if (it.isProjectRoot) "Coordinator" else it.parent?.let { "In a Project" } } },
+        content = { state, actions ->
+            val graph = LocalPanelGraph.current
+            if (graph == null) {
+                EmptyRow("The Project section needs the app to render", "Nothing to show outside a running chat.")
+            } else {
+                ProjectPanelSection(graph, state.agentId, onOpenAgent = actions::openAgent, onOpenProject = actions::openProject)
+            }
+        },
     )
 
     val remote = PanelSection(

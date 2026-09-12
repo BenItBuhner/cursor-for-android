@@ -236,6 +236,23 @@ class ConversationPanelTest {
     }
 
     @Test
+    fun `the Project section is the Projects work's own, behind the projects capability`() {
+        val project = PanelRegistry.default()[PanelSectionId.Project]!!
+        val off = project.availability(Capabilities.DOCUMENTED, state)
+        assertThat(off).isInstanceOf(SectionAvailability.RequiresExtended::class.java)
+        // Ready: the mode alone is what it waits on, not a later build.
+        assertThat((off as SectionAvailability.RequiresExtended).ready).isTrue()
+        assertThat(project.availability(Capabilities.EXTENDED, state)).isEqualTo(SectionAvailability.Available)
+        assertThat(project.availability(Capabilities.DOCUMENTED.copy(projects = true), state)).isEqualTo(SectionAvailability.Available)
+
+        // Rendered on its own, without the graph it owns a view model through, it says so rather than crashing.
+        state = state.copy(capabilities = Capabilities.EXTENDED)
+        show()
+        open(PanelSectionId.Project)
+        assertThat(shown("The Project section needs the app to render")).isTrue()
+    }
+
+    @Test
     fun `share copies the link and opens cursor com`() {
         show()
         open(PanelSectionId.Share)
