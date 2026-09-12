@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.api.dto.SseInteractionUpdateDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.ActivityGroup
@@ -140,6 +141,8 @@ object TimelineBuilder {
         private val timed: Boolean = true,
         /** When the run started, for the footer of a run whose outcome reports no duration of its own. */
         private val startedAtMillis: Long? = null,
+        /** Where the bytes of an image the agent generates are kept; without one only a small image is kept, inline. */
+        private val images: GeneratedImageSink? = null,
         private val nowProvider: () -> Long = AppClock::now,
     ) {
         private val items = mutableListOf<TimelineItem>()
@@ -208,6 +211,9 @@ object TimelineBuilder {
                 is RunStreamEvent.Assistant -> { applied++; appendAssistant(event.text) }
                 is RunStreamEvent.Thinking -> { applied++; appendThinking(event.text) }
                 is RunStreamEvent.ToolCall -> { applied++; applyTool(event.call) }
+                // Not counted: the simplified `tool_call` it accompanies is the content event, and a reconnect
+                // catches up on those; this only adds to the call it names.
+                is RunStreamEvent.Interaction -> applyInteraction(event.update)
                 is RunStreamEvent.Result -> finish(event)
                 is RunStreamEvent.Error -> if (!event.isExpired) streamError = event
                 RunStreamEvent.Heartbeat, RunStreamEvent.Done -> Unit
@@ -275,17 +281,60 @@ object TimelineBuilder {
 
         private fun applyTool(dto: SseToolCallDto) {
             closeThinking()
-            val call = ToolCallMapper.from(dto, todos)
+            val call = ToolCallMapper.from(dto, todos, images)
             if (!call.isRunning) ToolCallMapper.todos(dto)?.let { todos = it }
             // A status update lands on the call it reports on, wherever that is; a new call joins the open group.
-            val idx = callGroup[call.callId] ?: -1
-            if (idx >= 0) {
-                val group = items[idx] as ActivityGroup
-                items[idx] = group.copy(steps = group.steps.map { if (it is ToolCall && it.callId == call.callId) call else it })
-            } else {
-                addStep(call)
+            // What an earlier event kept for the call — the payload its `interaction_update` carried, the output the
+            // running event had — stays unless this event brings its own.
+            replaceCall(call.callId) { existing -> call.inheriting(existing) } ?: addStep(call)
+        }
+
+        /**
+         * The SDK-shape update for a tool call: joined to the call by id whichever of the two events came first. It
+         * carries the typed arguments and result the simplified event may have left out, so the call takes from it
+         * whatever it lacks — the payload above all, the output and line counts too — and, when no `tool_call` event
+         * has named the call yet, stands in for one until it does.
+         */
+        private fun applyInteraction(update: SseInteractionUpdateDto) {
+            val callId = update.callId ?: return
+            val toolCall = update.toolCall ?: return
+            val status = if (update.isToolCallCompleted) ToolCall.STATUS_COMPLETED else ToolCall.STATUS_RUNNING
+            val dto = SseToolCallDto(callId, toolCall.type, status, toolCall.args, toolCall.result)
+            val fromUpdate = ToolCallMapper.from(dto, todos, images)
+            replaceCall(callId) { existing ->
+                existing.copy(
+                    // A completion the simplified event has not reported yet stops the row spinning; it will say the same.
+                    status = if (existing.isRunning && !fromUpdate.isRunning) fromUpdate.status else existing.status,
+                    payload = fromUpdate.payload ?: existing.payload,
+                    output = existing.output ?: fromUpdate.output,
+                    exitCode = existing.exitCode ?: fromUpdate.exitCode,
+                    linesAdded = existing.linesAdded ?: fromUpdate.linesAdded,
+                    linesRemoved = existing.linesRemoved ?: fromUpdate.linesRemoved,
+                    isError = existing.isError || fromUpdate.isError,
+                )
+            } ?: run {
+                closeThinking()
+                addStep(fromUpdate)
             }
         }
+
+        /** Replaces the call [callId] wherever it sits with [transform] of it; null when no group holds it. */
+        private inline fun replaceCall(callId: String, transform: (ToolCall) -> ToolCall): Unit? {
+            val idx = callGroup[callId] ?: return null
+            val group = items[idx] as ActivityGroup
+            items[idx] = group.copy(steps = group.steps.map { if (it is ToolCall && it.callId == callId) transform(it) else it })
+            return Unit
+        }
+
+        /** This call with whatever [previous] kept that this event did not bring. */
+        private fun ToolCall.inheriting(previous: ToolCall): ToolCall = copy(
+            payload = payload ?: previous.payload,
+            output = output ?: previous.output,
+            exitCode = exitCode ?: previous.exitCode,
+            linesAdded = linesAdded ?: previous.linesAdded,
+            linesRemoved = linesRemoved ?: previous.linesRemoved,
+            truncated = truncated ?: previous.truncated,
+        )
 
         /**
          * The run is over, so nothing in it is still happening: text and thinking stop streaming, and a tool call the

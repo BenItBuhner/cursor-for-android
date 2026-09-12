@@ -8,6 +8,7 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolLabels
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolOutput
+import com.cursorforandroid.domain.ToolTruncation
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -29,7 +30,11 @@ object ToolCallMapper {
     /** One to-do as the agent's to-do list carries it; [previousTodos] is the list as of the last update. */
     data class Todo(val id: String, val content: String, val status: String)
 
-    fun from(dto: SseToolCallDto, previousTodos: List<Todo>? = null): ToolCall {
+    /**
+     * The [ToolCall] for a `tool_call` event. [images] keeps the bytes of a generated image on the device (see
+     * [ToolPayloads.from]); without one a small image stays inline and a large one is noted but not kept.
+     */
+    fun from(dto: SseToolCallDto, previousTodos: List<Todo>? = null, images: GeneratedImageSink? = null): ToolCall {
         val kind = ToolNames.kindOf(dto.name)
         val args = dto.args as? JsonObject
         val result = dto.result
@@ -39,6 +44,8 @@ object ToolCallMapper {
         val described = describe(kind, dto.name, args, result, running, previousTodos)
         // Everything the row needs is read here; the payload itself is not kept (see [ToolCall.output]).
         val output = ToolOutput.from(described.kind, described.detail, result)
+        // What the call produced, clipped like the output: the simplified event carries it when it is small enough.
+        val payload = if (isError) null else ToolPayloads.from(dto.name, dto.args, result, images, dto.callId)
         return ToolCall(
             callId = dto.callId,
             name = dto.name,
@@ -53,6 +60,8 @@ object ToolCallMapper {
             labels = described.labels,
             output = output.output,
             exitCode = output.exitCode,
+            payload = payload,
+            truncated = dto.truncated?.takeIf { it.args || it.result }?.let { ToolTruncation(it.args, it.result) },
             linkedAgentIds = if (CoordinatorLineage.isCoordinatorTool(dto.name)) linkedAgentIds(args, result) else emptyList(),
         )
     }

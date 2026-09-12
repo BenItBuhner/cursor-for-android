@@ -344,7 +344,9 @@ class ConversationRepositoryTest {
 
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.items.isNotEmpty() && !conversations.state("bc-1").value.isLoading }
-        assertThat(api.getAgentCalls).isEqualTo(1)
+        // The detail read is launched beside the transcript, not before it: it may not have reached the API by the
+        // time the items are on screen, and the point is that the transcript did not wait for it.
+        awaitUntil { api.getAgentCalls == 1 }
         assertThat(api.getAgentGate!!.isCompleted).isFalse()
 
         api.getAgentGate!!.complete(Unit)
