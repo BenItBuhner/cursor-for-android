@@ -91,12 +91,12 @@ import kotlinx.coroutines.withContext
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page. A `/command`
  * standing in the text is painted in the Cursor orange ([CommandOrange]) over the field's own glyphs, without
- * the field editing anything differently. Two commands are not text at all but pills right of "+", as on the web
+ * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
- * `/plan`, which is [planMode]. Typing either with a space after it, or picking it from the popover or the "+"
- * menu, turns it into its pill and takes the token out of the text; the pill's cross puts the mode off again. The
- * two are one slot — the one turned on last replaces the other, in the owner's state as well — so at most one pill
- * is ever worn.
+ * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
+ * after it, or picking it from the popover or the "+" menu, turns it into its pill and takes the token out of the
+ * text; the pill's cross puts the mode off again. They are one slot — the one turned on last replaces the other, in
+ * the owner's state as well — so at most one pill is ever worn.
  * The corners are [CursorDimens.composerRadius] rather than the web's 12px: concentric with the two discs in the
  * bottom corners, so the box wraps them evenly instead of pinching in behind them.
  *
@@ -131,9 +131,14 @@ fun ComposerBox(
     onAttachmentError: ((String) -> Unit)? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
-    /** Plan mode as the owner holds it, worn as a pill; [onPlanMode] puts it on from `/plan` and off from the pill's cross. Null leaves `/plan` as text. */
-    planMode: Boolean = false,
-    onPlanMode: ((Boolean) -> Unit)? = null,
+    /**
+     * The mode the owner holds — Plan, or with [extendedModes] Ask or Debug — worn as a pill; [onModePill] puts one on
+     * from its `/command` and takes it off (null) from the pill's cross. Null leaves the mode commands as text.
+     */
+    modePill: ModePills.Pill? = null,
+    onModePill: ((ModePills.Pill?) -> Unit)? = null,
+    /** Whether `/ask` and `/debug` become pills here (Extended mode); off, they stay in the text like any other command. */
+    extendedModes: Boolean = false,
     footerExtra: (@Composable RowScope.() -> Unit)? = null,
     minLines: Int = 1,
 ) {
@@ -142,9 +147,9 @@ fun ComposerBox(
     val shape = remember { RoundedCornerShape(CursorDimens.composerRadius) }
     // The owner's text split into what the field shows and the Multitask pill; the field never holds the token.
     val presented = remember(value) { ModePills.present(value) }
-    // Plan and Multitask are one slot (see ModePills), and the owner keeps them so; should it ever hold both for a
-    // frame, the token in the text is the one shown, since it is the one the field is hiding.
-    val planPill = planMode && onPlanMode != null && !presented.multitask
+    // The modes and Multitask are one slot (see ModePills), and the owner keeps them so; should it ever hold both for
+    // a frame, the token in the text is the one shown, since it is the one the field is hiding.
+    val wornMode = modePill?.takeIf { it.agentMode != null && onModePill != null && !presented.multitask }
     // Saved alongside the text and the caret, so a composer rebuilt from instance state is left the way the reader
     // had it. The want is taken from it once, before the field has reported its own state over the top; a field that
     // was not focused is never given focus, since arriving on a screen must not throw the keyboard up.
@@ -208,8 +213,9 @@ fun ComposerBox(
     val currentCommands by rememberUpdatedState(commands)
     val currentMenu by rememberUpdatedState(plusMenu)
     val currentPresented by rememberUpdatedState(presented)
-    val currentPlanMode by rememberUpdatedState(onPlanMode)
-    val currentPlanOn by rememberUpdatedState(planMode)
+    val currentOnMode by rememberUpdatedState(onModePill)
+    val currentMode by rememberUpdatedState(modePill)
+    val currentExtended by rememberUpdatedState(extendedModes)
 
     /** Hands the owner the field's text in its own shape — `/multitask ` in front while that pill is on. */
     fun publish(text: String, multitask: Boolean = currentPresented.multitask) {
@@ -218,26 +224,26 @@ fun ComposerBox(
     }
 
     /**
-     * Puts [pill] on for the field's [text], and the other mode off: plan mode is asked for and `/multitask` leaves
-     * the owner's text, or the text leads with `/multitask` and plan mode is put off. The owner keeps the two
-     * exclusive as well; this is so the composer never depends on it.
+     * Puts [pill] on for the field's [text], and the others off: a mode is asked for and `/multitask` leaves the
+     * owner's text, or the text leads with `/multitask` and the mode is put off. The owner keeps them exclusive as
+     * well; this is so the composer never depends on it.
      */
     fun turnOn(pill: ModePills.Pill, text: String) {
         when (pill) {
-            ModePills.Pill.Plan -> {
-                currentPlanMode?.invoke(true)
-                publish(text, multitask = false)
-            }
             ModePills.Pill.Multitask -> {
                 publish(text, multitask = true)
-                if (currentPlanOn) currentPlanMode?.invoke(false)
+                if (currentMode != null) currentOnMode?.invoke(null)
+            }
+            else -> {
+                currentOnMode?.invoke(pill)
+                publish(text, multitask = false)
             }
         }
     }
 
     fun complete(entry: SlashCommand) {
         val token = currentToken ?: return
-        val pill = ModePills.pillFor(entry.name, planEnabled = currentPlanMode != null)
+        val pill = ModePills.pillFor(entry.name, planEnabled = currentOnMode != null, extended = currentExtended)
         if (pill != null) {
             // Multitask and Plan are pills, not text: the token goes, the mode goes on.
             val next = ModePills.consumeToken(field.text.toString(), token)
@@ -283,10 +289,11 @@ fun ComposerBox(
                 scrollState = textScroll,
                 onTextLayout = { textLayout.get = it },
                 inputTransformation = InputTransformation {
-                    // A `/multitask ` or `/plan ` the reader has just closed with a space becomes its pill: the token
-                    // leaves the text here, before the field ever shows it, and the caret stays on its characters.
-                    // The last one typed is the one that stays on; the other mode goes off with it.
-                    val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onPlanMode != null)
+                    // A `/multitask `, `/plan ` (or, in Extended mode, `/ask ` or `/debug `) the reader has just closed
+                    // with a space becomes its pill: the token leaves the text here, before the field ever shows it,
+                    // and the caret stays on its characters. The last one typed is the one that stays on; the other
+                    // mode goes off with it.
+                    val typed = ModePills.consumeTyped(asCharSequence().toString(), selection, planEnabled = onModePill != null, extended = extendedModes)
                     val turnedOn = typed.turnedOn
                     if (turnedOn != null) {
                         replace(0, length, typed.text)
@@ -336,8 +343,8 @@ fun ComposerBox(
                         prompt = value,
                         onPromptChange = { next ->
                             onValueChange(next)
-                            // Multitask from the menu is the same one slot as the pills: it puts plan mode off.
-                            if (planMode && SlashCommands.has(next, SlashCommands.MULTITASK)) onPlanMode?.invoke(false)
+                            // Multitask from the menu is the same one slot as the pills: it puts the mode off.
+                            if (modePill != null && SlashCommands.has(next, SlashCommands.MULTITASK)) onModePill?.invoke(null)
                             // The command goes in at the front of the prompt and the caret follows the adopted text
                             // to the end, which is where the reader carries on writing; the field is handed back with it.
                             wantsFocus = true
@@ -352,8 +359,8 @@ fun ComposerBox(
             // measured in order, so the pills take what their words need and the chip is left the rest: it ellipsises
             // before a pill would, and send is never pushed out.
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                if (planPill) {
-                    ModePill(ModePills.Pill.Plan, onClear = { onPlanMode?.invoke(false) })
+                if (wornMode != null) {
+                    ModePill(wornMode, onClear = { onModePill?.invoke(null) })
                     Spacer(Modifier.width(6.dp))
                 }
                 if (presented.multitask) {

@@ -19,26 +19,48 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * The two slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
- * still travels in the prompt as its token, and `/plan`, which is plan mode (`mode: "plan"` on the run) and never
- * travels as text at all. They are two settings of one slot — a run is planned or fanned out to subagents, not
- * both — so turning either on takes the other off, and the composer only ever wears one of them.
+ * The slash commands the composer wears as pills instead of text, as cursor.com/agents does: `/multitask`, which
+ * still travels in the prompt as its token, and the modes — `/plan`, which is plan mode (`mode: "plan"` on the run),
+ * and in Extended mode `/ask` and `/debug`, which are `agent.v1.AgentMode` ASK and DEBUG on the account's follow-up —
+ * none of which travels as text at all. They are settings of one slot — a run is planned, or answers, or debugs, or
+ * fans out to subagents, not two of those — so turning any on takes the others off, and the composer only ever wears one.
  *
  * Everything here is presentation. The owner of the composer keeps holding the prompt the way it has always been
  * sent — `/multitask fix the flaky test` — and the field shows `fix the flaky test` beside a Multitask pill; every
- * keystroke hands the owner the text with the token back in front ([compose]). Only these two become pills: `/goal`,
- * a skill or a machine command stay in the text, painted as commands.
+ * keystroke hands the owner the text with the token back in front ([compose]). Only these become pills: `/goal`, a
+ * skill or a machine command stay in the text, painted as commands.
  */
 object ModePills {
     /** A pill: the slash command it stands for, and the word on it. */
     enum class Pill(val command: String, val label: String) {
         Multitask(SlashCommands.MULTITASK, "Multitask"),
         Plan(SlashCommands.PLAN, "Plan"),
+        Ask(SlashCommands.ASK, "Ask"),
+        Debug(SlashCommands.DEBUG, "Debug"),
+        ;
+
+        /** The mode a pill asks the run for; null for Multitask, which rides in the text instead. */
+        val agentMode: AgentMode?
+            get() = when (this) {
+                Multitask -> null
+                Plan -> AgentMode.PLAN
+                Ask -> AgentMode.ASK
+                Debug -> AgentMode.DEBUG
+            }
+
+        /** True for the pills that need the account's follow-up to travel (Extended mode). */
+        val isExtended: Boolean get() = agentMode?.needsAccountService == true
+
+        companion object {
+            /** The pill for a mode the owner holds; null for none, and for a mode the composer has no pill for. */
+            fun of(mode: AgentMode?): Pill? = entries.firstOrNull { it.agentMode != null && it.agentMode == mode }
+        }
     }
 
     /** What the field shows of the owner's value, and whether the Multitask pill is on. */
@@ -57,10 +79,15 @@ object ModePills {
     /** The field's [text] in the owner's shape: led by `/multitask ` while the pill is on, so the request carries it. */
     fun compose(text: String, multitask: Boolean): String = if (multitask) "/${SlashCommands.MULTITASK} $text" else text
 
-    /** Which pill a picked or typed command becomes, if any: `/plan` only where plan mode can be set ([planEnabled]). */
-    fun pillFor(name: String, planEnabled: Boolean): Pill? = when (name) {
+    /**
+     * Which pill a picked or typed command becomes, if any: `/plan` only where a mode can be set ([planEnabled]),
+     * `/ask` and `/debug` only where the account's modes are on as well ([extended]).
+     */
+    fun pillFor(name: String, planEnabled: Boolean, extended: Boolean = false): Pill? = when (name) {
         SlashCommands.MULTITASK -> Pill.Multitask
         SlashCommands.PLAN -> if (planEnabled) Pill.Plan else null
+        SlashCommands.ASK -> if (planEnabled && extended) Pill.Ask else null
+        SlashCommands.DEBUG -> if (planEnabled && extended) Pill.Debug else null
         else -> null
     }
 
@@ -74,18 +101,18 @@ object ModePills {
     }
 
     /**
-     * Takes every `/multitask ` and (with [planEnabled]) `/plan ` — a token with whitespace after it, so the reader
-     * has closed it — out of [text]. A token still being typed at the end of the text stays, so the popover can
-     * finish it, and a tap on Send with one there sends it as text, as it always has.
+     * Takes every `/multitask ` and (with [planEnabled]) `/plan ` — and, with [extended] too, `/ask ` and `/debug ` —
+     * a token with whitespace after it, so the reader has closed it — out of [text]. A token still being typed at the
+     * end of the text stays, so the popover can finish it, and a tap on Send with one there sends it as text, as it always has.
      */
-    fun consumeTyped(text: String, selection: TextRange, planEnabled: Boolean): Typed {
+    fun consumeTyped(text: String, selection: TextRange, planEnabled: Boolean, extended: Boolean = false): Typed {
         var result = text
         var start = selection.start
         var end = selection.end
         val pills = ArrayList<Pill>()
         // Later tokens first, so the spans of the earlier ones stay valid as characters leave.
         for (match in CLOSED.findAll(text).toList().asReversed()) {
-            val pill = pillFor(match.groupValues[1], planEnabled) ?: continue
+            val pill = pillFor(match.groupValues[1], planEnabled, extended) ?: continue
             pills += pill
             // The token and the whitespace that closed it.
             val removed = match.range.first..match.range.last + 1
@@ -105,7 +132,7 @@ object ModePills {
         return TextFieldValue(next, TextRange(minOf(token.start, next.length)))
     }
 
-    private val CLOSED = Regex("(?<=^|\\s)/(${SlashCommands.MULTITASK}|${SlashCommands.PLAN})(?=\\s)")
+    private val CLOSED = Regex("(?<=^|\\s)/(${SlashCommands.MULTITASK}|${SlashCommands.PLAN}|${SlashCommands.ASK}|${SlashCommands.DEBUG})(?=\\s)")
     private val CLOSED_MULTITASK = Regex("(?<=^|\\s)/${SlashCommands.MULTITASK}(?=\\s)")
 
     /** [index] once [removed] has left the text: unchanged before it, at its start inside it, moved up after it. */
@@ -143,16 +170,26 @@ internal val PillVioletLight = Color(0xFF6A5ACD)
 internal val PillAmberDark = Color(0xFFF1B467)
 internal val PillAmberLight = Color(0xFF8F5C00)
 
+/** Ask mode's blue: the theme's `charts.blue` line (#82AAFF), deepened for the light surface the same way. */
+internal val PillBlueDark = Color(0xFF82AAFF)
+internal val PillBlueLight = Color(0xFF2456B8)
+
+/** Debug mode's teal: `charts.green` at its cooler end (#5FD3B3), so it reads apart from the git-added green of the diffs. */
+internal val PillTealDark = Color(0xFF5FD3B3)
+internal val PillTealLight = Color(0xFF0F766E)
+
 /** How much of its tint a pill's wash carries over the surface, dark or light. */
 private const val PillWashAlpha = 0.12f
 
-/** A pill's tint in the theme in force: Multitask the web's violet, Plan the theme's amber. */
+/** A pill's tint in the theme in force: Multitask the web's violet, Plan the theme's amber, Ask blue, Debug teal. */
 @Composable
 internal fun pillTint(pill: ModePills.Pill): Color {
     val dark = CursorTheme.colors.isDark
     return when (pill) {
         ModePills.Pill.Multitask -> if (dark) PillVioletDark else PillVioletLight
         ModePills.Pill.Plan -> if (dark) PillAmberDark else PillAmberLight
+        ModePills.Pill.Ask -> if (dark) PillBlueDark else PillBlueLight
+        ModePills.Pill.Debug -> if (dark) PillTealDark else PillTealLight
     }
 }
 
@@ -187,4 +224,6 @@ private val ModePills.Pill.icon: ImageVector
     get() = when (this) {
         ModePills.Pill.Multitask -> CursorIcons.Multitask
         ModePills.Pill.Plan -> CursorIcons.Plan
+        ModePills.Pill.Ask -> CursorIcons.Ask
+        ModePills.Pill.Debug -> CursorIcons.Bug
     }

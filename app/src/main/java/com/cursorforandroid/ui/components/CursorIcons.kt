@@ -405,6 +405,15 @@ object CursorIcons {
         }
     }
 
+    /** Ask mode: Lucide `message-circle-question`, a question in a speech bubble — the agent answers, edits nothing. */
+    val Ask: ImageVector by lazy {
+        icon("Ask") {
+            path("M7.9 20A9 9 0 1 0 4 16.1L2 22Z")
+            path("M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3")
+            path("M12 17h.01")
+        }
+    }
+
     /** Files: an upright paperclip as the web's row draws it (Lucide's leans 45°), so the geometry is our own. */
     val Paperclip: ImageVector by lazy {
         icon("Paperclip") {

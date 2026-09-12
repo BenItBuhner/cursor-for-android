@@ -66,6 +66,7 @@ import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.Dot
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.Pill
 import com.cursorforandroid.ui.components.PullRequestPill
 import com.cursorforandroid.ui.components.RunningGlyph
@@ -179,8 +180,9 @@ fun HomeScreen(
                         modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
                         // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.
-                        planMode = state.planMode,
-                        onPlanMode = viewModel::setPlanMode,
+                        // A new chat is launched over the documented API, which carries agent and plan alone.
+                        modePill = if (state.planMode) ModePills.Pill.Plan else null,
+                        onModePill = { pill -> viewModel.setPlanMode(pill == ModePills.Pill.Plan) },
                     )
                     state.error?.let {
                         Row(Modifier.padding(top = 8.dp, start = 2.dp), verticalAlignment = Alignment.CenterVertically) {
