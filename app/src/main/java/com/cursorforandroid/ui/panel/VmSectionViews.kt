@@ -52,7 +52,10 @@ internal fun WorkspaceBrowser(state: PanelState, actions: PanelActions) {
         return
     }
     val workspace = state.workspace
-    LaunchedEffect(state.agentId) { if (workspace.tree is RemoteLoad.Idle) actions.loadWorkspace() }
+    // Asked for on the first showing, and again once the mode that allows the read is turned on under it.
+    LaunchedEffect(state.agentId, state.capabilities.workspaceFiles) {
+        if (workspace.tree is RemoteLoad.Idle || workspace.tree is RemoteLoad.Unsupported) actions.loadWorkspace()
+    }
     val segments = workspace.path.split('/').filter { it.isNotEmpty() }
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("workspace", style = type.small, color = if (segments.isEmpty()) colors.textSecondary else colors.link, modifier = Modifier.pressable({ actions.browseWorkspace("") }, CursorTheme.shapes.sm, enabled = segments.isNotEmpty()).padding(2.dp))

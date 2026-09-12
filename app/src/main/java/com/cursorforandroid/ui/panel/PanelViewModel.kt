@@ -234,6 +234,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val url = agent.value?.prUrl ?: return
         if (!force && pullRequest.value !is RemoteLoad.Idle && pullRequest.value !is RemoteLoad.Failed) return
         if (pullRequestJob?.isActive == true && !force) return
+        readPullRequest(url, force)
+    }
+
+    private fun readPullRequest(url: String, force: Boolean) {
         pullRequestJob?.cancel()
         pullRequest.value = RemoteLoad.Loading
         pullRequestJob = viewModelScope.launch {
@@ -403,10 +407,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             val result = graph.reviews.createPullRequest(agentId, current.branchName)
             pullRequestCreation.value = result.fold(
                 onSuccess = { created ->
-                    // The row learns its pull request from the public record, the section from its host.
+                    // The row learns its pull request from the public record, the section from its host — by the
+                    // URL Cursor answered with, since the row may take a moment to catch up.
                     graph.agents.loadDetail(agentId)
-                    pullRequest.value = RemoteLoad.Idle
-                    loadPullRequest(force = true)
+                    created.url?.let { readPullRequest(it, force = true) }
                     RemoteLoad.Loaded(created.url.orEmpty())
                 },
                 onFailure = { RemoteLoad.Failed(it.message ?: "Cursor could not open the pull request.", retryable = it !is IllegalStateException) },
