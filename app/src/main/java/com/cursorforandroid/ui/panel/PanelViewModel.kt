@@ -18,12 +18,14 @@ import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.DesktopSession
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.MachineStatus
+import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PullRequestView
 import com.cursorforandroid.domain.RepoContents
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ScmHost
+import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
@@ -133,11 +135,15 @@ data class PanelState(
     val desktop: DesktopState = DesktopState.Idle,
     /** Opening the pull request from here: idle until asked; the URL once Cursor has opened it. */
     val pullRequestCreation: RemoteLoad<String> = RemoteLoad.Idle,
+    /** What the account has said about the chat's controls (Extended mode): its queue, the last steer, what was held or answered from here. */
+    val controls: ConversationControls = ConversationControls.EMPTY,
 ) {
     val prUrl: String? get() = agent?.prUrl
     val hasPullRequest: Boolean get() = prUrl != null
     /** The files the Changes section lists: the pull request's when it has them, else the branch diff's (Extended). */
     val branchDiffFiles: List<AgentDiffFile> get() = diff.valueOrNull?.files.orEmpty()
+    /** A turn is under way, by the run, the stream or the row. */
+    val isRunning: Boolean get() = runStatus?.isActive == true || isStreaming || agent?.isRunning == true
 }
 
 /**
@@ -179,13 +185,15 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** The reads of the agent's VM and of the account, folded so the main combine stays within its arity. */
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
+    /** [vmLoads] with what the account has said about the chat's controls, for the same reason. */
+    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId)) { vm, controls -> vm to controls }
 
     val state: StateFlow<PanelState> = combine(
         agent,
         graph.conversations.state(agentId),
         content,
         graph.extendedMode.capabilities,
-        combine(pullRequest, artifacts, usage, browser, vmLoads) { pr, art, use, br, vm -> Loads(pr, art, use, br, vm) },
+        combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, (vm, controls) -> Loads(pr, art, use, br, vm, controls) },
     ) { a, conversation, (transcript, prompts), capabilities, loads ->
         PanelState(
             agentId = agentId,
@@ -205,10 +213,18 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             machine = loads.vm.machine,
             desktop = loads.vm.desktop,
             pullRequestCreation = loads.vm.pullRequestCreation,
+            controls = loads.controls,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
 
-    private data class Loads(val pullRequest: RemoteLoad<PullRequestView>, val artifacts: RemoteLoad<List<Artifact>>, val usage: RemoteLoad<AgentUsage>, val browser: RepoBrowserState, val vm: VmLoads)
+    private data class Loads(
+        val pullRequest: RemoteLoad<PullRequestView>,
+        val artifacts: RemoteLoad<List<Artifact>>,
+        val usage: RemoteLoad<AgentUsage>,
+        val browser: RepoBrowserState,
+        val vm: VmLoads,
+        val controls: ConversationControls,
+    )
 
     private data class VmLoads(
         val diff: RemoteLoad<AgentDiff>,
@@ -217,6 +233,35 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val desktop: DesktopState,
         val pullRequestCreation: RemoteLoad<String>,
     )
+
+    init {
+        // The account's queue is kept current while the panel lives, like while the chat's screen does.
+        graph.steering.attach(agentId)
+    }
+
+    override fun onCleared() {
+        graph.steering.detach(agentId)
+        super.onCleared()
+    }
+
+    // -- the chat's controls on the account (Extended mode) -----------------------------------------------------------
+
+    /** Each answers what to tell the reader — the account's outcome, or nothing — or fails with the reason; see [SteeringRepository]. */
+    suspend fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>): Result<String?> = graph.steering.answerQuestion(agentId, callId, answers).map { it.message }
+    suspend fun steer(text: String): Result<String?> = graph.steering.steer(agentId, text).map { it.message }
+    suspend fun pauseRun(): Result<String?> = graph.steering.pause(agentId).map { "Paused; resume when you're ready." }
+    suspend fun resumeRun(): Result<String?> = graph.steering.resume(agentId).map { "Resumed." }
+    suspend fun stopRun(): Result<String?> = graph.conversations.cancelActiveRun(agentId).map { null }
+    suspend fun wake(): Result<String?> = graph.steering.wake(agentId).map { if (it) "Waking the agent's machine." else "The machine was already awake." }
+    suspend fun cancelToolCall(callId: String): Result<String?> = graph.steering.cancelToolCall(agentId, callId).map { if (it) "Stopping that step." else "That step had already finished." }
+    suspend fun refreshQueue() = graph.steering.refreshQueue(agentId)
+    suspend fun queueSendNow(followupId: String): Result<String?> = graph.steering.submitPendingNow(agentId, followupId).map { null }
+    suspend fun queueDelete(followupId: String): Result<String?> = graph.steering.deletePending(agentId, followupId).map { null }
+    suspend fun queueMove(followupId: String, up: Boolean): Result<String?> = graph.steering.movePending(agentId, followupId, up).map { null }
+    suspend fun queueUpdate(followupId: String, text: String): Result<String?> =
+        graph.steering.updatePending(agentId, followupId, text).map { null }.also { graph.steering.markEditing(agentId, followupId, editing = false) }
+    suspend fun queueMarkEditing(followupId: String, editing: Boolean): Result<String?> = graph.steering.markEditing(agentId, followupId, editing).map { null }
+    suspend fun queueSteerNow(followupId: String): Result<String?> = graph.steering.promotePending(agentId, followupId).map { it.message }
 
     private fun promptImagesOf(items: List<TimelineItem>): List<MessageAttachment> = items.filterIsInstance<UserMessage>().flatMap { it.attachments }
 

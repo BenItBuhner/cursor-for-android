@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.ComposerMenuActions
+import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -53,6 +54,8 @@ class ComposerPillsScreenshotTest {
     private data class Scene(
         val value: String = "",
         val planMode: Boolean = false,
+        /** The Extended-mode pills: Ask or Debug worn instead of Plan. */
+        val modePill: ModePills.Pill? = null,
         val modelLabel: String = "Claude Fable 5.1",
         val mode: ThemeMode = ThemeMode.Dark,
     )
@@ -75,8 +78,9 @@ class ComposerPillsScreenshotTest {
                         plusMenu = ComposerMenuActions(onPickFiles = {}),
                         modelLabel = scene.modelLabel,
                         onModel = {},
-                        planMode = scene.planMode,
-                        onPlanMode = {},
+                        modePill = scene.modePill ?: if (scene.planMode) ModePills.Pill.Plan else null,
+                        onModePill = {},
+                        extendedModes = scene.modePill != null,
                     )
                 }
             }
@@ -118,5 +122,17 @@ class ComposerPillsScreenshotTest {
             mode = ThemeMode.Light,
         )
         capture("37_composer_pills_light", settledText = "Ship the 0.2.0")
+    }
+
+    /** Extended mode's two modes, each worn like Plan: Ask in blue, Debug in teal; one pill at a time. */
+    @Test
+    fun extendedModePills() {
+        compose.setContent { Composer(scene) }
+
+        scene = Scene(modePill = ModePills.Pill.Ask, value = "Why does the widget repaint on every list refresh?")
+        capture("47_composer_ask_pill", settledText = "Why does the widget")
+
+        scene = Scene(modePill = ModePills.Pill.Debug, value = "The sidebar loses its scroll position after a rotation")
+        capture("48_composer_debug_pill", settledText = "The sidebar loses")
     }
 }

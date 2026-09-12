@@ -239,7 +239,7 @@ class PanelScreenshotTest {
         compose.onNodeWithTag("files-tab-Workspace").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("workspace-dir")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("45_panel_workspace_files")
+        capture("49_panel_workspace_files")
     }
 
     /** Extended mode: the Remote section of a cloud chat, offering its VM desktop. */
@@ -252,7 +252,7 @@ class PanelScreenshotTest {
         toggle(PanelSectionId.Remote)
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-view")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("46_panel_remote_desktop")
+        capture("50_panel_remote_desktop")
     }
 
     /** Default mode: a Remote Control chat's machine, its state from the fleet endpoint and the documented floors. */
@@ -265,7 +265,7 @@ class PanelScreenshotTest {
         toggle(PanelSectionId.Remote)
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("machine-status")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("47_panel_remote_control")
+        capture("51_panel_remote_control")
     }
 
     /** Extended mode: the Changes section reading the branch's diff before a pull request exists. */
@@ -276,7 +276,7 @@ class PanelScreenshotTest {
         toggle(PanelSectionId.PendingQuestion)
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("branch-diff-file")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("48_panel_branch_diff")
+        capture("52_panel_branch_diff")
     }
 
     /** The desktop screen's chrome over the (empty, under Robolectric) noVNC canvas, in control. */
@@ -291,7 +291,23 @@ class PanelScreenshotTest {
             }
         }
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-connection")).fetchSemanticsNodes().isNotEmpty() }
-        capture("49_panel_desktop_screen")
+        capture("53_panel_desktop_screen")
+    }
+
+    /**
+     * Extended mode on a running chat: the Overview's run controls, and the Queue and steering section with the steer
+     * line answered, the two follow-ups the account holds and every edit each offers.
+     */
+    @Test
+    fun queueSteering() {
+        compose.setContent { Panel(PanelFixtures.extendedRunning()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.Queue)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("queued-followup")).fetchSemanticsNodes().size == 2 }
+        scrollToTop()
+        capture("45_panel_queue_steering")
     }
 
     @Test

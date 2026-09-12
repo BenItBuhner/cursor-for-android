@@ -44,7 +44,9 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.rememberLightboxState
+import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.TimelineItemView
+import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -148,13 +150,13 @@ class RichContentScreenshotTest {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Transcript(items: List<TimelineItem>) {
+    private fun Transcript(items: List<TimelineItem>, controls: TranscriptControls = TranscriptControls()) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { StubApi() })) }
         val lightbox = rememberLightboxState("bc-demo")
         val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
         CursorTheme(mode = ThemeMode.Dark) {
-            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
+            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides controls) {
                 Column(
                     Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene"),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -163,6 +165,42 @@ class RichContentScreenshotTest {
                 }
             }
         }
+    }
+
+    /**
+     * The same question in Extended mode: the chips are choices — one picked — with a line for an answer of one's
+     * own and the send; the search still under way in the group above carries the stop of its own step.
+     */
+    @Test
+    fun transcriptAnswerQuestion() {
+        val question = ToolPayload.Question(
+            title = "Before I change the schema",
+            questions = listOf(
+                ToolPayload.Question.Item("q-scope", "Which tables should the migration touch?", listOf(ToolPayload.Question.Option("users", "users"), ToolPayload.Question.Option("orders", "orders"), ToolPayload.Question.Option("all", "All of them")), allowMultiple = true),
+                ToolPayload.Question.Item("q-when", "Run it now or at the next deploy?", listOf(ToolPayload.Question.Option("now", "Now"), ToolPayload.Question.Option("deploy", "Next deploy"))),
+            ),
+        )
+        val scene = listOf(
+            UserMessage("u1", "Migrate the settings tables to the new schema.", timestampMillis = 1_736_949_600_000),
+            AssistantMessage("a1", "I have the migration drafted. Two things to settle before I run it:"),
+            ActivityGroup(
+                "g2",
+                listOf(
+                    ToolCall("s1", "grep", ToolKind.Grep, ToolCall.STATUS_RUNNING, "CREATE TABLE", detail = "CREATE TABLE"),
+                    ToolCall("ask-1", "ask_question", ToolKind.Question, ToolCall.STATUS_RUNNING, "", payload = question),
+                ),
+            ),
+        )
+        compose.setContent { Transcript(scene, TranscriptControls(onAnswer = { _, _ -> }, onCancelToolCall = {})) }
+
+        // The work open onto its steps, so the running search shows the stop of its own.
+        compose.onNodeWithText("Exploring").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("stop-step")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(hasTestTag("option-chip") and hasText("orders")).performClick()
+        compose.onNode(hasTestTag("option-chip") and hasText("Next deploy")).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("send-answer")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "46_transcript_answer_question.png").path, RoborazziOptions())
     }
 
     @Test

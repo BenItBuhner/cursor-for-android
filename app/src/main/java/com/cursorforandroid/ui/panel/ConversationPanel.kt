@@ -36,7 +36,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AgentDiffFile
+import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.domain.Artifact
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
@@ -199,6 +201,29 @@ fun rememberPanelActions(
             override fun setDesktopViewOnly(viewOnly: Boolean) = viewModel.setDesktopViewOnly(viewOnly)
             override fun closeDesktop() = viewModel.closeDesktop()
             override fun createPullRequest() = viewModel.createPullRequest()
+
+            /** One account-service control: what it came back with goes on the screen's snackbar, as does the reason it did not happen. */
+            private fun control(block: suspend () -> Result<String?>) {
+                scope.launch {
+                    block().fold(onSuccess = { message -> if (!message.isNullOrBlank()) onToast(message) }, onFailure = { onToast(it.userMessage()) })
+                }
+            }
+            override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = control { viewModel.answerQuestion(callId, answers) }
+            override fun steer(text: String) = control { viewModel.steer(text) }
+            override fun pauseRun() = control { viewModel.pauseRun() }
+            override fun resumeRun() = control { viewModel.resumeRun() }
+            override fun stopRun() = control { viewModel.stopRun() }
+            override fun wake() = control { viewModel.wake() }
+            override fun cancelToolCall(callId: String) = control { viewModel.cancelToolCall(callId) }
+            override fun refreshQueue() {
+                scope.launch { viewModel.refreshQueue() }
+            }
+            override fun queueSendNow(followupId: String) = control { viewModel.queueSendNow(followupId) }
+            override fun queueDelete(followupId: String) = control { viewModel.queueDelete(followupId) }
+            override fun queueMove(followupId: String, up: Boolean) = control { viewModel.queueMove(followupId, up) }
+            override fun queueUpdate(followupId: String, text: String) = control { viewModel.queueUpdate(followupId, text) }
+            override fun queueMarkEditing(followupId: String, editing: Boolean) = control { viewModel.queueMarkEditing(followupId, editing) }
+            override fun queueSteerNow(followupId: String) = control { viewModel.queueSteerNow(followupId) }
         }
     }
 }

@@ -164,6 +164,15 @@ object BuiltInSlashCommands {
         command(SlashCommands.PLAN, "Explore first and draft a plan before making changes"),
     )
 
+    /**
+     * The modes only the account service carries (`agent.v1.AgentMode` ASK and DEBUG), offered by a composer in
+     * Extended mode alone: listed in default mode they would be sent as text the agent has no use for.
+     */
+    val extendedModes: List<SlashCommand> = listOf(
+        command(SlashCommands.ASK, "Answer questions about the code without changing it"),
+        command(SlashCommands.DEBUG, "Investigate a bug with runtime evidence before fixing it"),
+    )
+
     val skills: List<SlashCommand> = listOf(
         skill("autopilot", "Monitor a pull request and address feedback, conflicts and failing checks"),
         skill("review", "Select and run the appropriate code-review agent"),

@@ -52,10 +52,16 @@ class ComposerPillsTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     private var value by mutableStateOf("")
-    private var planMode by mutableStateOf(false)
+    private var modePill by mutableStateOf<ModePills.Pill?>(null)
     private val planChanges = mutableListOf<Boolean>()
+    private val modeChanges = mutableListOf<ModePills.Pill?>()
 
-    private fun show(modelLabel: String = "Claude Fable 5.1", plan: Boolean = true, mode: ThemeMode = ThemeMode.Dark, width: Dp? = null) {
+    /** The owner's plan flag, as the home composer holds it: the Plan pill on or off. */
+    private var planMode: Boolean
+        get() = modePill == ModePills.Pill.Plan
+        set(on) { modePill = if (on) ModePills.Pill.Plan else null }
+
+    private fun show(modelLabel: String = "Claude Fable 5.1", plan: Boolean = true, extended: Boolean = false, mode: ThemeMode = ThemeMode.Dark, width: Dp? = null) {
         compose.setContent {
             CursorTheme(mode = mode) {
                 ComposerBox(
@@ -66,8 +72,9 @@ class ComposerPillsTest {
                     plusMenu = ComposerMenuActions(onPickFiles = {}),
                     modelLabel = modelLabel,
                     onModel = {},
-                    planMode = planMode,
-                    onPlanMode = if (plan) ({ on -> planMode = on; planChanges += on }) else null,
+                    modePill = modePill,
+                    onModePill = if (plan) ({ pill -> modePill = pill; modeChanges += pill; planChanges += (pill == ModePills.Pill.Plan) }) else null,
+                    extendedModes = extended,
                     modifier = Modifier.testTag("composer").then(if (width != null) Modifier.width(width) else Modifier),
                 )
             }
@@ -255,6 +262,48 @@ class ComposerPillsTest {
         compose.runOnIdle { assertThat(value).isEqualTo("/plan ship it") }
         assertThat(shown()).isEqualTo("/plan ship it")
         assertThat(pillCount("Plan")).isEqualTo(0)
+    }
+
+    @Test
+    fun `in Extended mode ask and debug are pills of the same slot, and the cross puts the mode off`() {
+        show(extended = true)
+
+        field.performTextInput("/ask why does the build fail")
+        compose.waitUntil { modePill == ModePills.Pill.Ask }
+        compose.waitUntil { pillCount("Ask") == 1 }
+        assertThat(shown()).isEqualTo("why does the build fail")
+        compose.runOnIdle { assertThat(value).isEqualTo("why does the build fail") }
+
+        // Debug typed next replaces Ask: one slot, one pill; the owner hears the swap.
+        field.performTextInput(" /debug ")
+        compose.waitUntil { modePill == ModePills.Pill.Debug }
+        compose.waitUntil { pillCount("Debug") == 1 }
+        assertThat(pillCount("Ask")).isEqualTo(0)
+        compose.runOnIdle { assertThat(modeChanges).containsExactly(ModePills.Pill.Ask, ModePills.Pill.Debug).inOrder() }
+
+        // Multitask takes the mode off, as it does Plan.
+        field.performTextInput("/multitask ")
+        compose.waitUntil { pillCount("Multitask") == 1 }
+        compose.runOnIdle { assertThat(modePill).isNull() }
+        assertThat(pillCount("Debug")).isEqualTo(0)
+
+        // And the cross on a mode pill hands the owner null.
+        field.performTextInput("/ask ")
+        compose.waitUntil { pillCount("Ask") == 1 }
+        compose.onNodeWithContentDescription("Remove Ask").performClick()
+        compose.runOnIdle { assertThat(modePill).isNull() }
+        assertThat(pillCount("Ask")).isEqualTo(0)
+    }
+
+    @Test
+    fun `without Extended mode ask and debug stay in the text like any other command`() {
+        show(extended = false)
+
+        field.performTextInput("/ask why /debug ")
+        compose.runOnIdle { assertThat(value).isEqualTo("/ask why /debug ") }
+        assertThat(shown()).isEqualTo("/ask why /debug ")
+        assertThat(pillCount("Ask") + pillCount("Debug")).isEqualTo(0)
+        assertThat(modeChanges).isEmpty()
     }
 
     @Test

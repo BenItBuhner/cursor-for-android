@@ -5,6 +5,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
@@ -13,12 +14,15 @@ import com.cursorforandroid.domain.ChangedFileStatus
 import com.cursorforandroid.domain.CheckConclusion
 import com.cursorforandroid.domain.CheckRun
 import com.cursorforandroid.domain.CheckStatus
+import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.MachineStatus
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PullRequestDetails
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestView
+import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.RepoContents
 import com.cursorforandroid.domain.RepoEntry
 import com.cursorforandroid.domain.Review
@@ -28,6 +32,7 @@ import com.cursorforandroid.domain.ReviewVerdict
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunUsage
 import com.cursorforandroid.domain.ScmHost
+import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.domain.ToolCall
@@ -241,5 +246,41 @@ object PanelFixtures {
         agentId = "bc-machine",
         runStatus = RunStatus.RUNNING,
         machine = RemoteLoad.Loaded(MachineStatus("studio-mac", connected = true, isInUse = true, activeAgentId = "bc-machine")),
+    )
+
+    /** The question a run is paused on, as the stream carries it: an `ask_question` call still running. */
+    val question = ToolPayload.Question(
+        title = "Before I change the schema",
+        questions = listOf(
+            ToolPayload.Question.Item("q-scope", "Which tables should the migration touch?", listOf(ToolPayload.Question.Option("users", "users"), ToolPayload.Question.Option("orders", "orders"), ToolPayload.Question.Option("all", "All of them")), allowMultiple = true),
+            ToolPayload.Question.Item("q-when", "Run it now or at the next deploy?", listOf(ToolPayload.Question.Option("now", "Now"), ToolPayload.Question.Option("deploy", "Next deploy"))),
+        ),
+    )
+
+    /** The transcript with the run paused on [question] after its edits, and a search still under way. */
+    fun itemsWithQuestion(): List<TimelineItem> = items() + ActivityGroup(
+        "g2",
+        listOf(
+            call("s1", ToolKind.Grep, "grep", "ThemeMode", "ThemeMode", null, status = ToolCall.STATUS_RUNNING),
+            call("ask-1", ToolKind.Question, "ask_question", "", null, question, status = ToolCall.STATUS_RUNNING),
+        ),
+    )
+
+    /** The account's queue for the chat, as `ListPendingFollowups` lists it. */
+    val queue = listOf(
+        PendingFollowup("fu-1", "Then add a test for the light theme", NOW - 20 * 60_000L, AgentSource.GLASS),
+        PendingFollowup("fu-2", "And a changelog line under Unreleased", NOW - 10 * 60_000L, AgentSource.API, isEditing = true),
+    )
+
+    /** A running chat in Extended mode: the question waiting, two follow-ups queued on the account, a steer answered. */
+    fun extendedRunning(): PanelState = PanelState(
+        agentId = agent.id,
+        agent = agent.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE),
+        runStatus = RunStatus.RUNNING,
+        isStreaming = true,
+        content = TranscriptContent.of(itemsWithQuestion()),
+        capabilities = Capabilities.EXTENDED,
+        pullRequest = RemoteLoad.Loaded(pullRequest),
+        controls = ConversationControls(queue = queue, queueLoad = QueueLoad.Loaded, lastSteer = SteerOutcome.QUEUED),
     )
 }

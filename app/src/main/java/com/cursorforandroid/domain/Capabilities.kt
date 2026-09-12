@@ -31,7 +31,11 @@ data class Capabilities(
      * by what its own transcript says, and its view offers no action.
      */
     val projects: Boolean,
-    /** Steering a running chat (`InjectBackgroundComposerContext`) and holding it (`PauseBackgroundComposer` / `ResumeBackgroundComposer`). Off: the public cancel only. */
+    /**
+     * Steering a running chat (`InjectBackgroundComposerContext`), holding it (`PauseBackgroundComposer` /
+     * `ResumeBackgroundComposer`), stopping one of its tool calls (`CancelBackgroundComposerToolCall`) and waking its
+     * machine (`WakeBackgroundComposer`). Off: the public cancel only.
+     */
     val steering: Boolean,
     /** The agent's live workspace: `ListWorkspaceFiles` and `ReadBinaryFile`. Off: only the files the stream carried, and the repository's tree. */
     val workspaceFiles: Boolean,
@@ -45,11 +49,21 @@ data class Capabilities(
     val scmPullRequests: Boolean,
     /** The agent's VM desktop over noVNC: `GetMachine` for the pod and its ticket. Off: nothing; the machine's own state stays public. */
     val remoteDesktop: Boolean,
+    /** Answering an agent's `ask_question` from here (`SubmitInteractionResponseBackgroundComposer`). Off: the question is read-only, answered on cursor.com. */
+    val interactions: Boolean,
+    /**
+     * The account's follow-up queue (`AddAsyncFollowupBackgroundComposer`, `ListPendingFollowups`, `UpdatePendingFollowup`,
+     * `DeletePendingFollowup`, `ReorderPendingFollowup`, `SubmitPendingFollowupNow`, `MarkFollowupEditing`): the queue
+     * the desktop, the web and the iOS app share. Off: follow-ups sent mid-turn wait on this device and go out when the turn ends.
+     */
+    val accountQueue: Boolean,
+    /** Ask and Debug modes for a follow-up, which only the account's follow-up RPC can carry (`agent.v1.AgentMode`). Off: agent and plan. */
+    val agentModes: Boolean,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
-            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes
 
     companion object {
         /** The default: the documented API only. */
@@ -66,6 +80,9 @@ data class Capabilities(
             diffDetails = false,
             scmPullRequests = false,
             remoteDesktop = false,
+            interactions = false,
+            accountQueue = false,
+            agentModes = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -82,6 +99,9 @@ data class Capabilities(
             diffDetails = true,
             scmPullRequests = true,
             remoteDesktop = true,
+            interactions = true,
+            accountQueue = true,
+            agentModes = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

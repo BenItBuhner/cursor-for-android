@@ -1086,7 +1086,6 @@ class ConversationRepository(
         modelDisplayName: String? = null,
     ): Result<Unit> {
         val e = entry(agentId)
-        val localId = staged.localId
         return agents.followUp(
             agentId,
             staged.text,
@@ -1096,22 +1095,56 @@ class ConversationRepository(
             modelId = modelId,
             modelParams = modelParams,
             modelDisplayName = modelDisplayName,
-        ).map { run ->
-            // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
-            val kept = runCatching { attachments.commit(agentId, run.id, staged.attachments) }.getOrDefault(staged.attachments.attachments)
-            e.publish(
-                mutate = {
-                    // A reload that raced the request may already list this run. The local copy stays all the
-                    // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
-                    // for as long as only the run list does; the next load prunes it once both have caught up.
-                    local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
-                    promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
-                    inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
-                },
-            )
-            startStreaming(e, agentId, run)
-            persist(e, session.current)
-        }
+        ).map { run -> accepted(e, agentId, staged, run) }
+    }
+
+    /**
+     * Files a follow-up through the account service rather than the documented run request — for a mode the
+     * documented API cannot carry — and shows it like [sendFollowUp]. [send] answers with the run the account
+     * started; when it names none (the message went into the account's queue behind a turn) the bubble comes down
+     * without an error and the chat is reloaded, which is where the message shows up next.
+     */
+    suspend fun sendFollowUpVia(
+        agentId: String,
+        text: String,
+        images: List<PromptImage> = emptyList(),
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
+        send: suspend () -> String?,
+    ): Result<Unit> {
+        if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
+        val e = entry(agentId)
+        val staged = stageFollowUp(agentId, text, images)
+        return agents.followUpVia(agentId, modelId, modelParams, modelDisplayName, send)
+            .map { run ->
+                if (run != null) {
+                    accepted(e, agentId, staged, run)
+                } else {
+                    discardStaged(agentId, staged)
+                    reload(agentId)
+                }
+            }
+            .onFailure { t -> discardStaged(agentId, staged, t.userMessage()) }
+    }
+
+    /** The server has filed [staged] as [run]: the bubble is no longer pending, its images follow it, and its stream starts. */
+    private suspend fun accepted(e: Entry, agentId: String, staged: StagedFollowUp, run: RunDto) {
+        val localId = staged.localId
+        // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
+        val kept = runCatching { attachments.commit(agentId, run.id, staged.attachments) }.getOrDefault(staged.attachments.attachments)
+        e.publish(
+            mutate = {
+                // A reload that raced the request may already list this run. The local copy stays all the
+                // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
+                // for as long as only the run list does; the next load prunes it once both have caught up.
+                local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
+                inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
+            },
+        )
+        startStreaming(e, agentId, run)
+        persist(e, session.current)
     }
 
     /** Takes a [stageFollowUp]ed prompt that will not be sent down again, with the reason when there is one to show. */

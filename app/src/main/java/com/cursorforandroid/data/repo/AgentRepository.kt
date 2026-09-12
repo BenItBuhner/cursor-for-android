@@ -55,6 +55,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -727,6 +728,36 @@ class AgentRepository(
             switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
         }
         response.run
+    }
+
+    /**
+     * A follow-up filed through the account service rather than the documented run request — for a mode the
+     * documented API cannot carry (see `SteeringApi.addFollowup`). [send] answers with the id of the run the account
+     * started, or null when it named none; the row is updated the way [followUp] updates it, the run stamped now
+     * since the account reports no record for it. Null from [send] is success with no run to stream: the caller
+     * reloads the chat instead.
+     */
+    suspend fun followUpVia(
+        agentId: String,
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
+        send: suspend () -> String?,
+    ): Result<RunDto?> = runCatching {
+        val startedIn = token()
+        val runId = send()
+        val now = AppClock.now()
+        val stamp = Instant.ofEpochMilli(now).toString()
+        val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
+        patch(agentId, startedIn) { current ->
+            val switched = if (modelId != null) {
+                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
+            } else {
+                current
+            }
+            switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
+        }
+        run
     }
 
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {

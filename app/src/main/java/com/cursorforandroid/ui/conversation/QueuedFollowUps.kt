@@ -14,19 +14,30 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -135,6 +146,109 @@ private fun QueuedFollowUpRow(
                 GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
                 GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary, onEdit)
                 GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
+            }
+        }
+    }
+}
+
+/**
+ * The account's queue for the chat (Extended mode), in the same rows as the device's: what the desktop and the web
+ * show above their composers, in the order the server will send it. Each row's glyphs are remove, edit and send now;
+ * edit opens the row into a line of its own with save and cancel, the account told meanwhile that the message is
+ * being reworded (`MarkFollowupEditing`). A row the account has in flight from here shows a ring instead.
+ */
+@Composable
+fun AccountQueueRows(
+    queue: List<PendingFollowup>,
+    inFlightIds: Set<String>,
+    onSendNow: (PendingFollowup) -> Unit,
+    onRemove: (PendingFollowup) -> Unit,
+    onUpdate: (PendingFollowup, String) -> Unit,
+    onEditing: (PendingFollowup, Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.animateContentSize().testTag("account-queue"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        queue.forEachIndexed { index, item ->
+            key(item.id) {
+                AccountQueueRow(
+                    item = item,
+                    position = index + 1,
+                    count = queue.size,
+                    inFlight = item.id in inFlightIds,
+                    onSendNow = { onSendNow(item) },
+                    onRemove = { onRemove(item) },
+                    onUpdate = { text -> onUpdate(item, text) },
+                    onEditing = { editing -> onEditing(item, editing) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountQueueRow(
+    item: PendingFollowup,
+    position: Int,
+    count: Int,
+    inFlight: Boolean,
+    onSendNow: () -> Unit,
+    onRemove: () -> Unit,
+    onUpdate: (String) -> Unit,
+    onEditing: (Boolean) -> Unit,
+) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    var editing by rememberSaveable(item.id) { mutableStateOf(false) }
+    // The caret starts at the end of the message, where a rewording most often continues.
+    var text by rememberSaveable(item.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(item.text, TextRange(item.text.length))) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
+            .heightIn(min = RowHeight)
+            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
+            .semantics { contentDescription = "Queued on your account, $position of $count" }
+            .testTag("account-queue-row"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.Cloud, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
+        Spacer(Modifier.width(8.dp))
+        if (editing) {
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it },
+                textStyle = type.input.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.textPrimary),
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp).testTag("account-queue-edit"),
+            )
+            Spacer(Modifier.width(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlyphButton(CursorIcons.Close, "Cancel editing", colors.iconTertiary) { editing = false; text = TextFieldValue(item.text, TextRange(item.text.length)); onEditing(false) }
+                GlyphButton(CursorIcons.Check, "Save queued follow-up", colors.iconPrimary) { editing = false; onUpdate(text.text) }
+            }
+        } else {
+            Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                Text(
+                    item.previewText,
+                    style = type.input,
+                    color = if (inFlight) colors.textTertiary else colors.textPrimary,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (item.isEditing) Text("Being edited on another device", style = type.small, color = colors.textQuaternary, maxLines = 1)
+            }
+            Spacer(Modifier.width(8.dp))
+            if (inFlight) {
+                Box(Modifier.size(Glyph + 10.dp).semantics { contentDescription = "Sending" }, contentAlignment = Alignment.Center) {
+                    SpinnerRing(size = 11.dp)
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
+                    GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary) { text = TextFieldValue(item.text, TextRange(item.text.length)); editing = true; onEditing(true) }
+                    GlyphButton(CursorIcons.ArrowUp, "Send now", colors.iconPrimary, onSendNow)
+                }
             }
         }
     }
