@@ -14,6 +14,7 @@ import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
+import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
@@ -23,6 +24,7 @@ import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
+import com.cursorforandroid.data.demo.DemoReview
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -49,6 +51,7 @@ import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
+import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
@@ -162,6 +165,25 @@ class AppGraph(
     private val lazyGitHub = lazy { GitHubApi(CursorApiFactory.gitHubClient()) }
     private val lazyGitHubPullRequests = lazy { GitHubPullRequestSource(lazyGitHub.value) }
     private val lazyGitHubSlashCommands = lazy { GitHubSlashCommandApi(lazyGitHub.value) }
+
+    /**
+     * Origin's documented REST API, for Origin-hosted repositories and pull requests. It takes a user access token
+     * the app has no documented way to mint (the CLI's exchange is not in the reference), so the provider answers
+     * null and every Origin read degrades to "open in browser" until one exists.
+     */
+    private val lazyOrigin = lazy { OriginApi(CursorApiFactory.originClient(), tokenProvider = { null }) }
+
+    /** The panel's reads of a pull request, a repository's files and the agent's token usage; nothing on api2. */
+    private val lazyReviews = lazy {
+        ReviewRepository(
+            gitHub = { lazyGitHub.value },
+            origin = { lazyOrigin.value },
+            usageApi = { agentId -> ReviewRepository.usageOf(session.current.api.usage(agentId)) },
+            isDemo = { session.isDemo },
+            demo = DemoReview,
+        )
+    }
+    val reviews: ReviewRepository get() = lazyReviews.value
 
     // The repositories take their sources by value, so the account's and GitHub's are handed over behind these
     // shims: a graph in default mode never builds the api2 client, and one in Extended mode never builds GitHub's.
@@ -365,6 +387,7 @@ class AppGraph(
             if (lazyCatalog.isInitialized()) catalog.reset()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
+            if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
@@ -424,6 +447,8 @@ class AppGraph(
             "gitHub" to lazyGitHub,
             "gitHubPullRequests" to lazyGitHubPullRequests,
             "gitHubSlashCommands" to lazyGitHubSlashCommands,
+            "origin" to lazyOrigin,
+            "reviews" to lazyReviews,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,
             "pins" to lazyPins,
