@@ -6,6 +6,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
+import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
@@ -13,16 +14,20 @@ import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
+import com.cursorforandroid.data.api.FollowupQueueApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
+import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.api.WorkerLaunch
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
@@ -62,13 +67,17 @@ import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.share.ShareInbox
@@ -172,6 +181,8 @@ class AppGraph(
     private val lazyAccountSlashCommands = lazy { DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The account's Projects: who belongs to whom, and the coordinator's actions. */
     private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
+    private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
 
     /**
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
@@ -227,6 +238,22 @@ class AppGraph(
         override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
+    }
+    private val steeringAccount = object : InteractionApi, FollowupQueueApi, RunControlApi {
+        override suspend fun answerQuestion(agentId: String, toolCallId: String, answers: List<ToolPayload.Question.Answer>): InteractionResolution = lazySteeringApi.value.answerQuestion(agentId, toolCallId, answers)
+        override suspend fun addFollowup(agentId: String, followup: AccountFollowup, synchronous: Boolean): String? = lazySteeringApi.value.addFollowup(agentId, followup, synchronous)
+        override suspend fun listPending(agentId: String): List<PendingFollowup> = lazySteeringApi.value.listPending(agentId)
+        override suspend fun updatePending(agentId: String, followupId: String, text: String) = lazySteeringApi.value.updatePending(agentId, followupId, text)
+        override suspend fun deletePending(agentId: String, followupId: String) = lazySteeringApi.value.deletePending(agentId, followupId)
+        override suspend fun reorderPending(agentId: String, followupId: String, targetFollowupId: String, insertAfter: Boolean) = lazySteeringApi.value.reorderPending(agentId, followupId, targetFollowupId, insertAfter)
+        override suspend fun submitPendingNow(agentId: String, followupId: String) = lazySteeringApi.value.submitPendingNow(agentId, followupId)
+        override suspend fun markEditing(agentId: String, followupId: String, editing: Boolean) = lazySteeringApi.value.markEditing(agentId, followupId, editing)
+        override suspend fun steer(agentId: String, text: String, expectedRunId: String?): SteerOutcome = lazySteeringApi.value.steer(agentId, text, expectedRunId)
+        override suspend fun promoteFollowup(agentId: String, followupId: String, expectedRunId: String?): SteerOutcome = lazySteeringApi.value.promoteFollowup(agentId, followupId, expectedRunId)
+        override suspend fun pause(agentId: String, runId: String?) = lazySteeringApi.value.pause(agentId, runId)
+        override suspend fun resume(agentId: String) = lazySteeringApi.value.resume(agentId)
+        override suspend fun cancelToolCall(agentId: String, toolCallId: String): Boolean = lazySteeringApi.value.cancelToolCall(agentId, toolCallId)
+        override suspend fun wake(agentId: String): Boolean = lazySteeringApi.value.wake(agentId)
     }
     private val accountSlashCommands = object : SlashCommandApi {
         override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forRepository(repoUrl, ref)
@@ -366,6 +393,23 @@ class AppGraph(
     }
     val followUps: FollowUpRepository get() = lazyFollowUps.value
 
+    /**
+     * A chat's controls on the account (Extended mode): the question it is waiting on, the account's queue in place
+     * of the device's, steering, pause and resume, one tool call's cancel. Each answers a named refusal with the mode off.
+     */
+    private val lazySteering = lazy {
+        SteeringRepository(
+            session = session,
+            agents = agents,
+            interactions = steeringAccount,
+            queueApi = steeringAccount,
+            runs = steeringAccount,
+            afterAction = { agentId -> conversations.revalidate(agentId) },
+            capabilities = capabilities,
+        )
+    }
+    val steering: SteeringRepository get() = lazySteering.value
+
     /** Presigned URLs for `/opt/cursor/artifacts/…` references in replies, and the loader that draws them. */
     private val lazyArtifacts = lazy { ArtifactRepository(session) }
     val artifacts: ArtifactRepository get() = lazyArtifacts.value
@@ -422,6 +466,7 @@ class AppGraph(
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
             if (lazyProjects.isInitialized()) projects.reset()
+            if (lazySteering.isInitialized()) steering.reset()
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
             // Signing out of one real account and into another keeps the same backend, so the list must be
@@ -447,6 +492,8 @@ class AppGraph(
         extendedMode.onDisabled = {
             if (lazySessionTokens.isInitialized()) lazySessionTokens.value.clear()
             if (lazyPins.isInitialized()) pins.reset()
+            // What the account said about a chat's queue and controls is the account's, not this device's.
+            if (lazySteering.isInitialized()) steering.reset()
             prefs.settlePinsLocally()
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
@@ -497,6 +544,8 @@ class AppGraph(
             "pins" to lazyPins,
             "projectApi" to lazyProjectApi,
             "projects" to lazyProjects,
+            "steeringApi" to lazySteeringApi,
+            "steering" to lazySteering,
             "catalog" to lazyCatalog,
             "slashCommands" to lazySlashCommands,
             "generatedMedia" to lazyGeneratedMedia,
