@@ -77,6 +77,7 @@ import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.panel.ConversationPanel
+import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
 import com.cursorforandroid.ui.panel.rememberPanelActions
@@ -111,6 +112,9 @@ fun ConversationScreen(
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
+    /** Where the panel's Project section sends the reader: another chat, or a Project's view. */
+    onOpenAgent: ((String) -> Unit)? = null,
+    onOpenProject: ((String) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -191,7 +195,7 @@ fun ConversationScreen(
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
-    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage)
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onOpenProject = onOpenProject)
 
     SidePanel(
         state = panelState,
@@ -199,7 +203,7 @@ fun ConversationScreen(
         panelContent = {
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
             // open into the same lightbox as the transcript's.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
                 ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
             }
         },

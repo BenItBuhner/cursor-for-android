@@ -53,6 +53,9 @@ interface PanelActions {
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)
     fun openArtifact(artifact: Artifact)
+    /** Navigates to another chat (a subagent, a Project's primary) and to a Project's view; no-ops where the host offers neither. */
+    fun openAgent(agentId: String)
+    fun openProject(projectId: String)
     /** The panel's own toast. */
     fun notify(message: String)
 
@@ -72,6 +75,8 @@ interface PanelActions {
             override fun copyText(text: String, confirmation: String) = Unit
             override fun shareText(text: String) = Unit
             override fun openArtifact(artifact: Artifact) = Unit
+            override fun openAgent(agentId: String) = Unit
+            override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
         }
     }

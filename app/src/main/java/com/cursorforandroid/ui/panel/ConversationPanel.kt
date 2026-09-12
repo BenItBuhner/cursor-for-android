@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -33,6 +34,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorIcons
@@ -108,16 +110,28 @@ private fun PanelSectionView(section: PanelSection, state: PanelState, actions: 
 }
 
 /**
+ * The graph the panel lives in, for sections that own their own view models (the Project section). Null where the
+ * panel is rendered on its own, as in tests and previews; such a section then shows a named state instead.
+ */
+val LocalPanelGraph = staticCompositionLocalOf<AppGraph?> { null }
+
+/**
  * The [PanelActions] for a live panel: the view model's loads and the platform's clipboard, browser and share
- * sheet. [onToast] surfaces confirmations on the screen's own snackbar.
+ * sheet. [onToast] surfaces confirmations on the screen's own snackbar; [onOpenAgent] and [onOpenProject] are the
+ * host's navigation, absent where the screen cannot navigate.
  */
 @Composable
-fun rememberPanelActions(viewModel: PanelViewModel, onToast: (String) -> Unit): PanelActions {
+fun rememberPanelActions(
+    viewModel: PanelViewModel,
+    onToast: (String) -> Unit,
+    onOpenAgent: ((String) -> Unit)? = null,
+    onOpenProject: ((String) -> Unit)? = null,
+): PanelActions {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
-    return remember(viewModel) {
+    return remember(viewModel, onOpenAgent, onOpenProject) {
         object : PanelActions {
             override fun loadPullRequest(force: Boolean) = viewModel.loadPullRequest(force)
             override fun loadArtifacts(force: Boolean) = viewModel.loadArtifacts(force)
@@ -151,6 +165,12 @@ fun rememberPanelActions(viewModel: PanelViewModel, onToast: (String) -> Unit): 
                         onFailure = { onToast("Couldn't get a download link for ${artifact.name}.") },
                     )
                 }
+            }
+            override fun openAgent(agentId: String) {
+                onOpenAgent?.invoke(agentId) ?: onToast("This screen cannot open another chat.")
+            }
+            override fun openProject(projectId: String) {
+                onOpenProject?.invoke(projectId) ?: onToast("This screen cannot open a Project.")
             }
             override fun notify(message: String) {
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
