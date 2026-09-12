@@ -214,7 +214,7 @@ class ConversationPanelTest {
     }
 
     @Test
-    fun `the Extended-mode sections are placeholders that name what they need, in both modes`() {
+    fun `the Extended-mode sections name what they need in the default mode, and are the real sections with it on`() {
         show()
         for (id in listOf(PanelSectionId.Queue, PanelSectionId.Project, PanelSectionId.Remote)) {
             open(id)
@@ -228,11 +228,12 @@ class ConversationPanelTest {
         scrollTo("section-PendingQuestion")
         assertThat(shown("SubmitInteractionResponseBackgroundComposer")).isTrue()
 
-        // With the mode on but no build carrying the sections yet, the placeholder says so instead of pretending.
+        // With the mode on, every one of them is the real section (the queue, the Project view, the Remote desktop):
+        // no placeholder of either kind is left.
         state = state.copy(capabilities = Capabilities.EXTENDED)
         compose.waitForIdle()
-        assertThat(shown("Arrives with a later build")).isTrue()
         assertThat(shown("Needs Extended mode")).isFalse()
+        assertThat(shown("Arrives with a later build")).isFalse()
     }
 
     @Test
