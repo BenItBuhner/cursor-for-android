@@ -99,8 +99,9 @@ fun ConversationPanel(
 private fun PanelSectionView(section: PanelSection, state: PanelState, actions: PanelActions) {
     val availability = section.availability(state.capabilities, state)
     var expanded by rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(section.expandedByDefault) }
-    // What the section needs is asked for when it is opened, and again when its chat changes under it.
-    LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId) {
+    // What the section needs is asked for when it is opened, and again when its chat — or the mode, which decides
+    // which reads may be made — changes under it.
+    LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId, state.capabilities) {
         if (expanded && availability is SectionAvailability.Available) section.onOpen(actions)
     }
     val hint = when (availability) {

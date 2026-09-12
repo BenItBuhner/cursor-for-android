@@ -160,7 +160,6 @@ private fun connectionLabel(connection: DesktopConnection, session: DesktopSessi
  * the page; the websockify URL — with its ticket — is handed to the page by a script call once it has loaded, never
  * put in a URL the WebView would keep, and the page reports back through [Bridge]. Nothing is cached or stored.
  */
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun DesktopWebView(session: DesktopSession, onConnection: (DesktopConnection) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -214,6 +213,8 @@ private class Bridge {
     }
 }
 
+/** JavaScript is the point: noVNC is a script. Nothing but the app's own assets can run in this view (see the client below). */
+@SuppressLint("SetJavaScriptEnabled")
 private fun createDesktopWebView(context: Context, bridge: Bridge): WebView = WebView(context).apply {
     settings.apply {
         javaScriptEnabled = true
