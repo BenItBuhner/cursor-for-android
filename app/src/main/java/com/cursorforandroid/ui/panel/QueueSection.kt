@@ -27,6 +27,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PendingFollowup
@@ -48,6 +50,10 @@ import com.cursorforandroid.ui.theme.CursorTheme
 internal fun QueueSection(state: PanelState, actions: PanelActions) {
     val capabilities = state.capabilities
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp).testTag("queue-section")) {
+        if (state.isDemo) {
+            EmptyRow("Not available in the demo", "The demo has no account to keep a queue on or a run to steer.")
+            return@Column
+        }
         if (capabilities.steering) {
             RunControlsRow(state, actions)
             SteerRow(state, actions)
@@ -196,7 +202,8 @@ private fun QueuedRow(item: PendingFollowup, index: Int, count: Int, inFlight: B
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var editing by rememberSaveable("queue-edit-${item.id}") { mutableStateOf(false) }
-    var text by rememberSaveable("queue-text-${item.id}") { mutableStateOf(item.text) }
+    // The caret starts at the end of the message, where a rewording most often continues.
+    var text by rememberSaveable("queue-text-${item.id}", stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(item.text, TextRange(item.text.length))) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -215,9 +222,9 @@ private fun QueuedRow(item: PendingFollowup, index: Int, count: Int, inFlight: B
                 modifier = Modifier.fillMaxWidth().testTag("queued-edit"),
             )
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
-                CursorButton("Cancel", { editing = false; text = item.text; actions.queueMarkEditing(item.id, false) }, height = 26.dp)
+                CursorButton("Cancel", { editing = false; text = TextFieldValue(item.text, TextRange(item.text.length)); actions.queueMarkEditing(item.id, false) }, height = 26.dp)
                 Spacer(Modifier.width(6.dp))
-                CursorButton("Save", { editing = false; actions.queueUpdate(item.id, text) }, primary = true, enabled = text.isNotBlank(), height = 26.dp, modifier = Modifier.testTag("queued-save"))
+                CursorButton("Save", { editing = false; actions.queueUpdate(item.id, text.text) }, primary = true, enabled = text.text.isNotBlank(), height = 26.dp, modifier = Modifier.testTag("queued-save"))
             }
             return@Column
         }
@@ -240,7 +247,7 @@ private fun QueuedRow(item: PendingFollowup, index: Int, count: Int, inFlight: B
             Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Glyph(CursorIcons.ArrowUp, "Move up", enabled = index > 0) { actions.queueMove(item.id, up = true) }
                 Glyph(CursorIcons.ArrowDown, "Move down", enabled = index < count - 1) { actions.queueMove(item.id, up = false) }
-                Glyph(CursorIcons.Pencil, "Edit queued follow-up") { text = item.text; editing = true; actions.queueMarkEditing(item.id, true) }
+                Glyph(CursorIcons.Pencil, "Edit queued follow-up") { text = TextFieldValue(item.text, TextRange(item.text.length)); editing = true; actions.queueMarkEditing(item.id, true) }
                 Glyph(CursorIcons.Trash, "Remove queued follow-up") { actions.queueDelete(item.id) }
                 Spacer(Modifier.weight(1f))
                 if (canSteer) {
@@ -256,8 +263,8 @@ private fun QueuedRow(item: PendingFollowup, index: Int, count: Int, inFlight: B
 @Composable
 private fun Glyph(icon: ImageVector, contentDescription: String, enabled: Boolean = true, onClick: () -> Unit) {
     val colors = CursorTheme.colors
-    TouchTarget(size = 26.dp, touchSize = 36.dp, shape = CircleShape, onClick = onClick, enabled = enabled) {
-        Icon(icon, contentDescription, tint = if (enabled) colors.iconTertiary else colors.iconQuaternary.copy(alpha = 0.5f), modifier = Modifier.size(13.dp))
+    TouchTarget(size = 26.dp, touchSize = 36.dp, shape = CircleShape, onClick = onClick, enabled = enabled, contentDescription = contentDescription) {
+        Icon(icon, null, tint = if (enabled) colors.iconTertiary else colors.iconQuaternary.copy(alpha = 0.5f), modifier = Modifier.size(13.dp))
     }
 }
 
