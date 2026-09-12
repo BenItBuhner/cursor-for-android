@@ -33,6 +33,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.ActivityGroup
@@ -44,6 +45,9 @@ import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -53,6 +57,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import java.time.Instant
 import java.util.Locale
 import java.util.TimeZone
@@ -415,6 +420,16 @@ class AppScreenshotTest {
         // The demo stands in for the account: its actions are offered, its context is the named empty state.
         waitForText("New primary")
         waitForText("No shared context for this Project yet.")
+        // Opening the row marked the Project read (AppNavHost's row actions); the coordinator's unread badge goes once
+        // that write lands, so the frame waits for it instead of catching the badge or not by timing. Observed from a
+        // background collector: a runBlocking read inside waitUntil would hold the looper the store's emission needs.
+        val markers = AtomicReference<Map<String, Long>>(emptyMap())
+        val watching = CoroutineScope(Dispatchers.IO).launch { graph.prefs.localAgentState.collect { markers.set(it.readMarkers) } }
+        try {
+            compose.waitUntil(20_000) { markers.get().containsKey(DemoData.PROJECT_ID) }
+        } finally {
+            watching.cancel()
+        }
         compose.waitForIdle()
         capture("38_project_view")
         Espresso.pressBack()
