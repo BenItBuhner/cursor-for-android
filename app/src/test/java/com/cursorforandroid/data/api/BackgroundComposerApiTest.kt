@@ -3,6 +3,7 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
@@ -64,12 +65,18 @@ class BackgroundComposerApiTest {
 
         assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
         assertThat(list.composers).containsAtLeast(
-            ComposerSnapshot("bc-1", name = "x", archived = false),
+            ComposerSnapshot("bc-1", name = "x", archived = false, source = AgentSource.WEBSITE),
             ComposerSnapshot("bc-7", name = "no pr", archived = true),
             ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")),
-            ComposerSnapshot("bc-10", name = "Webhook worker", parent = AgentParent("bc-8", AgentParentKind.PROJECT_WORKER)),
+            ComposerSnapshot("bc-10", name = "Webhook worker", parent = AgentParent("bc-8", AgentParentKind.PROJECT_WORKER), source = AgentSource.WEBSITE),
             ComposerSnapshot("bc-11", name = "Pricing side chat", parent = AgentParent("bc-8", AgentParentKind.SIDE_CHAT)),
         )
+        // Where each belongs follows from its record alone.
+        val scopes = list.composers.associate { it.id to it.scope }
+        assertThat(scopes["bc-8"]).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(scopes["bc-10"]).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(scopes["bc-11"]).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(scopes["bc-1"]).isEqualTo(AgentScope.PRIMARY)
         assertThat(list.pullRequests).containsExactly(
             "https://github.com/acme/app/pull/1", PullRequestState.Open,
             "https://github.com/acme/app/pull/2", PullRequestState.Draft,
@@ -101,8 +108,17 @@ class BackgroundComposerApiTest {
         assertThat(body["includeStatus"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo(BackgroundComposerApi.LIST_WINDOW.toString())
-        // SDK agents are left out of the list unless asked for, as cursor.com/agents leaves them out until its Source filter says SDK.
-        assertThat(body["includeHiddenSources"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("BACKGROUND_COMPOSER_SOURCE_SDK")
+        // SDK agents are left out of the list unless asked for, as cursor.com/agents leaves them out until its Source filter
+        // says SDK; so are the chats Cursor starts for another chat, whose records say whose they are.
+        assertThat(body["includeHiddenSources"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly(
+            "BACKGROUND_COMPOSER_SOURCE_SDK",
+            "BACKGROUND_COMPOSER_SOURCE_AS_SIDE_CHAT_FROM_CLOUD",
+            "BACKGROUND_COMPOSER_SOURCE_AS_SUBAGENT_FROM_CLOUD",
+            "BACKGROUND_COMPOSER_SOURCE_CLOUD_META_AGENT",
+        ).inOrder()
+        // The workers' and subagents' records, which the Agents Window never asks for: they carry the lineage.
+        assertThat(body["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includeSubagents"]?.jsonPrimitive?.content).isEqualTo("true")
     }
 
     @Test

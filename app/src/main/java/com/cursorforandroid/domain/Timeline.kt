@@ -119,6 +119,12 @@ data class ToolCall(
     val payload: ToolPayload? = null,
     /** The stream left the call's arguments or result out for size (`tool_call.truncated`); null when it said nothing. */
     val truncated: ToolTruncation? = null,
+    /**
+     * The cloud agents a coordinator's tool call names — the worker `create_agent` made, the one `send_to_agent`
+     * or `stop_agent` addressed, the ones `get_agent_status` reported on — by their ids. The one word about a
+     * Project's workers the documented stream carries (see [CoordinatorLineage]); empty for every other tool.
+     */
+    val linkedAgentIds: List<String> = emptyList(),
 ) : ActivityStep {
     val isRunning: Boolean get() = status == STATUS_RUNNING
 

@@ -142,6 +142,8 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         isProject = previous?.isProject ?: false,
         projectAppearance = previous?.projectAppearance,
         parent = previous?.parent,
+        knownScope = previous?.knownScope,
+        hasPendingInteraction = previous?.hasPendingInteraction ?: false,
     )
 }
 
@@ -216,6 +218,8 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         isProject = previous?.isProject ?: false,
         projectAppearance = previous?.projectAppearance,
         parent = previous?.parent,
+        knownScope = previous?.knownScope,
+        hasPendingInteraction = previous?.hasPendingInteraction ?: false,
     )
 }
 

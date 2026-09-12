@@ -32,6 +32,18 @@ data class TrackedRun(
 
     /** "+80 −230 · 3 Files", "3 Files · Worked 3m 5s", "Worked 3m 5s" or null: the second line of a finished card. */
     fun statsLine(): String? = digest.statsLine(durationMs)
+
+    /**
+     * A worker's finish as its Project's news rather than a standalone alert: keyed to the Project [projectId], so the
+     * finishes of one Project's workers share a card (the latest replacing the last), titled after the Project, and
+     * summarised over [finishedWorkers] — this worker included — as "Stripe webhook handler finished" or "2 workers
+     * finished · Usage events aggregation, Stripe webhook handler". Tapping it opens the Project.
+     */
+    fun rolledUpInto(projectId: String, projectName: String?, finishedWorkers: List<String>): TrackedRun {
+        val names = finishedWorkers.ifEmpty { listOf(title) }
+        val summary = if (names.size == 1) "${names.single()} finished" else "${names.size} workers finished \u00B7 ${names.joinToString(", ")}"
+        return copy(agentId = projectId, title = projectName?.takeIf { it.isNotBlank() } ?: "Project", summary = summary, branch = null, prUrl = null)
+    }
 }
 
 /** Aggregate of a run's tool calls plus a description of what the agent is doing right now. */

@@ -40,6 +40,27 @@ class NavStackTest {
     }
 
     @Test
+    fun `a Project opens over a chat, a primary opened from it goes back to it, and the route round-trips`() {
+        val stack = NavStack(Screen.Home)
+        stack.openAgent("bc-1")
+        stack.openProject("bc-p")
+        assertThat(stack.screens).containsExactly(Screen.Home, Screen.Agent("bc-1"), Screen.Project("bc-p")).inOrder()
+        // A primary opened from the Project sits over it; back returns to the Project.
+        stack.openAgent("bc-w")
+        assertThat(stack.screens).containsExactly(Screen.Home, Screen.Agent("bc-1"), Screen.Project("bc-p"), Screen.Agent("bc-w")).inOrder()
+        stack.pop()
+        assertThat(stack.top.screen).isEqualTo(Screen.Project("bc-p"))
+        // One Project from another swaps; the same one again changes nothing.
+        val entry = stack.top
+        stack.openProject("bc-p")
+        assertThat(stack.top).isEqualTo(entry)
+        stack.openProject("bc-q")
+        assertThat(stack.screens).containsExactly(Screen.Home, Screen.Agent("bc-1"), Screen.Project("bc-q")).inOrder()
+        assertThat(Screen.fromRoute(Screen.Project("bc-q").route)).isEqualTo(Screen.Project("bc-q"))
+        assertThat(Screen.fromRoute("project/")).isNull()
+    }
+
+    @Test
     fun `opening a chat from Settings pushes it over Settings`() {
         val stack = NavStack(Screen.Home)
         stack.push(Screen.Settings)

@@ -132,6 +132,37 @@ enum class AgentParentKind { PROJECT_WORKER, SIDE_CHAT, SUBAGENT }
 @Serializable
 data class AgentParent(val id: String, val kind: AgentParentKind)
 
+/**
+ * Where a chat belongs, decided from its own lineage and never from whether its parent happens to be listed: a
+ * [PRIMARY] chat is one of the account's own; a [PROJECT_ROOT] is a Cursor Project's coordinator (or a chat that
+ * drives workers the way one does); a [PROJECT_CHILD] is a worker, side chat or cloud subagent — a chat that belongs
+ * inside another chat's surface and never among the primary rows, whatever has become of its parent.
+ */
+@Serializable
+enum class AgentScope {
+    PRIMARY,
+    PROJECT_ROOT,
+    PROJECT_CHILD,
+    ;
+
+    companion object {
+        /** Sources the account gives only to chats that hang off another chat; a child by its source alone. */
+        val CHILD_SOURCES: Set<AgentSource> = setOf(AgentSource.AS_SIDE_CHAT_FROM_CLOUD, AgentSource.AS_SUBAGENT_FROM_CLOUD, AgentSource.CLOUD_META_AGENT)
+
+        /**
+         * The scope a record's lineage facts add up to: a chat with a parent is a child, one the account marks as a
+         * Project (and nobody's child) is a root, one started as a side chat or subagent is a child even when its
+         * parent went unnamed, and everything else is a primary chat.
+         */
+        fun of(isProject: Boolean, parent: AgentParent?, source: AgentSource?): AgentScope = when {
+            parent != null -> PROJECT_CHILD
+            source != null && source in CHILD_SOURCES -> PROJECT_CHILD
+            isProject -> PROJECT_ROOT
+            else -> PRIMARY
+        }
+    }
+}
+
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
 @Serializable
 data class Agent(
@@ -182,12 +213,35 @@ data class Agent(
      * its own. The sidebar nests a chat under its parent when the parent is listed too.
      */
     val parent: AgentParent? = null,
+    /**
+     * Where the chat belongs, as last decided by something that knows its lineage — the account's record, a
+     * membership answer, a coordinator's transcript naming it — or null when nothing has said yet. Read it through
+     * [scope]. Sticky on purpose: carried across refreshes and kept on disk with the row, and left alone when Extended
+     * mode is turned off, since default mode cannot re-learn it and forgetting it is what lets a worker back into the
+     * primary list.
+     */
+    val knownScope: AgentScope? = null,
+    /**
+     * The agent has asked a question and is waiting on the answer (`hasPendingInteraction` on the account's record):
+     * a Project's view marks such a primary as needing input. Only the account says; false until it has.
+     */
+    val hasPendingInteraction: Boolean = false,
 ) {
+    /**
+     * Where the chat belongs (see [AgentScope]): what a lineage source last decided ([knownScope]), else what the
+     * row's own facts add up to — so a row classified before the scope was kept, or by the demo's dataset, still
+     * lands where its parent link and Project flag put it.
+     */
+    val scope: AgentScope get() = knownScope ?: AgentScope.of(isProject, parent, source)
     /**
      * A Project at the top of its tree: the chat the Projects group lists. The Agents Window's rule as well — a
      * Project that is itself somebody's subagent or side chat is shown where its parent is.
      */
-    val isProjectRoot: Boolean get() = isProject && parent == null
+    val isProjectRoot: Boolean get() = scope == AgentScope.PROJECT_ROOT
+    /** A worker, side chat or subagent: shown inside its parent's surface, never among the primary rows. */
+    val isProjectChild: Boolean get() = scope == AgentScope.PROJECT_CHILD
+    /** Drawn as a Project — with its icon and colour — whether the account said so or its own transcript did. */
+    val looksLikeProject: Boolean get() = isProject || isProjectRoot
     /**
      * The name of the chat's model, for the composer chip and the list row. Rows recorded by earlier versions carry
      * the variant's parameters after the name ("Composer 2 · Fast", "Claude 5 · 1M context · Max effort"); only the

@@ -109,6 +109,8 @@ fun AgentRowItem(
     val interaction = remember { MutableInteractionSource() }
     val agent = row.agent
 
+    // A stand-in for a Project not loaded yet has nothing to act on: it opens (the chat loads by id) and nothing more.
+    val placeholder = row.isPlaceholder
     Box(modifier.fillMaxWidth().padding(start = CursorDimens.selectionInset + CursorDimens.sidebarIndent * depth.coerceIn(0, MAX_INDENT_DEPTH), end = CursorDimens.selectionInset)) {
         Row(
             Modifier
@@ -119,7 +121,7 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu) ({ menuOpen = true }) else null,
+                    onLongClick = if (showMenu && !placeholder) ({ menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -127,24 +129,25 @@ fun AgentRowItem(
         ) {
             // A Project is told by its look, with unread and error as a badge on it; a turn going, an archive or a
             // snooze still take the slot, as they do on every row.
+            val project = agent.looksLikeProject
             when {
-                agent.isProject && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
-                agent.isProject && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
-                agent.isProject && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
+                project && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
+                project && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
+                project && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
                 else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
             }
             Spacer(Modifier.width(10.dp))
             Text(
                 agent.name,
                 style = type.row,
-                color = if (agent.isArchived) colors.textTertiary else colors.textPrimary,
+                color = if (agent.isArchived || placeholder) colors.textTertiary else colors.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
-                if (prefs.showRuntime) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                if (prefs.showRuntime && !placeholder) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))

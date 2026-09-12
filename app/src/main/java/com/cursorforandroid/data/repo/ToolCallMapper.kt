@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.dto.SseToolCallDto
+import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.DiffStats
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
@@ -61,7 +62,29 @@ object ToolCallMapper {
             exitCode = output.exitCode,
             payload = payload,
             truncated = dto.truncated?.takeIf { it.args || it.result }?.let { ToolTruncation(it.args, it.result) },
+            linkedAgentIds = if (CoordinatorLineage.isCoordinatorTool(dto.name)) linkedAgentIds(args, result) else emptyList(),
         )
+    }
+
+    /**
+     * The worker ids a coordinator's call names (see [CoordinatorLineage]): the `agent_id` it addressed or the
+     * `agent_ids` it asked about, and in the result the `agent_id` of the worker created, the `worker_bc_id` the
+     * message went to, or the `bc_id` of each worker reported on — under the proto's spelling or the SDK's, at the
+     * top of the payload or wrapped in its `success` / `value`.
+     */
+    internal fun linkedAgentIds(args: JsonObject?, result: JsonElement?): List<String> {
+        val ids = LinkedHashSet<String>()
+        fun JsonElement?.addId() = (this as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }?.let { ids += it }
+        fun JsonElement?.addIds() = (this as? JsonArray)?.forEach { it.addId() }
+        AGENT_ID_KEYS.forEach { args?.get(it).addId() }
+        AGENT_IDS_KEYS.forEach { args?.get(it).addIds() }
+        val resultObj = result.obj()
+        if (resultObj != null) {
+            (AGENT_ID_KEYS + WORKER_ID_KEYS).forEach { key -> resultObj.deep(key).addId() }
+            val workers = resultObj.deep("workers") as? JsonArray
+            workers?.forEach { worker -> (worker as? JsonObject)?.let { w -> (WORKER_ID_KEYS + AGENT_ID_KEYS).forEach { key -> w[key].addId() } } }
+        }
+        return ids.toList()
     }
 
     /** The to-do list an update carries, for the next update to be described against. */
@@ -335,6 +358,10 @@ object ToolCallMapper {
     private val COMMAND_KEYS = listOf("command", "cmd")
     private val DESCRIPTION_KEYS = listOf("description")
     private val URL_KEYS = listOf("url", "uri")
+    /** How a coordinator's call names one worker, a list of them, and the worker a message went to. */
+    private val AGENT_ID_KEYS = listOf("agent_id", "agentId")
+    private val AGENT_IDS_KEYS = listOf("agent_ids", "agentIds")
+    private val WORKER_ID_KEYS = listOf("worker_bc_id", "workerBcId", "bc_id", "bcId")
     /** Compiled once: [describe] runs for every tool event on the stream. */
     private val PROVIDER_SCOPE = Regex("^(user|team|project)-")
     private val TERMINAL_FILE = Regex("^(ext-)?\\d+\\.txt$")
