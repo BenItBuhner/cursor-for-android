@@ -161,6 +161,8 @@ internal const val ANSWER_REASON = "Answering the agent's question from here goe
 internal fun ChangesSection(state: PanelState, actions: PanelActions) {
     val pr = state.pullRequest
     val prFiles = pr.valueOrNull?.files.orEmpty()
+    val branch = state.diff
+    val branchFiles = state.branchDiffFiles
     val local = state.content.changes
     Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         when {
@@ -168,6 +170,17 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
                 PanelCaption("From the pull request · ${prFiles.size} ${if (prFiles.size == 1) "file" else "files"}")
                 prFiles.forEach { file -> ChangedFileRow(file) }
                 if (local.isNotEmpty()) PanelNote("The edits streamed in this conversation are in the pull request above; open a file under Files › Touched to see each one.")
+            }
+            // The account's diff of the branch against its base (Extended): whole, whether or not a pull request exists yet.
+            branchFiles.isNotEmpty() -> {
+                val diff = branch.valueOrNull
+                val against = listOfNotNull(diff?.branchName, diff?.baseBranch).takeIf { it.size == 2 }?.joinToString(" → ")
+                PanelCaption(listOfNotNull("From the branch", against, "${branchFiles.size} ${if (branchFiles.size == 1) "file" else "files"}").joinToString(" · "))
+                BranchDiffFiles(branchFiles, actions)
+                if (state.hasPullRequest && pr is RemoteLoad.Loading) LoadingRow("Reading the pull request's files…")
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    CursorButton("Refresh", { actions.loadDiff(force = true) }, icon = CursorIcons.Refresh, height = 28.dp)
+                }
             }
             local.isNotEmpty() -> {
                 PanelCaption("From this conversation · ${local.size} ${if (local.size == 1) "file" else "files"}")
@@ -177,6 +190,7 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
                     pr is RemoteLoad.Failed -> PanelNote("The pull request's own files could not be read: ${pr.message}")
                     pr is RemoteLoad.Unsupported -> PanelNote(pr.reason)
                 }
+                BranchDiffNote(state, actions)
             }
             state.hasPullRequest -> when (pr) {
                 RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow("Reading the pull request's files…")
@@ -184,8 +198,25 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
                 is RemoteLoad.Unsupported -> UnsupportedRow(pr.reason, pr.url, actions::openUrl)
                 is RemoteLoad.Loaded -> EmptyRow("The pull request changes no files")
             }
-            else -> EmptyRow("No changes yet", "Edits arrive here as the agent makes them; a pull request's files once it opens one.")
+            branch is RemoteLoad.Loading -> LoadingRow("Reading the branch's diff…")
+            branch is RemoteLoad.Failed -> FailedRow(branch.message, onRetry = if (branch.retryable) ({ actions.loadDiff(force = true) }) else null)
+            branch is RemoteLoad.Loaded -> EmptyRow("No changes yet", "The branch matches its base; edits arrive here as the agent commits them.")
+            else -> {
+                EmptyRow("No changes yet", "Edits arrive here as the agent makes them; a pull request's files once it opens one.")
+                BranchDiffNote(state, actions)
+            }
         }
+    }
+}
+
+/** Under the stream's own changes: what the account's diff would add, and why it is not here. */
+@Composable
+private fun BranchDiffNote(state: PanelState, actions: PanelActions) {
+    when (val branch = state.diff) {
+        RemoteLoad.Loading -> LoadingRow("Reading the branch's diff…")
+        is RemoteLoad.Failed -> PanelNote("The branch's own diff could not be read: ${branch.message}")
+        is RemoteLoad.Unsupported -> if (!state.capabilities.diffDetails && !state.isDemo) RequiresExtendedRow(SectionAvailability.RequiresExtended(DIFF_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
+        else -> Unit
     }
 }
 
@@ -253,6 +284,7 @@ internal fun PullRequestSection(state: PanelState, actions: PanelActions) {
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         if (url == null) {
             EmptyRow("No pull request yet", "The agent opens one when it pushes with auto-create on, or when asked to.")
+            CreatePullRequestRow(state, actions)
             return@Column
         }
         when (val pr = state.pullRequest) {
@@ -348,6 +380,35 @@ private fun PullRequestBody(view: PullRequestView, actions: PanelActions) {
     }
 }
 
+internal const val CREATE_PR_REASON = "Opening the pull request from here goes through MakePRBackgroundComposer, an undocumented endpoint"
+
+/**
+ * Opening the pull request from the phone (Extended): Cursor pushes the branch and writes the title and body the
+ * agent would have. A chat with no branch has nothing to open one from; the demo has no host.
+ */
+@Composable
+private fun CreatePullRequestRow(state: PanelState, actions: PanelActions) {
+    val agent = state.agent ?: return
+    if (state.isDemo) return
+    if (!state.capabilities.scmPullRequests) {
+        RequiresExtendedRow(SectionAvailability.RequiresExtended(CREATE_PR_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
+        return
+    }
+    if (!agent.hasBranch || agent.repoUrl == null) {
+        PanelNote("The chat has no branch yet, so there is nothing to open a pull request from.")
+        return
+    }
+    when (val creation = state.pullRequestCreation) {
+        RemoteLoad.Idle -> Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            CursorButton("Create pull request", actions::createPullRequest, icon = CursorIcons.GitPullRequest, height = 30.dp, modifier = Modifier.testTag("create-pull-request"))
+        }
+        RemoteLoad.Loading -> LoadingRow("Asking Cursor to open the pull request…")
+        is RemoteLoad.Failed -> FailedRow(creation.message, onRetry = if (creation.retryable) actions::createPullRequest else null)
+        is RemoteLoad.Unsupported -> UnsupportedRow(creation.reason, creation.url, actions::openUrl)
+        is RemoteLoad.Loaded -> PanelRow("Pull request opened", icon = CursorIcons.Check, iconTint = CursorTheme.colors.green, subtitle = creation.value.ifBlank { "Cursor is opening it; the chat row follows." }, onClick = creation.value.takeIf { it.isNotBlank() }?.let { url -> { actions.openUrl(url) } })
+    }
+}
+
 /** The body as written, folded past a dozen lines behind "Show more" so a long description does not bury the checks. */
 @Composable
 private fun PullRequestDescription(body: String) {
@@ -409,7 +470,7 @@ internal fun FilesSection(state: PanelState, actions: PanelActions) {
         when (tab) {
             FilesTab.Touched -> TouchedFiles(state, actions)
             FilesTab.Repository -> RepositoryBrowser(state, actions)
-            FilesTab.Workspace -> RequiresExtendedRow(SectionAvailability.RequiresExtended("The agent's live workspace (ListWorkspaceFiles, ReadBinaryFile) is only reachable through undocumented endpoints"), extendedOn = state.capabilities.anyExtended)
+            FilesTab.Workspace -> WorkspaceBrowser(state, actions)
         }
     }
 }
@@ -509,7 +570,7 @@ private fun RepoEntryRow(entry: RepoEntry, onClick: () -> Unit) {
     val colors = CursorTheme.colors
     PanelRow(
         title = entry.name,
-        icon = if (entry.isDirectory) CursorIcons.Folder else iconFor(entry.extension),
+        icon = if (entry.isDirectory) CursorIcons.Folder else iconForExtension(entry.extension),
         iconTint = if (entry.isDirectory) colors.iconSecondary else colors.iconTertiary,
         trailing = { Text(if (entry.isDirectory) "" else formatBytes(entry.sizeBytes).orEmpty(), style = CursorTheme.typography.small, color = colors.textQuaternary) },
         onClick = onClick,
@@ -517,7 +578,7 @@ private fun RepoEntryRow(entry: RepoEntry, onClick: () -> Unit) {
     )
 }
 
-private fun iconFor(extension: String): ImageVector = when (extension) {
+internal fun iconForExtension(extension: String): ImageVector = when (extension) {
     "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp" -> CursorIcons.Image
     "mp4", "webm", "mov" -> CursorIcons.Video
     "md", "markdown", "txt" -> CursorIcons.Book

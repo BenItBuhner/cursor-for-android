@@ -1,5 +1,7 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubApiException
 import com.cursorforandroid.data.api.GitHubPullRequestRef
@@ -9,8 +11,12 @@ import com.cursorforandroid.data.api.OriginApiException
 import com.cursorforandroid.data.api.OriginPullRequestRef
 import com.cursorforandroid.data.api.OriginRepo
 import com.cursorforandroid.data.api.OriginTokenMissingException
+import com.cursorforandroid.data.api.PullRequestCreationApi
+import com.cursorforandroid.data.api.ScmPullRequestApi
 import com.cursorforandroid.data.api.userMessage
+import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.domain.AgentUsage
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.PullRequestView
 import com.cursorforandroid.domain.RepoContents
 import com.cursorforandroid.domain.RunUsage
@@ -44,11 +50,14 @@ fun interface DemoReviewSource {
 }
 
 /**
- * The reads behind the panel's Pull request, Changes, Files › Repository and Usage sections, in default mode: GitHub's
+ * The reads behind the panel's Pull request, Changes, Files › Repository and Usage sections. In default mode: GitHub's
  * REST API, anonymous, for GitHub-hosted repositories (private ones answer `404` and the budget is sixty an hour, so
  * every answer is kept for a while and a spent budget is remembered); Origin's for Origin-hosted ones when a token
- * exists (none does today, see [OriginApi]); the documented usage endpoint for the tokens. Nothing here reaches
- * `api2`. Answers are cached per key for [TTL_MS] so opening and closing the panel does not spend requests.
+ * exists (none does today, see [OriginApi]); the documented usage endpoint for the tokens — nothing on `api2`. In
+ * Extended mode ([Capabilities.scmPullRequests]) the account's own view of the pull request stands in wherever those
+ * cannot read it: every host Cursor connects, a private GitHub repository, a spent GitHub budget ([scm]); and a pull
+ * request can be opened from here ([createPullRequest]). Answers are cached per key for [TTL_MS] so opening and
+ * closing the panel does not spend requests.
  */
 class ReviewRepository(
     private val gitHub: () -> GitHubApi,
@@ -57,6 +66,10 @@ class ReviewRepository(
     private val isDemo: () -> Boolean = { false },
     private val demo: DemoReviewSource? = null,
     private val now: () -> Long = AppClock::now,
+    /** The account's SCM reads, when a build wires them; asked only with [Capabilities.scmPullRequests] on. */
+    private val scm: (() -> ScmPullRequestApi)? = null,
+    private val creation: (() -> PullRequestCreationApi)? = null,
+    private val capabilities: suspend () -> Capabilities = { Capabilities.DOCUMENTED },
 ) {
     private class Cached<T>(val value: T, val at: Long)
 
@@ -88,9 +101,69 @@ class ReviewRepository(
 
     private suspend fun readPullRequest(url: String): PullRequestLoad {
         if (isDemo()) return demo?.pullRequest(url)?.let { PullRequestLoad.Loaded(it) } ?: PullRequestLoad.Unsupported(ScmHost.of(url), "The demo has no record of this pull request.")
-        GitHubPullRequestRef.parse(url)?.let { return PullRequestLoad.Loaded(readGitHub(it)) }
+        val account = scm?.takeIf { capabilities().scmPullRequests }
+        GitHubPullRequestRef.parse(url)?.let { ref ->
+            // GitHub's own word first, in either mode: anonymous, and richer than the account's copy. Where GitHub
+            // will not show it (a private repository, a spent budget), the account reads it with the session alone.
+            if (account == null) return PullRequestLoad.Loaded(readGitHub(ref))
+            return try {
+                PullRequestLoad.Loaded(readGitHub(ref))
+            } catch (e: GitHubApiException) {
+                if (e.isNotFound || e.isRateLimited) PullRequestLoad.Loaded(readAccount(url, account())) else throw e
+            }
+        }
+        if (account != null) return PullRequestLoad.Loaded(readAccount(url, account()))
         OriginPullRequestRef.parse(url)?.let { return PullRequestLoad.Loaded(readOrigin(it)) }
         return PullRequestLoad.Unsupported(ScmHost.of(url), "This pull request is on ${ScmHost.of(url).label}, which this app cannot read without Extended mode.")
+    }
+
+    /**
+     * The account's view: the record (required), then its files, checks and discussions in parallel; a secondary
+     * read that fails is left out and named in [PullRequestView.missing], like GitHub's.
+     */
+    private suspend fun readAccount(url: String, api: ScmPullRequestApi): PullRequestView = coroutineScope {
+        val details = api.pullRequest(url)
+        val files = async { runCatching { api.files(url) } }
+        val status = async { runCatching { api.status(url) } }
+        val threads = async { runCatching { api.discussions(url) } }
+        val missing = mutableSetOf<String>()
+        val statusDetails = status.await().getOrElse { missing += "checks"; null }
+        PullRequestView(
+            details = details.copy(
+                headSha = details.headSha ?: statusDetails?.headSha,
+                additions = details.additions ?: statusDetails?.additions,
+                deletions = details.deletions ?: statusDetails?.deletions,
+                commits = details.commits ?: statusDetails?.commits,
+            ),
+            files = files.await().getOrElse { missing += "files"; emptyList() },
+            checks = statusDetails?.checks.orEmpty(),
+            threads = threads.await().getOrElse { missing += "comments"; emptyList() },
+            missing = missing,
+            declaredReviewDecision = statusDetails?.reviewDecision,
+        )
+    }
+
+    /**
+     * Opens the agent's pull request from here (`MakePRBackgroundComposer`): Cursor pushes the branch and writes the
+     * title and body the agent would have. Refused without [Capabilities.scmPullRequests] and in the demo, with the
+     * reason in words; a branch with no commits yet is a named failure too.
+     */
+    suspend fun createPullRequest(agentId: String, branchName: String?): Result<CreatedPullRequest> {
+        if (isDemo()) return Result.failure(IllegalStateException("The demo cannot open a pull request."))
+        if (!capabilities().scmPullRequests) return Result.failure(IllegalStateException(NEEDS_EXTENDED_MODE))
+        val api = creation?.invoke() ?: return Result.failure(IllegalStateException("Opening pull requests is not wired to the account service in this build."))
+        return try {
+            val created = api.makePullRequest(agentId, branchName)
+            when {
+                created.succeeded -> Result.success(created)
+                !created.hasCommits -> Result.failure(IOException("The branch has no commits yet, so there is nothing to open a pull request from."))
+                else -> Result.failure(IOException(created.error ?: "Cursor opened no pull request."))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Result.failure(IOException(describe(t), t))
+        }
     }
 
     /**
@@ -127,6 +200,12 @@ class ReviewRepository(
     }
 
     private fun failure(t: Throwable): PullRequestLoad = when (t) {
+        is SessionUnavailableException -> PullRequestLoad.Failed(if (t.code == SessionUnavailableException.EXTENDED_MODE_OFF) NEEDS_EXTENDED_MODE else t.message ?: "Cursor couldn't start a session for this key.", notFound = t.isPermanent)
+        is ConnectRpcException -> when {
+            t.httpCode == 404 || t.code == "unimplemented" -> PullRequestLoad.Failed(ENDPOINT_CHANGED, notFound = true)
+            t.code == "not_found" -> PullRequestLoad.Failed("Cursor has no record of this pull request.", notFound = true)
+            else -> PullRequestLoad.Failed("Cursor refused (${t.message}).")
+        }
         is OriginTokenMissingException -> PullRequestLoad.Unsupported(ScmHost.Origin, "This pull request is on Origin. Reading it needs an Origin access token, which this app cannot mint yet.")
         is OriginApiException -> if (t.isUnauthorized) PullRequestLoad.Unsupported(ScmHost.Origin, "Origin refused the token this app holds.") else PullRequestLoad.Failed(t.message ?: "Origin could not be read.", notFound = t.isNotFound)
         is GitHubApiException -> when {
@@ -178,6 +257,8 @@ class ReviewRepository(
 
     /** What the message of a failed usage or contents read should say. */
     fun describe(t: Throwable): String = when (t) {
+        is SessionUnavailableException -> if (t.code == SessionUnavailableException.EXTENDED_MODE_OFF) NEEDS_EXTENDED_MODE else t.message ?: "Cursor couldn't start a session for this key."
+        is ConnectRpcException -> if (t.httpCode == 404 || t.code == "unimplemented") ENDPOINT_CHANGED else "Cursor refused (${t.message})."
         is OriginTokenMissingException -> "Reading Origin needs an access token this app cannot mint yet."
         is GitHubApiException -> when {
             t.isRateLimited -> "GitHub's anonymous rate limit for this network is used up."
@@ -200,6 +281,9 @@ class ReviewRepository(
     companion object {
         /** Long enough that reopening the panel is free, short enough that a pushed commit shows within a minute. */
         const val TTL_MS = 60_000L
+
+        const val NEEDS_EXTENDED_MODE = "Needs Extended mode: reading this pull request goes through Cursor's account service."
+        const val ENDPOINT_CHANGED = "Cursor changed a private endpoint; this pull request cannot be read here until the app is updated."
 
         /** The typed usage the documented endpoint's DTOs map to. */
         fun usageOf(dto: com.cursorforandroid.data.api.dto.AgentUsageResponseDto): AgentUsage = AgentUsage(

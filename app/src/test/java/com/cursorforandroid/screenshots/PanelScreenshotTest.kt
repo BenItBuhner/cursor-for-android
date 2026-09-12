@@ -34,17 +34,20 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.dto.DownloadArtifactResponseDto
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.domain.DesktopSession
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.panel.ConversationPanel
+import com.cursorforandroid.ui.panel.DesktopScreen
 import com.cursorforandroid.ui.panel.FileView
 import com.cursorforandroid.ui.panel.PanelActions
 import com.cursorforandroid.ui.panel.PanelFixtures
 import com.cursorforandroid.ui.panel.PanelSectionId
 import com.cursorforandroid.ui.panel.PanelState
 import com.cursorforandroid.ui.panel.RemoteLoad
+import com.cursorforandroid.ui.panel.WorkspaceBrowserState
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -221,6 +224,74 @@ class PanelScreenshotTest {
         toggle(PanelSectionId.Usage)
         scrollToTop()
         capture("43_panel_degraded_states")
+    }
+
+    /** Extended mode: the Files › Workspace tab one level into the agent's live VM, a directory and a file side by side. */
+    @Test
+    fun workspaceFiles() {
+        val state = PanelFixtures.extended().copy(workspace = WorkspaceBrowserState(path = "app", tree = RemoteLoad.Loaded(PanelFixtures.workspaceTree)))
+        compose.setContent { Panel(state) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.Files)
+        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("files-tab-Workspace"))
+        compose.onNodeWithTag("files-tab-Workspace").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("workspace-dir")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("49_panel_workspace_files")
+    }
+
+    /** Extended mode: the Remote section of a cloud chat, offering its VM desktop. */
+    @Test
+    fun remoteDesktop() {
+        compose.setContent { Panel(PanelFixtures.extended()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.Remote)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-view")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("50_panel_remote_desktop")
+    }
+
+    /** Default mode: a Remote Control chat's machine, its state from the fleet endpoint and the documented floors. */
+    @Test
+    fun remoteControl() {
+        compose.setContent { Panel(PanelFixtures.remoteControl()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.Remote)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("machine-status")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("51_panel_remote_control")
+    }
+
+    /** Extended mode: the Changes section reading the branch's diff before a pull request exists. */
+    @Test
+    fun branchDiff() {
+        compose.setContent { Panel(PanelFixtures.extended()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("branch-diff-file")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("52_panel_branch_diff")
+    }
+
+    /** The desktop screen's chrome over the (empty, under Robolectric) noVNC canvas, in control. */
+    @Test
+    fun desktopScreen() {
+        val session = DesktopSession("bc-demo", "wss://t-p-6080.c.cursorvm.com:443/websockify?network_token=x", viewOnly = false, port = 6080)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Box(Modifier.fillMaxSize().testTag("scene")) {
+                    DesktopScreen(session, agentName = PanelFixtures.agent.name, onViewOnlyChange = {}, onReconnect = {}, onClose = {})
+                }
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-connection")).fetchSemanticsNodes().isNotEmpty() }
+        capture("53_panel_desktop_screen")
     }
 
     /**

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Desktop</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; touch-action: none; }
+  #screen { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #screen canvas { outline: none; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<script type="module">
+  // noVNC (MPL-2.0, see LICENSE.txt) against the websockify URL the app hands over through cursorDesktop.connect;
+  // the URL carries the desktop ticket, so it is never put in this page's own address. Every event goes back to
+  // the app through AndroidDesktop.onState(state, detail).
+  import RFB from './core/rfb.js';
+
+  let rfb = null;
+
+  function report(state, detail) {
+    if (window.AndroidDesktop && typeof window.AndroidDesktop.onState === 'function') {
+      window.AndroidDesktop.onState(state, detail == null ? '' : String(detail));
+    }
+  }
+
+  window.cursorDesktop = {
+    connect(url, viewOnly) {
+      this.disconnect();
+      const screen = document.getElementById('screen');
+      rfb = new RFB(screen, url, { wsProtocols: ['binary'], shared: true });
+      rfb.viewOnly = !!viewOnly;
+      rfb.scaleViewport = true;
+      rfb.resizeSession = false;
+      rfb.clipViewport = false;
+      rfb.showDotCursor = true;
+      rfb.background = '#000';
+      rfb.addEventListener('connect', () => report('connected', ''));
+      rfb.addEventListener('disconnect', (e) => report('disconnected', e.detail && e.detail.clean ? 'clean' : 'dropped'));
+      rfb.addEventListener('securityfailure', (e) => report('failed', (e.detail && e.detail.reason) || 'security failure'));
+      rfb.addEventListener('credentialsrequired', () => report('failed', 'The desktop asked for VNC credentials this app does not hold'));
+      rfb.addEventListener('desktopname', (e) => report('name', e.detail && e.detail.name));
+      report('connecting', '');
+    },
+    setViewOnly(viewOnly) {
+      if (rfb) rfb.viewOnly = !!viewOnly;
+    },
+    disconnect() {
+      if (!rfb) return;
+      try { rfb.disconnect(); } catch (_) { /* already gone */ }
+      rfb = null;
+    },
+  };
+
+  report('ready', '');
+</script>
+</body>
+</html>

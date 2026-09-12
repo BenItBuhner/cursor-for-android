@@ -35,6 +35,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.ToolPayload
@@ -62,6 +63,17 @@ fun ConversationPanel(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val file = state.browser.file
+    // The desktop takes the whole screen in its own window, over the panel and the chat alike, for as long as the
+    // session is open; back or the X ends the session.
+    (state.desktop as? DesktopState.Open)?.let { open ->
+        DesktopDialog(
+            session = open.session,
+            agentName = state.agent?.name,
+            onViewOnlyChange = actions::setDesktopViewOnly,
+            onReconnect = { actions.openDesktop(open.session.viewOnly) },
+            onClose = actions::closeDesktop,
+        )
+    }
     Column(modifier.fillMaxSize().testTag("conversation-panel")) {
         if (file != null) {
             FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl)
@@ -89,8 +101,9 @@ fun ConversationPanel(
 private fun PanelSectionView(section: PanelSection, state: PanelState, actions: PanelActions) {
     val availability = section.availability(state.capabilities, state)
     var expanded by rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(section.expandedByDefault) }
-    // What the section needs is asked for when it is opened, and again when its chat changes under it.
-    LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId) {
+    // What the section needs is asked for when it is opened, and again when its chat — or the mode, which decides
+    // which reads may be made — changes under it.
+    LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId, state.capabilities) {
         if (expanded && availability is SectionAvailability.Available) section.onOpen(actions)
     }
     val hint = when (availability) {
@@ -177,6 +190,17 @@ fun rememberPanelActions(
             override fun notify(message: String) {
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
+            override fun loadDiff(force: Boolean) = viewModel.loadDiff(force)
+            override fun openBranchDiffFile(file: AgentDiffFile) = viewModel.openBranchDiffFile(file)
+            override fun loadWorkspace(force: Boolean) = viewModel.loadWorkspace(force)
+            override fun browseWorkspace(path: String) = viewModel.browseWorkspace(path)
+            override fun browseWorkspaceUp() = viewModel.browseWorkspaceUp()
+            override fun openWorkspaceFile(path: String) = viewModel.openWorkspaceFile(path)
+            override fun loadMachine(force: Boolean) = viewModel.loadMachine(force)
+            override fun openDesktop(viewOnly: Boolean) = viewModel.openDesktop(viewOnly)
+            override fun setDesktopViewOnly(viewOnly: Boolean) = viewModel.setDesktopViewOnly(viewOnly)
+            override fun closeDesktop() = viewModel.closeDesktop()
+            override fun createPullRequest() = viewModel.createPullRequest()
 
             /** One account-service control: what it came back with goes on the screen's snackbar, as does the reason it did not happen. */
             private fun control(block: suspend () -> Result<String?>) {

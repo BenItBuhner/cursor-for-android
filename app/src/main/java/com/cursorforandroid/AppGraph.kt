@@ -8,27 +8,36 @@ import com.cursorforandroid.crash.CrashReporting
 import com.cursorforandroid.data.api.AccountApi
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.AccountList
+import com.cursorforandroid.data.api.AgentFilesApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
+import com.cursorforandroid.data.api.DesktopProbe
+import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.FollowupQueueApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.MachineApi
+import com.cursorforandroid.data.api.MachineLookupApi
 import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.PullRequestApi
+import com.cursorforandroid.data.api.PullRequestCreationApi
 import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.api.SlashCommandApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.api.WorkerLaunch
+import com.cursorforandroid.data.api.WorkspaceFilesApi
 import com.cursorforandroid.data.auth.CursorLogin
 import com.cursorforandroid.data.auth.CursorLoginEndpoints
 import com.cursorforandroid.data.auth.SessionTokenProvider
@@ -63,14 +72,18 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
+import com.cursorforandroid.data.repo.RemoteRepository
 import com.cursorforandroid.data.repo.ReviewRepository
 import com.cursorforandroid.data.repo.RunMonitor
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
+import com.cursorforandroid.data.repo.WorkspaceRepository
+import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.DesktopPage
 import com.cursorforandroid.domain.InteractionResolution
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.ProjectAppearance
@@ -80,6 +93,7 @@ import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
+import com.cursorforandroid.domain.WorkspaceTree
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -181,6 +195,12 @@ class AppGraph(
     private val lazyAccountSlashCommands = lazy { DashboardSlashCommandApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** The account's Projects: who belongs to whom, and the coordinator's actions. */
     private val lazyProjectApi = lazy { ProjectApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The agent's live VM: its workspace files and its branch diff (the panel's Files › Workspace and Changes). */
+    private val lazyAgentFiles = lazy { AgentFilesApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account's view of a pull request on any host it connects, and opening one from here. */
+    private val lazyPullRequestApi = lazy { PullRequestApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** Where the agent's machine is, for its desktop. */
+    private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
     private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
 
@@ -199,7 +219,10 @@ class AppGraph(
      */
     private val lazyOrigin = lazy { OriginApi(CursorApiFactory.originClient(), tokenProvider = { null }) }
 
-    /** The panel's reads of a pull request, a repository's files and the agent's token usage; nothing on api2. */
+    /**
+     * The panel's reads of a pull request, a repository's files and the agent's token usage: the documented and
+     * public hosts in default mode, the account's SCM view standing in behind the `scmPullRequests` capability.
+     */
     private val lazyReviews = lazy {
         ReviewRepository(
             gitHub = { lazyGitHub.value },
@@ -207,9 +230,31 @@ class AppGraph(
             usageApi = { agentId -> ReviewRepository.usageOf(session.current.api.usage(agentId)) },
             isDemo = { session.isDemo },
             demo = DemoReview,
+            scm = { lazyPullRequestApi.value },
+            creation = { accountPullRequestCreation },
+            capabilities = capabilities,
         )
     }
     val reviews: ReviewRepository get() = lazyReviews.value
+
+    /** The agent's workspace tree, its files and its branch diff, behind the `workspaceFiles` and `diffDetails` capabilities. */
+    private val lazyWorkspace = lazy { WorkspaceRepository(files = agentFiles, diffs = agentFiles, capabilities = capabilities, isDemo = { session.isDemo }) }
+    val workspace: WorkspaceRepository get() = lazyWorkspace.value
+
+    /**
+     * The panel's Remote section: a Remote Control chat's machine from the documented fleet endpoint in either mode,
+     * and the agent's VM desktop behind the `remoteDesktop` capability.
+     */
+    private val lazyRemote = lazy {
+        RemoteRepository(
+            workers = { session.current.api.listWorkers(scope = "personal") },
+            machines = accountMachines,
+            probe = DesktopProbe(client = { lazyAccountClient.value }, origin = DesktopPage.ORIGIN),
+            capabilities = capabilities,
+            isDemo = { session.isDemo },
+        )
+    }
+    val remote: RemoteRepository get() = lazyRemote.value
 
     // The repositories take their sources by value, so the account's and GitHub's are handed over behind these
     // shims: a graph in default mode never builds the api2 client, and one in Extended mode never builds GitHub's.
@@ -239,6 +284,17 @@ class AppGraph(
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
     }
+    private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
+        override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
+        override suspend fun readFile(agentId: String, path: String): ByteArray = lazyAgentFiles.value.readFile(agentId, path)
+        override suspend fun diffDetails(agentId: String): AgentDiff = lazyAgentFiles.value.diffDetails(agentId)
+    }
+    private val accountPullRequestCreation = object : PullRequestCreationApi {
+        override suspend fun makePullRequest(agentId: String, branchName: String?): CreatedPullRequest = lazyPullRequestApi.value.makePullRequest(agentId, branchName)
+        override suspend fun openPullRequest(agentId: String, title: String?, body: String?, baseBranch: String?, draft: Boolean): CreatedPullRequest =
+            lazyPullRequestApi.value.openPullRequest(agentId, title, body, baseBranch, draft)
+    }
+    private val accountMachines = MachineLookupApi { agentId -> lazyMachineApi.value.machine(agentId) }
     private val steeringAccount = object : InteractionApi, FollowupQueueApi, RunControlApi {
         override suspend fun answerQuestion(agentId: String, toolCallId: String, answers: List<ToolPayload.Question.Answer>): InteractionResolution = lazySteeringApi.value.answerQuestion(agentId, toolCallId, answers)
         override suspend fun addFollowup(agentId: String, followup: AccountFollowup, synchronous: Boolean): String? = lazySteeringApi.value.addFollowup(agentId, followup, synchronous)
@@ -476,6 +532,8 @@ class AppGraph(
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyReviews.isInitialized()) reviews.reset()
+            if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             media.clearCaches()
             attachments.clear()
@@ -500,6 +558,10 @@ class AppGraph(
             caches.pullRequests.removeAll()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
             caches.slashCommands.removeAll()
+            // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.
+            if (lazyReviews.isInitialized()) reviews.reset()
+            if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyRemote.isInitialized()) remote.reset()
             if (lazyAgents.isInitialized()) agents.forgetAccountSources(prefs.localAgentState.first().launchedHereIds)
             session.forgetAccountProfile()
         }
@@ -509,6 +571,8 @@ class AppGraph(
             if (lazyAccountPullRequests.isInitialized()) lazyAccountPullRequests.value.reset()
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazySlashCommands.isInitialized()) slashCommands.reset()
+            // A pull request the browser stood in for can now be read through the account.
+            if (lazyReviews.isInitialized()) reviews.reset()
             session.refreshAccountProfile()
             if (lazyPins.isInitialized()) {
                 pins.reset()
@@ -539,6 +603,11 @@ class AppGraph(
             "gitHubSlashCommands" to lazyGitHubSlashCommands,
             "origin" to lazyOrigin,
             "reviews" to lazyReviews,
+            "agentFiles" to lazyAgentFiles,
+            "pullRequestApi" to lazyPullRequestApi,
+            "machineApi" to lazyMachineApi,
+            "workspace" to lazyWorkspace,
+            "remote" to lazyRemote,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,
             "pins" to lazyPins,

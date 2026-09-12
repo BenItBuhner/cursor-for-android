@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.lineStatsOf
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -80,6 +81,19 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
                 items(view.change.diffs) { diff -> DiffBlock(diff, showHeader = false) }
             }
             is FileView.Repository -> RepoFileBody(view.file)
+            is FileView.Workspace -> RepoFileBody(view.file)
+            is FileView.BranchDiff -> {
+                val file = view.file
+                val patch = file.patch
+                when {
+                    patch != null -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
+                        item { DiffBlock(ToolPayload.FileDiff(file.path, patch, file.additions, file.deletions), showHeader = false) }
+                    }
+                    file.modifiedContent != null -> TextFile(file.modifiedContent, truncated = false)
+                    file.originalContent != null -> TextFile(file.originalContent, truncated = false)
+                    else -> StateRow(CursorIcons.File, "Nothing to show", "${file.status.label}; the account sent no hunks for this file.")
+                }
+            }
         }
     }
 }
@@ -93,6 +107,12 @@ private fun subtitleOf(view: FileView): String = when (view) {
     ).joinToString(" · ")
     is FileView.Changes -> listOfNotNull("${view.change.diffs.size} ${if (view.change.diffs.size == 1) "edit" else "edits"}", view.change.lineStats).joinToString(" · ")
     is FileView.Repository -> listOfNotNull(view.file.path, formatBytes(view.file.sizeBytes)).joinToString(" · ")
+    is FileView.Workspace -> listOfNotNull("From the agent's workspace", formatBytes(view.file.sizeBytes)).joinToString(" · ")
+    is FileView.BranchDiff -> listOfNotNull(
+        if (view.file.patch != null) "The branch's diff" else if (view.file.modifiedContent != null) "As it is on the branch" else "As it was on the base",
+        view.file.previousPath?.let { "was $it" },
+        lineStatsOf(view.file.additions, view.file.deletions),
+    ).joinToString(" · ")
 }
 
 @Composable

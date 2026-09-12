@@ -37,6 +37,18 @@ data class Capabilities(
      * machine (`WakeBackgroundComposer`). Off: the public cancel only.
      */
     val steering: Boolean,
+    /** The agent's live workspace: `ListWorkspaceFiles` and `ReadBinaryFile`. Off: only the files the stream carried, and the repository's tree. */
+    val workspaceFiles: Boolean,
+    /** The branch's diff against its base before a pull request exists: `GetBackgroundComposerDiffDetails`. Off: the edits the stream carried. */
+    val diffDetails: Boolean,
+    /**
+     * A pull request on any host Cursor connects, read through the account (`SCMService/GetPullRequest`,
+     * `GetPullRequestDiff`, `GetDetailedPullRequestStatus`, `GetPullRequestDiscussions`) and opened from here
+     * (`MakePRBackgroundComposer` / `OpenPRBackgroundComposer`). Off: GitHub's REST API for GitHub-hosted repositories, the browser for the rest.
+     */
+    val scmPullRequests: Boolean,
+    /** The agent's VM desktop over noVNC: `GetMachine` for the pod and its ticket. Off: nothing; the machine's own state stays public. */
+    val remoteDesktop: Boolean,
     /** Answering an agent's `ask_question` from here (`SubmitInteractionResponseBackgroundComposer`). Off: the question is read-only, answered on cursor.com. */
     val interactions: Boolean,
     /**
@@ -51,7 +63,7 @@ data class Capabilities(
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
-            interactions || accountQueue || agentModes
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes
 
     companion object {
         /** The default: the documented API only. */
@@ -64,6 +76,10 @@ data class Capabilities(
             accountPullRequests = false,
             projects = false,
             steering = false,
+            workspaceFiles = false,
+            diffDetails = false,
+            scmPullRequests = false,
+            remoteDesktop = false,
             interactions = false,
             accountQueue = false,
             agentModes = false,
@@ -79,6 +95,10 @@ data class Capabilities(
             accountPullRequests = true,
             projects = true,
             steering = true,
+            workspaceFiles = true,
+            diffDetails = true,
+            scmPullRequests = true,
+            remoteDesktop = true,
             interactions = true,
             accountQueue = true,
             agentModes = true,
