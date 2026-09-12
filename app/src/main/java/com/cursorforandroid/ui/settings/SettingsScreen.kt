@@ -198,6 +198,11 @@ fun SettingsScreen(
                 UpdateRows(graph, uriHandler::openUri)
             }
 
+            Group("Privacy")
+            CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
+                CrashReportRows(graph)
+            }
+
             Group("About")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 InfoRow("API", if (extendedMode && !isDemo) "Cloud Agents v1 · v0 transcript · Cursor account service" else "Cloud Agents v1 · v0 transcript")
@@ -416,6 +421,35 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheck
         Spacer(Modifier.width(12.dp))
         CursorToggle(checked = checked, onCheckedChange = onCheckedChange)
     }
+}
+
+/**
+ * The crash report consent. Off until the user turns it on, and never assumed; a build that carries no project to
+ * report to says so instead of offering a switch that would do nothing.
+ */
+@Composable
+private fun CrashReportRows(graph: AppGraph) {
+    val scope = rememberCoroutineScope()
+    val enabled by graph.prefs.crashReports.collectAsStateWithLifecycle(initialValue = false)
+    if (!graph.crashReporting.isAvailable) {
+        StatusRow(title = CrashReportCopy.TITLE, subtitle = CrashReportCopy.UNAVAILABLE, warning = false)
+        return
+    }
+    ToggleRow(
+        title = CrashReportCopy.TITLE,
+        subtitle = if (enabled) CrashReportCopy.ON else CrashReportCopy.OFF,
+        checked = enabled,
+        onCheckedChange = { scope.launch { graph.prefs.setCrashReports(it) } },
+    )
+}
+
+/** Settings copy for the crash report consent, shared with its test. */
+internal object CrashReportCopy {
+    const val TITLE = "Send crash reports"
+    const val OFF = "Off. If the app crashes or freezes, nothing is sent anywhere."
+    const val ON = "A crash or freeze sends its stack trace, the app version and the device model to the project's " +
+        "Sentry. Never your account, prompts, replies or keys."
+    const val UNAVAILABLE = "Not available in this build: it was made without a project to report to."
 }
 
 /**

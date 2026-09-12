@@ -1,6 +1,7 @@
 package com.cursorforandroid
 
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
 import com.cursorforandroid.notifications.LiveNotificationCoordinator
@@ -29,6 +30,9 @@ object DeferredStartup {
 
     /** Called from every activity creation; the work either belongs to that activity or is idempotent. */
     fun arm(activity: ComponentActivity, graph: AppGraph) {
+        // Not held back with the rest: a crash in the first seconds is the kind worth hearing about, and reading the
+        // one setting costs nothing the first frame notices. The collector is the process's, started once.
+        graph.crashReporting.follow(graph.prefs.crashReports, ProcessLifecycleOwner.get().lifecycleScope)
         activity.lifecycleScope.launch {
             activity.lifecycle.withResumed {}
             delay(settleMs)
