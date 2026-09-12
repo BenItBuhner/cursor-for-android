@@ -1,6 +1,6 @@
 [versions]
 agp = "8.10.1"
-kotlin = "2.2.21"
+kotlin = "2.4.10"
 coreKtx = "1.17.0"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
@@ -10,9 +10,9 @@ securityCrypto = "1.1.0-alpha06"
 splashscreen = "1.0.1"
 retrofit = "2.11.0"
 okhttp = "4.12.0"
-serialization = "1.7.3"
+serialization = "1.11.0"
 # 1.10.x is what coil-core 3.3.0 compiles against; keeping the app on the same line avoids two coroutine runtimes.
-coroutines = "1.10.2"
+coroutines = "1.11.0"
 browser = "1.8.0"
 # Coil 3.3.0 is the last line built against Kotlin 2.2 / lifecycle 2.8 (3.4+ pulls Kotlin 2.3 and lifecycle 2.9).
 coil = "3.3.0"
