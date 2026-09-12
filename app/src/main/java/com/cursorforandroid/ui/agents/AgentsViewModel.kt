@@ -164,6 +164,9 @@ class AgentsViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AgentListUiState())
 
     init {
+        // A Project the list names but lacks is fetched by id so its workers can sit under it rather than under a
+        // stand-in; the list surface being up is when that matters.
+        graph.projects.watchList()
         viewModelScope.launch {
             // Disk first, so the list is on screen before the network is consulted; the refresh is then silent
             // when there was something to show and visible (pull-to-refresh indicator) on a truly cold start.

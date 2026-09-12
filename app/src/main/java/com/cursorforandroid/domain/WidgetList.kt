@@ -50,8 +50,10 @@ object WidgetList {
         WidgetMode.Pinned -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
             .firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty()
         // Agents at work, whatever the Status filter says (a "Running" list with Running filtered out would only
-        // ever be empty); the Repo / Git / Source filters still apply.
+        // ever be empty); the Repo / Git / Source filters still apply. A Project's workers belong to the Project's
+        // surface, not to a primary list like this one (a pinned one is listed, as in the sidebar).
         WidgetMode.Running -> agents
+            .filter { !it.isProjectChild || it.id in local.pinnedIds }
             .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
             .sortedByDescending { it.agent.updatedAtMillis }

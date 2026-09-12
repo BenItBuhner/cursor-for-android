@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -169,6 +170,7 @@ fun Sidebar(
             // Rows dissolve at the top and bottom of the pane while more of the list sits past that edge; there is no
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()
+            KeepAtTop(listState, sidebarTopKey(state))
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
                 if (!state.hasLoaded && state.sections.isEmpty()) {
                     item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
@@ -200,8 +202,21 @@ fun Sidebar(
                             },
                         )
                     }
+                    if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
+                        // Without the account service only a coordinator's own transcript says which chats are its
+                        // workers; the rest of them look like chats of their own.
+                        item("projects-notice") {
+                            Text(
+                                PROJECTS_DEFAULT_MODE_NOTICE,
+                                style = type.small,
+                                color = colors.textQuaternary,
+                                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
+                            )
+                        }
+                    }
                     if (expanded) {
-                        val expandedIds = expandedParents.toSet()
+                        // A search shows every match where it sits in the tree, so the tree is open while one is typed.
+                        val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
                         items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
                             val id = row.agent.id
                             AgentRowItem(
@@ -230,6 +245,43 @@ fun Sidebar(
         AccountFooter(user, isDemo, extendedMode, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
     }
 }
+
+/**
+ * Keeps a list that is at its top at its top when rows land above it. A `LazyColumn` holds the first visible row in
+ * place by its key when the rows change, and the sidebar's rows land in several publishes — the pages first, then
+ * the Projects group with the account's word, above "Pinned" — so a sidebar composed while the list loads (the
+ * closed drawer on a phone, the permanent column on a tablet) would otherwise sit past its own Projects group after
+ * a cold start, its first row still the "Pinned" header it opened on.
+ *
+ * Told by the keys rather than by timing: the row that leads the list is [topKey], and the row the list is anchored
+ * on keeps its key whether this runs before or after the remeasure that moves it. A list anchored on the row that
+ * led it before the change was at the top, and is asked to stay there ([LazyListState.requestScrollToItem] wins
+ * over the anchoring at the next measure); a list anchored anywhere else was scrolled, and is left alone.
+ */
+@Composable
+internal fun KeepAtTop(listState: LazyListState, topKey: Any?) {
+    var previousTopKey by remember { mutableStateOf(topKey) }
+    LaunchedEffect(topKey) {
+        // The item the list is anchored on: the one at the first visible index, not the first of the visible items,
+        // which can be the row above it showing through the content padding.
+        val index = listState.firstVisibleItemIndex
+        val anchored = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key
+        val wasAtTop = anchored != null && anchored == previousTopKey && listState.firstVisibleItemScrollOffset == 0
+        if (wasAtTop && topKey != previousTopKey) listState.requestScrollToItem(0)
+        previousTopKey = topKey
+    }
+}
+
+/** The key of the row that leads the sidebar's list as it is composed below — what [KeepAtTop] watches. */
+internal fun sidebarTopKey(state: AgentListUiState): String? = when {
+    !state.hasLoaded && state.sections.isEmpty() -> "loading"
+    state.hasLoaded && state.sections.isEmpty() -> "empty"
+    state.error != null -> "error"
+    else -> state.sections.firstOrNull()?.let { "hdr-${it.key}" }
+}
+
+/** The one line the Projects group carries without Extended mode: what the list can and cannot tell about workers. */
+const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats without Extended mode"
 
 /** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
 @Composable

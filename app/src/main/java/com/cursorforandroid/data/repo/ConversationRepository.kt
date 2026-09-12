@@ -16,6 +16,8 @@ import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.TimelineBuilder.withUniqueIds
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.ModelParam
@@ -216,6 +218,8 @@ class ConversationRepository(
         @Volatile var stops = 0
         /** The terminal runs whose traces [pause] turned away, replayed by [resume]. */
         var deferredTraceRuns: List<RunDto> = emptyList()
+        /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
+        var reportedWorkers: Set<String>? = null
         var lastUsedAt = AppClock.now()
         private var builtPrefix: Prefix? = null
         private var orderedFromRuns: List<RunDto>? = null
@@ -538,12 +542,32 @@ class ConversationRepository(
         }
     }
 
-    /** Rebuilds the visible items from the entry's inputs after [mutate] has changed them. */
+    /**
+     * Rebuilds the visible items from the entry's inputs after [mutate] has changed them. What the rebuilt transcript
+     * says about the chat's workers — the one word default mode has on a Project's lineage — goes to the agent list
+     * once it has changed (see [Entry.coordinatorLineage]), outside the entry's monitor.
+     */
     private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }) {
-        synchronized(this) {
+        val workers = synchronized(this) {
             mutate()
-            state.update { it.copy(items = items()).transform() }
+            val items = items()
+            state.update { it.copy(items = items).transform() }
+            coordinatorLineage(items)
         }
+        if (workers != null) agents.applyLineage(agentId, workers.associateWith { AgentParentKind.PROJECT_WORKER }, authoritative = false)
+    }
+
+    /**
+     * The workers the chat's transcript names through the coordinator's tools (see [CoordinatorLineage]) when that
+     * has changed since it was last reported, else null. A transcript with the tools but no ids yet still reports
+     * (an empty set): the chat is a coordinator, and that alone places it.
+     */
+    private fun Entry.coordinatorLineage(items: List<TimelineItem>): Set<String>? {
+        if (!CoordinatorLineage.isCoordinator(items)) return null
+        val workers = CoordinatorLineage.workerIds(items)
+        if (workers == reportedWorkers) return null
+        reportedWorkers = workers
+        return workers
     }
 
     /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */

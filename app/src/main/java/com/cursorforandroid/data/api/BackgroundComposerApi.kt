@@ -3,6 +3,7 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
@@ -28,7 +29,12 @@ data class ComposerSnapshot(
     val projectAppearance: ProjectAppearance? = null,
     /** The chat this one hangs off, and how; null for a chat of its own. */
     val parent: AgentParent? = null,
-)
+    /** Where the chat was started, when the record said (see [AgentSource]). */
+    val source: AgentSource? = null,
+) {
+    /** Where the chat belongs by this record's own lineage facts (see [AgentScope.of]). */
+    val scope: AgentScope get() = AgentScope.of(isProject, parent, source)
+}
 
 /**
  * What one read of the account's agent list says beyond the agents themselves: the pins, where each agent's pull
@@ -93,6 +99,8 @@ class BackgroundComposerApi(
                 includeStatus = true,
                 includePinnedState = true,
                 includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
+                includeWorkers = true,
+                includeSubagents = true,
             ),
             ListBackgroundComposersRequestDto.serializer(),
             ListBackgroundComposersResponseDto.serializer(),
@@ -164,6 +172,15 @@ class BackgroundComposerApi(
         val includePinnedState: Boolean,
         /** `include_hidden_sources`: sources the list leaves out unless asked, named as the proto spells them. */
         val includeHiddenSources: List<String>,
+        /**
+         * `include_workers` / `include_subagents`: the records of a Project's workers and of cloud subagents, which
+         * the list leaves out unless asked (the Agents Window never asks; it lists them under their parents from
+         * `ListWorkersForManager`). They are the records that carry `managerAgentId` and `cloudSubagentParent`, and
+         * the public list this app draws its rows from lists those chats regardless — so without them the rows would
+         * never learn whose they are, and would sit among the account's own chats.
+         */
+        val includeWorkers: Boolean,
+        val includeSubagents: Boolean,
     )
 
     @Serializable
@@ -246,11 +263,13 @@ class BackgroundComposerApi(
 
         /**
          * Sources the account service leaves out of the list unless asked for: agents started by the SDK, which
-         * cursor.com/agents and the desktop Agents window hide until their Source filter is set to SDK. The public
-         * list this app draws its rows from does not hide them, so they are asked for here or they would never learn
-         * their source (nor their pins and pull request states).
+         * cursor.com/agents and the desktop Agents window hide until their Source filter is set to SDK, and the chats
+         * Cursor starts for another chat — side chats and subagents branched off a cloud agent, and its meta agents.
+         * The public list this app draws its rows from hides none of them, so they are asked for here or they would
+         * never learn their source (nor their pins and pull request states), nor — for the side chats and subagents —
+         * whose they are.
          */
-        val HIDDEN_SOURCES: List<AgentSource> = listOf(AgentSource.SDK)
+        val HIDDEN_SOURCES: List<AgentSource> = listOf(AgentSource.SDK, AgentSource.AS_SIDE_CHAT_FROM_CLOUD, AgentSource.AS_SUBAGENT_FROM_CLOUD, AgentSource.CLOUD_META_AGENT)
 
         /**
          * What the record says about names, archive and Cursor Projects, derived the way the Agents Window derives
@@ -278,6 +297,7 @@ class BackgroundComposerApi(
                 isProject = isProject,
                 projectAppearance = appearance,
                 parent = parent,
+                source = AgentSource.parse(composer.source?.contentOrNull),
             )
         }
 

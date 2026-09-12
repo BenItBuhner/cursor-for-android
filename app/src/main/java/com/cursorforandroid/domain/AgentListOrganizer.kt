@@ -25,6 +25,12 @@ data class AgentRow(
      * [AgentListOrganizer.nest]).
      */
     val children: List<AgentRow> = emptyList(),
+    /**
+     * A stand-in for a Project the list has not loaded yet, holding the workers that name it (see
+     * [AgentListOrganizer.placeholder]): drawn as "Project (loading)", with no row actions, until the row itself
+     * has been fetched and takes its place.
+     */
+    val isPlaceholder: Boolean = false,
 ) {
     /** This row's children, their children and so on, depth first — what a collapsed parent stands for. */
     fun descendants(): List<AgentRow> = children.flatMap { listOf(it) + it.descendants() }
@@ -166,6 +172,16 @@ object AgentListOrganizer {
         SortOrder.Name -> rows.sortedBy { it.agent.name.lowercase() }
     }
 
+    /**
+     * The sidebar's sections. Classify, then nest: every row is placed by its own [Agent.scope] — a Project's
+     * worker, side chat or subagent belongs inside its parent's tree and nowhere else, so it is never listed among
+     * the primary rows whatever has become of its parent (filtered out, archived, searched away, not loaded yet).
+     * A pinned child is the one exception, by the user's word. A child whose Project the list does not hold at all
+     * sits under a stand-in row for that Project (see [placeholder]) until the row has been fetched.
+     *
+     * The filters apply to every row; the search finds a chat wherever it sits in the tree, and shows it under its
+     * parent — a match on the parent keeps its whole subtree.
+     */
     fun organize(
         agents: List<Agent>,
         prefs: ListPreferences,
@@ -174,11 +190,11 @@ object AgentListOrganizer {
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentSection> {
-        val rows = agents
-            .filter { matchesQuery(it, query) }
-            .map { toRow(it, local, nowMillis) }
-            .filter { matchesFilters(it, prefs) }
-        val sorted = nest(sort(rows, prefs.sortOrder))
+        val rows = sort(agents.map { toRow(it, local, nowMillis) }.filter { matchesFilters(it, prefs) }, prefs.sortOrder)
+        val (nested, primary) = rows.partition { it.agent.isProjectChild && !it.isPinned }
+        val known = agents.mapTo(HashSet(agents.size)) { it.id }
+        val tree = nest(primary, nested) + placeholders(nested, known, nowMillis)
+        val sorted = tree.mapNotNull { it.matching(query) }
 
         // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
         val projects = sorted.filter { it.agent.isProjectRoot }
@@ -217,9 +233,13 @@ object AgentListOrganizer {
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
 
-    /** [recentRows] for sections already organized without a search query: every row once, nested ones included, newest first. */
+    /**
+     * [recentRows] for sections already organized without a search query: the primary rows once, newest first. A
+     * Project's workers, side chats and subagents are not among them — they belong to the Project's own surface,
+     * and the recents, like the widget, are a primary surface (a pinned child is listed, as it is in the sidebar).
+     */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
-        sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+        sections.flatMap { it.rows }.filterNot { it.isPlaceholder }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
 
     /**
      * Nests each row under its parent chat when the parent is listed too (see [Agent.parent]), the way the Agents
@@ -229,6 +249,9 @@ object AgentListOrganizer {
      * top-level rows in [rows]' order, each with its children in that order too (and theirs, and so on). A cycle
      * in the parent links is never expected; should the account report one, its rows stand on their own rather
      * than vanish.
+     *
+     * This is the tree of rows that are all listed on their own account; [organize] goes through [nest] with the
+     * project-scoped rows set apart, so that those never stand on their own.
      */
     fun nest(rows: List<AgentRow>): List<AgentRow> {
         val ids = rows.mapTo(HashSet()) { it.agent.id }
@@ -247,6 +270,86 @@ object AgentListOrganizer {
     }
 
     /**
+     * The tree of the [primary] rows, each with the rows of [nested] that hang off it beneath it (and theirs, and so
+     * on), in the lists' order. A nested row is placed under its parent or not at all: one whose parent is neither
+     * primary nor placed — a worker whose Project is archived, filtered out or not loaded — is left out here rather
+     * than stranded among the primary rows, which is what let workers leak into the chat list. A nested row that
+     * names itself, or sits on a cycle of parent links, is left out the same way.
+     */
+    fun nest(primary: List<AgentRow>, nested: List<AgentRow>): List<AgentRow> {
+        if (nested.isEmpty()) return primary
+        val childrenOf = nested.filter { it.agent.parent != null && it.agent.parent.id != it.agent.id }.groupBy { it.agent.parent!!.id }
+        val placed = HashSet<String>()
+        fun build(row: AgentRow): AgentRow {
+            placed += row.agent.id
+            val children = buildList { childrenOf[row.agent.id].orEmpty().forEach { if (it.agent.id !in placed) add(build(it)) } }
+            return if (children.isEmpty()) row else row.copy(children = children)
+        }
+        return primary.map(::build)
+    }
+
+    /**
+     * The Projects the list does not hold at all, each standing in for the workers that name it as their manager:
+     * a Project chat beyond the listing window, or not yet fetched, whose workers must not go into the primary rows
+     * meanwhile. Side chats and subagents of an unloaded chat wait unseen instead: their parent is not necessarily a
+     * Project. Rows already [placed] under a listed parent need no stand-in.
+     */
+    private fun placeholders(nested: List<AgentRow>, known: Set<String>, nowMillis: Long): List<AgentRow> {
+        val orphans = nested.filter { row ->
+            val parent = row.agent.parent ?: return@filter false
+            parent.kind == AgentParentKind.PROJECT_WORKER && parent.id != row.agent.id && parent.id !in known
+        }
+        if (orphans.isEmpty()) return emptyList()
+        return orphans.groupBy { it.agent.parent!!.id }.map { (projectId, workers) -> placeholder(projectId, workers, nowMillis) }
+    }
+
+    /**
+     * A stand-in row for Project [projectId], which the list has not loaded, over the [workers] that belong to it.
+     * It reads "Project (loading)" and is as recent as its newest worker, so it sits where the Project will.
+     */
+    fun placeholder(projectId: String, workers: List<AgentRow>, nowMillis: Long = AppClock.now()): AgentRow {
+        val newest = workers.maxOfOrNull { it.agent.updatedAtMillis } ?: nowMillis
+        val agent = Agent(
+            id = projectId,
+            name = PLACEHOLDER_NAME,
+            lifecycle = AgentLifecycle.UNKNOWN,
+            runStatus = null,
+            envType = EnvType.UNKNOWN,
+            envName = null,
+            url = "https://cursor.com/agents/$projectId",
+            createdAtMillis = newest,
+            updatedAtMillis = newest,
+            latestRunId = null,
+            repoUrl = null,
+            startingRef = null,
+            knownScope = AgentScope.PROJECT_ROOT,
+        )
+        return AgentRow(agent = agent, indicator = AgentIndicator.Read, isPinned = false, isUnread = false, launchedFromThisDevice = false, children = workers, isPlaceholder = true)
+    }
+
+    /**
+     * The ids of the parents that [agents] name but do not hold — Projects and chats beyond the listing window whose
+     * workers, side chats or subagents are in the list. What the repository fetches by id so that each of them can
+     * take its place at the head of its tree.
+     */
+    fun missingParentIds(agents: List<Agent>): Set<String> {
+        val known = agents.mapTo(HashSet(agents.size)) { it.id }
+        return agents.mapNotNullTo(LinkedHashSet()) { agent -> agent.parent?.id?.takeIf { it != agent.id && it !in known } }
+    }
+
+    /**
+     * The row when it or a chat under it matches [query] (blank matches everything), with its children narrowed to
+     * the matches unless the row itself matched — a search finds a worker under its Project, and a Project by its
+     * name with everything under it; null when nothing in the subtree matches.
+     */
+    private fun AgentRow.matching(query: String): AgentRow? {
+        if (query.isBlank()) return this
+        if (!isPlaceholder && matchesQuery(agent, query)) return this
+        val kept = children.mapNotNull { it.matching(query) }
+        return if (kept.isEmpty()) null else copy(children = kept)
+    }
+
+    /**
      * A section's rows as the sidebar lists them: each top-level row, then — while its id is in [expandedIds] — its
      * children beneath it one level deeper, and theirs in turn. A parent not in [expandedIds] stands for its subtree.
      */
@@ -260,6 +363,9 @@ object AgentListOrganizer {
 
     /** The section key of the Projects group: the Project chats, ahead of everything else. */
     const val PROJECTS_KEY = "projects"
+
+    /** What a [placeholder] row is called until the Project it stands for has been fetched. */
+    const val PLACEHOLDER_NAME = "Project (loading)"
 
     /** The section key of the Pinned group. */
     const val PINNED_KEY = "pinned"

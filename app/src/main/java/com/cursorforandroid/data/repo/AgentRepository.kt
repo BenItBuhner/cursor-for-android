@@ -19,6 +19,9 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
@@ -214,6 +217,9 @@ class AgentRepository(
      * a row that may still fail to be created is never written to disk.
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /** Lineage said about chats the list does not hold yet (see [applyLineage]): whose child each is, and which are roots. */
+    private val pendingLineage = ConcurrentHashMap<String, AgentParent>()
+    private val pendingRoots: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
@@ -254,6 +260,8 @@ class AgentRepository(
             clear()
             restoredFor = null
             pendingLaunches.clear()
+            pendingLineage.clear()
+            pendingRoots.clear()
         }
     }
 
@@ -508,7 +516,7 @@ class AgentRepository(
         val current = agents.associateBy { it.id }
         val fresh = items.associate { it.id to it.toAgent(current[it.id]) }
         val kept = agents.map { fresh[it.id] ?: it }
-        val added = items.distinctBy { it.id }.mapNotNull { if (it.id in current) null else fresh.getValue(it.id) }
+        val added = items.distinctBy { it.id }.mapNotNull { if (it.id in current) null else fresh.getValue(it.id).withPendingLineage() }
         return copy(agents = kept + added, hasLoaded = true)
     }
 
@@ -783,8 +791,9 @@ class AgentRepository(
      * Folds the account list's name, archive flag and Project facts onto the rows already shown. Official apps rename
      * and archive here, and a v1 list that has not caught up (or never will — the public archive is a different
      * write) would otherwise keep the old title or leave a chat sitting in the open list. Whether a chat is a Project,
-     * how it looks and whose child it is are the account's alone to say (the public list has no notion of them), so
-     * the snapshot's word replaces the row's; a row the list did not mention keeps what it had.
+     * how it looks, whose child it is and so where it belongs ([Agent.scope]) are the account's alone to say (the
+     * public list has no notion of them), so the snapshot's word replaces the row's; a row the list did not mention
+     * keeps what it had.
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
@@ -809,10 +818,61 @@ class AgentRepository(
                 isProject = snap.isProject,
                 projectAppearance = snap.projectAppearance,
                 parent = snap.parent,
+                knownScope = snap.scope,
             )
             if (updated == agent) agent else updated.also { changed = true }
         }
         return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * Folds in who belongs to [rootId]: every chat in [members] is its child, in the capacity given, and the root is a
+     * Project's coordinator. From the account's membership reads ([authoritative]), the word replaces whatever the
+     * rows had — like the account list's, it is the account's own. From a coordinator's transcript (the one signal
+     * default mode has, see `CoordinatorLineage`) it only fills in what nothing has classified yet: a row the account
+     * has placed keeps its place, a root the account never called a Project stays whatever the account said.
+     * Rows not in the list are left for the list to bring; the classification is kept on the rows from then on.
+     */
+    fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, authoritative: Boolean, startedIn: Int = token()) {
+        if (rootId.isBlank()) return
+        val listed = HashSet<String>()
+        val landed = publish(null, startedIn) { s ->
+            var changed = false
+            val next = s.agents.map { agent ->
+                listed += agent.id
+                val updated = when {
+                    agent.id == rootId -> when {
+                        agent.parent != null -> agent // A Project that is itself somebody's child stays where its parent is.
+                        authoritative || agent.knownScope == null -> agent.copy(knownScope = AgentScope.PROJECT_ROOT)
+                        else -> agent
+                    }
+                    agent.id in members -> {
+                        val kind = members.getValue(agent.id)
+                        when {
+                            authoritative -> agent.copy(parent = AgentParent(rootId, kind), knownScope = AgentScope.PROJECT_CHILD)
+                            agent.knownScope == null && agent.parent == null -> agent.copy(parent = AgentParent(rootId, kind), knownScope = AgentScope.PROJECT_CHILD)
+                            else -> agent
+                        }
+                    }
+                    else -> agent
+                }
+                if (updated == agent) agent else updated.also { changed = true }
+            }
+            if (changed) s.copy(agents = next) else s
+        }
+        if (!landed) return
+        // What was said about chats the list does not hold yet is kept for when it does: a worker the coordinator
+        // just created reaches the list a refresh later, and must not sit among the primary rows even for that long.
+        members.forEach { (id, kind) -> if (id !in listed && id != rootId) pendingLineage[id] = AgentParent(rootId, kind) }
+        if (rootId !in listed) pendingRoots += rootId
+    }
+
+    /** A row arriving for the first time takes the lineage said about it before it arrived (see [applyLineage]). */
+    private fun Agent.withPendingLineage(): Agent {
+        if (knownScope != null) return this
+        pendingLineage.remove(id)?.let { return copy(parent = it, knownScope = AgentScope.PROJECT_CHILD) }
+        if (pendingRoots.remove(id) && parent == null) return copy(knownScope = AgentScope.PROJECT_ROOT)
+        return this
     }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
@@ -826,7 +886,7 @@ class AgentRepository(
     fun upsert(agent: Agent, startedIn: Int = token()) {
         publish(null, startedIn) { s ->
             val exists = s.agents.any { it.id == agent.id }
-            val list = if (exists) s.agents.map { if (it.id == agent.id) agent else it } else listOf(agent) + s.agents
+            val list = if (exists) s.agents.map { if (it.id == agent.id) agent else it } else listOf(agent.withPendingLineage()) + s.agents
             s.copy(agents = list)
         }
     }

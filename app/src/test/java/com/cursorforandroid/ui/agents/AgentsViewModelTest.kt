@@ -118,14 +118,15 @@ class AgentsViewModelTest {
         assertThat(loaded.recentRows.map { it.agent.id }).isEqualTo(AgentListOrganizer.recentRows(loaded.sections).map { it.agent.id })
         assertThat(loaded.recentRows.map { it.agent.updatedAtMillis }).isInOrder(reverseOrder<Long>())
         // The demo's Project leads, its workers and side chat folded under it; the demo pins its three showcase
-        // chats, which the sidebar lifts out into a Pinned group. The recent list leaves all of them in their place
-        // by recency, the folded chats included.
+        // chats, which the sidebar lifts out into a Pinned group. The recent list leaves the Project and the pinned
+        // chats in their place by recency; the folded chats belong to the Project's surface and are not recent chats.
         assertThat(loaded.sections.map { it.title }.take(2)).containsExactly("Projects", "Pinned").inOrder()
         val project = loaded.sections.first().rows.single()
         assertThat(project.agent.id).isEqualTo(DemoData.PROJECT_ID)
         assertThat(project.children.map { it.agent.id }).containsExactly("bc-demo-0019", "bc-demo-0020", "bc-demo-0021").inOrder()
         assertThat(loaded.sections[1].rows.map { it.agent.id }).containsExactly("bc-demo-0001", "bc-demo-0002", "bc-demo-0003")
-        assertThat(loaded.recentRows.map { it.agent.id }).containsAtLeast(DemoData.PROJECT_ID, "bc-demo-0019", "bc-demo-0020", "bc-demo-0021")
+        assertThat(loaded.recentRows.map { it.agent.id }).contains(DemoData.PROJECT_ID)
+        assertThat(loaded.recentRows.map { it.agent.id }).containsNoneOf("bc-demo-0019", "bc-demo-0020", "bc-demo-0021")
         assertThat(loaded.recentRows.first().agent.id).isEqualTo("bc-demo-0004")
         assertThat(loaded.recentRows.count { it.indicator == AgentIndicator.Running }).isEqualTo(3)
         assertThat(loaded.runningCount).isEqualTo(3)
@@ -135,7 +136,7 @@ class AgentsViewModelTest {
         val noRunning = vm.uiState.first { StatusFilter.Running !in it.prefs.statuses }
         assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running }).isTrue()
         assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3)
-        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }.toSet())
+        assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.map { it.agent.id }.toSet())
 
         vm.toggleStatus(StatusFilter.Running)
         vm.setSortOrder(SortOrder.Name)

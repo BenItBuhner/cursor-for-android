@@ -18,6 +18,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
@@ -673,6 +674,50 @@ class AgentRepositoryTest {
         assertThat(agents().getValue("bc-1").isProject).isFalse()
         assertThat(agents().getValue("bc-1").projectAppearance).isNull()
         assertThat(agents().getValue("bc-2").parent).isNull()
+    }
+
+    @Test
+    fun `lineage from a transcript fills in what nothing has placed, lineage from the account replaces it, and both wait for rows still to come`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-c", "Coordinator", "run-c")
+        api.addIdleAgent("bc-w", "Worker", "run-w")
+        api.addIdleAgent("bc-x", "Placed elsewhere", "run-x")
+        val repo = repository()
+        repo.refresh()
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x", parent = AgentParent("bc-other", AgentParentKind.SIDE_CHAT))))
+        fun agent(id: String) = repo.state.value.agents.first { it.id == id }
+
+        // The coordinator's own transcript: a hint. It places the unplaced and leaves the account's word alone.
+        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER, "bc-late" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agent("bc-c").scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(agent("bc-c").isProject).isFalse()
+        assertThat(agent("bc-c").looksLikeProject).isTrue()
+        assertThat(agent("bc-w").parent).isEqualTo(AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("bc-x").parent).isEqualTo(AgentParent("bc-other", AgentParentKind.SIDE_CHAT))
+
+        // A worker the coordinator just created reaches the list a refresh later, already placed.
+        api.addIdleAgent("bc-late", "Late worker", "run-late")
+        repo.refresh()
+        assertThat(agent("bc-late").parent).isEqualTo(AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))
+        assertThat(agent("bc-late").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+
+        // The account's list has the last word: what it says replaces the hint, and the classification rides refreshes and the disk.
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-c", isProject = true), ComposerSnapshot("bc-w"), ComposerSnapshot("bc-late", parent = AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))))
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agent("bc-w").parent).isNull()
+        assertThat(agent("bc-c").isProject).isTrue()
+        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
+        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        repo.refresh()
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-w" }?.knownScope == AgentScope.PROJECT_CHILD }
+
+        // A Project that is itself somebody's child stays where its parent is, whoever names it as a root.
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-c", isProject = true, parent = AgentParent("bc-up", AgentParentKind.SUBAGENT))))
+        repo.applyLineage("bc-c", emptyMap(), authoritative = true)
+        assertThat(agent("bc-c").scope).isEqualTo(AgentScope.PROJECT_CHILD)
     }
 
     @Test

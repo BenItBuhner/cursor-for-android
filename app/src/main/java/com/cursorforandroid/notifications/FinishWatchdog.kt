@@ -124,10 +124,19 @@ class FinishWatchdog(
             // a finish the system dropped is one the next check should still be able to tell.
             val key = "${was.id}/$runId"
             if (!announced.add(key)) continue
-            if (!announce(trackedRun(settled, runId, record))) announced.remove(key)
+            if (!announce(rolledUp(trackedRun(settled, runId, record), settled))) announced.remove(key)
         }
         val running = agents.state.value.agents.count { it.isRunning }
         return if (running > 0) Outcome.Watching(running) else Outcome.Done
+    }
+
+    /**
+     * A Project's worker is announced as its Project's news, never as a card of its own (see [TrackedRun.rolledUpInto]);
+     * each check knows only the finish in hand, so the card names that worker.
+     */
+    private fun rolledUp(run: TrackedRun, agent: Agent): TrackedRun {
+        val project = agent.parent?.takeIf { agent.isProjectChild } ?: return run
+        return run.rolledUpInto(project.id, agents.agent(project.id)?.name, listOf(run.title))
     }
 
     /**

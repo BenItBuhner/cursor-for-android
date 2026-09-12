@@ -129,7 +129,8 @@ fun ShareDestinationScreen(
                     item("hdr-${section.key}") {
                         GroupLabel(section.title, Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap))
                     }
-                    items(section.rows, key = { "${section.key}:${it.agent.id}" }) { row ->
+                    // A Project still loading has nothing to share into yet.
+                    items(section.rows.filterNot { it.isPlaceholder }, key = { "${section.key}:${it.agent.id}" }) { row ->
                         AgentRowItem(
                             row = row,
                             selected = false,

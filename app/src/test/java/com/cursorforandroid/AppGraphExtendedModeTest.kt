@@ -32,9 +32,13 @@ class AppGraphExtendedModeTest {
         assertThat(graph.slashCommands.load(repoScope)).isEqualTo(SlashCatalog.BUILT_IN)
         graph.pullRequests.refresh(listOf("https://gitlab.com/acme/app/-/merge_requests/1"))
         assertThat(graph.agents.rename("bc-1", "x").isFailure).isTrue()
+        // The Projects' lineage reads: none is made, and the parents the list lacks are fetched through the public API alone.
+        graph.projects.syncLineage(listOf("bc-1"))
+        graph.projects.watchList()
 
         val built = graph.builtParts()
-        assertThat(built).containsNoneOf("accountClient", "accountRpc", "sessionTokens", "accountAgents", "accountPullRequests", "accountSlashCommands")
+        assertThat(built).containsNoneOf("accountClient", "accountRpc", "sessionTokens", "accountAgents", "accountPullRequests", "accountSlashCommands", "projectApi")
+        assertThat(built).contains("projects")
         // What stands in: GitHub's client, built by the catalog load (the tree read is decided per host, so nothing was asked of it here).
         assertThat(built).contains("gitHubSlashCommands")
     }
