@@ -15,6 +15,7 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunFooter
@@ -96,6 +97,42 @@ class LiveRunMonitorTest {
     )
 
     private fun running() = monitor.state.value.running
+
+    @Test
+    fun `a Project's workers finish as the Project's news, one card per Project, never as cards of their own`() = runBlocking {
+        api.addIdleAgent("bc-p", "Cesium billing launch", "run-p")
+        api.addRunningAgent("bc-w1", "Usage events aggregation", "run-w1")
+        api.addRunningAgent("bc-w2", "Stripe webhook handler", "run-w2")
+        api.addRunningAgent("bc-x", "Plain chat", "run-x")
+        agents.refresh()
+        agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-w2" to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        monitor.start()
+        awaitUntil { monitor.state.value.hasReconciled && running().size == 3 }
+
+        streamer.emit("run-w1", RunStreamEvent.Result("run-w1", RunStatus.FINISHED, "Aggregates in.", 60_000, null))
+        streamer.emit("run-w1", RunStreamEvent.Done)
+        awaitUntil { finished.size == 1 }
+        val first = finished.single()
+        // Keyed to the Project, titled after it, and about the worker.
+        assertThat(first.agentId).isEqualTo("bc-p")
+        assertThat(first.title).isEqualTo("Cesium billing launch")
+        assertThat(first.summary).isEqualTo("Usage events aggregation finished")
+        assertThat(first.durationMs).isEqualTo(60_000L)
+
+        streamer.emit("run-w2", RunStreamEvent.Result("run-w2", RunStatus.FINISHED, "Webhooks in.", 30_000, null))
+        streamer.emit("run-w2", RunStreamEvent.Done)
+        awaitUntil { finished.size == 2 }
+        assertThat(finished[1].agentId).isEqualTo("bc-p")
+        assertThat(finished[1].summary).isEqualTo("2 workers finished \u00B7 Usage events aggregation, Stripe webhook handler")
+
+        // A chat of its own is announced as itself.
+        streamer.emit("run-x", RunStreamEvent.Result("run-x", RunStatus.FINISHED, "Done.", 10_000, null))
+        streamer.emit("run-x", RunStreamEvent.Done)
+        awaitUntil { finished.size == 3 }
+        assertThat(finished[2].agentId).isEqualTo("bc-x")
+        assertThat(finished[2].title).isEqualTo("Plain chat")
+        assertThat(finished[2].summary).isEqualTo("Done.")
+    }
 
     @Test
     fun `tracks running agents, shares one stream with the conversation and reports finishes once`() = runBlocking {

@@ -72,6 +72,8 @@ class RunMonitor(
      * take an id out of it.
      */
     private val finishedEmitted = RecentIds(MAX_REMEMBERED_FINISHES)
+    /** Per Project, the names of its workers that finished while the monitor has been up, for the rolled-up card. */
+    private val finishedWorkers = ConcurrentHashMap<String, List<String>>()
 
     private class Tracker(val runId: String, val job: Job)
 
@@ -217,8 +219,21 @@ class RunMonitor(
             }
     }
 
+    /**
+     * Reports a finished run once. A Project's worker never gets a card of its own: its finish is the Project's news,
+     * rolled up with the other workers of that Project that finished while the monitor has been up (see
+     * [TrackedRun.rolledUpInto]), so however many workers a coordinator runs there is one line per Project.
+     */
     private fun publishFinished(run: TrackedRun) {
-        if (finishedEmitted.add(run.runId)) _finished.tryEmit(run)
+        if (!finishedEmitted.add(run.runId)) return
+        _finished.tryEmit(rolledUp(run))
+    }
+
+    private fun rolledUp(run: TrackedRun): TrackedRun {
+        val agent = agents.agent(run.agentId) ?: return run
+        val project = agent.parent?.takeIf { agent.isProjectChild } ?: return run
+        val names = finishedWorkers.compute(project.id) { _, names -> ((names ?: emptyList()) + run.title).takeLast(MAX_ROLLED_UP_WORKERS) }.orEmpty()
+        return run.rolledUpInto(project.id, agents.agent(project.id)?.name, names)
     }
 
     private fun toTracked(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun {
@@ -272,5 +287,7 @@ class RunMonitor(
         private const val FULL_REFRESH_EVERY = 5
         /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
         private const val MAX_REMEMBERED_FINISHES = 256
+        /** Worker names a Project's rolled-up card lists at most; older finishes drop off the front. */
+        private const val MAX_ROLLED_UP_WORKERS = 6
     }
 }

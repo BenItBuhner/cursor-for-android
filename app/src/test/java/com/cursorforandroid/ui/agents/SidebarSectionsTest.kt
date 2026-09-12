@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onFirst
@@ -18,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performMouseInput
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -175,6 +177,56 @@ class SidebarSectionsTest {
         // A cursor that jumped to the start would have built "sec" (or "esc") instead.
         assertThat(reported).doesNotContain("sec")
         assertThat(reported).doesNotContain("esc")
+    }
+
+    @Test
+    fun `a list at its top stays there when the Projects group lands above the first row`() {
+        // Enough rows that the list scrolls, with nothing above "Pinned" yet: the sidebar as it is while the list loads.
+        val today = (1..30).map { row("t$it", "Chat number $it") }
+        var listState by mutableStateOf(
+            AgentListUiState(sections = listOf(AgentSection("pinned", "Pinned", listOf(row("pin", "Pinned chat", pinned = true))), AgentSection("date:Today", "Today", today)), hasLoaded = true),
+        )
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Box(Modifier.size(320.dp, 480.dp)) {
+                    Sidebar(
+                        state = listState,
+                        user = CursorUser("key", "a@b.com", "Demo", "User", 1),
+                        isDemo = true,
+                        selectedAgentId = null,
+                        selectedDestination = null,
+                        onQueryChange = {},
+                        callbacks = SidebarCallbacks(
+                            onNewChat = {},
+                            onSettings = {},
+                            onCustomize = {},
+                            onToggleSidebar = null,
+                            onRefresh = {},
+                            rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
+                        ),
+                    )
+                }
+            }
+        }
+        compose.onNodeWithText("Pinned").assertIsDisplayed()
+        compose.onNodeWithText("Chat number 30").assertDoesNotExist()
+
+        // The publish that completes the load puts the Projects group above everything: the list shows it.
+        val project = row("proj", "Billing launch", isProject = true, children = listOf(row("w1", "Webhook worker")))
+        listState = listState.copy(sections = listOf(AgentSection(AgentListOrganizer.PROJECTS_KEY, "Projects", listOf(project))) + listState.sections)
+        compose.waitForIdle()
+        compose.onNodeWithText("Projects").assertIsDisplayed()
+        compose.onNodeWithText("Billing launch").assertIsDisplayed()
+        compose.onNodeWithText("Pinned").assertIsDisplayed()
+
+        // A list the reader has scrolled keeps its place when rows land above it.
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Chat number 30"))
+        compose.waitForIdle()
+        compose.onNodeWithText("Chat number 30").assertIsDisplayed()
+        listState = listState.copy(sections = listOf(AgentSection("newer", "Newer", listOf(row("n1", "Brand new")))) + listState.sections)
+        compose.waitForIdle()
+        compose.onNodeWithText("Chat number 30").assertIsDisplayed()
+        compose.onNodeWithText("Brand new").assertDoesNotExist()
     }
 
     private fun searchListState() = AgentListUiState(
