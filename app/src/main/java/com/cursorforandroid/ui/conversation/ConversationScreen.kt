@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -75,6 +76,12 @@ import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
+import com.cursorforandroid.ui.panel.ConversationPanel
+import com.cursorforandroid.ui.panel.LocalPanelGraph
+import com.cursorforandroid.ui.panel.PanelViewModel
+import com.cursorforandroid.ui.panel.SidePanel
+import com.cursorforandroid.ui.panel.rememberPanelActions
+import com.cursorforandroid.ui.panel.rememberSidePanelState
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -105,6 +112,9 @@ fun ConversationScreen(
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
+    /** Where the panel's Project section sends the reader: another chat, or a Project's view. */
+    onOpenAgent: ((String) -> Unit)? = null,
+    onOpenProject: ((String) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -179,7 +189,26 @@ fun ConversationScreen(
         if (following) listState.requestScrollToItem(0)
     }
 
-    Column(modifier.fillMaxSize().background(colors.canvas)) {
+    // The right-side panel: the chat's files, changes, pull request, media, artifacts and usage, read off the same
+    // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a swipe
+    // in from the end edge; it is per chat, like the view model behind it.
+    val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
+    val panelState = rememberSidePanelState()
+    val panel by panelViewModel.state.collectAsStateWithLifecycle()
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onOpenProject = onOpenProject)
+
+    SidePanel(
+        state = panelState,
+        modifier = modifier,
+        panelContent = {
+            // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
+            // open into the same lightbox as the transcript's.
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
+                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
+            }
+        },
+    ) {
+    Column(Modifier.fillMaxSize().background(colors.canvas)) {
         CursorHeader(
             title = agent?.name ?: "Chat",
             subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
@@ -196,6 +225,8 @@ fun ConversationScreen(
                 agent?.prUrl?.let { prUrl ->
                     FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
                 }
+                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side.
+                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f))
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
@@ -361,6 +392,7 @@ fun ConversationScreen(
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }
+    }
     }
 
     // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it

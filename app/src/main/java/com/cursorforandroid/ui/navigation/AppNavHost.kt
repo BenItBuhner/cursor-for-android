@@ -308,6 +308,8 @@ internal fun AppShell(
                         agentId = screen.id,
                         onOpenSidebar = if (pane.wide) pane.openSidebar else null,
                         onBack = pane.onBack,
+                        onOpenAgent = ::openAgent,
+                        onOpenProject = ::openProject,
                     )
                     is Screen.Project -> ProjectScreen(
                         graph = graph,

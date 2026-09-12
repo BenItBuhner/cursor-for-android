@@ -224,6 +224,12 @@ object CursorApiFactory {
         }
         .build()
 
+    /**
+     * For Origin's REST API (`api.cursor.com/v1/origin`), which takes a user access token rather than the API key:
+     * the same bare client as GitHub's, so the stored key never rides along, and each call sets its own bearer.
+     */
+    fun originClient(): OkHttpClient = gitHubClient()
+
     fun retrofit(client: OkHttpClient, baseUrl: String = CursorEndpoints.BASE_URL): CursorApi = Retrofit.Builder()
         .baseUrl(baseUrl)
         .client(client)
