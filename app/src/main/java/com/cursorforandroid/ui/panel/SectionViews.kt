@@ -111,6 +111,8 @@ internal fun OverviewSection(state: PanelState, actions: PanelActions) {
             FactRow("Changed", stats.joinToString(" "))
         }
         agent.source?.let { FactRow("Started from", it.name.lowercase().replace('_', ' ').replaceFirstChar { c -> c.uppercase() }) }
+        // Extended mode: the run's controls sit under its facts, the same row the Queue section wears.
+        if (state.capabilities.steering && !state.isDemo) RunControlsRow(state, actions, Modifier.padding(top = 2.dp))
     }
 }
 
@@ -123,14 +125,31 @@ private fun environmentLabel(agent: Agent): String = when (agent.envType) {
 
 // -- Pending question -----------------------------------------------------------------------------------------------
 
+/**
+ * The question the run is paused on: answerable from here with the `interactions` capability (the chips are choices,
+ * a line takes an answer of one's own, and the send goes to `SubmitInteractionResponseBackgroundComposer`), read-only
+ * with a link to cursor.com otherwise.
+ */
 @Composable
 internal fun PendingQuestionSection(state: PanelState, actions: PanelActions) {
     val question = state.content.pendingQuestion
+    val callId = state.content.pendingQuestionCallId
+    val canAnswer = state.capabilities.interactions && !state.isDemo && callId != null
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         if (question != null) {
-            QuestionCard(question, pending = true, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), onOpenInBrowser = { actions.openUrl(CursorEndpoints.webUrl(state.agentId)) })
+            QuestionCard(
+                question,
+                pending = true,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                onOpenInBrowser = { actions.openUrl(CursorEndpoints.webUrl(state.agentId)) },
+                onAnswer = if (canAnswer) ({ answers -> actions.answerQuestion(callId!!, answers) }) else null,
+                answered = callId != null && callId in state.controls.answeredCallIds,
+                answering = callId != null && state.controls.isBusy("answer:$callId"),
+            )
         }
-        RequiresExtendedRow(SectionAvailability.RequiresExtended(ANSWER_REASON), extendedOn = state.capabilities.anyExtended)
+        if (!state.capabilities.interactions) {
+            RequiresExtendedRow(SectionAvailability.RequiresExtended(ANSWER_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
+        }
     }
 }
 

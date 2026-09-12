@@ -132,7 +132,18 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+    val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
+    val controls by viewModel.controls.collectAsStateWithLifecycle()
     val isDemo = graph.session.isDemo
+    // The transcript's rows answer the question they show and stop the step they show through the account
+    // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
+    val transcriptControls = remember(controls, capabilities) {
+        TranscriptControls(
+            state = controls,
+            onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
+            onCancelToolCall = if (capabilities.steering && !isDemo) ({ callId -> viewModel.cancelToolCall(callId) }) else null,
+        )
+    }
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
     val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
     val share by graph.share.offer.collectAsStateWithLifecycle()
@@ -258,7 +269,7 @@ fun ConversationScreen(
             val paneWidth = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()
             // The media context is the same for every row, so it is provided once around the list rather than
             // opening a provider scope per item.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalTranscriptControls provides transcriptControls) {
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
@@ -346,7 +357,9 @@ fun ConversationScreen(
         }
 
         val archived = agent?.isArchived == true
-        val willQueue = isActive || queue.isNotEmpty()
+        // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
+        val accountQueue = capabilities.accountQueue && !isDemo
+        val willQueue = isActive || queue.isNotEmpty() || (accountQueue && controls.queue.isNotEmpty())
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -362,12 +375,24 @@ fun ConversationScreen(
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
             }
+            if (accountQueue && controls.queue.isNotEmpty()) {
+                AccountQueueRows(
+                    queue = controls.queue,
+                    inFlightIds = controls.inFlightQueueIds,
+                    onSendNow = { viewModel.queueSendNow(it.id) },
+                    onRemove = { viewModel.queueDelete(it.id) },
+                    onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
+                    onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                )
+            }
             ComposerBox(
                 value = draft,
                 onValueChange = viewModel::setDraft,
                 placeholder = when {
                     archived -> "Unarchive to follow up"
                     // A send now joins the queue rather than interrupting; the placeholder says so before the tap.
+                    willQueue && accountQueue -> "Follow up (queues on your account)…"
                     willQueue -> "Follow up (sends when the turn ends)…"
                     else -> "Follow up…"
                 },
@@ -386,9 +411,11 @@ fun ConversationScreen(
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
                 onModel = if (archived) null else ({ modelSheet = true }),
-                // Plan mode for the next run is a pill beside "+", as on cursor.com/agents, not a suffix on the chip.
-                planMode = picker.planMode == true,
-                onPlanMode = viewModel::setPlanMode,
+                // The mode for the next run is a pill beside "+", as on cursor.com/agents, not a suffix on the chip:
+                // Plan in either mode; Ask and Debug where the account's follow-up can carry them (Extended mode).
+                modePill = picker.modePill,
+                onModePill = viewModel::setModePill,
+                extendedModes = capabilities.agentModes && !isDemo,
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
             )
         }

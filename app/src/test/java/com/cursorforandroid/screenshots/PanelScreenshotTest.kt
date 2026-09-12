@@ -223,6 +223,22 @@ class PanelScreenshotTest {
         capture("43_panel_degraded_states")
     }
 
+    /**
+     * Extended mode on a running chat: the Overview's run controls, and the Queue and steering section with the steer
+     * line answered, the two follow-ups the account holds and every edit each offers.
+     */
+    @Test
+    fun queueSteering() {
+        compose.setContent { Panel(PanelFixtures.extendedRunning()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.PendingQuestion)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.Queue)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("queued-followup")).fetchSemanticsNodes().size == 2 }
+        scrollToTop()
+        capture("45_panel_queue_steering")
+    }
+
     @Test
     fun fileViewer() {
         val code = """

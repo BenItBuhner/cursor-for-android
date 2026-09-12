@@ -5,12 +5,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentMode
+import com.cursorforandroid.domain.BuiltInSlashCommands
+import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.ModelChoice
@@ -19,11 +24,14 @@ import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.choiceFor
 import com.cursorforandroid.domain.choiceLabelled
 import com.cursorforandroid.share.ShareDraft
+import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.thumbnailOf
 import com.cursorforandroid.util.AppClock
@@ -67,15 +75,27 @@ data class FollowUpModelState(
     /** The chat's model's entry in [models]; null when the chat's model is unknown or the catalog no longer lists it. */
     val current: ModelChoice? = null,
     val override: ModelChoice? = null,
-    /** null keeps the conversation's mode; true / false asks the next run for plan / agent mode explicitly. */
-    val planMode: Boolean? = null,
+    /**
+     * The mode the next follow-up asks for; null keeps the conversation's mode. Agent and plan travel on the documented
+     * run request; Ask and Debug only on the account's follow-up, which Extended mode alone allows (see [AgentMode]).
+     */
+    val mode: AgentMode? = null,
     /** Model ids pinned in the picker, most recently pinned first. */
     val pinnedModelIds: List<String> = emptyList(),
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
-    /** The model's name alone — never its parameters. Plan mode is the composer's pill, not part of the chip. */
+    /** The model's name alone — never its parameters. The mode is the composer's pill, not part of the chip. */
     val chipLabel: String get() = override?.label ?: currentLabel ?: "Model"
+    /** The documented request's plan flag for [mode]: null keeps the conversation's mode (or the mode is one it cannot carry). */
+    val planMode: Boolean?
+        get() = when (mode) {
+            AgentMode.PLAN -> true
+            AgentMode.AGENT -> false
+            else -> null
+        }
+    /** The pill the composer wears for [mode], if any. */
+    val modePill: ModePills.Pill? get() = ModePills.Pill.of(mode)
 }
 
 class ConversationViewModel(private val graph: AppGraph, val agentId: String) : ViewModel() {
@@ -117,15 +137,25 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         pickerState(a, models, local).copy(pinnedModelIds = pinned)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
 
+    /** Which private surfaces the screen may offer: the answer chips, the account's queue, steering, Ask and Debug. */
+    val capabilities: StateFlow<Capabilities> = graph.extendedMode.capabilities
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Capabilities.DOCUMENTED)
+
+    /** What the account has said about this chat's controls: its queue, the last steer, what was answered from here. */
+    val controls: StateFlow<ConversationControls> = graph.steering.state(agentId)
+
     /**
      * What `/` offers the follow-up composer: the agent's skills and the `.cursor/commands` its machine reported, over
-     * the built-ins. The saved (or built-in) list is there at once; the account service's answer replaces it.
+     * the built-ins — and, in Extended mode, `/ask` and `/debug`, which only the account's follow-up can carry. The
+     * saved (or built-in) list is there at once; the account service's answer replaces it.
      */
-    val commands: StateFlow<SlashCatalog> = graph.slashCommands.catalog(commandScope(graph.agents.agent(agentId)))
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(commandScope(graph.agents.agent(agentId))))
+    val commands: StateFlow<SlashCatalog> = combine(graph.slashCommands.catalog(commandScope(graph.agents.agent(agentId))), capabilities) { catalog, caps ->
+        if (caps.agentModes) catalog.withExtendedModes() else catalog
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(commandScope(graph.agents.agent(agentId))))
 
     init {
         graph.conversations.attach(agentId)
+        graph.steering.attach(agentId)
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
             // The agent's machine reports its skills and commands a moment after it wakes; while the account says the
@@ -152,8 +182,17 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     override fun onCleared() {
         graph.conversations.detach(agentId)
+        graph.steering.detach(agentId)
         graph.followUps.flush(agentId)
         super.onCleared()
+    }
+
+    /** `/ask` and `/debug` after the other commands and before the skills, unless the account already lists a command of that name. */
+    private fun SlashCatalog.withExtendedModes(): SlashCatalog {
+        val known = entries.mapTo(HashSet()) { it.name }
+        val modes = BuiltInSlashCommands.extendedModes.filter { it.name !in known }
+        if (modes.isEmpty()) return this
+        return copy(entries = commands + modes + entries.filter { it.kind != SlashCommand.Kind.Command })
     }
 
     /**
@@ -189,10 +228,18 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    /** Plan mode and `/multitask` are one slot: asking for a plan takes the command out of the draft. */
-    fun setPlanMode(value: Boolean) {
-        picker.update { it.copy(planMode = value) }
-        if (value && SlashCommands.has(draft.value, SlashCommands.MULTITASK)) setDraft(SlashCommands.remove(draft.value, SlashCommands.MULTITASK))
+    /** The model sheet's plan toggle: on is plan mode, off asks for agent mode explicitly. */
+    fun setPlanMode(value: Boolean) = setMode(if (value) AgentMode.PLAN else AgentMode.AGENT)
+
+    /** The composer's pill: Plan, Ask or Debug on; the cross (null) puts the next run back to agent mode explicitly. */
+    fun setModePill(pill: ModePills.Pill?) = setMode(pill?.agentMode ?: AgentMode.AGENT)
+
+    /** The modes and `/multitask` are one slot: asking for one takes the command out of the draft. */
+    fun setMode(mode: AgentMode?) {
+        picker.update { it.copy(mode = mode) }
+        if (mode != null && mode != AgentMode.AGENT && SlashCommands.has(draft.value, SlashCommands.MULTITASK)) {
+            setDraft(SlashCommands.remove(draft.value, SlashCommands.MULTITASK))
+        }
     }
 
     fun togglePinnedModel(modelId: String) = viewModelScope.launch { graph.prefs.togglePinnedModel(modelId) }
@@ -205,11 +252,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * The one-slot rule the other way round: a draft that carries `/multitask` — typed, picked, shared in, restored or
-     * taken back from the queue — puts a plan that was asked for off (to agent mode, as the pill's cross does). A plan
-     * never asked for stays not asked for.
+     * taken back from the queue — puts a mode that was asked for off (to agent mode, as the pill's cross does). A
+     * mode never asked for stays not asked for.
      */
     private fun keepModesExclusive(text: String) {
-        if (SlashCommands.has(text, SlashCommands.MULTITASK)) picker.update { if (it.planMode == true) it.copy(planMode = false) else it }
+        if (SlashCommands.has(text, SlashCommands.MULTITASK)) picker.update { if (it.mode != null && it.mode != AgentMode.AGENT) it.copy(mode = AgentMode.AGENT) else it }
     }
 
     fun addAttachments(items: List<PendingAttachment>) {
@@ -252,8 +299,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * Sends the composer's message. While the agent is on a turn — or other follow-ups are already waiting — it is
-     * queued instead and goes out in its turn (see [queue]); only one run can be active per agent, and the API
-     * refuses anything more. A send the server refuses as busy all the same (the row was a poll behind) is queued too.
+     * queued instead and goes out in its turn: in Extended mode into the account's queue, the one the desktop and the
+     * web show too (see [controls]); otherwise on this device (see [queue]). Only one run can be active per agent,
+     * and the API refuses anything more; a send the server refuses as busy all the same (the row was a poll behind)
+     * is queued too. A follow-up in Ask or Debug mode travels on the account's follow-up, which alone can carry it.
      */
     fun send() {
         val text = draft.value.trim()
@@ -261,10 +310,75 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         if ((text.isEmpty() && images.isEmpty()) || sending.value) return
         val options = picker.value
         val busy = conversation.value.let { it.runStatus?.isActive == true || it.isStreaming } || graph.agents.agent(agentId)?.isRunning == true
-        if (busy || graph.followUps.state(agentId).value.queue.isNotEmpty()) {
-            enqueue(text, images, options)
+        val caps = capabilities.value
+        val accountMode = options.mode?.needsAccountService == true
+        if (accountMode && !caps.agentModes) {
+            toast.value = "${options.mode?.label} mode needs Extended mode; turn it on in Settings, or take the pill off."
             return
         }
+        val accountQueue = caps.accountQueue && !graph.session.isDemo
+        when {
+            busy && accountQueue -> queueOnAccount(text, images, options)
+            busy || graph.followUps.state(agentId).value.queue.isNotEmpty() -> enqueue(text, images, options)
+            accountMode -> sendViaAccount(text, images, options)
+            else -> sendDocumented(text, images, options)
+        }
+    }
+
+    /** A follow-up in a mode only the account service carries, on a free agent: filed there, shown and streamed like any other. */
+    private fun sendViaAccount(text: String, images: List<PendingAttachment>, options: FollowUpModelState) {
+        viewModelScope.launch {
+            sending.value = true
+            draft.value = ""
+            attachments.value = emptyList()
+            graph.conversations.sendFollowUpVia(
+                agentId,
+                text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
+                images.map { it.image },
+                modelId = options.override?.model?.id,
+                modelParams = options.override?.params.orEmpty(),
+                modelDisplayName = options.override?.label,
+            ) {
+                graph.steering.sendFollowup(agentId, accountFollowup(text, images, options)).getOrThrow()
+            }.onSuccess {
+                graph.followUps.clearDraft(agentId)
+                picker.update { if (it.override == options.override) it.copy(override = null) else it }
+            }.onFailure { restoreDraft(text, images, it) }
+            sending.value = false
+        }
+    }
+
+    /** A follow-up sent mid-turn in Extended mode: into the account's queue, behind the turn under way. */
+    private fun queueOnAccount(text: String, images: List<PendingAttachment>, options: FollowUpModelState) {
+        viewModelScope.launch {
+            sending.value = true
+            draft.value = ""
+            attachments.value = emptyList()
+            graph.steering.sendFollowup(agentId, accountFollowup(text, images, options))
+                .onSuccess { graph.followUps.clearDraft(agentId) }
+                .onFailure { restoreDraft(text, images, it) }
+            sending.value = false
+        }
+    }
+
+    private fun accountFollowup(text: String, images: List<PendingAttachment>, options: FollowUpModelState) = AccountFollowup(
+        text = text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
+        images = images.map { it.image },
+        mode = options.mode,
+        modelId = options.override?.model?.id,
+    )
+
+    /** A send that did not go out: what was typed since wins; the prompt only comes back to an empty composer. */
+    private fun restoreDraft(text: String, images: List<PendingAttachment>, cause: Throwable) {
+        if (draft.value.isBlank()) {
+            draft.value = text
+            graph.followUps.setDraftText(agentId, text)
+        }
+        if (attachments.value.isEmpty()) setAttachments(images)
+        toast.value = cause.userMessage()
+    }
+
+    private fun sendDocumented(text: String, images: List<PendingAttachment>, options: FollowUpModelState) {
         viewModelScope.launch {
             sending.value = true
             draft.value = ""
@@ -284,18 +398,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 // chat's model rather than a pending override — unless another one was made while this was in flight.
                 picker.update { if (it.override == options.override) it.copy(override = null) else it }
             }.onFailure {
-                if (it.toCursorError()?.code == "agent_busy") {
-                    enqueue(text, images, options)
-                } else {
-                    // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
-                    // prompt that did not go out only comes back to an empty one.
-                    if (draft.value.isBlank()) {
-                        draft.value = text
-                        graph.followUps.setDraftText(agentId, text)
-                    }
-                    if (attachments.value.isEmpty()) setAttachments(images)
-                    toast.value = it.userMessage()
-                }
+                // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
+                // prompt that did not go out only comes back to an empty one.
+                if (it.toCursorError()?.code == "agent_busy") enqueue(text, images, options) else restoreDraft(text, images, it)
             }
             sending.value = false
         }
@@ -335,6 +440,49 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     fun steerQueued(id: String) { graph.followUps.sendNow(agentId, id) }
 
     fun retryQueued(id: String) = graph.followUps.retry(agentId, id)
+
+    // -- the account's controls (Extended mode) ----------------------------------------------------------------------
+
+    /** One account-service action: its outcome, or the reason it did not happen, in the snackbar. */
+    private fun control(block: suspend () -> Result<String?>) = viewModelScope.launch {
+        block().fold(onSuccess = { message -> if (!message.isNullOrBlank()) toast.value = message }, onFailure = { toast.value = it.userMessage() })
+    }
+
+    /** Answers the question the agent is waiting on (`ask_question` call [callId]). */
+    fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = control {
+        graph.steering.answerQuestion(agentId, callId, answers).map { it.message }
+    }
+
+    /** Steers the turn under way without stopping it; the account's outcome is what shows. */
+    fun steer(text: String) = control { graph.steering.steer(agentId, text).map { it.message } }
+
+    fun pauseRun() = control { graph.steering.pause(agentId).map { "Paused; resume when you're ready." } }
+
+    fun resumeRun() = control { graph.steering.resume(agentId).map { "Resumed." } }
+
+    /** Stops one tool call of the turn under way. */
+    fun cancelToolCall(callId: String) = control {
+        graph.steering.cancelToolCall(agentId, callId).map { accepted -> if (accepted) "Stopping that step." else "That step had already finished." }
+    }
+
+    fun wake() = control { graph.steering.wake(agentId).map { signalled -> if (signalled) "Waking the agent's machine." else "The machine was already awake." } }
+
+    /** The account's queue: send now (in place of the turn under way), take away, move, reword, or deliver as a steer. */
+    fun queueSendNow(id: String) = control { graph.steering.submitPendingNow(agentId, id).map { null } }
+
+    fun queueDelete(id: String) = control { graph.steering.deletePending(agentId, id).map { null } }
+
+    fun queueMove(id: String, up: Boolean) = control { graph.steering.movePending(agentId, id, up).map { null } }
+
+    fun queueUpdate(id: String, text: String) = control {
+        graph.steering.updatePending(agentId, id, text).map { null }.also { graph.steering.markEditing(agentId, id, editing = false) }
+    }
+
+    fun queueMarkEditing(id: String, editing: Boolean) = control { graph.steering.markEditing(agentId, id, editing).map { null } }
+
+    fun queueSteerNow(id: String) = control { graph.steering.promotePending(agentId, id).map { it.message } }
+
+    fun refreshQueue() = viewModelScope.launch { graph.steering.refreshQueue(agentId) }
 
     fun cancelRun() = viewModelScope.launch {
         graph.conversations.cancelActiveRun(agentId).onFailure { toast.value = it.userMessage() }

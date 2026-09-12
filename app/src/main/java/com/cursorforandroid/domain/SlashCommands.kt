@@ -14,6 +14,12 @@ object SlashCommands {
      * pill on, and the run is asked for `mode: "plan"` the same way the model picker's toggle asks for it.
      */
     const val PLAN = "plan"
+    /**
+     * `/ask` and `/debug`: the composer's shorthand for Ask and Debug modes (`agent.v1.AgentMode` ASK and DEBUG), which
+     * only the account's follow-up RPC can carry. Pills like `/plan` where Extended mode allows the mode; text otherwise.
+     */
+    const val ASK = "ask"
+    const val DEBUG = "debug"
 
     private val NAME = Regex("^[a-z0-9][a-z0-9-]*$")
     private val TOKEN = Regex("(?<=^|\\s)/([a-z0-9][a-z0-9-]*)(?=\\s|$)")

@@ -17,6 +17,8 @@ data class TranscriptContent(
     val subagents: List<ToolPayload.Subagent>,
     /** The question the agent is waiting on, when a run is paused on one. */
     val pendingQuestion: ToolPayload.Question?,
+    /** The `ask_question` call [pendingQuestion] belongs to, by id: what an answer sent from here names. */
+    val pendingQuestionCallId: String? = null,
 ) {
     val isEmpty: Boolean get() = touched.isEmpty() && changes.isEmpty() && media.isEmpty() && subagents.isEmpty() && pendingQuestion == null
 
@@ -63,6 +65,7 @@ data class TranscriptContent(
             val media = ArrayList<MediaItem>()
             val subagents = ArrayList<ToolPayload.Subagent>()
             var pending: ToolPayload.Question? = null
+            var pendingCallId: String? = null
             for (call in calls) {
                 val path = call.touchedPath?.takeIf { it.isNotBlank() }
                 val touch = when {
@@ -90,7 +93,10 @@ data class TranscriptContent(
                     is ToolPayload.GeneratedImage -> if (payload.src != null) media += MediaItem.Image(call.callId, payload)
                     is ToolPayload.Recording -> media += MediaItem.Recording(call.callId, payload)
                     is ToolPayload.Subagent -> subagents += payload
-                    is ToolPayload.Question -> if (call.pendingQuestion != null) pending = payload
+                    is ToolPayload.Question -> if (call.pendingQuestion != null) {
+                        pending = payload
+                        pendingCallId = call.callId
+                    }
                     null -> Unit
                 }
             }
@@ -100,6 +106,7 @@ data class TranscriptContent(
                 media = media,
                 subagents = subagents,
                 pendingQuestion = pending,
+                pendingQuestionCallId = pendingCallId,
             )
         }
     }

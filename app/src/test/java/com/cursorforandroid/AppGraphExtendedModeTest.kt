@@ -4,8 +4,11 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.repo.SlashScope
+import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.SlashCatalog
+import com.cursorforandroid.domain.ToolPayload
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -35,10 +38,16 @@ class AppGraphExtendedModeTest {
         // The Projects' lineage reads: none is made, and the parents the list lacks are fetched through the public API alone.
         graph.projects.syncLineage(listOf("bc-1"))
         graph.projects.watchList()
+        // The chat's controls: each is refused by name before anything is built to call.
+        graph.steering.refreshQueue("bc-1")
+        assertThat(graph.steering.steer("bc-1", "go").exceptionOrNull()?.message).isEqualTo(SteeringRepository.NEEDS_EXTENDED_MODE)
+        assertThat(graph.steering.answerQuestion("bc-1", "call-1", listOf(ToolPayload.Question.Answer("q", listOf("a")))).exceptionOrNull()?.message).isEqualTo(SteeringRepository.NEEDS_EXTENDED_MODE)
+        assertThat(graph.steering.pause("bc-1").isFailure).isTrue()
+        assertThat(graph.steering.state("bc-1").value.queueLoad).isEqualTo(QueueLoad.Unavailable(SteeringRepository.NEEDS_EXTENDED_MODE))
 
         val built = graph.builtParts()
-        assertThat(built).containsNoneOf("accountClient", "accountRpc", "sessionTokens", "accountAgents", "accountPullRequests", "accountSlashCommands", "projectApi")
-        assertThat(built).contains("projects")
+        assertThat(built).containsNoneOf("accountClient", "accountRpc", "sessionTokens", "accountAgents", "accountPullRequests", "accountSlashCommands", "projectApi", "steeringApi")
+        assertThat(built).containsAtLeast("projects", "steering")
         // What stands in: GitHub's client, built by the catalog load (the tree read is decided per host, so nothing was asked of it here).
         assertThat(built).contains("gitHubSlashCommands")
     }
@@ -51,9 +60,11 @@ class AppGraphExtendedModeTest {
 
         // No key is stored, so the session exchange refuses before any network; the client was built to try.
         graph.slashCommands.load(repoScope)
+        // The chat's controls reach for the account too, and its refusal (no key) is the words the screen shows.
+        assertThat(graph.steering.steer("bc-1", "go").exceptionOrNull()?.message).isEqualTo("Not signed in.")
 
         val built = graph.builtParts()
-        assertThat(built).containsAtLeast("accountClient", "accountRpc", "sessionTokens", "accountSlashCommands")
+        assertThat(built).containsAtLeast("accountClient", "accountRpc", "sessionTokens", "accountSlashCommands", "steeringApi")
         assertThat(built).containsNoneOf("gitHub", "gitHubSlashCommands", "gitHubPullRequests")
     }
 
