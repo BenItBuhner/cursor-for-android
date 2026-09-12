@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 
 /** The panel's sections, top to bottom, by the names the spec gives them (§7). */
@@ -59,6 +60,27 @@ interface PanelActions {
     /** The panel's own toast. */
     fun notify(message: String)
 
+    // The chat's controls on the account (Extended mode; see SteeringRepository). Each reports its outcome through [notify].
+    /** Answers the `ask_question` call [callId] the agent is waiting on. */
+    fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>)
+    /** Steers the turn under way without stopping it. */
+    fun steer(text: String)
+    fun pauseRun()
+    fun resumeRun()
+    /** The documented cancel of the run under way. */
+    fun stopRun()
+    /** Wakes the chat's machine ahead of a follow-up. */
+    fun wake()
+    fun cancelToolCall(callId: String)
+    /** The account's queue: re-read it, and one queued message's send now, removal, move, rewording, editing flag, or delivery as a steer. */
+    fun refreshQueue()
+    fun queueSendNow(followupId: String)
+    fun queueDelete(followupId: String)
+    fun queueMove(followupId: String, up: Boolean)
+    fun queueUpdate(followupId: String, text: String)
+    fun queueMarkEditing(followupId: String, editing: Boolean)
+    fun queueSteerNow(followupId: String)
+
     companion object {
         /** Does nothing; for previews and tests of the sections' rendering. */
         val None: PanelActions = object : PanelActions {
@@ -78,6 +100,20 @@ interface PanelActions {
             override fun openAgent(agentId: String) = Unit
             override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
+            override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = Unit
+            override fun steer(text: String) = Unit
+            override fun pauseRun() = Unit
+            override fun resumeRun() = Unit
+            override fun stopRun() = Unit
+            override fun wake() = Unit
+            override fun cancelToolCall(callId: String) = Unit
+            override fun refreshQueue() = Unit
+            override fun queueSendNow(followupId: String) = Unit
+            override fun queueDelete(followupId: String) = Unit
+            override fun queueMove(followupId: String, up: Boolean) = Unit
+            override fun queueUpdate(followupId: String, text: String) = Unit
+            override fun queueMarkEditing(followupId: String, editing: Boolean) = Unit
+            override fun queueSteerNow(followupId: String) = Unit
         }
     }
 }

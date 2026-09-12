@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -24,9 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,6 +40,7 @@ import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.ToolTruncation
+import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -202,24 +208,43 @@ fun SubagentCard(subagent: ToolPayload.Subagent, modifier: Modifier = Modifier, 
 
 /**
  * The questions an agent asked, with their options as chips, and — once answered — what was picked. While
- * [pending], the run is paused on it: the card says so, and that answering happens in Cursor's own clients (the
- * documented API has no way to answer; Extended mode will). Nothing here is a control: the chips are the choices
- * on offer, read-only.
+ * [pending], the run is paused on it: the card says so. With [onAnswer] (Extended mode, where
+ * `SubmitInteractionResponseBackgroundComposer` can carry the answer) the chips are choices — one per question, or any
+ * number where the question allows it — with a line for an answer of one's own under each, and a button that sends
+ * the lot; [answering] while the send is out, [answered] once the account took it and until the stream shows the call
+ * finished. Without it the card is read-only and says that answering happens in Cursor's own clients.
  */
 @Composable
-fun QuestionCard(question: ToolPayload.Question, pending: Boolean, modifier: Modifier = Modifier, onOpenInBrowser: (() -> Unit)? = null) {
+fun QuestionCard(
+    question: ToolPayload.Question,
+    pending: Boolean,
+    modifier: Modifier = Modifier,
+    onOpenInBrowser: (() -> Unit)? = null,
+    onAnswer: ((List<ToolPayload.Question.Answer>) -> Unit)? = null,
+    answered: Boolean = false,
+    answering: Boolean = false,
+) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
+    val interactive = pending && onAnswer != null && !answered
+    // What has been picked and typed so far, per question, kept across recompositions for as long as the card is up.
+    val picks = remember(question.questions) { mutableStateMapOf<String, List<String>>() }
+    val typed = remember(question.questions) { mutableStateMapOf<String, String>() }
+    val complete = question.questions.all { item -> picks[item.id].orEmpty().isNotEmpty() || typed[item.id].orEmpty().isNotBlank() }
     CursorCard(modifier.fillMaxWidth().testTag("question-card"), fill = colors.fillFaint, border = if (pending) colors.orange.copy(alpha = 0.5f) else Color.Transparent) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(CursorIcons.Bell, null, tint = if (pending) colors.orange else colors.iconTertiary, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(7.dp))
                 ShimmerText(
-                    if (pending) "Waiting for your answer" else "Asked",
+                    when {
+                        answered && pending -> "Answer sent"
+                        pending -> "Waiting for your answer"
+                        else -> "Asked"
+                    },
                     style = type.baseMedium,
                     color = colors.textSecondary,
-                    active = pending,
+                    active = pending && !answered,
                     modifier = Modifier.semantics { heading() },
                 )
                 question.title?.let {
@@ -231,13 +256,34 @@ fun QuestionCard(question: ToolPayload.Question, pending: Boolean, modifier: Mod
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(item.prompt, style = type.message, color = colors.textPrimary)
                     val answer = question.answerFor(item)
+                    val chosen = picks[item.id].orEmpty()
                     if (item.options.isNotEmpty()) {
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             item.options.forEach { option ->
-                                val picked = answer != null && (answer == option.label || answer.split(", ").contains(option.label))
-                                OptionChip(option.label, picked = picked)
+                                val picked = if (interactive) option.id in chosen else answer != null && (answer == option.label || answer.split(", ").contains(option.label))
+                                OptionChip(
+                                    option.label,
+                                    picked = picked,
+                                    onClick = if (!interactive) null else {
+                                        {
+                                            picks[item.id] = when {
+                                                option.id in chosen -> chosen - option.id
+                                                item.allowMultiple -> chosen + option.id
+                                                else -> listOf(option.id)
+                                            }
+                                        }
+                                    },
+                                )
                             }
                         }
+                    }
+                    if (interactive) {
+                        AnswerField(
+                            value = typed[item.id].orEmpty(),
+                            onValueChange = { typed[item.id] = it },
+                            placeholder = if (item.options.isEmpty()) "Type your answer…" else "Or type an answer…",
+                            enabled = !answering,
+                        )
                     }
                     if (answer != null && item.options.none { it.label == answer }) {
                         Text("Answer: $answer", style = type.base, color = colors.textSecondary)
@@ -247,23 +293,55 @@ fun QuestionCard(question: ToolPayload.Question, pending: Boolean, modifier: Mod
             }
             if (pending) {
                 HairlineDivider()
-                val hint = "Answering needs Cursor's own app or Extended mode; the run waits until then."
-                if (onOpenInBrowser != null) {
-                    Text(
-                        "Answer on cursor.com",
-                        style = type.baseMedium,
-                        color = colors.link,
-                        modifier = Modifier.pressable(onOpenInBrowser, CursorTheme.shapes.base).padding(vertical = 2.dp),
-                    )
+                when {
+                    answered -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(CursorIcons.Check, null, tint = colors.green, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Sent; the agent picks it up now.", style = type.small, color = colors.textTertiary)
+                    }
+                    interactive -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (question.questions.size > 1) "One answer per question." else "Pick one, or type your own.",
+                            style = type.small,
+                            color = colors.textQuaternary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        CursorButton(
+                            if (answering) "Sending…" else "Send answer",
+                            primary = true,
+                            enabled = complete && !answering,
+                            height = 28.dp,
+                            onClick = {
+                                onAnswer?.invoke(
+                                    question.questions.map { item ->
+                                        ToolPayload.Question.Answer(item.id, picks[item.id].orEmpty(), typed[item.id]?.trim()?.takeIf { it.isNotEmpty() })
+                                    },
+                                )
+                            },
+                            modifier = Modifier.testTag("send-answer"),
+                        )
+                    }
+                    else -> {
+                        if (onOpenInBrowser != null) {
+                            Text(
+                                "Answer on cursor.com",
+                                style = type.baseMedium,
+                                color = colors.link,
+                                modifier = Modifier.pressable(onOpenInBrowser, CursorTheme.shapes.base).padding(vertical = 2.dp),
+                            )
+                        }
+                        Text("Answering needs Cursor's own app or Extended mode; the run waits until then.", style = type.small, color = colors.textQuaternary)
+                    }
                 }
-                Text(hint, style = type.small, color = colors.textQuaternary)
             }
         }
     }
 }
 
+/** A choice on offer: read-only when [onClick] is null, else a toggle worn in the accent while [picked]. */
 @Composable
-private fun OptionChip(label: String, picked: Boolean) {
+private fun OptionChip(label: String, picked: Boolean, onClick: (() -> Unit)? = null) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.full
     Text(
@@ -275,7 +353,31 @@ private fun OptionChip(label: String, picked: Boolean) {
         modifier = Modifier
             .widthIn(max = 220.dp)
             .cursorSurface(if (picked) colors.accent else colors.fill, if (picked) Color.Transparent else colors.stroke, shape)
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .then(if (onClick != null) Modifier.pressable(onClick, shape).semantics { selected = picked } else Modifier)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .testTag("option-chip"),
+    )
+}
+
+/** The line for an answer in one's own words under a question's chips. */
+@Composable
+private fun AnswerField(value: String, onValueChange: (String) -> Unit, placeholder: String, enabled: Boolean) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val shape = CursorTheme.shapes.base
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        enabled = enabled,
+        textStyle = type.base.copy(color = colors.textPrimary),
+        cursorBrush = SolidColor(colors.textPrimary),
+        modifier = Modifier
+            .fillMaxWidth()
+            .cursorSurface(colors.fill, colors.strokeSubtle, shape)
+            .padding(horizontal = 10.dp, vertical = 7.dp)
+            .semantics { contentDescription = placeholder }
+            .testTag("answer-field"),
+        decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = type.base, color = colors.textQuaternary); inner() } },
     )
 }
 
@@ -312,11 +414,23 @@ internal fun GroupMediaStrip(group: ActivityGroup, modifier: Modifier = Modifier
     }
 }
 
-/** The question a group is paused on, as its own card under the group. */
+/**
+ * The question a group is paused on, as its own card under the group: answerable from here when the transcript's
+ * controls ([LocalTranscriptControls]) can carry the answer, read-only otherwise.
+ */
 @Composable
 internal fun PendingQuestionCard(call: ToolCall, modifier: Modifier = Modifier, onOpenInBrowser: (() -> Unit)? = null) {
     val question = call.pendingQuestion ?: return
-    QuestionCard(question, pending = true, modifier = modifier, onOpenInBrowser = onOpenInBrowser)
+    val controls = LocalTranscriptControls.current
+    QuestionCard(
+        question,
+        pending = true,
+        modifier = modifier,
+        onOpenInBrowser = onOpenInBrowser,
+        onAnswer = controls.onAnswer?.let { answer -> { answers -> answer(call.callId, answers) } },
+        answered = call.callId in controls.state.answeredCallIds,
+        answering = controls.state.isBusy("answer:${call.callId}"),
+    )
 }
 
 /** The first row of a diff or file card: a glyph, the file's name, its path dimmed after it, and [trailing] at the end. */

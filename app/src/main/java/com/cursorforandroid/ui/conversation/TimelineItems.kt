@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -47,6 +48,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -84,6 +86,7 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.ShimmerText
+import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -515,6 +518,21 @@ private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
             call.lineStats?.let { stats ->
                 Spacer(Modifier.width(4.dp))
                 LineStats(stats)
+            }
+            // Extended mode: a step under way can be stopped on its own (`CancelBackgroundComposerToolCall`), the
+            // turn going on without it. A question is stopped by answering it, not here.
+            val controls = LocalTranscriptControls.current
+            val onCancel = controls.onCancelToolCall
+            if (call.isRunning && onCancel != null && call.pendingQuestion == null) {
+                Spacer(Modifier.width(6.dp))
+                val asked = call.callId in controls.state.cancelledCallIds || controls.state.isBusy("tool:${call.callId}")
+                if (asked) {
+                    Text("Stopping…", style = type.small, color = colors.textQuaternary, maxLines = 1)
+                } else {
+                    TouchTarget(size = 20.dp, touchSize = 32.dp, shape = CircleShape, onClick = { onCancel(call.callId) }, modifier = Modifier.testTag("stop-step")) {
+                        Icon(CursorIcons.Stop, "Stop this step", tint = colors.iconTertiary, modifier = Modifier.size(11.dp))
+                    }
+                }
             }
         }
         if (expandable) {

@@ -20,14 +20,28 @@ object DefaultPanelSections {
     )
 
     /**
-     * Read-only in default mode: the question shows when the stream carried one; answering it is the Extended half
-     * (`SubmitInteractionResponseBackgroundComposer`), which stays a placeholder here.
+     * The question shows when the stream carried one, in either mode; answering it from here is the Extended half
+     * (`SubmitInteractionResponseBackgroundComposer`, the `interactions` capability), and the card's chips are choices
+     * only then. Without a question, the section names what it would do: the answer's endpoint while the mode is off,
+     * or that nothing is waiting.
      */
     val pendingQuestion = PanelSection(
         id = PanelSectionId.PendingQuestion,
         icon = CursorIcons.Bell,
-        availability = { _, state -> if (state.content.pendingQuestion != null) SectionAvailability.Available else SectionAvailability.RequiresExtended(ANSWER_REASON) },
-        hint = { if (it.content.pendingQuestion != null) "Waiting" else null },
+        availability = { capabilities, state ->
+            when {
+                state.content.pendingQuestion != null -> SectionAvailability.Available
+                capabilities.interactions -> SectionAvailability.NotForThisChat("The agent isn't waiting on a question")
+                else -> SectionAvailability.RequiresExtended(ANSWER_REASON, ready = true)
+            }
+        },
+        hint = { state ->
+            when {
+                state.content.pendingQuestion == null -> null
+                state.content.pendingQuestionCallId?.let { it in state.controls.answeredCallIds } == true -> "Answered"
+                else -> "Waiting"
+            }
+        },
         expandedByDefault = true,
         content = { state, actions -> PendingQuestionSection(state, actions) },
     )
@@ -75,11 +89,17 @@ object DefaultPanelSections {
         content = { state, actions -> ArtifactsSection(state, actions) },
     )
 
+    /**
+     * The account's queue, steering and the run's controls, behind the `accountQueue` and `steering` capabilities:
+     * [QueueSection]. In default mode the queue stays on the device, above the composer, and this names what the mode adds.
+     */
     val queue = PanelSection(
         id = PanelSectionId.Queue,
         icon = CursorIcons.Clock,
-        availability = { _, _ -> SectionAvailability.RequiresExtended(QUEUE_REASON) },
-        content = { state, _ -> PlaceholderSection(QUEUE_REASON, state) },
+        availability = { capabilities, _ -> if (capabilities.accountQueue || capabilities.steering) SectionAvailability.Available else SectionAvailability.RequiresExtended(QUEUE_REASON, ready = true) },
+        hint = ::queueHint,
+        onOpen = { it.refreshQueue() },
+        content = { state, actions -> QueueSection(state, actions) },
     )
 
     /**
@@ -125,7 +145,7 @@ object DefaultPanelSections {
 
     val all: List<PanelSection> = listOf(header, pendingQuestion, changes, pullRequest, files, media, artifacts, queue, project, remote, usage, share)
 
-    const val QUEUE_REASON = "The account's follow-up queue, steering a running turn, pausing and resuming all go through undocumented endpoints (ListPendingFollowups, InjectBackgroundComposerContext, PauseBackgroundComposer)"
+    const val QUEUE_REASON = "The account's follow-up queue, steering a running turn, pausing and resuming all go through undocumented endpoints (ListPendingFollowups, InjectBackgroundComposerContext, PauseBackgroundComposer); the queue stays on this device meanwhile"
     const val PROJECT_REASON = "A Project's workers, side chats and shared context come from undocumented endpoints (ListWorkersForManager, ListBackgroundComposerChildren, the Agent Store)"
     const val REMOTE_REASON = "Viewing or taking control of the agent's desktop needs GetMachine and the VM's VNC endpoint, which are undocumented; Remote Control agents themselves already list and stream here"
 }
