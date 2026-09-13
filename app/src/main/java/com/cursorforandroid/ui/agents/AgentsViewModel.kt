@@ -71,11 +71,13 @@ data class AgentListUiState(
 /**
  * What this device knows about the agents beyond the API, ready for the organizer: pins, read markers and launches
  * from the preferences, with the pull request states the account last gave folded in; alongside, the last row action
- * the server refused, which the list shows where a failed refresh would show its own error.
+ * the server refused, which the list shows where a failed refresh would show its own error, and the Projects the
+ * list names but the server would not give, whose stand-ins say so.
  */
 private class DeviceState(
     val local: LocalAgentState,
     val actionError: String?,
+    val unavailableProjects: Set<String>,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -97,8 +99,8 @@ class AgentsViewModel(
         local.copy(pullRequests = states)
     }
 
-    private val device: Flow<DeviceState> = combine(localState, actionError) { local, failed ->
-        DeviceState(local = local, actionError = failed)
+    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents) { local, failed, unavailable ->
+        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys)
     }
 
     /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
@@ -137,7 +139,7 @@ class AgentsViewModel(
         clock,
     ) { list, prefs, device, q, now ->
         val local = device.local
-        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now)
+        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local, now) }

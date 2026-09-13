@@ -203,6 +203,9 @@ object AgentListOrganizer {
      * tree is the chat's own, and a Project's count is its membership rather than what a filter left of it; only an
      * archived child is put away, as any archived chat is. The search finds a chat wherever it sits in the tree, and
      * shows it under its parent — a match on the parent keeps its whole subtree.
+     *
+     * [unavailableProjects] are the Projects the list names but the server has refused to give (see
+     * `ProjectRepository.unavailableParents`): their stand-ins say so instead of "loading".
      */
     fun organize(
         agents: List<Agent>,
@@ -211,13 +214,14 @@ object AgentListOrganizer {
         query: String = "",
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
+        unavailableProjects: Set<String> = emptySet(),
     ): List<AgentSection> {
         val rows = sort(agents.map { toRow(it, local, nowMillis) }, prefs.sortOrder)
         val (nested, standalone) = rows.partition { it.agent.isProjectChild && !it.isPinned }
         val primary = standalone.filter { isListed(it, prefs) }
         val children = nested.filter { passesArchive(it, prefs) }
         val known = agents.mapTo(HashSet(agents.size)) { it.id }
-        val tree = nest(primary, children) + placeholders(children, known, nowMillis)
+        val tree = nest(primary, children) + placeholders(children, known, nowMillis, unavailableProjects)
         val sorted = tree.mapNotNull { it.matching(query) }
 
         // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
@@ -318,24 +322,25 @@ object AgentListOrganizer {
      * meanwhile. Side chats and subagents of an unloaded chat wait unseen instead: their parent is not necessarily a
      * Project. Rows already [placed] under a listed parent need no stand-in.
      */
-    private fun placeholders(nested: List<AgentRow>, known: Set<String>, nowMillis: Long): List<AgentRow> {
+    private fun placeholders(nested: List<AgentRow>, known: Set<String>, nowMillis: Long, unavailable: Set<String>): List<AgentRow> {
         val orphans = nested.filter { row ->
             val parent = row.agent.parent ?: return@filter false
             parent.kind == AgentParentKind.PROJECT_WORKER && parent.id != row.agent.id && parent.id !in known
         }
         if (orphans.isEmpty()) return emptyList()
-        return orphans.groupBy { it.agent.parent!!.id }.map { (projectId, workers) -> placeholder(projectId, workers, nowMillis) }
+        return orphans.groupBy { it.agent.parent!!.id }.map { (projectId, workers) -> placeholder(projectId, workers, nowMillis, unavailable = projectId in unavailable) }
     }
 
     /**
      * A stand-in row for Project [projectId], which the list has not loaded, over the [workers] that belong to it.
-     * It reads "Project (loading)" and is as recent as its newest worker, so it sits where the Project will.
+     * It reads "Project (loading)" — or "Project (unavailable)" once the server has refused the row ([unavailable]),
+     * rather than load for ever — and is as recent as its newest worker, so it sits where the Project will.
      */
-    fun placeholder(projectId: String, workers: List<AgentRow>, nowMillis: Long = AppClock.now()): AgentRow {
+    fun placeholder(projectId: String, workers: List<AgentRow>, nowMillis: Long = AppClock.now(), unavailable: Boolean = false): AgentRow {
         val newest = workers.maxOfOrNull { it.agent.updatedAtMillis } ?: nowMillis
         val agent = Agent(
             id = projectId,
-            name = PLACEHOLDER_NAME,
+            name = if (unavailable) UNAVAILABLE_NAME else PLACEHOLDER_NAME,
             lifecycle = AgentLifecycle.UNKNOWN,
             runStatus = null,
             envType = EnvType.UNKNOWN,
@@ -390,6 +395,9 @@ object AgentListOrganizer {
 
     /** What a [placeholder] row is called until the Project it stands for has been fetched. */
     const val PLACEHOLDER_NAME = "Project (loading)"
+
+    /** What a [placeholder] row is called once the server has refused the Project's row (a deleted Project, another account's). */
+    const val UNAVAILABLE_NAME = "Project (unavailable)"
 
     /** The section key of the Pinned group. */
     const val PINNED_KEY = "pinned"

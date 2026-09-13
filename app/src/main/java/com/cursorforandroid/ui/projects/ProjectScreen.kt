@@ -219,10 +219,11 @@ internal fun ProjectBody(
         item("hero") { ProjectHero(state, nowMillis) }
         item("coordinator-hdr") { SectionLabel("Coordinator") }
         item("coordinator") {
-            if (root == null) {
-                LoadingRow("Loading the Project\u2026")
-            } else {
-                AgentLine(root, local, nowMillis, subtitle = "Plans the work and delegates it", onOpen = { actions.onOpenAgent(root) })
+            when {
+                root != null -> AgentLine(root, local, nowMillis, subtitle = "Plans the work and delegates it", onOpen = { actions.onOpenAgent(root) })
+                // The server would not give the coordinator's row: say so, rather than load for ever.
+                state.rootUnavailable != null -> NoticeRow(rootUnavailableNotice(state.rootUnavailable))
+                else -> LoadingRow("Loading the Project\u2026")
             }
         }
         item("primaries-hdr") { SectionLabel(if (state.workers.isEmpty()) "Primaries" else "Primaries \u00B7 ${state.workers.size}", syncing = state.isSyncing) }
@@ -488,6 +489,13 @@ internal fun formatBytes(bytes: Long): String = when {
 
 /** The named state of a side chat Cursor will not start for a cloud chat yet (spec §4). */
 const val SIDE_CHATS_COMING = "Side chats for cloud agents are coming to Cursor"
+
+/**
+ * The coordinator's line when Cursor would not give its row ([ProjectViewState.rootUnavailable]): the chats below
+ * still name the Project as theirs, so the view stays; what is known about the refusal follows.
+ */
+internal fun rootUnavailableNotice(reason: String): String =
+    "Cursor did not return this Project's coordinator ($reason). It may have been deleted, or belong to another account; the chats below still name it. It is asked for again later."
 
 /** What the Project screen offers with Extended mode off, in one line under the primaries. */
 val PROJECT_NEEDS_EXTENDED_MODE: String get() = ProjectRepository.NEEDS_EXTENDED_MODE

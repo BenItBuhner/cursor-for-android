@@ -159,6 +159,11 @@ class AgentListOrganizerTest {
         assertThat(sections.first().rows.single().children.map { it.agent.id }).containsExactly("worker")
         // A side chat of an unloaded chat waits unseen: its parent need not be a Project.
         assertThat(sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).doesNotContain("side")
+        // Once the server has refused the Project's row, the stand-in says so rather than "loading".
+        val refused = AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, unavailableProjects = setOf("project"))
+        assertThat(refused.first().rows.single().let { it.isPlaceholder && it.agent.name == AgentListOrganizer.UNAVAILABLE_NAME }).isTrue()
+        assertThat(refused.first().rows.single().children.map { it.agent.id }).containsExactly("worker")
+        assertThat(AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, unavailableProjects = setOf("other")).first().rows.single().agent.name).isEqualTo(AgentListOrganizer.PLACEHOLDER_NAME)
         // The stand-in is not a recent chat, and nothing under it is.
         assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
         // Which parents to fetch: the ones named but not held, once each.

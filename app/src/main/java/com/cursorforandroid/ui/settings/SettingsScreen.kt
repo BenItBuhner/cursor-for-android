@@ -223,7 +223,10 @@ fun SettingsScreen(
                 }
             }
             Text(
-                "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License; icons are derived from Lucide (ISC).",
+                "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc. JetBrains Mono is bundled under the SIL Open Font License. " +
+                    "Icons are derived from Lucide (ISC); the Project icon catalog's brand and product marks come from Simple Icons (CC0 1.0) — each remains its owner's trademark, " +
+                    "shown only to identify that product on a Project named after it — and marks no open library carries are drawn as neutral stand-ins. " +
+                    "The remote desktop view embeds noVNC (MPL-2.0).",
                 style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 8.dp, start = 2.dp),
             )
 

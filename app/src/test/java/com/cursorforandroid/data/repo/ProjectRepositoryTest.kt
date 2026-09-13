@@ -394,4 +394,32 @@ class ProjectRepositoryTest {
         assertThat(api.getAgentCalls).isEqualTo(before + 1)
         assertThat(agents.agent("bc-w")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
     }
+
+    @Test
+    fun `a parent the server refuses is named unavailable, for its stand-in and its view, until its row arrives`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-w", "Worker", "run-w")
+        val agents = agents()
+        agents.refresh()
+        agents.applyLineage("bc-gone", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        api.failGetAgent = IllegalStateException("gone")
+        val projects = projects(agents)
+        assertThat(projects.unavailableParents.value).isEmpty()
+
+        projects.materializeParents(listOf("bc-gone"))
+
+        // The refusal, in the words the rest of the app shows, and the view's word for the missing coordinator.
+        assertThat(projects.unavailableParents.value.keys).containsExactly("bc-gone")
+        val view = projects.view("bc-gone").first()
+        assertThat(view.root).isNull()
+        assertThat(view.rootUnavailable).isEqualTo(projects.unavailableParents.value.getValue("bc-gone"))
+        assertThat(view.workers.map { it.agent.id }).containsExactly("bc-w")
+
+        // The row arrives through the list: the parent is no longer missing, and no longer unavailable.
+        api.failGetAgent = null
+        api.addIdleAgent("bc-gone", "The Project", "run-p")
+        projects.watchList()
+        agents.refresh()
+        withTimeout(5_000) { projects.unavailableParents.first { it.isEmpty() } }
+        assertThat(projects.view("bc-gone").first { it.root != null }.rootUnavailable).isNull()
+    }
 }
