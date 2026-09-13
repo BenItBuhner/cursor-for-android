@@ -26,6 +26,7 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
@@ -218,9 +219,16 @@ class AgentRepository(
      * a row that may still fail to be created is never written to disk.
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    /** Lineage said about chats the list does not hold yet (see [applyLineage]): whose child each is, and which are roots. */
-    private val pendingLineage = ConcurrentHashMap<String, AgentParent>()
-    private val pendingRoots: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /**
+     * Where each chat belongs, as every source has said so far — the account's records, a root's membership and
+     * children answers, a coordinator's transcript, an action taken here (see [LineageSignal]) — by chat id: a parent
+     * for a child, none for a root. Applied to every row on every publication (see [publish]), so a row the public
+     * list re-adds, a page that lands after the word did, or a list restored from disk is placed the same as the row
+     * that was there when the word came. Cleared with the list.
+     */
+    private val placements = ConcurrentHashMap<String, Placement>()
+
+    private class Placement(val parent: AgentParent?, val signal: LineageSignal)
 
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
@@ -261,8 +269,6 @@ class AgentRepository(
             clear()
             restoredFor = null
             pendingLaunches.clear()
-            pendingLineage.clear()
-            pendingRoots.clear()
         }
     }
 
@@ -272,6 +278,7 @@ class AgentRepository(
         lastCompleteListingAt = 0L
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
+        placements.clear()
     }
 
     /**
@@ -293,9 +300,66 @@ class AgentRepository(
                 if (session.current !== backend) return false
                 owner = backend
             }
-            _state.value = transform(_state.value)
+            // Every publication ends with the classification pass: whatever [transform] did to the rows — merged a
+            // page, folded in a record, restored the disk — each row is placed by what is known of its lineage.
+            _state.value = transform(_state.value).classified()
             true
         }
+
+    /**
+     * Places every row by the lineage known of it: the registry's word ([placements]) first, then the row's own facts.
+     * A child placement puts the row under its parent; a root placement makes it a Project's coordinator unless it is
+     * itself somebody's child; a row nothing has placed is read by its facts (a parent link, a child's source, the
+     * Project flag) and keeps the scope it was kept with otherwise. Nothing here ever makes a placed child a primary
+     * row: that takes an authoritative retraction (see [applyAccountSnapshots], [applyLineage], [clearLineage]).
+     * The list is returned as it was when no row changes, so a publication of the same rows stays the same value.
+     */
+    private fun AgentListState.classified(): AgentListState {
+        if (agents.isEmpty()) return this
+        var changed = false
+        val next = agents.map { agent ->
+            val placed = agent.placed()
+            if (placed == agent) agent else placed.also { changed = true }
+        }
+        return if (changed) copy(agents = next) else this
+    }
+
+    private fun Agent.placed(): Agent {
+        val placement = placements[id]
+        return when {
+            placement?.parent != null -> {
+                if (parent == placement.parent && knownScope == AgentScope.PROJECT_CHILD && scopeSignal == placement.signal) this
+                else copy(parent = placement.parent, knownScope = AgentScope.PROJECT_CHILD, scopeSignal = placement.signal)
+            }
+            placement != null -> when {
+                // A root that is itself somebody's child stays where its parent is (the Agents Window's rule too).
+                parent != null -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+                knownScope == AgentScope.PROJECT_ROOT && scopeSignal == placement.signal -> this
+                else -> copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = placement.signal)
+            }
+            // Nothing said: the row's own facts, kept with it, are its placement.
+            parent != null -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+            source != null && source in AgentScope.CHILD_SOURCES -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.HIDDEN_SOURCE)
+            isProject && knownScope != AgentScope.PROJECT_CHILD -> if (knownScope == AgentScope.PROJECT_ROOT) this else copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+            else -> this
+        }
+    }
+
+    /**
+     * Records a word about where [id] belongs: under [parent], or (null) at the head of a Project. An authoritative
+     * word replaces anything; a coordinator's transcript, the one hint, fills in only what nothing authoritative has
+     * placed. True when the registry changed.
+     */
+    private fun place(id: String, parent: AgentParent?, signal: LineageSignal): Boolean {
+        if (id.isBlank() || parent?.id == id) return false
+        val current = placements[id]
+        if (current != null && !signal.isAuthoritative && current.signal.isAuthoritative) return false
+        // A Project that is itself somebody's child is shown where its parent is: a root's word does not lift it out.
+        if (parent == null && current?.parent != null && current.signal.isAuthoritative) return false
+        if (current != null && current.parent == parent && current.signal == signal) return false
+        placements[id] = Placement(parent, signal)
+        return true
+    }
 
     /**
      * Drops a list that belongs to another backend before anything is published for the current one. The switch
@@ -340,7 +404,17 @@ class AgentRepository(
             val rows = if (capabilities().accountSession) entry.value else entry.value.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
-                if (s.agents.isNotEmpty() || s.hasLoaded) s else s.copy(agents = rows, hasLoaded = true, isFromCache = true)
+                if (s.agents.isNotEmpty() || s.hasLoaded) s else {
+                    // What the rows were placed by last time is the registry's starting word, so the rows the next
+                    // fetch brings — and any it re-adds — are placed the same before the account has spoken again.
+                    rows.forEach { row ->
+                        when {
+                            row.parent != null -> place(row.id, row.parent, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+                            row.knownScope == AgentScope.PROJECT_ROOT -> place(row.id, null, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+                        }
+                    }
+                    s.copy(agents = rows, hasLoaded = true, isFromCache = true)
+                }
             }
             // A sign-out landed while the file was being read: this disk copy is not the current account's, and the
             // one that is has still to be restored.
@@ -517,7 +591,7 @@ class AgentRepository(
         val current = agents.associateBy { it.id }
         val fresh = items.associate { it.id to it.toAgent(current[it.id]) }
         val kept = agents.map { fresh[it.id] ?: it }
-        val added = items.distinctBy { it.id }.mapNotNull { if (it.id in current) null else fresh.getValue(it.id).withPendingLineage() }
+        val added = items.distinctBy { it.id }.mapNotNull { if (it.id in current) null else fresh.getValue(it.id) }
         return copy(agents = kept + added, hasLoaded = true)
     }
 
@@ -821,10 +895,15 @@ class AgentRepository(
     /**
      * Folds the account list's name, archive flag and Project facts onto the rows already shown. Official apps rename
      * and archive here, and a v1 list that has not caught up (or never will — the public archive is a different
-     * write) would otherwise keep the old title or leave a chat sitting in the open list. Whether a chat is a Project,
-     * how it looks, whose child it is and so where it belongs ([Agent.scope]) are the account's alone to say (the
-     * public list has no notion of them), so the snapshot's word replaces the row's; a row the list did not mention
-     * keeps what it had.
+     * write) would otherwise keep the old title or leave a chat sitting in the open list.
+     *
+     * Lineage is folded in one direction only. A record that names the chat's manager, side-chat parent or subagent
+     * parent, or carries `projectMetadata`, places it (see [LineageSignal.ACCOUNT_RECORD]). A record that names
+     * nothing does not unplace it: workers reach the list without a `managerAgentId` — an adopted chat's record never
+     * carried one, and the list is windowed, so the same worker is in one read and out of the next — and until 0.3.0
+     * every such read put the worker back among the primary rows, over the membership that had placed it, which is
+     * how Projects' chats leaked into the list and the notifications on accounts with many of them. The one retraction
+     * honoured is the record's own: a chat this list itself had placed, whose record no longer says so, was released.
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
@@ -843,13 +922,48 @@ class AgentRepository(
                 false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
                 null -> agent.lifecycle
             }
+            val placement = placements[agent.id]
+            var parent = agent.parent
+            var knownScope = agent.knownScope
+            var signal = agent.scopeSignal
+            when {
+                snap.parent != null -> {
+                    place(agent.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
+                    parent = snap.parent
+                    knownScope = AgentScope.PROJECT_CHILD
+                    signal = LineageSignal.ACCOUNT_RECORD
+                }
+                // The record's own earlier word, withdrawn: the chat was released, or its parent unlinked.
+                placement != null && placement.signal == LineageSignal.ACCOUNT_RECORD && placement.parent != null -> {
+                    placements.remove(agent.id)
+                    parent = null
+                    knownScope = if (snap.isProject) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
+                    signal = if (snap.isProject) LineageSignal.ACCOUNT_RECORD else null
+                }
+            }
+            if (snap.isProject && parent == null && placements[agent.id]?.parent == null) {
+                place(agent.id, null, LineageSignal.ACCOUNT_RECORD)
+                knownScope = AgentScope.PROJECT_ROOT
+                signal = LineageSignal.ACCOUNT_RECORD
+            } else if (!snap.isProject && placement != null && placement.parent == null && placement.signal == LineageSignal.ACCOUNT_RECORD) {
+                // A Project the record no longer calls one.
+                placements.remove(agent.id)
+                if (knownScope == AgentScope.PROJECT_ROOT) {
+                    knownScope = null
+                    signal = null
+                }
+            }
             val updated = agent.copy(
                 name = name,
                 lifecycle = lifecycle,
                 isProject = snap.isProject,
-                projectAppearance = snap.projectAppearance,
-                parent = snap.parent,
-                knownScope = snap.scope,
+                projectAppearance = snap.projectAppearance ?: agent.projectAppearance?.takeIf { snap.isProject },
+                parent = parent,
+                knownScope = knownScope,
+                scopeSignal = signal,
+                // The record's source rides along (the list's sources land separately): a side chat's or subagent's
+                // source is a lineage fact of its own, and the classification pass reads it.
+                source = snap.source ?: agent.source,
                 hasPendingInteraction = snap.hasPendingInteraction,
             )
             if (updated == agent) agent else updated.also { changed = true }
@@ -859,53 +973,58 @@ class AgentRepository(
 
     /**
      * Folds in who belongs to [rootId]: every chat in [members] is its child, in the capacity given, and the root is a
-     * Project's coordinator. From the account's membership reads ([authoritative]), the word replaces whatever the
-     * rows had — like the account list's, it is the account's own. From a coordinator's transcript (the one signal
-     * default mode has, see `CoordinatorLineage`) it only fills in what nothing has classified yet: a row the account
-     * has placed keeps its place, a root the account never called a Project stays whatever the account said.
-     * Rows not in the list are left for the list to bring; the classification is kept on the rows from then on.
+     * Project's coordinator; the word is [signal]'s. The account's own answers ([LineageSignal.MEMBERSHIP],
+     * [LineageSignal.CHILDREN_LIST], an [LineageSignal.ACTION] taken here) replace whatever the rows had, and — for the
+     * kinds in [retract], which an answer covered in full — release the chats of that kind the root had and the
+     * answer no longer names, unless the chat's own record still names the root. A coordinator's transcript (the one
+     * signal default mode has, see `CoordinatorLineage`) only fills in what nothing authoritative has placed.
+     * Rows the list does not hold yet are placed when they arrive: the word is kept in the registry.
      */
-    fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, authoritative: Boolean, startedIn: Int = token()) {
+    fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, signal: LineageSignal, retract: Set<AgentParentKind> = emptySet(), startedIn: Int = token()) {
         if (rootId.isBlank()) return
-        val listed = HashSet<String>()
-        val landed = publish(null, startedIn) { s ->
-            var changed = false
-            val next = s.agents.map { agent ->
-                listed += agent.id
-                val updated = when {
-                    agent.id == rootId -> when {
-                        agent.parent != null -> agent // A Project that is itself somebody's child stays where its parent is.
-                        authoritative || agent.knownScope == null -> agent.copy(knownScope = AgentScope.PROJECT_ROOT)
-                        else -> agent
-                    }
-                    agent.id in members -> {
-                        val kind = members.getValue(agent.id)
-                        when {
-                            authoritative -> agent.copy(parent = AgentParent(rootId, kind), knownScope = AgentScope.PROJECT_CHILD)
-                            agent.knownScope == null && agent.parent == null -> agent.copy(parent = AgentParent(rootId, kind), knownScope = AgentScope.PROJECT_CHILD)
-                            else -> agent
-                        }
-                    }
-                    else -> agent
+        synchronized(publishLock) {
+            if (generation.get() != startedIn) return
+            place(rootId, null, signal)
+            members.forEach { (id, kind) -> if (id != rootId) place(id, AgentParent(rootId, kind), signal) }
+            if (retract.isNotEmpty() && signal.isAuthoritative) {
+                placements.entries.removeAll { (id, placement) ->
+                    val parent = placement.parent ?: return@removeAll false
+                    parent.id == rootId && parent.kind in retract && id !in members && placement.signal.isRetractable
                 }
-                if (updated == agent) agent else updated.also { changed = true }
             }
-            if (changed) s.copy(agents = next) else s
+            publish(null, startedIn) { s ->
+                if (retract.isEmpty()) return@publish s
+                var changed = false
+                val next = s.agents.map { agent ->
+                    val parent = agent.parent ?: return@map agent
+                    val released = parent.id == rootId && parent.kind in retract && agent.id !in members && placements[agent.id] == null &&
+                        agent.scopeSignal?.isRetractable != false
+                    if (!released) agent else agent.copy(parent = null, knownScope = AgentScope.PRIMARY, scopeSignal = null).also { changed = true }
+                }
+                if (changed) s.copy(agents = next) else s
+            }
         }
-        if (!landed) return
-        // What was said about chats the list does not hold yet is kept for when it does: a worker the coordinator
-        // just created reaches the list a refresh later, and must not sit among the primary rows even for that long.
-        members.forEach { (id, kind) -> if (id !in listed && id != rootId) pendingLineage[id] = AgentParent(rootId, kind) }
-        if (rootId !in listed) pendingRoots += rootId
     }
 
-    /** A row arriving for the first time takes the lineage said about it before it arrived (see [applyLineage]). */
-    private fun Agent.withPendingLineage(): Agent {
-        if (knownScope != null) return this
-        pendingLineage.remove(id)?.let { return copy(parent = it, knownScope = AgentScope.PROJECT_CHILD) }
-        if (pendingRoots.remove(id) && parent == null) return copy(knownScope = AgentScope.PROJECT_ROOT)
-        return this
+    /** [applyLineage] with the account's word ([authoritative]) or a coordinator's transcript's. */
+    fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, authoritative: Boolean, startedIn: Int = token()) =
+        applyLineage(rootId, members, if (authoritative) LineageSignal.MEMBERSHIP else LineageSignal.COORDINATOR_TRANSCRIPT, startedIn = startedIn)
+
+    /** Releases [agentId] from whatever it hung off (an action taken here: `ClearWorkerManager`): a chat of its own again. */
+    fun clearLineage(agentId: String, startedIn: Int = token()) {
+        synchronized(publishLock) {
+            if (generation.get() != startedIn) return
+            placements.remove(agentId)
+            publish(null, startedIn) { s ->
+                val row = s.agents.firstOrNull { it.id == agentId } ?: return@publish s
+                if (row.parent == null && row.knownScope != AgentScope.PROJECT_CHILD) return@publish s
+                s.copy(agents = s.agents.map { if (it.id == agentId) it.copy(parent = null, knownScope = AgentScope.PRIMARY, scopeSignal = null) else it })
+            }
+        }
     }
+
+    /** Which word placed [agentId], for the diagnostics; null when nothing beyond the row's own record has. */
+    fun placementOf(agentId: String): Pair<AgentParent?, LineageSignal>? = placements[agentId]?.let { it.parent to it.signal }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
         val startedIn = token()
@@ -918,7 +1037,7 @@ class AgentRepository(
     fun upsert(agent: Agent, startedIn: Int = token()) {
         publish(null, startedIn) { s ->
             val exists = s.agents.any { it.id == agent.id }
-            val list = if (exists) s.agents.map { if (it.id == agent.id) agent else it } else listOf(agent.withPendingLineage()) + s.agents
+            val list = if (exists) s.agents.map { if (it.id == agent.id) agent else it } else listOf(agent) + s.agents
             s.copy(agents = list)
         }
     }

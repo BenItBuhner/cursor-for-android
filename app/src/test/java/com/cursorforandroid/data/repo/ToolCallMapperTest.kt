@@ -230,9 +230,19 @@ class ToolCallMapperTest {
         // Every other tool names nothing, whatever ids its payload happens to carry.
         assertThat(call("fetch_cloud_agent_data", """{"bc_ids":["bc-x"]}""", """{"agents":[{"bc_id":"bc-x"}]}""").linkedAgentIds).isEmpty()
         assertThat(call("read_file", """{"path":"a.kt","agent_id":"bc-x"}""").linkedAgentIds).isEmpty()
-        // The rows still read as they did: the ids ride along, they do not change the wording.
-        assertThat(line("create_agent", """{"prompt":"Build it"}""", """{"agent_id":"bc-w1"}""")).isEqualTo("Created agent")
-        assertThat(line("send_to_agent", """{"agent_id":"bc-w1"}""", status = "running")).isEqualTo("Messaging agent")
+        // The plain line names the worker: by the name the coordinator gave it, else by its id; a check by its count.
+        assertThat(line("create_agent", """{"prompt":"Build it","name":"Webhooks"}""", """{"agent_id":"bc-w1"}""")).isEqualTo("Created agent Webhooks")
+        assertThat(line("create_agent", """{"prompt":"Build it"}""", """{"agent_id":"bc-w1"}""")).isEqualTo("Created agent bc-w1")
+        assertThat(line("send_to_agent", """{"agent_id":"bc-w1"}""", status = "running")).isEqualTo("Messaging agent bc-w1")
+        assertThat(line("get_agent_status", """{"agent_ids":["bc-w1","bc-w2"]}""", """{"workers":[{"bc_id":"bc-w1"},{"bc_id":"bc-w2"}]}""")).isEqualTo("Checked agents 2 agents")
+        assertThat(line("send_to_user", """{"message":"PR #215 is merged.\nMore below."}""")).isEqualTo("Sent message PR #215 is merged.")
+        // The coordinator's tools are a kind of their own, in the public spelling and the SDK's; a stale trace's
+        // "Other" still reads with their verbs.
+        assertThat(call("create_agent", """{"prompt":"Build it"}""").kind).isEqualTo(ToolKind.Coordinator)
+        assertThat(ToolNames.kindOf("sendToAgentToolCall")).isEqualTo(ToolKind.Coordinator)
+        assertThat(ToolNames.kindOf("send_to_user")).isEqualTo(ToolKind.Coordinator)
+        assertThat(ToolNames.labels(ToolKind.Other, "create_agent").completed).isEqualTo("Created agent")
+        assertThat(ToolNames.labels(ToolKind.Coordinator, "sendToUser").loading).isEqualTo("Sending message")
     }
 
     @Test

@@ -9,6 +9,7 @@ import com.cursorforandroid.domain.ProjectLineage
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -27,11 +28,37 @@ interface ProjectLineageApi {
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 
-    /** Both reads for one root, folded into what the root owns. */
+    /**
+     * Both reads of one root, each on its own: the workers `ListWorkersForManager` names and the side chats and
+     * subagents `ListBackgroundComposerChildren` lists. One refusing does not lose the other's answer — a Project
+     * whose children call is not offered still has its workers placed — and the result says which read answered.
+     */
     suspend fun lineage(rootId: String): ProjectLineage {
-        val workers = workersForManager(rootId)
-        val children = children(rootId).associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
-        return ProjectLineage(rootId, workers, children)
+        var failure: Throwable? = null
+        val workers = try {
+            workersForManager(rootId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            failure = t
+            null
+        }
+        val children = try {
+            children(rootId).associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            if (failure == null) failure = t
+            null
+        }
+        return ProjectLineage(
+            rootId = rootId,
+            workers = workers.orEmpty(),
+            children = children.orEmpty(),
+            workersRead = workers != null,
+            childrenRead = children != null,
+            failure = failure,
+        )
     }
 }
 

@@ -97,7 +97,8 @@ data class TranscriptContent(
                         pending = payload
                         pendingCallId = call.callId
                     }
-                    null -> Unit
+                    // A coordinator's workers are the Project view's business, not the Changes or Files lists'.
+                    is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, null -> Unit
                 }
             }
             return TranscriptContent(

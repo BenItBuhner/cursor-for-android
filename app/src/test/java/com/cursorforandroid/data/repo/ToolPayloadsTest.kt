@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.ToolPayloadLimits
+import com.cursorforandroid.domain.WorkerStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -163,5 +164,62 @@ class ToolPayloadsTest {
         assertThat(payload("shell", """{"command":"ls"}""", """{"status":"success","value":{"stdout":"a\nb","exitCode":0}}""")).isNull()
         assertThat(payload("grep", """{"pattern":"x"}""", """{"success":{"count":3}}""")).isNull()
         assertThat(payload("delete", """{"path":"old.txt"}""", """{"status":"success","value":{"fileSize":3}}""")).isNull()
+    }
+
+    @Test
+    fun `a coordinator's calls keep the workers they are about, in the proto's spelling and the SDK's`() {
+        // create_agent: the worker's name and prompt from the arguments, its id from the result (wrapped or not).
+        val created = payload("create_agent", """{"prompt":"Handle the webhooks.","name":"Stripe webhook handler"}""", """{"success":{"agent_id":"bc-w1","message":"Created agent"}}""") as ToolPayload.WorkerAction
+        assertThat(created.kind).isEqualTo(ToolPayload.WorkerAction.Kind.Created)
+        assertThat(created.worker).isEqualTo(WorkerStatus(agentId = "bc-w1", name = "Stripe webhook handler"))
+        assertThat(created.title).isEqualTo("Stripe webhook handler")
+        assertThat(created.text).isEqualTo("Handle the webhooks.")
+        assertThat(created.note).isEqualTo("Created agent")
+        assertThat(created.worker!!.isCloudAgent).isTrue()
+        // While it runs there is no id yet; the card still has the name.
+        val creating = payload("createAgent", """{"prompt":"Handle the webhooks.","name":"Stripe webhook handler"}""") as ToolPayload.WorkerAction
+        assertThat(creating.worker!!.agentId).isNull()
+        assertThat(creating.title).isEqualTo("Stripe webhook handler")
+
+        // send_to_agent: the message and its title, the worker it went to and how it was delivered.
+        val sent = payload("send_to_agent", """{"agent_id":"bc-w1","title":"Rebase","message":"PR #215 is merged.","delivery":"followup"}""", """{"success":{"worker_bc_id":"bc-w1","delivered_as":"FOLLOWUP"}}""") as ToolPayload.WorkerAction
+        assertThat(sent.kind).isEqualTo(ToolPayload.WorkerAction.Kind.Messaged)
+        assertThat(sent.worker!!.agentId).isEqualTo("bc-w1")
+        assertThat(sent.title).isEqualTo("Rebase")
+        assertThat(sent.text).isEqualTo("PR #215 is merged.")
+        assertThat(sent.note).isEqualTo("Delivered as followup")
+
+        // get_agent_status: one worker per report, with where it stands; the asked-about ids when nothing came back.
+        val status = payload(
+            "get_agent_status",
+            """{"agent_ids":["bc-w1","bc-w2"]}""",
+            """{"status":"success","value":{"workers":[{"bc_id":"bc-w1","name":"Aggregation","lifecycle":"ACTIVE","turn_in_flight":false,"last_terminal_turn_status":"FINISHED","pr_url":"https://github.com/o/r/pull/215","last_activity_at_ms":1700000000000},{"bcId":"bc-w2","name":"Webhooks","turnInFlight":true}]}}""",
+        ) as ToolPayload.WorkerAction
+        assertThat(status.kind).isEqualTo(ToolPayload.WorkerAction.Kind.Status)
+        assertThat(status.workers.map { it.agentId }).containsExactly("bc-w1", "bc-w2").inOrder()
+        assertThat(status.workers[0].statusLabel).isEqualTo("Finished")
+        assertThat(status.workers[0].prUrl).isEqualTo("https://github.com/o/r/pull/215")
+        assertThat(status.workers[0].lastActivityAtMillis).isEqualTo(1_700_000_000_000L)
+        assertThat(status.workers[1].statusLabel).isEqualTo("Working")
+        val asked = payload("get_agent_status", """{"agent_ids":["bc-w1","bc-w2"]}""") as ToolPayload.WorkerAction
+        assertThat(asked.workers.map { it.agentId }).containsExactly("bc-w1", "bc-w2").inOrder()
+        assertThat(asked.workers[0].statusLabel).isNull()
+        assertThat(WorkerStatus(lastTurnStatus = "RUN_STATUS_ERROR").statusLabel).isEqualTo("Failed")
+        assertThat(WorkerStatus(lifecycle = "ARCHIVED").statusLabel).isEqualTo("Archived")
+
+        // stop_agent and read_agent_transcript name the worker; the transcript comes as an excerpt.
+        val stopped = payload("stop_agent", """{"agent_id":"bc-w2"}""", """{"success":{"worker_bc_id":"bc-w2","message":"Stopped"}}""") as ToolPayload.WorkerAction
+        assertThat(stopped.kind).isEqualTo(ToolPayload.WorkerAction.Kind.Stopped)
+        assertThat(stopped.worker!!.agentId).isEqualTo("bc-w2")
+        val read = payload("read_agent_transcript", """{"agent_id":"bc-w2","mode":"SUMMARY"}""", """{"success":{"transcript":"user: Build it\nassistant: Done.","truncated":true}}""") as ToolPayload.WorkerAction
+        assertThat(read.kind).isEqualTo(ToolPayload.WorkerAction.Kind.ReadTranscript)
+        assertThat(read.text).isEqualTo("user: Build it\nassistant: Done.")
+        assertThat(read.title).isEqualTo("SUMMARY")
+        assertThat(read.truncated).isTrue()
+
+        // send_to_user is the coordinator's message to the user, as written.
+        assertThat(payload("send_to_user", """{"message":"PR #215 is **merged**."}""", """{"success":{}}""")).isEqualTo(ToolPayload.CoordinatorMessage("PR #215 is **merged**."))
+        assertThat(payload("sendToUserToolCall", """{"message":"Hi"}""")).isEqualTo(ToolPayload.CoordinatorMessage("Hi"))
+        assertThat(payload("send_to_user", """{}""")).isNull()
     }
 }

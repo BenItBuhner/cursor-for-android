@@ -99,39 +99,56 @@ class LiveRunMonitorTest {
     private fun running() = monitor.state.value.running
 
     @Test
-    fun `a Project's workers finish as the Project's news, one card per Project, never as cards of their own`() = runBlocking {
-        api.addIdleAgent("bc-p", "Cesium billing launch", "run-p")
+    fun `nothing of a Project is followed or announced - not its coordinator, not its workers - while a chat of its own still is`() = runBlocking {
+        api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
         api.addRunningAgent("bc-w1", "Usage events aggregation", "run-w1")
         api.addRunningAgent("bc-w2", "Stripe webhook handler", "run-w2")
         api.addRunningAgent("bc-x", "Plain chat", "run-x")
         agents.refresh()
         agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-w2" to AgentParentKind.PROJECT_WORKER), authoritative = true)
         monitor.start()
-        awaitUntil { monitor.state.value.hasReconciled && running().size == 3 }
+        awaitUntil { monitor.state.value.hasReconciled }
+        // The coordinator and its workers are running, and the monitor has no stream on any of them.
+        assertThat(running().map { it.agentId }).containsExactly("bc-x")
+        assertThat(monitor.state.value.runningCount).isEqualTo(1)
+        assertThat(streamer.connections).doesNotContain("run-p")
+        assertThat(streamer.connections).doesNotContain("run-w1")
 
-        streamer.emit("run-w1", RunStreamEvent.Result("run-w1", RunStatus.FINISHED, "Aggregates in.", 60_000, null))
-        streamer.emit("run-w1", RunStreamEvent.Done)
-        awaitUntil { finished.size == 1 }
-        val first = finished.single()
-        // Keyed to the Project, titled after it, and about the worker.
-        assertThat(first.agentId).isEqualTo("bc-p")
-        assertThat(first.title).isEqualTo("Cesium billing launch")
-        assertThat(first.summary).isEqualTo("Usage events aggregation finished")
-        assertThat(first.durationMs).isEqualTo(60_000L)
-
-        streamer.emit("run-w2", RunStreamEvent.Result("run-w2", RunStatus.FINISHED, "Webhooks in.", 30_000, null))
-        streamer.emit("run-w2", RunStreamEvent.Done)
-        awaitUntil { finished.size == 2 }
-        assertThat(finished[1].agentId).isEqualTo("bc-p")
-        assertThat(finished[1].summary).isEqualTo("2 workers finished \u00B7 Usage events aggregation, Stripe webhook handler")
-
+        // A worker finishing is not the monitor's news, nor is the coordinator's turn ending.
+        api.runs["run-w1"] = api.runs.getValue("run-w1").copy(status = "FINISHED", result = "Aggregates in.", durationMs = 60_000)
+        api.runs["run-p"] = api.runs.getValue("run-p").copy(status = "FINISHED", result = "Two PRs up.", durationMs = 240_000)
+        agents.refresh()
         // A chat of its own is announced as itself.
         streamer.emit("run-x", RunStreamEvent.Result("run-x", RunStatus.FINISHED, "Done.", 10_000, null))
         streamer.emit("run-x", RunStreamEvent.Done)
-        awaitUntil { finished.size == 3 }
-        assertThat(finished[2].agentId).isEqualTo("bc-x")
-        assertThat(finished[2].title).isEqualTo("Plain chat")
-        assertThat(finished[2].summary).isEqualTo("Done.")
+        awaitUntil { finished.size == 1 }
+        assertThat(finished.single().agentId).isEqualTo("bc-x")
+        assertThat(finished.single().title).isEqualTo("Plain chat")
+        delay(100)
+        assertThat(finished).hasSize(1)
+    }
+
+    @Test
+    fun `a chat placed inside a Project while its run was being followed is dropped, not announced`() = runBlocking {
+        api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
+        api.addRunningAgent("bc-w1", "Usage events aggregation", "run-w1")
+        agents.refresh()
+        monitor.start()
+        // Nothing said yet about lineage: both are followed as chats of the account's own.
+        awaitUntil { monitor.state.value.hasReconciled && running().size == 2 }
+        streamer.emit("run-w1", RunStreamEvent.Status("run-w1", RunStatus.RUNNING))
+        awaitUntil { running().firstOrNull { it.agentId == "bc-w1" }?.phase == LivePhase.Running }
+
+        // The lineage lands (the coordinator's transcript named the worker, or the account listed it): both leave the card.
+        agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        awaitUntil { running().isEmpty() }
+        assertThat(monitor.state.value.runningCount).isEqualTo(0)
+
+        // The worker's finish, arriving on the stream that was already open, is not announced either.
+        streamer.emit("run-w1", RunStreamEvent.Result("run-w1", RunStatus.FINISHED, "Aggregates in.", 60_000, null))
+        streamer.emit("run-w1", RunStreamEvent.Done)
+        delay(150)
+        assertThat(finished).isEmpty()
     }
 
     @Test

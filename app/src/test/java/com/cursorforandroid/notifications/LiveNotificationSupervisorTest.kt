@@ -4,6 +4,10 @@ import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.RunStatus
@@ -340,5 +344,23 @@ class LiveNotificationSupervisorTest {
             .isEqualTo(LiveDecision.Track(setOf("bc-2"), serviceActive = true))
         assertThat(liveDecision(signedIn, fetched("bc-1"), enabled = true, serviceActive = false, quietIds = setOf("bc-1")))
             .isEqualTo(LiveDecision.Idle)
+    }
+
+    @Test
+    fun `nothing of a Project starts the service - not its coordinator, not a worker, a side chat or a subagent - however it was classified`() {
+        val signedIn = SessionState.SignedIn(user, isDemo = false)
+        val running = agent("bc-x", RunStatus.RUNNING)
+        // Classified by the account (Extended mode lists the scope with the row), and by lineage alone (default
+        // mode, from the coordinator's transcript): the decision reads the scope, not how it was learned.
+        val root = agent("bc-p", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_ROOT)
+        val rootByFlag = agent("bc-p2", RunStatus.RUNNING).copy(isProject = true)
+        val worker = agent("bc-w", RunStatus.RUNNING).copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
+        val sideChat = agent("bc-s", RunStatus.RUNNING).copy(source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
+        val subagent = agent("bc-sub", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_CHILD)
+        fun list(vararg agents: Agent) = AgentListState(agents = agents.toList(), hasLoaded = true, isFromCache = false)
+
+        assertThat(liveDecision(signedIn, list(root, rootByFlag, worker, sideChat, subagent), enabled = true, serviceActive = false)).isEqualTo(LiveDecision.Idle)
+        assertThat(liveDecision(signedIn, list(root, worker, running), enabled = true, serviceActive = true))
+            .isEqualTo(LiveDecision.Track(setOf("bc-x"), serviceActive = true))
     }
 }

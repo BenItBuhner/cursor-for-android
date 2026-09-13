@@ -82,6 +82,7 @@ import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
 import com.cursorforandroid.domain.InteractionResolution
@@ -103,6 +104,7 @@ import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -630,6 +632,32 @@ class AppGraph(
 
     /** Which of [deferredParts] this process has actually built. */
     internal fun builtParts(): Set<String> = deferredParts.filterValues { it.isInitialized() }.keys
+
+    /**
+     * The redacted account of where every chat was placed and by what (see [ProjectDiagnostics]): Settings › Advanced
+     * exports it, so a Project's chat that still shows among the account's own can be traced to the signal that
+     * missed. Ids are shortened to their tails; no names, prompts or tokens are in it.
+     */
+    suspend fun projectDiagnosticsReport(): String {
+        val list = agents.state.value
+        val allowed = capabilities()
+        val syncs = if (lazyProjects.isInitialized()) projects.syncRecords() else emptyMap()
+        return ProjectDiagnostics.render(
+            ProjectDiagnostics.Input(
+                appVersion = BuildConfig.VERSION_NAME,
+                nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
+                extendedMode = extendedMode.enabled.first(),
+                projectsCapability = allowed.projects,
+                accountSession = allowed.accountSession,
+                listFromCache = list.isFromCache,
+                lastRefreshedIso = agents.lastRefreshedAt.takeIf { it > 0 }?.let { java.time.Instant.ofEpochMilli(it).toString() },
+                agents = list.agents,
+                placementOf = agents::placementOf,
+                rootSyncs = syncs.mapValues { (_, s) -> ProjectDiagnostics.RootSync(s.workersRead, s.childrenRead, s.workerCount, s.childCount, s.notice) },
+                pinnedIds = prefs.localAgentState.first().pinnedIds,
+            ),
+        )
+    }
 
     suspend fun signOut() = session.signOut()
 }

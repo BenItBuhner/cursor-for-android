@@ -163,6 +163,37 @@ enum class AgentScope {
     }
 }
 
+/**
+ * Which word placed a chat where it is ([Agent.scopeSignal]): the account's own record of the chat naming its
+ * manager, side-chat parent or subagent parent — or its `projectMetadata` — ([ACCOUNT_RECORD]); a root's
+ * `ListWorkersForManager` answer ([MEMBERSHIP]) or `ListBackgroundComposerChildren` answer ([CHILDREN_LIST]); the
+ * source the account gives only to side chats and subagents ([HIDDEN_SOURCE]); a coordinator's own transcript naming
+ * it through `create_agent` and the other coordinator tools ([COORDINATOR_TRANSCRIPT], the one word default mode
+ * has); an action taken from this app — a worker created, adopted, moved or released ([ACTION]); or nothing yet, the
+ * row being what its facts make it. The diagnostics export names it per row so a leak can be traced to the signal
+ * that missed.
+ */
+@Serializable
+enum class LineageSignal {
+    ACCOUNT_RECORD,
+    MEMBERSHIP,
+    CHILDREN_LIST,
+    HIDDEN_SOURCE,
+    COORDINATOR_TRANSCRIPT,
+    ACTION,
+    ;
+
+    /** Words of the account service itself, which replace anything a weaker signal said; a transcript is a hint. */
+    val isAuthoritative: Boolean get() = this != COORDINATOR_TRANSCRIPT
+
+    /**
+     * Whether a complete membership answer that no longer names the chat releases it. A membership's, a children
+     * list's or a transcript's word is; the chat's own record naming its parent is not (the record is the chat's,
+     * the membership the Project's), nor is an action taken here a moment ago, which the account may not list yet.
+     */
+    val isRetractable: Boolean get() = this == MEMBERSHIP || this == CHILDREN_LIST || this == COORDINATOR_TRANSCRIPT
+}
+
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
 @Serializable
 data class Agent(
@@ -226,13 +257,24 @@ data class Agent(
      * a Project's view marks such a primary as needing input. Only the account says; false until it has.
      */
     val hasPendingInteraction: Boolean = false,
+    /** Which word placed the chat where [scope] says (see [LineageSignal]); null while nothing has. */
+    val scopeSignal: LineageSignal? = null,
 ) {
     /**
-     * Where the chat belongs (see [AgentScope]): what a lineage source last decided ([knownScope]), else what the
-     * row's own facts add up to — so a row classified before the scope was kept, or by the demo's dataset, still
-     * lands where its parent link and Project flag put it.
+     * Where the chat belongs (see [AgentScope]). Any lineage fact on the row scopes it: a parent link or a child's
+     * source makes it a child whatever else was said, and a word that called it a child ([knownScope]) holds until
+     * something authoritative clears both; only then do the Project flag and the kept scope decide. The order is the
+     * safe one — nothing a list merge or a lineage-less account record can do to a row makes a placed child a primary
+     * again — and it is what a row classified before the scope was kept, or by the demo's dataset, is read by too.
      */
-    val scope: AgentScope get() = knownScope ?: AgentScope.of(isProject, parent, source)
+    val scope: AgentScope
+        get() = when {
+            parent != null -> AgentScope.PROJECT_CHILD
+            source != null && source in AgentScope.CHILD_SOURCES -> AgentScope.PROJECT_CHILD
+            knownScope == AgentScope.PROJECT_CHILD -> AgentScope.PROJECT_CHILD
+            isProject -> AgentScope.PROJECT_ROOT
+            else -> knownScope ?: AgentScope.PRIMARY
+        }
     /**
      * A Project at the top of its tree: the chat the Projects group lists. The Agents Window's rule as well — a
      * Project that is itself somebody's subagent or side chat is shown where its parent is.
@@ -240,6 +282,11 @@ data class Agent(
     val isProjectRoot: Boolean get() = scope == AgentScope.PROJECT_ROOT
     /** A worker, side chat or subagent: shown inside its parent's surface, never among the primary rows. */
     val isProjectChild: Boolean get() = scope == AgentScope.PROJECT_CHILD
+    /**
+     * A Project's coordinator or anything spawned inside a Project: what the Project's own view is for. No
+     * notification is posted for it, and no primary surface beyond the sidebar's tree (recents, the widget) lists it.
+     */
+    val isProjectScoped: Boolean get() = scope != AgentScope.PRIMARY
     /** Drawn as a Project — with its icon and colour — whether the account said so or its own transcript did. */
     val looksLikeProject: Boolean get() = isProject || isProjectRoot
     /**

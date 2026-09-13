@@ -36,6 +36,8 @@ object SystemNotifications {
     /** The line a subagent report opens with, and the resume hint it closes with: Cursor's framing, not the report. */
     private val detailPreamble = Regex("""^This is the (?:last|final) output of the [^\n]*:\s*""", RegexOption.IGNORE_CASE)
     private val detailResumeHint = Regex("""\s*Agent ID:\s*\S+(?:\s*\([^)]*\))?\s*$""", RegexOption.IGNORE_CASE)
+    /** The cloud agent a report names, anywhere in the block: `Agent ID: bc-…`, `agent_id: bc-…`, `bc_id: bc-…`. */
+    private val agentIdMention = Regex("""\b(?:agent[ _]?id|bc[ _]?id|worker[ _]?id)\s*[:=]\s*["'`]?(bc-[A-Za-z0-9-]+)""", RegexOption.IGNORE_CASE)
 
     /**
      * The `<user_query>` Cursor appends to a notification tells the model how to react to it ("The beginning of the
@@ -82,10 +84,11 @@ object SystemNotifications {
     private fun notification(id: String, raw: String, attributes: String, content: String, timestampMillis: Long?): SystemNotification {
         val source = sourceAttribute.find(attributes)?.let { it.groupValues[1].ifEmpty { it.groupValues[2] } }?.trim()?.lowercase()?.ifEmpty { null }
         val task = taskBlock.find(content)?.let { task(it.groupValues[1]) }
+        val agentId = agentIdMention.find(content)?.groupValues?.get(1)
         return when {
-            task != null -> task.toNotification(id, raw, timestampMillis)
+            task != null -> task.toNotification(id, raw, timestampMillis, source, agentId)
             source == "goal" -> goal(id, raw, content, timestampMillis)
-            else -> other(id, raw, source, content, timestampMillis)
+            else -> other(id, raw, source, content, timestampMillis, agentId)
         }
     }
 
@@ -109,19 +112,27 @@ object SystemNotifications {
         )
     }
 
-    /** A notification of a shape not known here: its `source` names it, its first line stands for it. */
-    private fun other(id: String, raw: String, source: String?, content: String, timestampMillis: Long?): SystemNotification {
+    /**
+     * A notification of a shape not known here: its `source` names it, its first line stands for it. One that names a
+     * cloud agent — a Project's worker writing to its coordinator outside a `<task>` report — is that worker's notice.
+     */
+    private fun other(id: String, raw: String, source: String?, content: String, timestampMillis: Long?, agentId: String?): SystemNotification {
         val plain = plainText(content).ifEmpty { null }
+        val worker = agentId != null || source in WORKER_SOURCES
         return SystemNotification(
             id = id,
-            kind = SystemNotification.Kind.Other,
-            title = source?.let { "${it.replace('_', ' ').replaceFirstChar(Char::uppercase)} notification" } ?: "System notification",
+            kind = if (worker) SystemNotification.Kind.Worker else SystemNotification.Kind.Other,
+            title = if (worker) "Worker update" else source?.let { "${it.replace('_', ' ').replaceFirstChar(Char::uppercase)} notification" } ?: "System notification",
             summary = plain?.let(::firstLine),
             body = plain,
             raw = raw,
             timestampMillis = timestampMillis,
+            agentId = agentId,
         )
     }
+
+    /** `source` attributes under which a Project's workers report to their coordinator. */
+    private val WORKER_SOURCES = setOf("worker", "agent", "cloud_agent", "project_worker", "worker_agent", "child_agent")
 
     /** The `key: value` header of a `<task>` report plus its `detail`, which is the finished task's last output. */
     private class Task(val fields: Map<String, String>) {
@@ -130,12 +141,19 @@ object SystemNotifications {
         val title: String? get() = fields["title"]?.ifBlank { null }
         val detail: String? get() = fields["detail"]?.ifBlank { null }
 
-        fun toNotification(id: String, raw: String, timestampMillis: Long?): SystemNotification {
-            val itemKind = when (kind) {
-                "subagent", "agent" -> SystemNotification.Kind.Subagent
+        fun toNotification(id: String, raw: String, timestampMillis: Long?, source: String?, mentionedAgentId: String?): SystemNotification {
+            // The cloud agent the report names — `agent_id:` in the header, `Agent ID: bc-…` in the resume hint — is
+            // the one the row opens. A `subagent` stays a subagent (a cloud one has a chat of its own all the same);
+            // an `agent` or a `worker` with an id is a Project's primary reporting to its coordinator.
+            val agentId = fields.entries.firstOrNull { (key, _) -> key in AGENT_ID_FIELDS }?.value?.trim()?.takeIf { it.startsWith("bc-") } ?: mentionedAgentId
+            val itemKind = when {
+                kind in WORKER_KINDS || source in WORKER_SOURCES -> SystemNotification.Kind.Worker
+                kind == "agent" && agentId != null -> SystemNotification.Kind.Worker
+                kind == "subagent" || kind == "agent" -> SystemNotification.Kind.Subagent
                 else -> SystemNotification.Kind.Task
             }
             val noun = when (itemKind) {
+                SystemNotification.Kind.Worker -> "Worker"
                 SystemNotification.Kind.Subagent -> "Subagent"
                 else -> kind?.takeIf { it.isNotBlank() }?.replace('_', ' ')?.replaceFirstChar(Char::uppercase) ?: "Task"
             }
@@ -151,11 +169,12 @@ object SystemNotifications {
                 id = id,
                 kind = itemKind,
                 title = "$noun $verb",
-                summary = title ?: report?.let(::firstLine),
+                summary = title ?: fields["name"]?.ifBlank { null } ?: report?.let(::firstLine),
                 body = report,
                 tone = tone,
                 raw = raw,
                 timestampMillis = timestampMillis,
+                agentId = agentId,
             )
         }
 
@@ -166,6 +185,11 @@ object SystemNotifications {
             return text.trim().ifEmpty { null }
         }
     }
+
+    /** `kind:` values under which a Project's worker reports; a bare `agent` is a subagent unless an id says otherwise. */
+    private val WORKER_KINDS = setOf("worker", "cloud_agent", "project_worker", "worker_agent", "primary", "background_agent")
+    /** Header fields that carry the reporting agent's id. */
+    private val AGENT_ID_FIELDS = setOf("agent_id", "agentid", "bc_id", "bcid", "worker_id", "workerid", "id")
 
     private fun task(block: String): Task? {
         val lines = block.trim().lines()

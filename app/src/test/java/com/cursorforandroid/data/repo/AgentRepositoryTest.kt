@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
@@ -701,15 +702,26 @@ class AgentRepositoryTest {
         assertThat(agent("bc-late").parent).isEqualTo(AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))
         assertThat(agent("bc-late").scope).isEqualTo(AgentScope.PROJECT_CHILD)
 
-        // The account's list has the last word: what it says replaces the hint, and the classification rides refreshes and the disk.
+        // The account's list speaks for what it names: a record that names a parent or a Project places the row, a
+        // record silent on lineage leaves the hint where it is (it is how workers without a `managerAgentId` leaked).
         repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-c", isProject = true), ComposerSnapshot("bc-w"), ComposerSnapshot("bc-late", parent = AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))))
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("bc-w").scopeSignal).isEqualTo(LineageSignal.COORDINATOR_TRANSCRIPT)
+        assertThat(agent("bc-late").scopeSignal).isEqualTo(LineageSignal.ACCOUNT_RECORD)
+        assertThat(agent("bc-c").isProject).isTrue()
+        // A record naming another parent replaces the hint; the hint never takes it back.
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w", parent = AgentParent("bc-other", AgentParentKind.SUBAGENT))))
+        assertThat(agent("bc-w").parent).isEqualTo(AgentParent("bc-other", AgentParentKind.SUBAGENT))
+        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agent("bc-w").parent).isEqualTo(AgentParent("bc-other", AgentParentKind.SUBAGENT))
+        // The record's own word withdrawn releases the row; the account's membership places it again, and the
+        // classification rides refreshes and the disk.
+        repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w")))
         assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agent("bc-w").parent).isNull()
-        assertThat(agent("bc-c").isProject).isTrue()
-        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
         repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = true)
         assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("bc-w").scopeSignal).isEqualTo(LineageSignal.MEMBERSHIP)
         repo.refresh()
         assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
         awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-w" }?.knownScope == AgentScope.PROJECT_CHILD }

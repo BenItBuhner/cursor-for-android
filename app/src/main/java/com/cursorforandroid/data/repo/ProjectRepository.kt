@@ -14,6 +14,7 @@ import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
@@ -86,6 +87,15 @@ data class ProjectViewState(
     val isEmpty: Boolean get() = workers.isEmpty() && sideChats.isEmpty() && subagents.isEmpty()
 }
 
+/** What one root's last membership pass answered: which of the two reads did, how many it named, and what went wrong. */
+data class LineageSyncRecord(
+    val workersRead: Boolean,
+    val childrenRead: Boolean,
+    val notice: String? = null,
+    val workerCount: Int = 0,
+    val childCount: Int = 0,
+)
+
 /**
  * Cursor Projects as the agent list needs them: who belongs to whom, so that a Project's workers, side chats and
  * subagents sit inside the Project and never among the account's own chats (see [com.cursorforandroid.domain.AgentScope]).
@@ -125,6 +135,9 @@ class ProjectRepository(
         val sideChatAvailability: SideChatAvailability = SideChatAvailability.UNKNOWN,
         val context: ContextState = ContextState.Idle,
         val actionsAvailable: Boolean = false,
+        /** The last membership pass: when, and what each read answered — for the sync's rotation and the diagnostics. */
+        val lastSyncedAtMillis: Long = 0L,
+        val lastSync: LineageSyncRecord? = null,
     )
 
     /** One membership pass at a time; a second request while one runs waits for it rather than doubling the calls. */
@@ -163,21 +176,24 @@ class ProjectRepository(
 
     /** [syncLineage] on this repository's own scope, for a caller that must not wait on it (the pin sync's round). */
     fun scheduleLineageSync(rootIds: Collection<String>) {
-        if (rootIds.isEmpty()) return
         scope.launch { syncLineage(rootIds) }
     }
 
     /**
-     * Reads the memberships of each Project in [rootIds] from the account and folds them onto the rows: every worker
-     * and child becomes the root's, whatever the list said before. Nothing happens without Extended mode, or for the
-     * demo; a root whose reads fail is skipped and asked again at the next pass. Bounded per pass to keep a list
-     * with many Projects from turning one refresh into a flood of calls.
+     * Reads the memberships of each Project from the account and folds them onto the rows: every worker and child
+     * becomes the root's, whatever the list said before. The roots are [rootIds] — what the account list's window
+     * called Projects — together with every root the agent list knows: a Project beyond the window, one a worker's
+     * record or a coordinator's transcript named, one restored from disk. Nothing happens without Extended mode, or
+     * for the demo. Bounded per pass to keep a list with many Projects from turning one refresh into a flood of
+     * calls, and rotated — the root read longest ago goes first — so a cap never leaves the same roots unread.
      */
-    suspend fun syncLineage(rootIds: Collection<String>) {
-        if (rootIds.isEmpty() || session.isDemo || !capabilities().projects) return
+    suspend fun syncLineage(rootIds: Collection<String> = emptyList()) {
+        if (session.isDemo || !capabilities().projects) return
         syncMutex.withLock {
             val token = agents.token()
-            for (rootId in rootIds.distinct().take(maxRootsPerSync)) {
+            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id }
+            val roots = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
+            for (rootId in roots.take(maxRootsPerSync)) {
                 if (!readLineage(rootId, token)) return
             }
         }
@@ -192,12 +208,32 @@ class ProjectRepository(
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            flow.update { it.copy(isSyncing = false, hasSynced = true, lineageNotice = describeLineageFailure(t)) }
+            flow.update { it.copy(isSyncing = false, hasSynced = true, lastSyncedAtMillis = now(), lineageNotice = describeLineageFailure(t), lastSync = LineageSyncRecord(false, false, describeLineageFailure(t))) }
             return true
         }
         if (agents.token() != token) return false
-        agents.applyLineage(rootId, lineage.members, authoritative = true, startedIn = token)
-        flow.update { it.copy(memberships = lineage.workers.associateBy { m -> m.workerId }, isSyncing = false, hasSynced = true, lineageNotice = null) }
+        val notice = lineage.failure?.let(::describeLineageFailure)
+        if (lineage.isUnread) {
+            flow.update { it.copy(isSyncing = false, hasSynced = true, lastSyncedAtMillis = now(), lineageNotice = notice, lastSync = LineageSyncRecord(false, false, notice)) }
+            return true
+        }
+        // Each read's word is applied with its own signal, and releases only the kind of member it covered in full.
+        if (lineage.workersRead) {
+            agents.applyLineage(rootId, lineage.workers.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
+        }
+        if (lineage.childrenRead) {
+            agents.applyLineage(rootId, lineage.children, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
+        }
+        flow.update {
+            it.copy(
+                memberships = if (lineage.workersRead) lineage.workers.associateBy { m -> m.workerId } else it.memberships,
+                isSyncing = false,
+                hasSynced = true,
+                lastSyncedAtMillis = now(),
+                lineageNotice = notice,
+                lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.size, lineage.children.size),
+            )
+        }
         // Members the list does not hold (beyond its window, or created moments ago) are fetched by id so the view can list them.
         val missing = lineage.members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)
         for (id in missing) {
@@ -206,6 +242,9 @@ class ProjectRepository(
         }
         return true
     }
+
+    /** The last membership pass of each root this session, for the diagnostics export. */
+    fun syncRecords(): Map<String, LineageSyncRecord> = extras.mapNotNull { (id, flow) -> flow.value.lastSync?.let { id to it } }.toMap()
 
     /**
      * Fetches the rows of [parentIds] through the public API so that each can take its place at the head of its
@@ -223,7 +262,7 @@ class ProjectRepository(
                 if (agents.agent(id) != null) continue
                 if (agents.loadDetail(id).isFailure) continue
                 val managesWorkers = agents.state.value.agents.any { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER }
-                if (managesWorkers) agents.applyLineage(id, emptyMap(), authoritative = true, startedIn = token)
+                if (managesWorkers) agents.applyLineage(id, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token)
             }
         }
     }
@@ -319,7 +358,7 @@ class ProjectRepository(
     /** Spawns a new primary under [projectId] (`CreateProjectWorker`); the worker's row joins the list at once. */
     suspend fun createWorker(projectId: String, launch: WorkerLaunch): Result<String> = action(needs = { it.projects }) { api ->
         val created = api.createWorker(projectId, launch)
-        agents.applyLineage(projectId, mapOf(created.id to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        agents.applyLineage(projectId, mapOf(created.id to AgentParentKind.PROJECT_WORKER), LineageSignal.ACTION)
         agents.loadDetail(created.id)
         refreshView(projectId)
         created.id
@@ -328,21 +367,21 @@ class ProjectRepository(
     /** Makes an existing chat one of [projectId]'s primaries (`SetWorkerManager`, adopted). */
     suspend fun adopt(projectId: String, agentId: String): Result<Unit> = action(needs = { it.projects }) { api ->
         api.setWorkerManager(agentId, projectId)
-        agents.applyLineage(projectId, mapOf(agentId to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        agents.applyLineage(projectId, mapOf(agentId to AgentParentKind.PROJECT_WORKER), LineageSignal.ACTION)
         refreshView(projectId)
     }
 
     /** Releases a primary from [projectId] (`ClearWorkerManager`): a chat of its own again. */
     suspend fun release(projectId: String, agentId: String): Result<Unit> = action(needs = { it.projects }) { api ->
         api.clearWorkerManager(agentId)
-        agents.patch(agentId) { it.copy(parent = null, knownScope = AgentScope.PRIMARY) }
+        agents.clearLineage(agentId)
         extrasOf(projectId).update { it.copy(memberships = it.memberships - agentId) }
     }
 
     /** Moves [agentId] under [newParentId] as its cloud subagent (`ReparentBackgroundComposer`). */
     suspend fun reparent(agentId: String, newParentId: String): Result<Unit> = action(needs = { it.projects }) { api ->
         api.reparent(agentId, newParentId)
-        agents.applyLineage(newParentId, mapOf(agentId to AgentParentKind.SUBAGENT), authoritative = true)
+        agents.applyLineage(newParentId, mapOf(agentId to AgentParentKind.SUBAGENT), LineageSignal.ACTION)
     }
 
     /** Sets the Project's icon and colour (`UpdateProjectAppearance`); the row shows the account's answer. */
@@ -360,7 +399,7 @@ class ProjectRepository(
         val flow = extrasOf(projectId)
         val result = action(needs = { it.projects }) { api ->
             val created = api.startSideChat(projectId, name)
-            agents.applyLineage(projectId, mapOf(created.id to AgentParentKind.SIDE_CHAT), authoritative = true)
+            agents.applyLineage(projectId, mapOf(created.id to AgentParentKind.SIDE_CHAT), LineageSignal.ACTION)
             agents.loadDetail(created.id)
             created.id
         }

@@ -15,6 +15,7 @@ import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.parseIsoMillis
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
@@ -241,6 +242,37 @@ class FinishWatchdogTest {
         agents.refresh()
         prefs.snooze("bc-1", Long.MAX_VALUE, nowMillis = now)
         finish("run-1", "FINISHED", "Done in the background.", 4_000, "2026-04-13T18:30:04.000Z")
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced).isEmpty()
+    }
+
+    @Test
+    fun `a Project's coordinator and workers are neither read nor announced, and are not counted as something to watch`() = runBlocking {
+        api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
+        api.addRunningAgent("bc-w", "Stripe webhook handler", "run-w")
+        api.addRunningAgent("bc-s", "Pricing copy", "run-s")
+        api.addRunningAgent("bc-x", "Plain chat", "run-x")
+        agents.refresh()
+        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), authoritative = true)
+        // Everything finished on the server while nothing followed it.
+        finish("run-p", "FINISHED", "Two PRs up.", 240_000, "2026-04-13T18:34:00.000Z")
+        finish("run-w", "FINISHED", "Webhooks in.", 60_000, "2026-04-13T18:31:00.000Z")
+        finish("run-s", "FINISHED", "Copy drafted.", 30_000, "2026-04-13T18:30:30.000Z")
+        finish("run-x", "FINISHED", "Done.", 1_000, "2026-04-13T18:30:01.000Z")
+        val recordReads = api.getRunCalls
+
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        // Only the account's own chat was announced; the Project's chats were not even worth a record read.
+        assertThat(announced.map { it.agentId }).containsExactly("bc-x")
+        assertThat(api.getRunCalls - recordReads).isAtMost(1)
+    }
+
+    @Test
+    fun `a Project's chats still running are not what keeps the watchdog watching`() = runBlocking {
+        api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
+        api.addRunningAgent("bc-w", "Stripe webhook handler", "run-w")
+        agents.refresh()
+        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced).isEmpty()
     }

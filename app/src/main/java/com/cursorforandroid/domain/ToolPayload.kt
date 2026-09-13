@@ -124,6 +124,69 @@ sealed interface ToolPayload {
             return (picked + listOfNotNull(text)).joinToString(", ").ifEmpty { null }
         }
     }
+
+    /**
+     * A Project coordinator's word to a worker or about it (`agent/v1/coordinator_tools`): the worker it created
+     * (`create_agent`, the prompt in [text], the worker's name in [title]), messaged (`send_to_agent`, the message
+     * in [text]), asked about (`get_agent_status`, one [WorkerStatus] per worker), stopped, or read the transcript of
+     * (an excerpt in [text]). [workers] names every worker the call touched; a status check carries their state as
+     * the coordinator saw it, which the list's live row supersedes when the worker is loaded here.
+     */
+    @Serializable
+    @SerialName("worker_action")
+    data class WorkerAction(
+        val kind: Kind,
+        val workers: List<WorkerStatus> = emptyList(),
+        val text: String? = null,
+        val title: String? = null,
+        /** The result's one-line message ("Created agent…", "Delivered as queued"). */
+        val note: String? = null,
+        val truncated: Boolean = false,
+    ) : ToolPayload {
+        enum class Kind { Created, Messaged, Status, Stopped, ReadTranscript }
+
+        /** The worker the call was about, for the calls about one. */
+        val worker: WorkerStatus? get() = workers.firstOrNull()
+    }
+
+    /** The coordinator's message to the user (`send_to_user`), as the markdown it wrote. */
+    @Serializable
+    @SerialName("coordinator_message")
+    data class CoordinatorMessage(val message: String) : ToolPayload
+}
+
+/**
+ * One worker as a coordinator's tool named it: the id (a cloud agent's, `bc-…`, when it is one), the name the
+ * coordinator gave or saw, and — from `get_agent_status` — where it stood: `lifecycle`, whether a turn was in
+ * flight, how its last turn ended, its pull request, when it was last active.
+ */
+@Serializable
+data class WorkerStatus(
+    val agentId: String? = null,
+    val name: String? = null,
+    val lifecycle: String? = null,
+    val turnInFlight: Boolean? = null,
+    val lastTurnStatus: String? = null,
+    val prUrl: String? = null,
+    val lastActivityAtMillis: Long? = null,
+) {
+    val isCloudAgent: Boolean get() = agentId?.startsWith("bc-") == true
+
+    /** "Working", "Finished", "Failed", "Cancelled", "Archived", or the raw word when it is one this build does not know; null for nothing said. */
+    val statusLabel: String?
+        get() = when {
+            turnInFlight == true -> "Working"
+            lastTurnStatus != null -> when (lastTurnStatus.trim().uppercase().removePrefix("RUN_STATUS_").removePrefix("TURN_STATUS_")) {
+                "FINISHED", "SUCCEEDED", "COMPLETED", "SUCCESS" -> "Finished"
+                "ERROR", "FAILED", "FAILURE" -> "Failed"
+                "CANCELLED", "CANCELED", "STOPPED" -> "Cancelled"
+                "EXPIRED", "TIMED_OUT", "TIMEOUT" -> "Expired"
+                "RUNNING", "CREATING" -> "Working"
+                else -> lastTurnStatus.trim().lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+            }
+            lifecycle != null -> lifecycle.trim().lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+            else -> null
+        }
 }
 
 /** How much of a payload's text is kept: enough for any edit or file a screen can scroll, bounded for the trace file. */

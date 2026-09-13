@@ -74,6 +74,12 @@ data class ThinkingBlock(
  */
 enum class ToolKind {
     Read, List, Search, Grep, Glob, Edit, Create, Delete, Shell, WebSearch, WebFetch, Task, Mcp, McpTools, Todo, Lints, Question, Image, Plan, Other,
+    /**
+     * A Project coordinator's tools (`agent/v1/coordinator_tools` and `send_to_user`): creating, messaging, checking
+     * on and stopping its workers, reading their transcripts, and speaking to the user. Rendered as what they are — a
+     * worker's card, a status row, the coordinator's message — rather than as steps behind an "Explored" header.
+     */
+    Coordinator,
 }
 
 /** The three forms of a tool's verb: while it runs, once it is done, and when it failed ("Edit attempted"). */
@@ -212,12 +218,19 @@ data class ActivityGroup(
     val thoughtSeconds: Long? get() = leadingThoughts.mapNotNull { it.durationSeconds }.takeIf { it.isNotEmpty() }?.sum()
 
     /**
+     * A Project coordinator's work: every call is one of its tools — a worker created, messaged, checked on or stopped,
+     * a word to the user. Shown step by step as cards and rows, never folded behind a summary: each is the point.
+     */
+    val isCoordination: Boolean get() = calls.isNotEmpty() && calls.all { it.kind == ToolKind.Coordinator }
+
+    /**
      * Whether the work collapses behind its summary row. Cursor groups tool calls from the first one, except that
-     * reads and listings alone need three of them; anything with a thought among it is grouped.
+     * reads and listings alone need three of them; anything with a thought among it is grouped. A coordinator's
+     * work is never grouped (see [isCoordination]).
      */
     val isWorkGrouped: Boolean
         get() {
-            if (calls.isEmpty()) return false
+            if (calls.isEmpty() || isCoordination) return false
             if (work.any { it is ThinkingBlock }) return true
             val onlyReads = calls.all { it.kind == ToolKind.Read || it.kind == ToolKind.List }
             return if (onlyReads) calls.size >= 3 else true
@@ -268,6 +281,8 @@ data class WorkSummary(
     /** Lines added and removed across the edits; null when no edit reported counts or one of them is missing them. */
     val additions: Int?,
     val deletions: Int?,
+    /** A coordinator's calls about its workers (created, messaged, checked on, stopped); a word to the user is not one. */
+    val coordinated: Int = 0,
 ) {
     val hasFileChanges: Boolean get() = edits > 0 || deletes > 0
 
@@ -299,6 +314,7 @@ data class WorkSummary(
                 fileChangeFiles = changes.map { it.summary }.filter { it.isNotBlank() }.distinct(),
                 additions = if (hasStats) additions else null,
                 deletions = if (hasStats) deletions else null,
+                coordinated = calls.count { it.kind == ToolKind.Coordinator && it.payload is ToolPayload.WorkerAction },
             )
         }
     }
@@ -341,6 +357,11 @@ data class WorkHeader(
                 val questions = calls.sumOf { (it.payload as? ToolPayload.Question)?.questions?.size ?: 1 }
                 return WorkHeader(if (busy) "Asking" else "Asked", plural(questions, "question"))
             }
+            // A coordinator's step is shown open (see ActivityGroup.isCoordination); the header is for the digest.
+            if (group.isCoordination) {
+                val agents = calls.flatMap { it.linkedAgentIds }.distinct().size
+                return WorkHeader(if (busy) "Coordinating" else "Coordinated", if (agents > 0) plural(agents, "agent") else null)
+            }
             val parts = mutableListOf<String>()
             val action: String
             if (summary.hasFileChanges) {
@@ -360,6 +381,7 @@ data class WorkHeader(
             if (summary.images > 0) parts += plural(summary.images, "image")
             if (summary.commands > 0) parts += "ran ${plural(summary.commands, "command")}"
             if (summary.taskCalls > 0) parts += plural(summary.taskCalls, "agent")
+            if (summary.coordinated > 0) parts += "coordinated ${plural(summary.coordinated, "worker")}"
             return WorkHeader(action, parts.joinToString(", ").ifBlank { null }, summary.lineStats)
         }
 
@@ -422,8 +444,14 @@ data class SystemNotification(
     /** The notification as injected, markup included, for "Copy message". */
     val raw: String,
     val timestampMillis: Long? = null,
+    /**
+     * The cloud agent the notice is about, when it named one (`Agent ID: bc-…`): a Project's worker reporting to
+     * its coordinator, or a cloud subagent. The row opens that agent's conversation.
+     */
+    val agentId: String? = null,
 ) : TimelineItem {
-    enum class Kind { Goal, Subagent, Task, Other }
+    /** [Worker] is a Project's worker (or a cloud agent) reporting in: a [Subagent] with a chat of its own to open. */
+    enum class Kind { Goal, Subagent, Task, Other, Worker }
 }
 
 /** Terminal marker for a run: status, duration and pushed branches. */
@@ -464,6 +492,8 @@ object ToolNames {
         put(ToolKind.Question, "ask_question", "askquestion")
         put(ToolKind.Image, "generate_image", "generateimage")
         put(ToolKind.Plan, "create_plan", "createplan")
+        // A Project coordinator's tools, in the public stream's spelling and the SDK's camel case (lowercased).
+        put(ToolKind.Coordinator, "create_agent", "createagent", "send_to_agent", "sendtoagent", "get_agent_status", "getagentstatus", "stop_agent", "stopagent", "read_agent_transcript", "readagenttranscript", "send_to_user", "sendtouser")
     }
 
     fun kindOf(name: String): ToolKind {
@@ -510,15 +540,25 @@ object ToolNames {
         "fetch_cloud_agent_data" to ToolLabels("Fetching cloud agent data", "Fetched cloud agent data", "Fetch cloud agent data"),
         "mcp_auth" to ToolLabels("Authenticating MCP server", "Authenticated MCP server", "MCP authentication"),
         "connect_scm" to ToolLabels("Connecting GitHub", "Connected GitHub", "Connect GitHub"),
+        "setup_vm_environment" to ToolLabels("Setting up VM", "Set up VM", "Set up VM"),
+        "truncated" to ToolLabels("Processing", "Processed", "Process"),
+    )
+
+    /** The coordinator's verbs, by the tool's public name (the SDK's camel case lands on the same rows). */
+    private val COORDINATOR: Map<String, ToolLabels> = mapOf(
         "send_to_user" to ToolLabels("Sending message", "Sent message", "Send message"),
         "get_agent_status" to ToolLabels("Checking agents", "Checked agents", "Check agents"),
         "send_to_agent" to ToolLabels("Messaging agent", "Messaged agent", "Message agent"),
         "read_agent_transcript" to ToolLabels("Reading transcript", "Read transcript", "Read transcript"),
         "create_agent" to ToolLabels("Creating agent", "Created agent", "Create agent"),
         "stop_agent" to ToolLabels("Stopping agent", "Stopped agent", "Stop agent"),
-        "setup_vm_environment" to ToolLabels("Setting up VM", "Set up VM", "Set up VM"),
-        "truncated" to ToolLabels("Processing", "Processed", "Process"),
     )
+
+    /** The public name of a coordinator's tool from any spelling the streams use (`sendToAgent` → `send_to_agent`). */
+    fun coordinatorTool(name: String): String? {
+        val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call")
+        return COORDINATOR.keys.firstOrNull { it == n || it.replace("_", "") == n }
+    }
 
     /** The verbs of a kind; for [ToolKind.Other] the tool's own, or its name read as words ("Switched mode"). */
     fun labels(kind: ToolKind, name: String): ToolLabels = when (kind) {
@@ -542,7 +582,9 @@ object ToolNames {
         ToolKind.Question -> ToolLabels("Asking questions", "Asked", "Ask question")
         ToolKind.Image -> ToolLabels("Generating image", "Generated image", "Generate image")
         ToolKind.Plan -> ToolLabels("Writing plan", "Wrote plan", "Write plan")
-        ToolKind.Other -> OTHER[name.trim().lowercase()] ?: humanize(name).let { ToolLabels(it, it, it) }
+        ToolKind.Coordinator -> coordinatorTool(name)?.let { COORDINATOR[it] } ?: humanize(name).let { ToolLabels(it, it, it) }
+        // A trace kept before the coordinator's tools had a kind of their own still reads with their verbs.
+        ToolKind.Other -> OTHER[name.trim().lowercase()] ?: coordinatorTool(name)?.let { COORDINATOR[it] } ?: humanize(name).let { ToolLabels(it, it, it) }
     }
 
     /** `switch_mode` / `switchModeToolCall` → "Switch mode"; an empty name is "Tool", as it is on the desktop. */

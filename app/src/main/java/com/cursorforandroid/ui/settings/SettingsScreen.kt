@@ -218,6 +218,8 @@ fun SettingsScreen(
                 Group("Advanced")
                 CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                     ExtendedModeRows(graph)
+                    HairlineDivider()
+                    ProjectDiagnosticsRow(graph)
                 }
             }
             Text(

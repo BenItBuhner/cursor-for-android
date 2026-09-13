@@ -87,9 +87,10 @@ class FinishWatchdog(
         if (!prefs.liveNotifications.first() || !canShowLive()) return Outcome.Off
         session.restoreIfNeeded()
         if (session.state.value !is SessionState.SignedIn) return Outcome.Off
-        // A fresh process knows the list only from disk, which is where the rows that were running last time are.
+        // A fresh process knows the list only from disk, which is where the rows that were running last time are. A
+        // Project's coordinator and the agents spawned inside it are never announced, so they are not worth a read.
         agents.restoreFromCache()
-        val before = agents.state.value.agents.filter { it.isRunning && it.latestRunId != null }
+        val before = agents.state.value.agents.filter { it.isRunning && !it.isProjectScoped && it.latestRunId != null }
         if (before.isEmpty()) return Outcome.Done
 
         // A list from disk, or one the app last fetched a while ago, is brought up to date first. The fetch reads the
@@ -118,25 +119,18 @@ class FinishWatchdog(
             }
             val settled = agents.agent(was.id) ?: continue
             if (settled.runStatus == RunStatus.CANCELLED) continue
+            // The refresh may have placed the row inside a Project since the check began: then it is not announced.
+            if (settled.isProjectScoped) continue
             val local = prefs.localAgentState.first()
             if (local.isSnoozed(was.id, nowProvider())) continue
             // Claimed first so two checks cannot both announce it, and given back when the card did not go out:
             // a finish the system dropped is one the next check should still be able to tell.
             val key = "${was.id}/$runId"
             if (!announced.add(key)) continue
-            if (!announce(rolledUp(trackedRun(settled, runId, record), settled))) announced.remove(key)
+            if (!announce(trackedRun(settled, runId, record))) announced.remove(key)
         }
-        val running = agents.state.value.agents.count { it.isRunning }
+        val running = agents.state.value.agents.count { it.isRunning && !it.isProjectScoped }
         return if (running > 0) Outcome.Watching(running) else Outcome.Done
-    }
-
-    /**
-     * A Project's worker is announced as its Project's news, never as a card of its own (see [TrackedRun.rolledUpInto]);
-     * each check knows only the finish in hand, so the card names that worker.
-     */
-    private fun rolledUp(run: TrackedRun, agent: Agent): TrackedRun {
-        val project = agent.parent?.takeIf { agent.isProjectChild } ?: return run
-        return run.rolledUpInto(project.id, agents.agent(project.id)?.name, listOf(run.title))
     }
 
     /**

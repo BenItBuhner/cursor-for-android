@@ -11,6 +11,7 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 
 /** The account's pinned agents as the server reports them; [loaded] false means the server skipped the pinned state. */
 data class PinnedIds(val ids: Set<String>, val loaded: Boolean)
@@ -93,36 +94,67 @@ class BackgroundComposerApi(
 ) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi {
 
     override suspend fun list(): AccountList {
-        val response = call(
-            "ListBackgroundComposers",
-            ListBackgroundComposersRequestDto(
-                n = LIST_WINDOW,
-                includeArchived = true,
-                includeStatus = true,
-                includePinnedState = true,
-                includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
-                includeWorkers = true,
-                includeSubagents = true,
-            ),
-            ListBackgroundComposersRequestDto.serializer(),
-            ListBackgroundComposersResponseDto.serializer(),
-        )
+        val first = page(null)
+        var response = first
+        val all = ArrayList(first.composers)
+        // The list is windowed and a heavy account outgrows one window — a Project with a hundred workers is one
+        // hundred rows of it — and a chat outside the window is a chat whose lineage the read did not say. The pages
+        // after the first follow whichever cursor the service answers with (a token, or the activity offset the older
+        // service pages by), a few at most; the rest is left to the membership reads and the rows' kept scope.
+        var pages = 1
+        while (response.hasMore && pages < MAX_LIST_PAGES) {
+            val cursor = response.cursor() ?: break
+            response = page(cursor)
+            if (response.composers.isEmpty()) break
+            all += response.composers
+            pages++
+        }
         val pullRequests = LinkedHashMap<String, PullRequestState>()
         val sources = LinkedHashMap<String, AgentSource>()
-        for (composer in response.composers) {
+        for (composer in all) {
             if (composer.bcId.isNotBlank()) AgentSource.parse(composer.source?.contentOrNull)?.let { sources[composer.bcId] = it }
             // Keyed exactly as the public API names the same PR on the agent's run (`git.branches[].prUrl`).
             val url = composer.prUrl?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             val state = pullRequestState(composer.prStatus, composer.isPrMerged) ?: continue
             pullRequests[url] = state
         }
-        val composers = response.composers.mapNotNull { composer -> snapshot(composer) }
+        val composers = all.mapNotNull { composer -> snapshot(composer) }.distinctBy { it.id }
         return AccountList(
-            PinnedIds(response.pinnedBcIds.toSet(), response.didLoadPinnedState),
+            PinnedIds(first.pinnedBcIds.toSet(), first.didLoadPinnedState),
             pullRequests,
             sources,
             composers,
         )
+    }
+
+    private suspend fun page(cursor: ListCursor?): ListBackgroundComposersResponseDto = call(
+        "ListBackgroundComposers",
+        ListBackgroundComposersRequestDto(
+            n = LIST_WINDOW,
+            includeArchived = true,
+            includeStatus = true,
+            includePinnedState = cursor == null,
+            includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
+            includeWorkers = true,
+            includeSubagents = true,
+            usePageTokens = if (cursor is ListCursor.Token) true else null,
+            pageToken = (cursor as? ListCursor.Token)?.token,
+            lastMessageActivityAtMsOffset = (cursor as? ListCursor.Offset)?.offset,
+        ),
+        ListBackgroundComposersRequestDto.serializer(),
+        ListBackgroundComposersResponseDto.serializer(),
+    )
+
+    /** Where the next page starts, as the service said: a page token, or the activity offset; null when it gave neither. */
+    private fun ListBackgroundComposersResponseDto.cursor(): ListCursor? {
+        nextPageToken?.trim()?.takeIf { it.isNotEmpty() }?.let { return ListCursor.Token(it) }
+        val offset = nextPageOffset?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() } ?: return null
+        return if (offset > 0) ListCursor.Offset(offset) else null
+    }
+
+    private sealed interface ListCursor {
+        data class Token(val token: String) : ListCursor
+        data class Offset(val offset: Long) : ListCursor
     }
 
     override suspend fun pin(ids: Collection<String>) {
@@ -183,6 +215,10 @@ class BackgroundComposerApi(
          */
         val includeWorkers: Boolean,
         val includeSubagents: Boolean,
+        /** Paging, one way or the other; left out (null) on the first page and where the service offered no cursor. */
+        val usePageTokens: Boolean? = null,
+        val pageToken: String? = null,
+        val lastMessageActivityAtMsOffset: Long? = null,
     )
 
     @Serializable
@@ -191,6 +227,9 @@ class BackgroundComposerApi(
         val pinnedBcIds: List<String> = emptyList(),
         val didLoadPinnedState: Boolean = false,
         val hasMore: Boolean = false,
+        val nextPageToken: String? = null,
+        /** `int64`, which proto3's JSON mapping writes as a string; read either way. */
+        val nextPageOffset: JsonPrimitive? = null,
     )
 
     /** The corner of `aiserver.v1.BackgroundComposer` read here; everything else the record carries is ignored. */
@@ -264,6 +303,9 @@ class BackgroundComposerApi(
          * the sidebar shows first (the public list is paged to 500; the rest are looked up one by one).
          */
         const val LIST_WINDOW = 200
+
+        /** Pages of the list read at most per round (see [list]): the window, then up to two more behind the service's cursor. */
+        const val MAX_LIST_PAGES = 3
 
         /**
          * Sources the account service leaves out of the list unless asked for: agents started by the SDK, which

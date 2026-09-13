@@ -5,6 +5,7 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.ToolPayloadLimits
+import com.cursorforandroid.domain.WorkerStatus
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -55,7 +56,77 @@ object ToolPayloads {
             ToolKind.Image -> image(arguments, value, images, callId)
             ToolKind.Task -> subagent(arguments, value)
             ToolKind.Question -> question(arguments, value)
+            ToolKind.Coordinator -> coordinator(name, arguments, value)
             ToolKind.Other -> if (isRecording(name)) recording(value) else null
+            else -> null
+        }
+    }
+
+    /**
+     * A coordinator's tools, by the shapes of `agent/v1/coordinator_tools` and `send_to_user` (field names in the
+     * proto's spelling and the SDK's): `CreateAgentArgs {prompt, name}` → `{agent_id, message}`; `SendToAgentArgs
+     * {agent_id, message, delivery, title}` → `{worker_bc_id, delivered_as, message}`; `GetAgentStatusArgs {agent_ids}`
+     * → `{workers[{bc_id, name, lifecycle, turn_in_flight, last_terminal_turn_status, pr_url, last_activity_at_ms}],
+     * message}`; `StopAgentArgs {agent_id}` → `{worker_bc_id, message}`; `ReadAgentTranscriptArgs {agent_id, mode}` →
+     * `{transcript, truncated}`; `SendToUserArgs {message}`.
+     */
+    private fun coordinator(name: String, args: JsonObject?, value: JsonObject?): ToolPayload? {
+        val tool = ToolNames.coordinatorTool(name) ?: return null
+        if (tool == "send_to_user") {
+            val message = args.string(listOf("message", "text", "content")) ?: return null
+            return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first)
+        }
+        val note = value?.deepString("message")
+        val argAgent = args.string(AGENT_ID_KEYS)
+        val resultAgent = value?.deepString("agent_id", "agentId", "worker_bc_id", "workerBcId")
+        return when (tool) {
+            "create_agent" -> ToolPayload.WorkerAction(
+                kind = ToolPayload.WorkerAction.Kind.Created,
+                workers = listOf(WorkerStatus(agentId = resultAgent, name = args.string(listOf("name")))),
+                text = args.string(listOf("prompt"))?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS).first },
+                title = args.string(listOf("name")),
+                note = note,
+            )
+            "send_to_agent" -> ToolPayload.WorkerAction(
+                kind = ToolPayload.WorkerAction.Kind.Messaged,
+                workers = listOf(WorkerStatus(agentId = resultAgent ?: argAgent)),
+                text = args.string(listOf("message"))?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS).first },
+                title = args.string(listOf("title")),
+                note = value?.deepString("delivered_as", "deliveredAs")?.let { "Delivered as ${it.lowercase().replace('_', ' ')}" } ?: note,
+            )
+            "get_agent_status" -> {
+                val reported = (value?.deep("workers") as? JsonArray)?.mapNotNull { element ->
+                    val w = element as? JsonObject ?: return@mapNotNull null
+                    WorkerStatus(
+                        agentId = w.string(listOf("bc_id", "bcId", "agent_id", "agentId")),
+                        name = w.string(listOf("name")),
+                        lifecycle = w.string(listOf("lifecycle")),
+                        turnInFlight = w.bool("turn_in_flight", "turnInFlight"),
+                        lastTurnStatus = w.string(listOf("last_terminal_turn_status", "lastTerminalTurnStatus")),
+                        prUrl = w.string(listOf("pr_url", "prUrl")),
+                        lastActivityAtMillis = w.deepLong("last_activity_at_ms", "lastActivityAtMs"),
+                    )
+                }.orEmpty()
+                val asked = (args?.get("agent_ids") as? JsonArray ?: args?.get("agentIds") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+                val workers = reported.ifEmpty { asked.map { WorkerStatus(agentId = it) } }
+                ToolPayload.WorkerAction(kind = ToolPayload.WorkerAction.Kind.Status, workers = workers, note = note)
+            }
+            "stop_agent" -> ToolPayload.WorkerAction(
+                kind = ToolPayload.WorkerAction.Kind.Stopped,
+                workers = listOf(WorkerStatus(agentId = resultAgent ?: argAgent)),
+                note = note,
+            )
+            "read_agent_transcript" -> {
+                val transcript = value?.deepString("transcript")
+                val (excerpt, cut) = transcript?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS) } ?: (null to false)
+                ToolPayload.WorkerAction(
+                    kind = ToolPayload.WorkerAction.Kind.ReadTranscript,
+                    workers = listOf(WorkerStatus(agentId = argAgent)),
+                    text = excerpt,
+                    title = args.string(listOf("mode")),
+                    truncated = cut || value?.deepBool("truncated") == true,
+                )
+            }
             else -> null
         }
     }
@@ -259,5 +330,8 @@ object ToolPayloads {
     }
 
     private val PATH_KEYS = listOf("path", "target_file", "targetFile", "file_path", "filePath", "relative_workspace_path", "relativeWorkspacePath", "file", "notebook_path", "absolutePath")
+    private val AGENT_ID_KEYS = listOf("agent_id", "agentId")
     private val DATA_URI = Regex("""^data:([^;,]*)(?:;[^,]*)?,(.*)$""", RegexOption.DOT_MATCHES_ALL)
+    /** A coordinator's prompt to a worker, or a transcript excerpt, is kept to a card's worth; the worker's own chat has the whole. */
+    private const val PROMPT_CHARS = 4_000
 }

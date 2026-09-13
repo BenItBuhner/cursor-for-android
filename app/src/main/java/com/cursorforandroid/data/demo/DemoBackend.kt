@@ -51,6 +51,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.time.Instant
@@ -138,6 +139,12 @@ internal class DemoStore {
                     val id = "s${++calls}"
                     add(toolEvent(id, "task", "running", "subagent_type" to "explore", "description" to step.description))
                     add(toolEvent(id, "task", "completed", "subagent_type" to "explore", "description" to step.description))
+                }
+                is DemoData.Step.Call -> {
+                    val id = "k${++calls}"
+                    val args = Json.parseToJsonElement(step.args)
+                    add(RunStreamEvent.ToolCall(SseToolCallDto(callId = id, name = step.name, status = "running", args = args)))
+                    add(RunStreamEvent.ToolCall(SseToolCallDto(callId = id, name = step.name, status = "completed", args = args, result = step.result?.let(Json::parseToJsonElement))))
                 }
                 DemoData.Step.Reply -> if (replies.hasNext()) add(RunStreamEvent.Assistant(replies.next()))
             }

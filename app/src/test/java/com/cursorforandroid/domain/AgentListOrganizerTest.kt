@@ -101,8 +101,8 @@ class AgentListOrganizerTest {
         assertThat(standIn.agent.isProjectRoot).isTrue()
         assertThat(standIn.children.map { it.agent.id }).containsExactly("orphan")
         assertThat(sections.ids("date:Today")).containsExactly("plain")
-        // The recent surface is a primary surface: the Projects and the chats, never the workers (a pinned one aside).
-        assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("project", "pinned-worker", "plain").inOrder()
+        // The recent surface is for the account's own chats: no Project, no worker — not even a pinned one.
+        assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
         // A filter that drops the parent hides its children with it; they never stand on their own.
         val running = AgentListOrganizer.organize(agents.map { if (it.id == "worker-new") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
         assertThat(running).isEmpty()
@@ -172,11 +172,13 @@ class AgentListOrganizerTest {
         val sections = AgentListOrganizer.organize(listOf(coordinator, agent("w", parent = "coord")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
         assertThat(sections.single().key).isEqualTo(AgentListOrganizer.PROJECTS_KEY)
         assertThat(sections.single().rows.single().children.map { it.agent.id }).containsExactly("w")
-        // What a lineage source last said wins over the row's own facts; nothing said falls back to them.
+        // The row's own lineage facts come first — a parent link makes a child whatever was kept — and a kept word
+        // that called it a child holds; only then do the Project flag and the kept scope decide.
         assertThat(agent("x", isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(agent("x", isProject = true, parent = "y").scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(agent("x").scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(agent("x", parent = "y", knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agent("x", parent = "y", knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("x", isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
     }
 
     @Test
@@ -194,13 +196,16 @@ class AgentListOrganizerTest {
         val pinned = sections.first { it.key == AgentListOrganizer.PINNED_KEY }.rows.single()
         assertThat(pinned.agent.id).isEqualTo("worker")
         assertThat(pinned.children.map { it.agent.id }).containsExactly("deep")
-        assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("project", "worker")
-        // The widget's lists are primary surfaces too.
+        // The sidebar's word is the sidebar's: the recents and the widget list nothing of a Project, pinned or not.
+        assertThat(AgentListOrganizer.recentRows(sections)).isEmpty()
         val running = agents.map { if (it.id == "deep") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }
         assertThat(WidgetList.rows(WidgetMode.Running, running, ListPreferences(), local, nowMillis = now, zone = zone)).isEmpty()
-        val pinnedRunning = running.map { if (it.id == "worker") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }
-        assertThat(WidgetList.rows(WidgetMode.Running, pinnedRunning, ListPreferences(), local, nowMillis = now, zone = zone).map { it.agent.id }).containsExactly("worker")
-        assertThat(WidgetList.rows(WidgetMode.Recent, agents, ListPreferences(), local, nowMillis = now, zone = zone).map { it.agent.id }).containsExactly("project", "worker")
+        val pinnedRunning = running.map { if (it.id == "worker" || it.id == "project") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }
+        assertThat(WidgetList.rows(WidgetMode.Running, pinnedRunning, ListPreferences(), local, nowMillis = now, zone = zone)).isEmpty()
+        assertThat(WidgetList.rows(WidgetMode.Pinned, agents, ListPreferences(), local, nowMillis = now, zone = zone)).isEmpty()
+        assertThat(WidgetList.rows(WidgetMode.Recent, agents, ListPreferences(), local, nowMillis = now, zone = zone)).isEmpty()
+        val withPlain = agents + agent("plain")
+        assertThat(WidgetList.rows(WidgetMode.Recent, withPlain, ListPreferences(), local, nowMillis = now, zone = zone).map { it.agent.id }).containsExactly("plain")
     }
 
     @Test
