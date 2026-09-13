@@ -528,8 +528,25 @@ class ConversationRepository(
                 e.runPagingJob = null
                 e.loadingOlder = false
                 e.stopFollowing()
+                e.trimWindow()
             }
         }
+    }
+
+    /**
+     * With no screen on the chat, the window falls back to what the next open starts on and the traces of the turns
+     * past it leave memory (the disk has them): however far a reader scrolled, a chat left behind holds no more than
+     * [MAX_RESTORED_WINDOW] runs' worth of items and traces.
+     */
+    private fun Entry.trimWindow() {
+        if (window <= MAX_RESTORED_WINDOW) return
+        publish(
+            mutate = {
+                window = MAX_RESTORED_WINDOW
+                val kept = layout().let { it.paired + it.standing }.mapTo(HashSet()) { it.id }
+                traces = traces.filterKeys { it in kept }
+            },
+        )
     }
 
     /**
