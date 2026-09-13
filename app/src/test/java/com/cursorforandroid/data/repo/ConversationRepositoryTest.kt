@@ -892,6 +892,57 @@ class ConversationRepositoryTest {
     }
 
     /**
+     * A follow-up on a long chat whose run records are still being paged in: its prompt stands on its own until the
+     * server reports it, and the window's older turns keep their own runs meanwhile — whether the transcript or the
+     * run list catches up with the follow-up first.
+     */
+    @Test
+    fun `a follow-up on a long chat pairs the window's turns with their own runs while the list is still paging`() = runBlocking<Unit> {
+        val turns = Array(60) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        // Every turn before the follow-up the fake will file (it stamps those in the morning of the 14th).
+        api.addFinishedAgent("bc-1", "Agent", *turns, firstRunAt = "2026-04-11T00:00:00.000Z")
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        // The pages behind the first are held: the list stays incomplete for the whole of this.
+        api.runsLaterPagesGate = CompletableDeferred()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 10 }
+
+        // The run list has the follow-up's run before the transcript has its prompt (the fake appends the prompt on
+        // createRun; take it back out to stage the lag).
+        val runId = "run-followup-1"
+        api.runsHiddenFromList += runId
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 61").isSuccess).isTrue()
+        api.transcripts["bc-1"] = api.transcripts.getValue("bc-1").filterNot { it.text == "Prompt 61" }
+        awaitUntil { state(conversations).isStreaming }
+        var shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..60).map { "Prompt $it" }.toTypedArray(), "Prompt 61").inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+
+        // The transcript catches up first: the prompt shows once, paired the same way.
+        api.transcripts["bc-1"] = api.transcripts.getValue("bc-1") + V0ConversationMessageDto("srv-61", "user_message", "Prompt 61")
+        var listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading }
+        shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..60).map { "Prompt $it" }.toTypedArray(), "Prompt 61").inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+        assertThat(shown.activeRunId).isEqualTo(runId)
+
+        // Then the run list: the server's copy of the turn takes over and nothing moves.
+        api.runsHiddenFromList -= runId
+        listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading }
+        shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..61).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+        assertThat(shown.items.map { it.id }).containsNoDuplicates()
+        api.runsLaterPagesGate!!.complete(Unit)
+    }
+
+    /**
      * A restart renders the window that was open from disk — the older turns' run records included — and the
      * network only revalidates it; scrolling up afterwards needs no page the disk did not keep.
      */

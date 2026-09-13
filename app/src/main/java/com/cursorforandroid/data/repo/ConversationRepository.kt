@@ -343,7 +343,7 @@ class ConversationRepository(
         fun layout(): Layout {
             val ordered = allRuns()
             val prompts = messages.count { it.type == USER_MESSAGE }
-            val total = if (runsComplete) ordered.size else maxOf(prompts, ordered.size)
+            val total = chatTotal(ordered, prompts)
             val unfetched = total - ordered.size
             val shown = ordered.takeLast(window)
             val firstShown = unfetched + (ordered.size - shown.size)
@@ -354,6 +354,28 @@ class ConversationRepository(
                 standing = shown.drop(pairedCount),
                 olderCount = firstShown,
             )
+        }
+
+        /**
+         * How many runs the chat has, counting the ones the list has not fetched. Exact once the list is complete.
+         * Until then every prompt started a run, plus the prompts sent from here that the transcript has not caught
+         * up with — told from the transcript's newest prompts, since a prompt sent from here is always the chat's
+         * newest — and never fewer than the runs in hand.
+         */
+        private fun chatTotal(ordered: List<RunDto>, prompts: Int): Int {
+            if (runsComplete) return ordered.size
+            val listed = runs.mapTo(HashSet()) { it.id }
+            val unlisted = local.filter { it.run.id !in listed }
+            var missing = 0
+            if (unlisted.isNotEmpty()) {
+                // The transcript's newest prompt: the newest of the prompts sent from here that it has caught up with.
+                val newest = messages.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
+                for (prompt in unlisted.asReversed()) {
+                    if (newest != null && newest == prompt.message.text.trim()) break
+                    missing++
+                }
+            }
+            return maxOf(prompts + missing, ordered.size)
         }
 
         /** The transcript from its [index]th user message on (0 is the whole of it; past the last prompt, nothing). */
@@ -404,8 +426,11 @@ class ConversationRepository(
          */
         fun coveredCount(): Int {
             val prompts = messages.count { it.type == USER_MESSAGE }
-            // Every fetched run has a prompt while there are prompts left over for the runs not fetched yet.
-            return if (runsComplete) prompts else minOf(prompts, allRuns().size)
+            if (runsComplete) return prompts
+            val ordered = allRuns()
+            // The prompts of the runs not fetched yet come first; what is left pairs with the runs in hand, oldest first.
+            val unfetched = chatTotal(ordered, prompts) - ordered.size
+            return (prompts - unfetched).coerceIn(0, ordered.size)
         }
 
         /** True when this run's message is shown from a prompt sent from here rather than from the server's transcript. */
