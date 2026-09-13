@@ -4,6 +4,11 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.ConversationRecordApi
+import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessStep
+import com.cursorforandroid.data.api.HeadlessToolCall
+import com.cursorforandroid.data.api.HeadlessToolResult
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
@@ -15,6 +20,7 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
@@ -88,10 +94,31 @@ class TranscriptRehydrationTest {
     /** A hub is per process: a restart starts with an empty one, and everything it had followed is gone with it. */
     private fun hub() = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
 
-    private fun repository(hub: LiveRunHub) = ConversationRepository(
+    private fun repository(hub: LiveRunHub, record: ConversationRecordApi? = null, capabilities: Capabilities = Capabilities.DOCUMENTED) = ConversationRepository(
         session, agents, prefs, hub, attachments, cache, traces,
         isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        record = record, capabilities = { capabilities },
     )
+
+    /** The account's record of the same chat: per turn its prompt, one read with its result, and the reply. */
+    private class FakeRecord(runs: Int, callsPerRun: Int) : ConversationRecordApi {
+        val steps: List<HeadlessStep> = (1..runs).flatMap { t ->
+            listOf(HeadlessStep(userMessage = "Prompt $t")) +
+                (1..callsPerRun).flatMap { n ->
+                    listOf(
+                        HeadlessStep(toolCall = HeadlessToolCall("rec-$t-$n", "read_file", buildJsonObject { put("path", JsonPrimitive("app/src/File$n.kt")) })),
+                        HeadlessStep(toolResult = HeadlessToolResult("rec-$t-$n", buildJsonObject { put("content", JsonPrimitive("recorded $t/$n")) })),
+                    )
+                } +
+                listOf(HeadlessStep(text = "Reply $t"))
+        }
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+
+        override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
+            calls.incrementAndGet()
+            return HeadlessPage(steps.drop(startIndex).take(limit), startIndex, steps.size)
+        }
+    }
 
     private suspend fun awaitUntil(timeoutMs: Long = 20_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
@@ -192,5 +219,49 @@ class TranscriptRehydrationTest {
         assertThat(rehydrated.toolCalls().count { (it.payload as? ToolPayload.FileContent)?.content?.length == 30_000 }).isEqualTo(runs * callsPerRun)
         // And nothing was asked of the expired logs: the disk answered for every run.
         assertThat(streamer.connections.count()).isEqualTo(runs)
+    }
+
+    /**
+     * A chat this device never saw whose logs have all expired: in default mode its turns keep their text; in
+     * Extended mode the account's own transcript gives the window its tool calls and payloads, which are then kept on
+     * disk like any replayed trace.
+     */
+    @Test
+    fun `in Extended mode the account's transcript fills the turns whose logs are gone, and default mode never asks it`() = runBlocking<Unit> {
+        val runs = 25
+        val callsPerRun = 3
+        seedLongConversation("bc-old", runs, callsPerRun, contentChars = 100)
+        expireEverything(runs)
+        val record = FakeRecord(runs, callsPerRun)
+
+        // Default mode: the documented endpoints only, so the expired turns are text.
+        val documented = repository(hub(), record = record, capabilities = Capabilities.DOCUMENTED)
+        documented.attach("bc-old")
+        awaitUntil(60_000) { !documented.state("bc-old").value.isLoading && documented.state("bc-old").value.items.count { it is UserMessage } == 10 }
+        delay(300)
+        assertThat(documented.state("bc-old").value.toolCalls()).isEmpty()
+        assertThat(record.calls.get()).isEqualTo(0)
+        documented.detach("bc-old")
+
+        // Extended mode: the window's turns come back whole from the account.
+        val extended = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        extended.attach("bc-old")
+        awaitUntil(60_000) { extended.state("bc-old").value.toolCalls().size == 10 * callsPerRun }
+        val filled = extended.state("bc-old").value
+        assertThat(filled.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(16..25).map { "Prompt $it" }.toTypedArray()).inOrder()
+        // Each turn's calls are its own: the record's turns paired with the runs by position.
+        val lastGroup = filled.items.filterIsInstance<ActivityGroup>().last()
+        assertThat(lastGroup.calls.map { it.callId }).containsExactly("rec-25-1", "rec-25-2", "rec-25-3").inOrder()
+        assertThat((lastGroup.calls.first().payload as ToolPayload.FileContent).content).isEqualTo("recorded 25/1")
+        assertThat(record.calls.get()).isGreaterThan(0)
+        // Kept: the next open needs neither the log nor the account.
+        awaitUntil { traces.runIds("bc-old").size == 10 }
+        val asked = record.calls.get()
+        extended.detach("bc-old")
+        val again = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        again.attach("bc-old")
+        awaitUntil(60_000) { again.state("bc-old").value.toolCalls().size == 10 * callsPerRun }
+        delay(200)
+        assertThat(record.calls.get()).isEqualTo(asked)
     }
 }

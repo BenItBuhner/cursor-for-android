@@ -59,11 +59,17 @@ data class Capabilities(
     val accountQueue: Boolean,
     /** Ask and Debug modes for a follow-up, which only the account's follow-up RPC can carry (`agent.v1.AgentMode`). Off: agent and plan. */
     val agentModes: Boolean,
+    /**
+     * The account's own copy of a chat's transcript, tool calls included (`BackgroundComposerService/FetchBackgroundComposer`),
+     * for the turns whose documented event log has expired and which this device never saw. Off: those turns keep
+     * their text alone.
+     */
+    val accountTranscript: Boolean = false,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
-            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript
 
     companion object {
         /** The default: the documented API only. */
@@ -83,6 +89,7 @@ data class Capabilities(
             interactions = false,
             accountQueue = false,
             agentModes = false,
+            accountTranscript = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -102,6 +109,7 @@ data class Capabilities(
             interactions = true,
             accountQueue = true,
             agentModes = true,
+            accountTranscript = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
@@ -16,11 +17,13 @@ import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.TimelineBuilder.withUniqueIds
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
@@ -134,6 +137,14 @@ class ConversationRepository(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     /** Where one agent's own work runs; a seam for tests that need to hold it up and see what the caller did meanwhile. */
     private val entryDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * The account's own transcript of a chat (Extended mode), for the turns whose documented log has expired and
+     * which the disk never held; null (or the capability off) leaves those turns to their text.
+     */
+    private val record: ConversationRecordApi? = null,
+    private val capabilities: suspend () -> Capabilities = { Capabilities.DOCUMENTED },
+    /** Where the images the account's transcript carries are kept on the device, like the stream's (see [LiveRunHub]). */
+    private val images: GeneratedImageStore? = null,
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -1094,11 +1105,50 @@ class ConversationRepository(
                         }
                     }
                 }
+                // The runs whose logs are gone: in Extended mode the account's own transcript still has their turns.
+                val gone = synchronized(e) { pending.filter { it.id in e.expiredRuns && it.id !in e.traces } }
+                if (gone.isNotEmpty()) fillFromRecord(e, agentId, gone, tokens)
             } finally {
                 // Runs this pass did not get to (paused half-way) wait on the queue for the next one — unless a pause
                 // already put them there and moved on (see [pause]).
                 synchronized(e) { if (e.traceJob === self) e.requeueInFlight() }
             }
+        }
+    }
+
+    /**
+     * Fills the traces of [runs] — finished runs whose documented log has expired — from the account's transcript
+     * (Extended mode): the record's turns pair with the chat's runs by position, oldest first, and a turn is taken
+     * only when the prompt it starts with is the one the transcript pairs with the run, so a record that counts its
+     * turns differently never dresses a run in another turn's work. What lands is kept on disk like a replayed trace.
+     */
+    private suspend fun fillFromRecord(e: Entry, agentId: String, runs: List<RunDto>, tokens: CacheTokens) {
+        val api = record ?: return
+        if (session.isDemo || !capabilities().accountTranscript) return
+        val (ordered, total, prompts) = synchronized(e) {
+            val listed = e.runs.sortedBy { parseIsoMillis(it.createdAt) }
+            val prompts = e.messages.filter { it.type == USER_MESSAGE }.map { it.text.trim() }
+            Triple(listed, if (e.runsComplete) listed.size else maxOf(prompts.size, listed.size), prompts)
+        }
+        val wanted = runs.mapNotNull { run -> ordered.indexOfFirst { it.id == run.id }.takeIf { it >= 0 }?.let { run to it } }
+        if (wanted.isEmpty()) return
+        val unfetched = total - ordered.size
+        val oldest = wanted.minOf { (_, index) -> unfetched + index }
+        val turns = runCatching { HeadlessTranscript.tailTurns(api, agentId, count = total - oldest) }
+            .onFailure { if (it is CancellationException) throw it }
+            .getOrNull() ?: return
+        if (turns.isEmpty()) return
+        val sink = images?.forAgent(agentId)
+        for ((run, index) in wanted) {
+            val position = unfetched + index
+            // The record's last turn is the chat's last run; count back from there.
+            val turn = turns.getOrNull(turns.size - (total - position)) ?: continue
+            val prompt = prompts.getOrNull(position)
+            if (prompt != null && turn.prompt != null && prompt != turn.prompt.trim()) continue
+            val items = HeadlessTranscript.trace(turn, run, sink)
+            if (items.none { it !is RunFooter }) continue
+            val trace = settleTrace(e, run, items)
+            withContext(NonCancellable) { writeTraces(agentId, listOf(trace), tokens) }
         }
     }
 
