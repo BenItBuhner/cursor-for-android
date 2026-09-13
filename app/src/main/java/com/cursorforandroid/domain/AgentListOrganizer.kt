@@ -122,6 +122,25 @@ object AgentListOrganizer {
         else -> AgentIndicator.Read
     }
 
+    /**
+     * Whether a row that stands on its own is listed under [prefs]. The Chats filters are about the account's chats
+     * — a chat's status, its pull request, where it was started, what it runs on — and a Project is none of those:
+     * it is a body of work with many chats and pull requests under it, and no chat-level filter can say anything
+     * about it as a whole. So a Project's row is listed whatever the filters say — its coordinator's merged pull
+     * request took the whole Project off the list once — with its tree and its count. The one word honoured is the
+     * archive ([passesArchive]): archiving is done to the Project itself, so an archived Project is put away as an
+     * archived chat is, and shown again with Archived checked. Every other row answers to [matchesFilters].
+     */
+    fun isListed(row: AgentRow, prefs: ListPreferences): Boolean =
+        if (row.agent.isProjectRoot) passesArchive(row, prefs) else matchesFilters(row, prefs)
+
+    /**
+     * The one filter every row answers to: an archived chat is listed only while Archived is checked. It is all
+     * the Status filter says about a Project, and about a chat nested under another (see [organize]).
+     */
+    fun passesArchive(row: AgentRow, prefs: ListPreferences): Boolean = !row.agent.isArchived || StatusFilter.Archived in prefs.statuses
+
+    /** The Chats filters, in full, as a chat of the account's own answers to them; see [isListed] for what does not. */
     fun matchesFilters(row: AgentRow, prefs: ListPreferences): Boolean {
         val agent = row.agent
         prefs.repos?.let { repos -> if (agent.repoSlug !in repos) return false }
@@ -179,8 +198,11 @@ object AgentListOrganizer {
      * A pinned child is the one exception, by the user's word. A child whose Project the list does not hold at all
      * sits under a stand-in row for that Project (see [placeholder]) until the row has been fetched.
      *
-     * The filters apply to every row; the search finds a chat wherever it sits in the tree, and shows it under its
-     * parent — a match on the parent keeps its whole subtree.
+     * The filters pick the chats that stand on their own — the account's chats, and a pinned child — and a
+     * Project's row stands whatever they say (see [isListed]). What hangs under a listed chat comes with it: the
+     * tree is the chat's own, and a Project's count is its membership rather than what a filter left of it; only an
+     * archived child is put away, as any archived chat is. The search finds a chat wherever it sits in the tree, and
+     * shows it under its parent — a match on the parent keeps its whole subtree.
      */
     fun organize(
         agents: List<Agent>,
@@ -190,10 +212,12 @@ object AgentListOrganizer {
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
     ): List<AgentSection> {
-        val rows = sort(agents.map { toRow(it, local, nowMillis) }.filter { matchesFilters(it, prefs) }, prefs.sortOrder)
-        val (nested, primary) = rows.partition { it.agent.isProjectChild && !it.isPinned }
+        val rows = sort(agents.map { toRow(it, local, nowMillis) }, prefs.sortOrder)
+        val (nested, standalone) = rows.partition { it.agent.isProjectChild && !it.isPinned }
+        val primary = standalone.filter { isListed(it, prefs) }
+        val children = nested.filter { passesArchive(it, prefs) }
         val known = agents.mapTo(HashSet(agents.size)) { it.id }
-        val tree = nest(primary, nested) + placeholders(nested, known, nowMillis)
+        val tree = nest(primary, children) + placeholders(children, known, nowMillis)
         val sorted = tree.mapNotNull { it.matching(query) }
 
         // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.

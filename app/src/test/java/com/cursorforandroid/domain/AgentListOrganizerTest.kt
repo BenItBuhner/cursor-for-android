@@ -2,6 +2,7 @@ package com.cursorforandroid.domain
 
 import com.cursorforandroid.data.api.CursorJson
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -103,9 +104,17 @@ class AgentListOrganizerTest {
         assertThat(sections.ids("date:Today")).containsExactly("plain")
         // The recent surface is for the account's own chats: no Project, no worker — not even a pinned one.
         assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
-        // A filter that drops the parent hides its children with it; they never stand on their own.
+        // A filter never drops a Project: it is listed with its whole tree, pinned children aside, while the chats
+        // that stand on their own — the pinned worker, the plain chat — answer to the filter as ever.
         val running = AgentListOrganizer.organize(agents.map { if (it.id == "worker-new") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
-        assertThat(running).isEmpty()
+        assertThat(running.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY)
+        assertThat(running.single().rows.map { it.agent.id }).containsExactly("project", "bc-gone").inOrder()
+        assertThat(running.single().rows.first().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
+        // A filter that drops a chat of the account's own hides its children with it; they never stand on their own.
+        val plainTree = listOf(agent("plain", updatedAgo = hour), agent("sub", parent = "plain", parentKind = AgentParentKind.SUBAGENT, runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE))
+        assertThat(AgentListOrganizer.organize(plainTree, ListPreferences(statuses = setOf(StatusFilter.Running)), LocalAgentState(), nowMillis = now, zone = zone)).isEmpty()
+        val plainListed = AgentListOrganizer.organize(plainTree, ListPreferences(statuses = setOf(StatusFilter.Unread)), LocalAgentState(), nowMillis = now, zone = zone)
+        assertThat(plainListed.single().rows.single().children.map { it.agent.id }).containsExactly("sub")
         // A search finds a child where it sits: under its parent, with its siblings that do not match left out.
         val searched = AgentListOrganizer.organize(agents, ListPreferences(), local, query = "side", nowMillis = now, zone = zone)
         val found = searched.single().rows.single()
@@ -132,9 +141,14 @@ class AgentListOrganizerTest {
         // Cause 3: the parent is archived and the default Status filter hides it.
         val archived = project.copy(lifecycle = AgentLifecycle.ARCHIVED)
         assertThat(primaryIds(listOf(archived, worker, side, plain, subagent))).containsExactly("plain")
-        // Cause 3: the parent is filtered out by repository while its workers keep their repositories.
+        // Cause 3, as it was: the parent filtered out by repository while its workers keep their repositories. The
+        // Project now stands whatever the Repo filter says, and its workers sit under it — never among the chats.
         val noRepo = project.copy(repoUrl = null)
-        assertThat(primaryIds(listOf(noRepo, worker, side, plain), ListPreferences(repos = setOf("acme/app")))).containsExactly("plain")
+        val byRepo = AgentListOrganizer.organize(listOf(noRepo, worker, side, plain), ListPreferences(repos = setOf("acme/app")), LocalAgentState(), nowMillis = now, zone = zone)
+        assertThat(byRepo.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, "date:Today").inOrder()
+        assertThat(byRepo.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("project")
+        assertThat(byRepo.first().rows.single().children.map { it.agent.id }).containsExactly("worker", "side")
+        assertThat(byRepo.ids("date:Today")).containsExactly("plain")
         // Cause 3: the parent is searched away.
         assertThat(primaryIds(listOf(project, worker, side, plain), query = "plain")).containsExactly("plain")
         // Cause 3 and 4: the parent is beyond the listing window, or in the gap between the two windows.
@@ -206,6 +220,146 @@ class AgentListOrganizerTest {
         assertThat(WidgetList.rows(WidgetMode.Recent, agents, ListPreferences(), local, nowMillis = now, zone = zone)).isEmpty()
         val withPlain = agents + agent("plain")
         assertThat(WidgetList.rows(WidgetMode.Recent, withPlain, ListPreferences(), local, nowMillis = now, zone = zone).map { it.agent.id }).containsExactly("plain")
+    }
+
+    // ---- the Chats filters and Projects: a Project's row stands whatever they say ----------------------------------
+
+    private val mergedPr = "https://github.com/acme/app/pull/1"
+    private val openPr = "https://github.com/acme/app/pull/2"
+
+    /**
+     * Three Projects and three chats of the account's own, alike but for being Projects: one with a merged pull
+     * request, one with an open one (on another repository, on the user's machine), one with none (running). The
+     * first Project's workers carry a merged and an open pull request of their own.
+     */
+    private val projectsAndChats = listOf(
+        agent("p-merged", isProject = true, branch = "cursor/p1", pr = mergedPr, source = AgentSource.WEBSITE),
+        agent("p-open", isProject = true, branch = "cursor/p2", pr = openPr, source = AgentSource.WEBSITE, env = EnvType.MACHINE, repo = "https://github.com/acme/web"),
+        agent("p-none", isProject = true, repo = null, runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE),
+        agent("w-merged", parent = "p-merged", branch = "cursor/w1", pr = mergedPr),
+        agent("w-open", parent = "p-merged", branch = "cursor/w2", pr = openPr),
+        agent("w-none", parent = "p-open"),
+        agent("c-merged", branch = "cursor/c1", pr = mergedPr),
+        agent("c-open", branch = "cursor/c2", pr = openPr),
+        agent("c-none"),
+    )
+    private val projectsAndChatsLocal = LocalAgentState(pullRequests = mapOf(mergedPr to PullRequestState.Merged, openPr to PullRequestState.Open))
+
+    /** Every Project is in the Projects group with its whole tree, and the chats listed on their own are exactly [chats]. */
+    private fun assertProjectsKept(prefs: ListPreferences, vararg chats: String) {
+        val sections = AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, nowMillis = now, zone = zone)
+        assertWithMessage("Projects under $prefs").that(sections.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("p-merged", "p-open", "p-none").inOrder()
+        val projects = sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.associateBy { it.agent.id }
+        // The counts are the Projects' membership, whatever the filter says about the workers' own pull requests.
+        assertWithMessage("p-merged's tree under $prefs").that(projects.getValue("p-merged").children.map { it.agent.id }).containsExactly("w-merged", "w-open").inOrder()
+        assertWithMessage("p-open's tree under $prefs").that(projects.getValue("p-open").children.map { it.agent.id }).containsExactly("w-none")
+        assertThat(projects.getValue("p-none").children).isEmpty()
+        assertThat(projects.getValue("p-merged").pullRequest).isEqualTo(PullRequestState.Merged)
+        val others = sections.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }
+        assertWithMessage("chats under $prefs").that(others.map { it.agent.id }).containsExactlyElementsIn(chats.toList())
+        // Nothing of a Project is a recent chat, filtered or not.
+        assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactlyElementsIn(chats.toList())
+    }
+
+    @Test
+    fun `the Git filter never takes a Project off the list, whatever its coordinator's pull request`() {
+        // Bennett's case: merged pull requests excluded, and a Project whose coordinator has one disappeared with them.
+        assertProjectsKept(ListPreferences(git = GitFilter.entries.toSet() - GitFilter.Merged), "c-open", "c-none")
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Merged)), "c-merged")
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Open)), "c-open")
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Draft)))
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Closed)))
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.NoPullRequest)), "c-none")
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Open, GitFilter.NoPullRequest)), "c-open", "c-none")
+        assertProjectsKept(ListPreferences(git = emptySet()))
+        assertProjectsKept(ListPreferences(), "c-merged", "c-open", "c-none")
+    }
+
+    @Test
+    fun `the Status, Repo, Source and Environment filters never take a Project off the list either`() {
+        // Status: none of the three chats is running, in error or snoozed, and all are unread (nothing read yet).
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Running)))
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Unread)), "c-merged", "c-open", "c-none")
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Read)))
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Error)))
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Snoozed)))
+        assertProjectsKept(ListPreferences(statuses = setOf(StatusFilter.Archived)))
+        assertProjectsKept(ListPreferences(statuses = emptySet()))
+        // Repo: a Project spans repositories, or names none.
+        assertProjectsKept(ListPreferences(repos = setOf("acme/app")), "c-merged", "c-open", "c-none")
+        assertProjectsKept(ListPreferences(repos = setOf("acme/web")))
+        assertProjectsKept(ListPreferences(repos = emptySet()))
+        // Source: the chats have not been asked where they were started ("Other"); the Projects were started on the web.
+        assertProjectsKept(ListPreferences(sources = setOf(SourceFilter.Other)), "c-merged", "c-open", "c-none")
+        assertProjectsKept(ListPreferences(sources = setOf(SourceFilter.Slack)))
+        assertProjectsKept(ListPreferences(sources = emptySet()))
+        // Environment.
+        assertProjectsKept(ListPreferences(environments = setOf(EnvironmentFilter.Cloud)), "c-merged", "c-open", "c-none")
+        assertProjectsKept(ListPreferences(environments = setOf(EnvironmentFilter.Machine)))
+        assertProjectsKept(ListPreferences(environments = emptySet()))
+        // All of them at once, each excluding something a Project has.
+        assertProjectsKept(ListPreferences(git = setOf(GitFilter.Draft), statuses = setOf(StatusFilter.Error), repos = setOf("acme/other"), sources = setOf(SourceFilter.ThisDevice), environments = setOf(EnvironmentFilter.Pool)))
+        // Grouping and sort order leave the Projects group where it is.
+        for (groupBy in GroupBy.entries) for (order in SortOrder.entries) {
+            val sections = AgentListOrganizer.organize(projectsAndChats, ListPreferences(groupBy = groupBy, sortOrder = order, git = setOf(GitFilter.Open)), projectsAndChatsLocal, nowMillis = now, zone = zone)
+            assertThat(sections.first().key).isEqualTo(AgentListOrganizer.PROJECTS_KEY)
+            assertThat(sections.first().rows.map { it.agent.id }).containsExactly("p-merged", "p-open", "p-none")
+        }
+        // The Chats filters still cut the Running widget and the recents as before: nothing of a Project, and the
+        // filters honoured for the account's chats.
+        assertThat(WidgetList.rows(WidgetMode.Recent, projectsAndChats, ListPreferences(git = GitFilter.entries.toSet() - GitFilter.Merged), projectsAndChatsLocal, nowMillis = now, zone = zone).map { it.agent.id }).containsExactly("c-open", "c-none")
+        assertThat(WidgetList.rows(WidgetMode.Running, projectsAndChats, ListPreferences(), projectsAndChatsLocal, nowMillis = now, zone = zone)).isEmpty()
+    }
+
+    @Test
+    fun `the search still finds a Project by name while the filters would have cut its coordinator`() {
+        val prefs = ListPreferences(git = GitFilter.entries.toSet() - GitFilter.Merged)
+        val byName = AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, query = "p-merged", nowMillis = now, zone = zone)
+        assertThat(byName.single().key).isEqualTo(AgentListOrganizer.PROJECTS_KEY)
+        val found = byName.single().rows.single()
+        assertThat(found.agent.id).isEqualTo("p-merged")
+        assertThat(found.children.map { it.agent.id }).containsExactly("w-merged", "w-open").inOrder()
+        // A worker is found under its Project, and a chat's own name still finds the chat.
+        val byWorker = AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, query = "w-open", nowMillis = now, zone = zone)
+        assertThat(byWorker.single().rows.single().let { it.agent.id to it.children.map { c -> c.agent.id } }).isEqualTo("p-merged" to listOf("w-open"))
+        assertThat(AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, query = "c-open", nowMillis = now, zone = zone).single().rows.map { it.agent.id }).containsExactly("c-open")
+        assertThat(AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, query = "nothing here", nowMillis = now, zone = zone)).isEmpty()
+    }
+
+    @Test
+    fun `the archive is the one filter a Project and its members answer to`() {
+        val agents = listOf(
+            agent("live", isProject = true, branch = "cursor/l", pr = mergedPr),
+            agent("live-worker", parent = "live"),
+            agent("live-archived-worker", parent = "live", lifecycle = AgentLifecycle.ARCHIVED),
+            agent("gone", isProject = true, lifecycle = AgentLifecycle.ARCHIVED),
+            agent("gone-worker", parent = "gone"),
+            agent("plain"),
+        )
+        val local = LocalAgentState(pullRequests = mapOf(mergedPr to PullRequestState.Merged))
+        // By default an archived Project is put away like an archived chat, its workers with it; so is an archived
+        // worker of a live Project, and the count follows.
+        val defaults = AgentListOrganizer.organize(agents, ListPreferences(git = GitFilter.entries.toSet() - GitFilter.Merged), local, nowMillis = now, zone = zone)
+        assertThat(defaults.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("live")
+        assertThat(defaults.first().rows.single().descendants().map { it.agent.id }).containsExactly("live-worker")
+        assertThat(defaults.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).containsExactly("live", "live-worker", "plain")
+        // With Archived checked, the archived Project is back with its worker, and so is the live Project's archived worker.
+        val archivedToo = AgentListOrganizer.organize(agents, ListPreferences(statuses = StatusFilter.entries.toSet()), local, nowMillis = now, zone = zone)
+        assertThat(archivedToo.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("live", "gone").inOrder()
+        val rows = archivedToo.first().rows.associateBy { it.agent.id }
+        assertThat(rows.getValue("live").children.map { it.agent.id }).containsExactly("live-worker", "live-archived-worker").inOrder()
+        assertThat(rows.getValue("gone").children.map { it.agent.id }).containsExactly("gone-worker")
+        // Archived alone lists the archived chats — and every live Project too, since nothing else decides about one.
+        val onlyArchived = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Archived)), local, nowMillis = now, zone = zone)
+        assertThat(onlyArchived.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("live", "gone").inOrder()
+        assertThat(onlyArchived.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }).isEmpty()
+        // The rule itself, row by row.
+        val liveRow = AgentListOrganizer.toRow(agents.first { it.id == "live" }, local, now)
+        val goneRow = AgentListOrganizer.toRow(agents.first { it.id == "gone" }, local, now)
+        assertThat(AgentListOrganizer.isListed(liveRow, ListPreferences(git = emptySet()))).isTrue()
+        assertThat(AgentListOrganizer.matchesFilters(liveRow, ListPreferences(git = emptySet()))).isFalse()
+        assertThat(AgentListOrganizer.isListed(goneRow, ListPreferences())).isFalse()
+        assertThat(AgentListOrganizer.isListed(goneRow, ListPreferences(statuses = setOf(StatusFilter.Archived)))).isTrue()
     }
 
     @Test
