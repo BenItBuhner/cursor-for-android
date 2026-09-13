@@ -156,36 +156,57 @@ class BackgroundComposerApiTest {
     }
 
     @Test
-    fun `a list with more behind it is read on, behind the service's cursor, a few pages at most`() = runBlocking<Unit> {
+    fun `a list with more behind it hands back the service's cursor, and the pages behind it are read on demand`() = runBlocking<Unit> {
         server.enqueue(session("s"))
         // The first page pages by token; the second by the activity offset the older service answers with; the
-        // third says there is more still, which is left alone.
+        // third says there is more still.
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-1"},{"bcId":"bc-2","managerAgentId":"bc-1"}],"hasMore":true,"nextPageToken":"page-2","pinnedBcIds":["bc-1"],"didLoadPinnedState":true}"""))
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-3","managerAgentId":"bc-1"},{"bcId":"bc-2"}],"hasMore":true,"nextPageOffset":"1700000000000"}"""))
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-4","sideChatInfo":{"parentBcId":"bc-3"}}],"hasMore":true,"nextPageToken":"page-4"}"""))
 
-        val list = api.list()
+        val first = api.list()
+        // One page, its pins, and where the next begins; nothing read that nobody has scrolled to.
+        assertThat(first.composers.map { it.id }).containsExactly("bc-1", "bc-2").inOrder()
+        assertThat(first.composers.first { it.id == "bc-2" }.parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
+        assertThat(first.pinned).isEqualTo(PinnedIds(setOf("bc-1"), loaded = true))
+        assertThat(first.nextCursor).isNotNull()
+        assertThat(server.requestCount).isEqualTo(2)
 
-        // Every page's records, once each (the first word on a repeated record stands), and the first page's pins.
-        assertThat(list.composers.map { it.id }).containsExactly("bc-1", "bc-2", "bc-3", "bc-4").inOrder()
-        assertThat(list.composers.first { it.id == "bc-2" }.parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
-        assertThat(list.composers.first { it.id == "bc-4" }.parent).isEqualTo(AgentParent("bc-3", AgentParentKind.SIDE_CHAT))
-        assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1"), loaded = true))
+        val second = api.listMore(first.nextCursor!!)
+        assertThat(second.composers.map { it.id }).containsExactly("bc-3", "bc-2").inOrder()
+        assertThat(second.pinned.loaded).isFalse()
+        assertThat(second.nextCursor).isNotNull()
+
+        val third = api.listMore(second.nextCursor!!)
+        assertThat(third.composers.single().parent).isEqualTo(AgentParent("bc-3", AgentParentKind.SIDE_CHAT))
+        assertThat(third.nextCursor).isNotNull()
+
         server.takeRequest() // the exchange
-        val first = server.takeRequest().json()
-        assertThat(first["pageToken"]).isNull()
-        assertThat(first["usePageTokens"]).isNull()
-        assertThat(first["lastMessageActivityAtMsOffset"]).isNull()
-        assertThat(first["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("true")
-        val second = server.takeRequest().json()
-        assertThat(second["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
-        assertThat(second["usePageTokens"]?.jsonPrimitive?.content).isEqualTo("true")
-        assertThat(second["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("false")
-        assertThat(second["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
-        val third = server.takeRequest().json()
-        assertThat(third["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000000000")
-        assertThat(third["pageToken"]).isNull()
+        val firstRequest = server.takeRequest().json()
+        assertThat(firstRequest["pageToken"]).isNull()
+        assertThat(firstRequest["usePageTokens"]).isNull()
+        assertThat(firstRequest["lastMessageActivityAtMsOffset"]).isNull()
+        assertThat(firstRequest["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("true")
+        val secondRequest = server.takeRequest().json()
+        assertThat(secondRequest["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
+        assertThat(secondRequest["usePageTokens"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(secondRequest["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("false")
+        assertThat(secondRequest["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
+        val thirdRequest = server.takeRequest().json()
+        assertThat(thirdRequest["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000000000")
+        assertThat(thirdRequest["pageToken"]).isNull()
         assertThat(server.requestCount).isEqualTo(4)
+    }
+
+    /** The last page names no cursor, and a page that says "more" but carries nothing ends the paging too. */
+    @Test
+    fun `the last page hands back no cursor`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-1"}],"hasMore":false,"nextPageToken":"ignored"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[],"hasMore":true,"nextPageToken":"page-2"}"""))
+
+        assertThat(api.list().nextCursor).isNull()
+        assertThat(api.list().nextCursor).isNull()
     }
 
     @Test

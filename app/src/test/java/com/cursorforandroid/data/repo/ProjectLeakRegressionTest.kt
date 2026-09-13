@@ -27,7 +27,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -243,6 +245,55 @@ class ProjectLeakRegressionTest {
         assertThat(record.childrenRead).isFalse()
         assertThat(record.workerCount).isEqualTo(3)
         assertThat(record.notice).isNotNull()
+    }
+
+    /**
+     * The list is paged on demand now, so a Project's workers and its coordinator can arrive pages apart. A worker on
+     * the first page whose record names a coordinator the list does not hold yet is placed under it at once, the
+     * coordinator is fetched by id to head the tree, and when the page that carries the coordinator (and more workers)
+     * lands, the placement pass runs over it too: nothing lifts the worker out, and the newcomers take their places.
+     */
+    @Test
+    fun `a Project's chats stay placed as the list pages, whichever page each arrives on`() = runBlocking<Unit> {
+        // Newest first: the workers on the first page of two, the coordinator and a third worker on the second.
+        api.addRunningAgent("bc-w1", "Worker one", "run-w1", createdAt = "2026-04-14T10:00:00.000Z")
+        api.addRunningAgent("bc-x", "A chat of its own", "run-x", createdAt = "2026-04-14T09:00:00.000Z")
+        api.addRunningAgent("bc-w2", "Worker two", "run-w2", createdAt = "2026-04-13T10:00:00.000Z")
+        api.addIdleAgent("bc-p", "Cursor for Android", "run-p", createdAt = "2026-04-12T10:00:00.000Z")
+        api.pageSize = 2
+        val agents = agents()
+        val projects = projects(agents)
+        projects.watchList()
+
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-w1", "bc-x")
+        assertThat(agents.state.value.hasMore).isTrue()
+        // The account's first page says whose the worker is; the coordinator is beyond the public list's first page.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
+        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        assertThat(AgentListOrganizer.missingParentIds(agents.state.value.agents)).containsExactly("bc-p")
+        // Fetched by id so it can head its tree, and marked a coordinator by the worker that names it.
+        withTimeout(5_000) { while (agents.agent("bc-p") == null) delay(10) }
+        assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
+        assertThat(primaryIds(agents)).containsExactly("bc-x")
+
+        // The reader pages on: the coordinator's own row lands with the second worker's, and the account's next page
+        // says whose the second worker is.
+        assertThat(agents.loadMore()).isEqualTo(RefreshOutcome.Refreshed)
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-w1", "bc-x", "bc-w2", "bc-p")
+        assertThat(agents.state.value.hasMore).isFalse()
+        assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
+        assertThat(agents.agent("bc-w1")!!.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true), ComposerSnapshot("bc-w2", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
+        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        assertThat(agents.agent("bc-w2")!!.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
+
+        // A refresh re-reads both pages; the rows come back placed as before.
+        agents.refresh()
+        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        assertThat(agents.agent("bc-w1")!!.parent?.id).isEqualTo("bc-p")
+        assertThat(agents.agent("bc-w2")!!.parent?.id).isEqualTo("bc-p")
+        assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
     }
 
     @Test

@@ -194,34 +194,54 @@ class AgentRepositoryTest {
     }
 
     @Test
-    fun `pages are published as they arrive and the legacy list never gates them`() = runBlocking<Unit> {
+    fun `the first page is published on its own, the legacy list never gates it, and the pages behind it come on demand`() = runBlocking<Unit> {
         repeat(250) { i -> api.addIdleAgent("bc-%03d".format(i), "Agent $i", "run-$i", createdAt = "2026-04-13T%02d:%02d:00.000Z".format(i / 60, i % 60)) }
         api.pageSize = 100
         api.v0Gate = CompletableDeferred()
-        api.laterPagesGate = CompletableDeferred()
         val repo = repository()
 
         val refresh = scope.launch { repo.refresh() }
         awaitUntil { repo.state.value.agents.size == 100 }
         assertThat(repo.state.value.hasLoaded).isTrue()
         assertThat(repo.state.value.isRefreshing).isTrue()
-        // Page 1 is on screen while page 2 is already requested (and held by the gate).
-        awaitUntil { api.listAgentsCalls == 2 }
-        // Newest first: the first page holds the most recently created agents.
+        // Newest first: the first page holds the most recently created agents, and the rest wait for the reader.
         assertThat(repo.state.value.agents.map { it.name }).contains("Agent 249")
         assertThat(repo.state.value.agents.map { it.name }).doesNotContain("Agent 0")
-
-        api.laterPagesGate!!.complete(Unit)
-        awaitUntil { repo.state.value.agents.size == 250 }
-        assertThat(repo.state.value.isRefreshing).isTrue()
         assertThat(repo.state.value.agents.all { it.repoUrl == null }).isTrue()
 
         api.v0Gate!!.complete(Unit)
         refresh.join()
         assertThat(repo.state.value.isRefreshing).isFalse()
+        assertThat(repo.state.value.hasMore).isTrue()
+        assertThat(repo.state.value.agents).hasSize(100)
         assertThat(repo.state.value.agents.all { it.repoUrl == "https://github.com/acme/app" }).isTrue()
+        assertThat(api.listAgentsCalls).isEqualTo(1)
+        assertThat(api.listAgentsV0Calls).isEqualTo(1)
+
+        // The reader reaches the end of the list: the next page, on both endpoints, and the page after that.
+        api.laterPagesGate = CompletableDeferred()
+        val more = scope.launch { repo.loadMore() }
+        awaitUntil { repo.state.value.isLoadingMore }
+        api.laterPagesGate!!.complete(Unit)
+        more.join()
+        assertThat(repo.state.value.agents).hasSize(200)
+        assertThat(repo.state.value.isLoadingMore).isFalse()
+        assertThat(repo.state.value.hasMore).isTrue()
+        assertThat(repo.state.value.agents.all { it.repoUrl == "https://github.com/acme/app" }).isTrue()
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Refreshed)
+        assertThat(repo.state.value.agents).hasSize(250)
+        assertThat(repo.state.value.agents.map { it.name }).contains("Agent 0")
+        assertThat(repo.state.value.hasMore).isFalse()
         assertThat(api.listAgentsCalls).isEqualTo(3)
         assertThat(api.listAgentsV0Calls).isEqualTo(3)
+        // Past the last page there is nothing to ask for.
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Skipped)
+        assertThat(api.listAgentsCalls).isEqualTo(3)
+
+        // A refresh re-reads the pages the reader has been to, so what is on screen is what it refreshes.
+        repo.refresh()
+        assertThat(api.listAgentsCalls).isEqualTo(6)
+        assertThat(repo.state.value.agents).hasSize(250)
     }
 
     @Test
@@ -281,7 +301,7 @@ class AgentRepositoryTest {
     }
 
     @Test
-    fun `a quick refresh reads only the newest page of each list`() = runBlocking<Unit> {
+    fun `a quick refresh reads only the newest page of each list, and a full one only the pages the list has been paged to`() = runBlocking<Unit> {
         repeat(150) { i -> api.addIdleAgent("bc-%03d".format(i), "Agent $i", "run-$i", createdAt = "2026-04-13T%02d:%02d:00.000Z".format(i / 60, i % 60)) }
         api.pageSize = 100
         val repo = repository()
@@ -289,8 +309,16 @@ class AgentRepositoryTest {
         assertThat(api.listAgentsCalls).isEqualTo(1)
         assertThat(api.listAgentsV0Calls).isEqualTo(1)
         assertThat(repo.state.value.agents).hasSize(100)
+        assertThat(repo.state.value.hasMore).isTrue()
         repo.refresh()
+        assertThat(api.listAgentsCalls).isEqualTo(2)
+        assertThat(repo.state.value.agents).hasSize(100)
+        repo.loadMore()
         assertThat(repo.state.value.agents).hasSize(150)
+        assertThat(repo.state.value.hasMore).isFalse()
+        // Two pages have been read, so a full refresh re-reads two.
+        repo.refresh()
+        assertThat(api.listAgentsCalls).isEqualTo(5)
     }
 
     @Test
@@ -772,20 +800,24 @@ class AgentRepositoryTest {
     }
 
     @Test
-    fun `a windowed refresh stops at its window, and a complete listing reconciles what lies beyond it`() = runBlocking<Unit> {
+    fun `a refresh re-reads the window and reconciles inside it, and a page loaded on demand reconciles the stretch it covers`() = runBlocking<Unit> {
         val agents = repository()
-        // Twelve agents, two per page: the windowed pass reads its five pages, a complete listing reads all six.
+        // Twelve agents, two per page: the refresh reads one page, the reader pages to the rest.
         api.pageSize = 2
         val start = now
         repeat(12) { i -> api.addIdleAgent("bc-%02d".format(i), "Agent $i", "run-$i", createdAt = iso(start - i * 60_000L)) }
 
-        // Nothing has ever been listed to the end, so the first pass does that rather than stopping at the window.
         agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.state.value.agents).hasSize(2)
+        assertThat(api.listAgentsCalls).isEqualTo(1)
+        assertThat(agents.state.value.hasMore).isTrue()
+        repeat(5) { assertThat(agents.loadMore()).isEqualTo(RefreshOutcome.Refreshed) }
         assertThat(agents.state.value.agents).hasSize(12)
+        assertThat(agents.state.value.hasMore).isFalse()
         assertThat(api.listAgentsCalls).isEqualTo(6)
 
-        // Deleted and renamed beyond the window. A windowed pass neither sees nor reconciles them: a row the pass
-        // never reached is not a row the server no longer has.
+        // Deleted and renamed elsewhere, beyond the five pages a refresh re-reads at most. The refresh neither sees
+        // nor reconciles them: a row the pass never reached is not a row the server no longer has.
         api.agents.remove("bc-11")
         api.v0.remove("bc-11")
         api.addIdleAgent("bc-10", "Renamed elsewhere", "run-10", createdAt = iso(start - 10 * 60_000L))
@@ -795,18 +827,20 @@ class AgentRepositoryTest {
         assertThat(agents.agent("bc-11")).isNotNull()
         assertThat(agents.agent("bc-10")?.name).isEqualTo("Agent 10")
 
-        // An hour on, the windowed pass is promoted to a complete listing and both land.
-        now += 61 * 60_000
-        agents.refresh(depth = RefreshDepth.Full)
-        assertThat(agents.agent("bc-11")).isNull()
+        // Paging to the end again covers the stretch beyond the window: the rename lands and the deleted row goes.
+        assertThat(agents.state.value.hasMore).isTrue()
+        agents.loadMore()
         assertThat(agents.agent("bc-10")?.name).isEqualTo("Renamed elsewhere")
+        assertThat(agents.agent("bc-11")).isNull()
+        assertThat(agents.state.value.agents).hasSize(11)
+        assertThat(agents.state.value.hasMore).isFalse()
 
-        // And a refresh asked for by hand pages to the end whenever it is asked, hour or no hour.
-        api.agents.remove("bc-10")
-        api.v0.remove("bc-10")
-        now += 60_000
-        agents.refresh(depth = RefreshDepth.Deep)
-        assertThat(agents.agent("bc-10")).isNull()
+        // A row deleted inside the window a refresh re-reads goes with that refresh (one old enough not to be a
+        // creation the listing is merely lagging).
+        api.agents.remove("bc-07")
+        api.v0.remove("bc-07")
+        agents.refresh(depth = RefreshDepth.Full)
+        assertThat(agents.agent("bc-07")).isNull()
         assertThat(agents.state.value.agents).hasSize(10)
     }
 

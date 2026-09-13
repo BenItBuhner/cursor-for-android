@@ -501,6 +501,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun reload() = graph.conversations.reload(agentId)
 
+    /** The reader neared the oldest turn shown: the turns before it are paged in (see [ConversationState.hasOlder]). */
+    fun loadOlder() = graph.conversations.loadOlder(agentId)
+
     /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
     fun resume() = graph.conversations.resume(agentId)
 

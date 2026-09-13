@@ -262,6 +262,7 @@ class AppGraph(
     // shims: a graph in default mode never builds the api2 client, and one in Extended mode never builds GitHub's.
     private val accountAgents = object : PinsApi, ComposerLifecycleApi {
         override suspend fun list(): AccountList = lazyAccountAgents.value.list()
+        override suspend fun listMore(cursor: String): AccountList = lazyAccountAgents.value.listMore(cursor)
         override suspend fun pin(ids: Collection<String>) = lazyAccountAgents.value.pin(ids)
         override suspend fun unpin(ids: Collection<String>) = lazyAccountAgents.value.unpin(ids)
         override suspend fun archive(id: String) = lazyAccountAgents.value.archive(id)
