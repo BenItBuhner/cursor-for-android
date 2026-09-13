@@ -326,7 +326,8 @@ fun RecentChatRow(
                     row.isSnoozed -> Icon(CursorIcons.Clock, "Snoozed", tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                     agent.hasPullRequest -> Icon(CursorIcons.GitPullRequest, row.pullRequest?.label ?: "Pull request", tint = pullRequestTint(row.pullRequest), modifier = Modifier.size(14.dp))
                     agent.hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp))
-                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = colors.iconTertiary)
+                    row.indicator == AgentIndicator.Running -> RunningGlyph(size = 14.dp, color = if (agent.looksLikeProject) colors.projectTone(agent.projectAppearance?.colorId) else colors.iconTertiary)
+                    agent.looksLikeProject -> Icon(CursorIcons.project(agent.projectAppearance?.icon), "Project", tint = colors.projectTone(agent.projectAppearance?.colorId), modifier = Modifier.size(14.dp))
                     else -> Icon(CursorIcons.Sparkle, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
                 }
                 agent.modelName?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -370,6 +371,8 @@ private fun PreviewCard(row: AgentRow) {
     CursorCard(Modifier.size(width = CursorDimens.previewCardWidth, height = CursorDimens.previewCardHeight), shape = CursorTheme.shapes.lg) {
         Box(Modifier.fillMaxSize().padding(10.dp), contentAlignment = Alignment.Center) {
             when {
+                // A Project's card is its icon in its colour, as the Agents Window heads the Project with.
+                agent.looksLikeProject -> Icon(CursorIcons.project(agent.projectAppearance?.icon), "Project", tint = colors.projectTone(agent.projectAppearance?.colorId), modifier = Modifier.size(24.dp))
                 agent.hasPullRequest -> PullRequestPill(row.pullRequest)
                 row.isSnoozed -> Pill("Snoozed", icon = CursorIcons.Clock)
                 row.indicator == AgentIndicator.Running -> Pill("Working", icon = CursorIcons.Sparkle)

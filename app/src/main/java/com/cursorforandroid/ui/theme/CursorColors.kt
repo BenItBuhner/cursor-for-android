@@ -74,11 +74,11 @@ data class CursorColors(
     val blue: Color,
     val purple: Color,
     val cyan: Color,
-    /** `charts.yellow`: the Projects palette's yellow. */
+    /** `charts.yellow`. */
     val yellow: Color,
-    /** `terminal.ansiMagenta`: the Projects palette's magenta. */
+    /** `terminal.ansiMagenta`. */
     val magenta: Color,
-    /** `--cursor-brand`, the Cursor orange; the Projects palette's "Brand" tone, the same in every theme. */
+    /** `--cursor-brand`, the Cursor orange, the same in every theme (the Projects palette's "Brand" tone; see [ProjectPalette]). */
     val brand: Color,
     /** Sidebar unread marker. */
     val unreadDot: Color,
@@ -88,22 +88,12 @@ data class CursorColors(
     val codeType: Color,
 ) {
     /**
-     * The colour a Cursor Project's `colorId` stands for, as the Agents Window resolves it (`agent-appearance`):
-     * `default` is the secondary icon tone, `brand` the Cursor orange, and every other id one of the theme's chart /
-     * terminal hues (`--cursor-icon-<id>-primary`). An id this build has not heard of reads as `default`.
+     * The colour a Cursor Project's `colorId` stands for, as the Agents Window paints it (`agent-appearance.js`
+     * resolving to Cursor's own dark or light design tokens; see [ProjectPalette]): `default` is the secondary icon
+     * tone, `brand` the Cursor orange, and the eight hues come from the palette for this theme's darkness. An id
+     * this build has not heard of reads as `default`.
      */
-    fun projectTone(colorId: String?): Color = when (colorId?.trim()?.lowercase()) {
-        "green" -> green
-        "cyan" -> cyan
-        "blue" -> blue
-        "purple" -> purple
-        "magenta" -> magenta
-        "orange" -> orange
-        "yellow" -> yellow
-        "red" -> red
-        "brand" -> brand
-        else -> iconSecondary
-    }
+    fun projectTone(colorId: String?): Color = ProjectPalette.color(colorId, dark = isDark) ?: iconSecondary
 }
 
 /** `--cursor-brand` (#F54E00) in the desktop build, theme-independent. */

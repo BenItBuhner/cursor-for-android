@@ -359,8 +359,8 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
 
 /**
  * The leading glyph of a Cursor Project's row: the Project's icon in the Project's colour, as the Agents Window
- * draws it — the default lightning in the secondary icon tone when the Project has not been given a look (see
- * [CursorIcons.project] and `CursorColors.projectTone`). A Project is told by its look rather than by what it
+ * draws it — the cube in the secondary icon tone when the Project has not been given a look, or was given one this
+ * build cannot draw (see [CursorIcons.project] and `CursorColors.projectTone`). A Project is told by its look rather than by what it
  * pushed, so the icon stays while the row is unread or in error; that state rides on it as a small [badge] in the
  * unread blue or the error red, haloed in the sidebar colour so it reads against the icon.
  */

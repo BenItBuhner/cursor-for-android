@@ -128,12 +128,16 @@ fun AgentRowItem(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // A Project is told by its look, with unread and error as a badge on it; a turn going, an archive or a
-            // snooze still take the slot, as they do on every row.
+            // snooze still take the slot, as they do on every row — the working dots in the Project's own colour,
+            // as the Agents Window tints them (`progressColorId`).
             val project = agent.looksLikeProject
             when {
                 project && row.indicator == AgentIndicator.Read -> ProjectGlyph(agent.projectAppearance)
                 project && row.indicator == AgentIndicator.Unread -> ProjectGlyph(agent.projectAppearance, badge = colors.unreadDot)
                 project && row.indicator == AgentIndicator.Error -> ProjectGlyph(agent.projectAppearance, badge = colors.red)
+                project && row.indicator == AgentIndicator.Running -> Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
+                    RunningGlyph(color = colors.projectTone(agent.projectAppearance?.colorId), size = 16.dp)
+                }
                 else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
             }
             Spacer(Modifier.width(10.dp))
