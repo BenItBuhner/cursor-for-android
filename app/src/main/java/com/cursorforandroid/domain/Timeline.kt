@@ -218,10 +218,11 @@ data class ActivityGroup(
     val thoughtSeconds: Long? get() = leadingThoughts.mapNotNull { it.durationSeconds }.takeIf { it.isNotEmpty() }?.sum()
 
     /**
-     * A Project coordinator's work: every call is one of its tools — a worker created, messaged, checked on or stopped,
-     * a word to the user. Shown step by step as cards and rows, never folded behind a summary: each is the point.
+     * A Project coordinator's work: one of its tools among the steps — a worker created, messaged, checked on or
+     * stopped, a word to the user. Shown step by step as cards and rows, never folded behind a summary, whatever the
+     * coordinator read alongside: each of those steps is the point of the turn.
      */
-    val isCoordination: Boolean get() = calls.isNotEmpty() && calls.all { it.kind == ToolKind.Coordinator }
+    val isCoordination: Boolean get() = calls.any { it.kind == ToolKind.Coordinator }
 
     /**
      * Whether the work collapses behind its summary row. Cursor groups tool calls from the first one, except that

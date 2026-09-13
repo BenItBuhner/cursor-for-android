@@ -273,6 +273,7 @@ class AppGraph(
     private val projectAccount = object : ProjectLineageApi, ProjectActionsApi, AgentStoreApi {
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> = lazyProjectApi.value.workersForManager(managerId)
         override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
+        override suspend fun record(id: String): ComposerSnapshot? = lazyAccountAgents.value.record(id)
         override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
         override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
         override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)

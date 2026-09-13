@@ -234,6 +234,20 @@ class ProjectRepository(
                 lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.size, lineage.children.size),
             )
         }
+        // A root the windowed list did not reach is a root only by its workers' word: its own record — the Project
+        // flag, the icon and colour, a parent of its own — is read by id, once per pass.
+        val row = agents.agent(rootId)
+        if (row != null && !row.isProject && row.parent == null) {
+            val record = try {
+                api.record(rootId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }
+            if (agents.token() != token) return false
+            if (record != null) agents.applyAccountSnapshots(listOf(record), token)
+        }
         // Members the list does not hold (beyond its window, or created moments ago) are fetched by id so the view can list them.
         val missing = lineage.members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)
         for (id in missing) {

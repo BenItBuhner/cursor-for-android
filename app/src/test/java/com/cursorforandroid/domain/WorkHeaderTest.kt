@@ -94,12 +94,13 @@ class WorkHeaderTest {
         assertThat(coordination.isWorkGrouped).isFalse()
         assertThat(coordination.header).isEqualTo(WorkHeader("Coordinated", "2 agents"))
         assertThat(group(created.copy(status = "running", linkedAgentIds = emptyList())).header).isEqualTo(WorkHeader("Coordinating", null))
-        // Mixed with the agent's own reading, the coordinator's calls are counted with the rest and the group folds as usual.
+        // Mixed with the agent's own reading, the coordinator's calls still keep the group open — the reads become
+        // lines beside the cards — and the header (for the digest) counts the workers.
         val mixed = group(call(ToolKind.Read, "A.kt"), call(ToolKind.Read, "B.kt"), created, said)
-        assertThat(mixed.isCoordination).isFalse()
-        assertThat(mixed.isWorkGrouped).isTrue()
+        assertThat(mixed.isCoordination).isTrue()
+        assertThat(mixed.isWorkGrouped).isFalse()
         assertThat(mixed.summary.coordinated).isEqualTo(1)
-        assertThat(mixed.header).isEqualTo(WorkHeader("Explored", "2 files, coordinated 1 worker"))
+        assertThat(mixed.header).isEqualTo(WorkHeader("Coordinated", "1 agent"))
         // The coordinator's tools are none of the Files, Changes or Images lists' business.
         assertThat(TranscriptContent.of(listOf(coordination)).isEmpty).isTrue()
     }

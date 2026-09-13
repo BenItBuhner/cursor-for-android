@@ -189,6 +189,24 @@ class BackgroundComposerApiTest {
     }
 
     @Test
+    fun `one chat's record is read by id, for a Project the windowed list did not reach`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-8","name":"Billing launch","projectMetadata":{"appearance":{"icon":"rocket","colorId":"purple"}}}],"hasMore":false}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-other"}],"hasMore":false}"""))
+
+        assertThat(api.record("bc-8")).isEqualTo(ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
+        // An answer about another chat is no record of this one.
+        assertThat(api.record("bc-9")).isNull()
+        server.takeRequest() // the exchange
+        val body = server.takeRequest().json()
+        assertThat(body["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-8")
+        assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo("1")
+        assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("false")
+    }
+
+    @Test
     fun `a list without the pinned state reports it as not loaded`() = runBlocking<Unit> {
         server.enqueue(session("s"))
         server.enqueue(MockResponse().setBody("""{"composers":[],"didLoadStatus":true,"hasMore":false}"""))

@@ -25,6 +25,9 @@ import java.util.UUID
 interface ProjectLineageApi {
     suspend fun workersForManager(managerId: String): List<WorkerMembership>
 
+    /** A root's own account record, when the source has one to give (see `ComposerRecordApi`); null when not. */
+    suspend fun record(id: String): ComposerSnapshot? = null
+
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 

@@ -53,6 +53,11 @@ data class AccountList(
 )
 
 /** The account's agent list and its pins, the ones the desktop Agents window and the iOS app share. An interface so the repositories can be faked. */
+/** One chat's account record by id, for a Project whose record the windowed list did not reach. */
+interface ComposerRecordApi {
+    suspend fun record(id: String): ComposerSnapshot?
+}
+
 interface PinsApi {
     suspend fun list(): AccountList
     suspend fun pin(ids: Collection<String>)
@@ -91,7 +96,7 @@ fun interface PullRequestStatusApi {
 class BackgroundComposerApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
-) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi {
+) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi, ComposerRecordApi {
 
     override suspend fun list(): AccountList {
         val first = page(null)
@@ -144,6 +149,30 @@ class BackgroundComposerApi(
         ListBackgroundComposersRequestDto.serializer(),
         ListBackgroundComposersResponseDto.serializer(),
     )
+
+    /**
+     * One chat's record by id (`ListBackgroundComposers {bc_id}`), for a Project whose record the windowed list
+     * did not reach: its Project flag and appearance, its manager, its side-chat or subagent parent. Null when the
+     * service knows no such chat, or answered with another.
+     */
+    override suspend fun record(id: String): ComposerSnapshot? {
+        val response = call(
+            "ListBackgroundComposers",
+            ListBackgroundComposersRequestDto(
+                n = 1,
+                includeArchived = true,
+                includeStatus = false,
+                includePinnedState = false,
+                includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
+                includeWorkers = true,
+                includeSubagents = true,
+                bcId = id,
+            ),
+            ListBackgroundComposersRequestDto.serializer(),
+            ListBackgroundComposersResponseDto.serializer(),
+        )
+        return response.composers.firstOrNull { it.bcId.trim() == id }?.let { snapshot(it) }
+    }
 
     /** Where the next page starts, as the service said: a page token, or the activity offset; null when it gave neither. */
     private fun ListBackgroundComposersResponseDto.cursor(): ListCursor? {
@@ -219,6 +248,8 @@ class BackgroundComposerApi(
         val usePageTokens: Boolean? = null,
         val pageToken: String? = null,
         val lastMessageActivityAtMsOffset: Long? = null,
+        /** One chat by id (see [record]); left out for the list. */
+        val bcId: String? = null,
     )
 
     @Serializable
