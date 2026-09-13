@@ -83,6 +83,38 @@ class SseParserTest {
         assertThat(frames.map { it.id }).containsExactly("10-0")
     }
 
+    /**
+     * The SDK-shape `interaction_update` of a generated image carries the picture as base64, megabytes on one line.
+     * Such a frame is read past and skipped; the frames after it — the simplified `tool_call` beside it, the
+     * `result` — still arrive. Ending the connection on it, as this parser used to, meant the next connection met
+     * the same frame again and the run could never be replayed to its end.
+     */
+    @Test
+    fun `a line longer than the parser will buffer is skipped, not the connection`() {
+        val huge = "A".repeat((1 shl 20) + 5_000)
+        val source = Buffer().writeUtf8(
+            "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +
+                "id: 10-0\nevent: interaction_update\ndata: {\"type\":\"tool-call-completed\",\"callId\":\"img-1\",\"toolCall\":{\"type\":\"generateImage\",\"result\":{\"status\":\"success\",\"value\":{\"imageData\":\"$huge\"}}}}\n\n" +
+                "id: 11-0\nevent: result\ndata: {\"runId\":\"run-1\",\"status\":\"FINISHED\",\"text\":\"Done.\"}\n\n" +
+                "id: 11-0\nevent: done\ndata: {}\n\n",
+        )
+        val frames = generateSequence { SseParser.readFrame(source) }.toList()
+
+        assertThat(frames.map { it.event }).containsExactly("tool_call", "interaction_update", "result", "done").inOrder()
+        assertThat(frames[1].oversized).isTrue()
+        assertThat(frames[1].id).isEqualTo("10-0")
+        assertThat(SseParser.parse(frames[1])).isEqualTo(SseParser.Parsed.Oversized)
+        assertThat(SseParser.toEvent(frames[2])).isInstanceOf(RunStreamEvent.Result::class.java)
+    }
+
+    /** A stream that ends inside an oversized line has nothing after it: no frame, no resume position. */
+    @Test
+    fun `a stream cut off inside an oversized line ends without a frame`() {
+        val source = Buffer().writeUtf8("id: 10-0\nevent: heartbeat\ndata: {}\n\nid: 11-0\nevent: assistant\ndata: " + "B".repeat((1 shl 20) + 100))
+        val frames = generateSequence { SseParser.readFrame(source) }.toList()
+        assertThat(frames.map { it.id }).containsExactly("10-0")
+    }
+
     @Test
     fun `a frame whose data cannot be read is neither delivered nor resumable`() {
         assertThat(SseParser.parse(SseFrame("assistant", "9-0", "{not json"))).isEqualTo(SseParser.Parsed.Undecodable)
@@ -176,6 +208,32 @@ class SseParserTest {
         assertThat(server.requestCount).isEqualTo(2)
         server.takeRequest()
         assertThat(server.takeRequest().getHeader("Last-Event-ID")).isEqualTo("10-0")
+        server.shutdown()
+    }
+
+    /**
+     * A run whose log carries one oversized frame reads to its result on the one connection, and the frame is
+     * resumed past: a drop after it asks for what follows it, never for the frame again.
+     */
+    @Test
+    fun `an oversized frame is skipped and resumed past, and the run still finishes`() = runTest {
+        val server = MockWebServer()
+        val huge = "A".repeat((1 shl 20) + 5_000)
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                "id: 10-0\nevent: tool_call\ndata: {\"callId\":\"img-1\",\"name\":\"generate_image\",\"status\":\"completed\"}\n\n" +
+                    "id: 10-1\nevent: interaction_update\ndata: {\"type\":\"tool-call-completed\",\"callId\":\"img-1\",\"toolCall\":{\"type\":\"generateImage\",\"result\":{\"status\":\"success\",\"value\":{\"imageData\":\"$huge\"}}}}\n\n" +
+                    "id: 11-0\nevent: assistant\ndata: {\"text\":\"Here is the image.\"}\n\n" +
+                    "id: 12-0\nevent: result\ndata: {\"runId\":\"run-1\",\"status\":\"FINISHED\",\"text\":\"Here is the image.\"}\n\n" +
+                    "id: 12-0\nevent: done\ndata: {}\n\n",
+            ),
+        )
+        server.start()
+        val streamer = SseRunStreamer(OkHttpClient(), { null }, urlFor = { _, _ -> server.url("/stream").toString() }, waiter = {})
+        val events = streamer.stream("bc-1", "run-1").toList()
+
+        assertThat(events.map { it::class.simpleName }).containsExactly("ToolCall", "Assistant", "Result", "Done").inOrder()
+        assertThat(server.requestCount).isEqualTo(1)
         server.shutdown()
     }
 

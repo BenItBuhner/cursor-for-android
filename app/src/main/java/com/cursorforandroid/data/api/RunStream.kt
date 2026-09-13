@@ -90,6 +90,8 @@ interface RunStreamer {
 /**
  * A raw SSE frame: `event:`, `id:`, `retry:` and joined `data:` lines. [resetId] is the spec's empty `id:`, which
  * drops the resume position rather than setting it to an empty one, and [retryMillis] a digits-only `retry:`.
+ * [oversized] marks a frame whose data ran past what this client will buffer (see [SseParser.readFrame]): its
+ * `data` is whatever fit, which is nothing to decode, and the frame is skipped rather than resumed from.
  */
 data class SseFrame(
     val event: String,
@@ -97,6 +99,7 @@ data class SseFrame(
     val data: String,
     val resetId: Boolean = false,
     val retryMillis: Long? = null,
+    val oversized: Boolean = false,
 )
 
 /**
@@ -104,7 +107,13 @@ data class SseFrame(
  * LF or CRLF line endings. A bare CR, which the specification also allows as a line ending, is not recognised.
  */
 object SseParser {
-    /** A line longer than this, or a frame whose data is, is not one of ours; the connection is given up on. */
+    /**
+     * A line longer than this, or a frame whose data is, is more than this client has a use for: the SDK-shape
+     * `interaction_update` of a generated image carries the picture itself as base64, megabytes of it. Such a line
+     * is read past and its frame marked [SseFrame.oversized], never kept whole. It used to end the connection
+     * instead, and the next connection — resumed from the event before it — met the same frame again, so a run with
+     * one such event could never be replayed to its end: its tool calls never reached the transcript.
+     */
     private const val MAX_LINE_BYTES = 1L shl 20
     private const val MAX_DATA_CHARS = 4 shl 20
 
@@ -112,11 +121,12 @@ object SseParser {
     private const val MIN_RETRY_MS = 1_000L
     private const val MAX_RETRY_MS = 60_000L
 
+    private const val NEWLINE = '\n'.code.toByte()
+
     /**
      * The next complete frame, or null when there is not going to be one: the stream ended (whatever it had
      * half-written when it did is discarded, as the SSE spec requires — a truncated frame is not a frame, and
-     * passing one on would have the caller resume from an event it never really received), or a line ran past
-     * anything this protocol has a use for, which is a connection to give up on rather than a buffer to grow.
+     * passing one on would have the caller resume from an event it never really received).
      */
     fun readFrame(source: BufferedSource): SseFrame? {
         var event = "message"
@@ -125,14 +135,20 @@ object SseParser {
         var retry: Long? = null
         val data = StringBuilder()
         var sawField = false
+        var oversized = false
         while (true) {
             val line = try {
-                source.readUtf8LineStrict(MAX_LINE_BYTES)
+                readLine(source)
             } catch (_: IOException) {
                 return null
+            } ?: return null
+            if (line === OVERSIZED_LINE) {
+                oversized = true
+                sawField = true
+                continue
             }
             if (line.isEmpty()) {
-                if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"), resetId, retry)
+                if (sawField) return SseFrame(event, id, data.toString().removeSuffix("\n"), resetId, retry, oversized)
                 continue
             }
             if (line.startsWith(":")) continue
@@ -143,8 +159,9 @@ object SseParser {
             sawField = true
             when (field) {
                 "event" -> event = value
-                // Past the cap the frame is left short, so it fails to decode and is skipped rather than kept whole.
-                "data" -> if (data.length <= MAX_DATA_CHARS) data.append(value).append('\n')
+                // Past the cap the frame is oversized: skipped whole rather than kept short, which would neither
+                // decode nor let the position move past it.
+                "data" -> if (data.length + value.length <= MAX_DATA_CHARS) data.append(value).append('\n') else oversized = true
                 // An empty value says the stream has no resume position rather than that it is the empty string; a
                 // value with a NUL in it is not an id at all and is ignored, leaving the position as it was.
                 "id" -> if (!value.contains('\u0000')) {
@@ -159,6 +176,40 @@ object SseParser {
         }
     }
 
+    /** The marker [readLine] answers for a line it read past rather than into memory (compared by identity). */
+    private val OVERSIZED_LINE = String(charArrayOf('\u0000'))
+
+    /**
+     * One line, without its LF or CRLF: null once the source is exhausted (a line the stream ended in the middle of
+     * is not a line), [OVERSIZED_LINE] for one longer than [MAX_LINE_BYTES], which is skipped to its end.
+     */
+    private fun readLine(source: BufferedSource): String? {
+        val newline = source.indexOf(NEWLINE, 0L, MAX_LINE_BYTES + 1)
+        if (newline >= 0) {
+            val line = source.readUtf8(newline)
+            source.skip(1)
+            return line.removeSuffix("\r")
+        }
+        // No newline within the cap: either the source ran out first, or the line is longer than the cap.
+        if (!source.request(MAX_LINE_BYTES + 1)) return null
+        // Read past the rest of the line, a chunk at a time, without keeping any of it.
+        while (true) {
+            val end = source.indexOf(NEWLINE, 0L, SKIP_CHUNK_BYTES)
+            if (end >= 0) {
+                source.skip(end + 1)
+                return OVERSIZED_LINE
+            }
+            if (!source.request(SKIP_CHUNK_BYTES)) {
+                // The stream ended inside the oversized line: nothing after it is a frame.
+                source.skip(source.buffer.size)
+                return null
+            }
+            source.skip(SKIP_CHUNK_BYTES)
+        }
+    }
+
+    private const val SKIP_CHUNK_BYTES = 64L shl 10
+
     /** What a frame turned out to be. Only a frame that said something may be resumed from. */
     sealed interface Parsed {
         data class Delivered(val event: RunStreamEvent) : Parsed
@@ -166,9 +217,16 @@ object SseParser {
         data object Ignored : Parsed
         /** The frame's data is not what its name promised: truncated, or a shape this version cannot read. */
         data object Undecodable : Parsed
+        /**
+         * The frame carried more than this client buffers (see [MAX_LINE_BYTES]) and was read past whole. Skipped,
+         * and resumed past: asking for it again would only bring the same frame. What it carried is an update the
+         * simplified events beside it deliver in their own words, minus the payload.
+         */
+        data object Oversized : Parsed
     }
 
     fun parse(frame: SseFrame): Parsed {
+        if (frame.oversized) return Parsed.Oversized
         val json = CursorJson
         val decoded = runCatching {
             when (frame.event) {
@@ -231,7 +289,8 @@ class SseRunStreamer(
                         frame.id?.let { lastId = it }
                         parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
                     }
-                    SseParser.Parsed.Ignored -> frame.id?.let { lastId = it }
+                    // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
+                    SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it }
                     SseParser.Parsed.Undecodable -> Unit
                 }
                 parsed

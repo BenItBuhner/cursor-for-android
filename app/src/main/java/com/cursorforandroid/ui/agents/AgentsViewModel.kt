@@ -57,6 +57,9 @@ data class AgentListUiState(
     val query: String = "",
     val isRefreshing: Boolean = false,
     val hasLoaded: Boolean = false,
+    /** The server lists agents older than the ones loaded; the sidebar's end asks for them (see [AgentsViewModel.loadMore]). */
+    val hasMore: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val error: String? = null,
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
@@ -153,6 +156,8 @@ class AgentsViewModel(
             query = q,
             isRefreshing = list.isRefreshing,
             hasLoaded = list.hasLoaded,
+            hasMore = list.hasMore,
+            isLoadingMore = list.isLoadingMore,
             // A refused row action is the newer news, and the one the user is waiting on.
             error = device.actionError ?: list.error,
             unreadCount = rows.count { it.isUnread },
@@ -214,6 +219,17 @@ class AgentsViewModel(
     fun refreshIfStale() = viewModelScope.launch {
         if (graph.agents.refreshIfStale(STALE_AFTER_MS) == RefreshOutcome.Refreshed) pollFailures = 0
         refreshPullRequests(eager = true)
+    }
+
+    /**
+     * The reader reached the end of the list: the next page of agents is fetched, and the account's list is paged
+     * alongside it (Extended mode) so the rows it adds are placed among the Projects and named as the account names
+     * them. The pull requests the page brings are looked up like any row's. Ignored while a page is already on its way.
+     */
+    fun loadMore() = viewModelScope.launch {
+        if (graph.agents.loadMore() != RefreshOutcome.Refreshed) return@launch
+        graph.pins.loadMore()
+        refreshPullRequests()
     }
 
     private suspend fun refreshPullRequests(eager: Boolean = false) =

@@ -45,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -72,6 +74,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -87,6 +90,8 @@ data class SidebarCallbacks(
     val onToggleSidebar: (() -> Unit)?,
     val onRefresh: () -> Unit,
     val rowActions: AgentRowActions,
+    /** The reader reached the end of the list and the server has older agents: the next page is asked for. */
+    val onLoadMore: () -> Unit = {},
 )
 
 /**
@@ -171,6 +176,16 @@ fun Sidebar(
             // rule above the footer, the fade is what separates the two.
             val listState = rememberLazyListState()
             KeepAtTop(listState, sidebarTopKey(state))
+            // The list holds the newest agents; the pages behind them are fetched as the reader nears its end. In
+            // the sidebar that is the last row being within a few of the bottom, whatever filter is on: with a
+            // narrow filter the loaded pages may match little, and the ones behind them are where more matches are.
+            val hasMore = state.hasMore
+            val isLoadingMore = state.isLoadingMore
+            LaunchedEffect(listState, hasMore, isLoadingMore) {
+                if (!hasMore || isLoadingMore) return@LaunchedEffect
+                snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
+                    .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
+            }
             LazyColumn(Modifier.fillMaxSize().scrollEdgeFade(listState), state = listState, contentPadding = PaddingValues(top = 2.dp, bottom = 12.dp)) {
                 if (!state.hasLoaded && state.sections.isEmpty()) {
                     item("loading") { Text("Loading chats…", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
@@ -235,6 +250,10 @@ fun Sidebar(
                         }
                     }
                 }
+                // Past the last row, while the server has older agents: the page being fetched, or a tap away.
+                if (state.hasLoaded && hasMore) {
+                    item("more") { MoreAgentsRow(isLoading = isLoadingMore, onLoad = callbacks.onLoadMore) }
+                }
             }
         }
 
@@ -282,6 +301,32 @@ internal fun sidebarTopKey(state: AgentListUiState): String? = when {
 
 /** The one line the Projects group carries without Extended mode: what the list can and cannot tell about workers. */
 const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats without Extended mode"
+
+/** How many rows from the end of the list the reader may be before the next page of agents is asked for. */
+private const val MoreAgentsPrefetchRows = 4
+
+/** The row past the last agent while the server has older ones: "Loading more…" as a page comes, else a line that asks for one. */
+@Composable
+internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Box(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag(if (isLoading) "loading-more-agents" else "load-more-agents")) {
+        if (isLoading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpinnerRing(size = 12.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Loading more…", style = type.small, color = colors.textQuaternary)
+            }
+        } else {
+            Text(
+                "Load more chats",
+                style = type.small,
+                color = colors.textTertiary,
+                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(vertical = 4.dp),
+            )
+        }
+    }
+}
 
 /** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
 @Composable

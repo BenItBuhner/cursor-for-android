@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -204,6 +205,18 @@ fun ConversationScreen(
     LaunchedEffect(items.size, newestKey, showWorking) {
         if (following) listState.requestScrollToItem(0)
     }
+    // The chat opens on its newest turns; the ones before them are paged in when the reader nears the top. In a
+    // reversed list the top is the highest index, so nearing it is the last visible item being within a few rows of
+    // the end. Asked once per approach: the repository ignores a request while one is under way.
+    val hasOlder = conversation.hasOlder
+    val isLoadingOlder = conversation.isLoadingOlder
+    LaunchedEffect(listState, hasOlder, isLoadingOlder) {
+        if (!hasOlder || isLoadingOlder) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
+            .collect { (lastVisible, total) ->
+                if (total > 0 && lastVisible >= total - OlderTurnsPrefetchRows) viewModel.loadOlder()
+            }
+    }
 
     // The right-side panel: the chat's files, changes, pull request, media, artifacts and usage, read off the same
     // repositories as the transcript plus the documented reads only it needs. Opened by the header button or a swipe
@@ -305,6 +318,13 @@ fun ConversationScreen(
                     // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
                     items(items.asReversed(), key = { it.id }, contentType = { it::class }) { item ->
                         TimelineItemView(item, paneWidth)
+                    }
+                    // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
+                    // reader's scroll did not reach far enough to ask for them.
+                    if (hasOlder && items.isNotEmpty()) {
+                        item("older") {
+                            OlderTurnsRow(isLoading = isLoadingOlder, onLoad = viewModel::loadOlder, modifier = paneWidth)
+                        }
                     }
                     if (!conversation.isLoading && items.isEmpty()) {
                         item("empty") {
@@ -470,3 +490,33 @@ fun ConversationScreen(
 
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
 private const val BottomTolerancePx = 48
+
+/** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
+private const val OlderTurnsPrefetchRows = 3
+
+/**
+ * The row past the oldest turn shown, while the chat has older ones: "Loading older…" while they are being paged in
+ * (their run records fetched, their traces read or replayed), else a line that asks for them — for a reader whose
+ * scroll stopped just short of where the list asks by itself.
+ */
+@Composable
+internal fun OlderTurnsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Box(modifier.padding(vertical = 6.dp).testTag(if (isLoading) "loading-older" else "load-older"), contentAlignment = Alignment.Center) {
+        if (isLoading) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpinnerRing(size = 12.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Loading older…", style = type.small, color = colors.textQuaternary)
+            }
+        } else {
+            Text(
+                "Older messages",
+                style = type.small,
+                color = colors.textTertiary,
+                modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+    }
+}

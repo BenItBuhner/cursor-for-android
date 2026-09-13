@@ -50,6 +50,8 @@ data class AccountList(
     val pullRequests: Map<String, PullRequestState>,
     val sources: Map<String, AgentSource> = emptyMap(),
     val composers: List<ComposerSnapshot> = emptyList(),
+    /** Where the next page of the account's list starts (see [PinsApi.listMore]); null when this page was the last. */
+    val nextCursor: String? = null,
 )
 
 /** The account's agent list and its pins, the ones the desktop Agents window and the iOS app share. An interface so the repositories can be faked. */
@@ -59,7 +61,11 @@ interface ComposerRecordApi {
 }
 
 interface PinsApi {
+    /** The newest page of the account's list, with the pins. */
     suspend fun list(): AccountList
+
+    /** The page after the one that answered with [cursor]: the same reads, without the pins, for the rows the public list paged to. */
+    suspend fun listMore(cursor: String): AccountList = list()
     suspend fun pin(ids: Collection<String>)
     suspend fun unpin(ids: Collection<String>)
 }
@@ -98,37 +104,36 @@ class BackgroundComposerApi(
     private val tokens: SessionTokenProvider,
 ) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi, ComposerRecordApi {
 
-    override suspend fun list(): AccountList {
-        val first = page(null)
-        var response = first
-        val all = ArrayList(first.composers)
-        // The list is windowed and a heavy account outgrows one window — a Project with a hundred workers is one
-        // hundred rows of it — and a chat outside the window is a chat whose lineage the read did not say. The pages
-        // after the first follow whichever cursor the service answers with (a token, or the activity offset the older
-        // service pages by), a few at most; the rest is left to the membership reads and the rows' kept scope.
-        var pages = 1
-        while (response.hasMore && pages < MAX_LIST_PAGES) {
-            val cursor = response.cursor() ?: break
-            response = page(cursor)
-            if (response.composers.isEmpty()) break
-            all += response.composers
-            pages++
-        }
+    override suspend fun list(): AccountList = accountList(page(null), first = true)
+
+    /**
+     * The page after [cursor] — the one [AccountList.nextCursor] named: a token, or the activity offset the older
+     * service pages by (see [ListCursor]). The list is windowed and a heavy account outgrows one window — a Project
+     * with a hundred workers is one hundred rows of it — so the pages behind the first are read as the public list
+     * pages, one for one, rather than a few up front and none after.
+     */
+    override suspend fun listMore(cursor: String): AccountList {
+        val parsed = ListCursor.parse(cursor) ?: return list()
+        return accountList(page(parsed), first = false)
+    }
+
+    private fun accountList(response: ListBackgroundComposersResponseDto, first: Boolean): AccountList {
         val pullRequests = LinkedHashMap<String, PullRequestState>()
         val sources = LinkedHashMap<String, AgentSource>()
-        for (composer in all) {
+        for (composer in response.composers) {
             if (composer.bcId.isNotBlank()) AgentSource.parse(composer.source?.contentOrNull)?.let { sources[composer.bcId] = it }
             // Keyed exactly as the public API names the same PR on the agent's run (`git.branches[].prUrl`).
             val url = composer.prUrl?.trim()?.takeIf { it.isNotEmpty() } ?: continue
             val state = pullRequestState(composer.prStatus, composer.isPrMerged) ?: continue
             pullRequests[url] = state
         }
-        val composers = all.mapNotNull { composer -> snapshot(composer) }.distinctBy { it.id }
+        val composers = response.composers.mapNotNull { composer -> snapshot(composer) }.distinctBy { it.id }
         return AccountList(
-            PinnedIds(first.pinnedBcIds.toSet(), first.didLoadPinnedState),
+            PinnedIds(if (first) response.pinnedBcIds.toSet() else emptySet(), first && response.didLoadPinnedState),
             pullRequests,
             sources,
             composers,
+            nextCursor = if (response.hasMore && response.composers.isNotEmpty()) response.cursor()?.encode() else null,
         )
     }
 
@@ -184,6 +189,20 @@ class BackgroundComposerApi(
     private sealed interface ListCursor {
         data class Token(val token: String) : ListCursor
         data class Offset(val offset: Long) : ListCursor
+
+        /** The cursor as [AccountList.nextCursor] carries it between calls: its kind, then its value. */
+        fun encode(): String = when (this) {
+            is Token -> "token:$token"
+            is Offset -> "offset:$offset"
+        }
+
+        companion object {
+            fun parse(encoded: String): ListCursor? = when {
+                encoded.startsWith("token:") -> encoded.removePrefix("token:").takeIf { it.isNotEmpty() }?.let(::Token)
+                encoded.startsWith("offset:") -> encoded.removePrefix("offset:").toLongOrNull()?.takeIf { it > 0 }?.let(::Offset)
+                else -> null
+            }
+        }
     }
 
     override suspend fun pin(ids: Collection<String>) {
@@ -334,9 +353,6 @@ class BackgroundComposerApi(
          * the sidebar shows first (the public list is paged to 500; the rest are looked up one by one).
          */
         const val LIST_WINDOW = 200
-
-        /** Pages of the list read at most per round (see [list]): the window, then up to two more behind the service's cursor. */
-        const val MAX_LIST_PAGES = 3
 
         /**
          * Sources the account service leaves out of the list unless asked for: agents started by the SDK, which

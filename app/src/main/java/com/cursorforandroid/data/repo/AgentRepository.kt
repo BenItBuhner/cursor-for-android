@@ -68,14 +68,17 @@ data class AgentListState(
     /** True while the list is the one restored from disk and no fetch has completed yet this session. */
     val isFromCache: Boolean = false,
     val error: String? = null,
+    /** The server has agents older than the ones loaded: the next page is a scroll to the end of the list away (see [AgentRepository.loadMore]). */
+    val hasMore: Boolean = false,
+    val isLoadingMore: Boolean = false,
 )
 
 /**
  * How much of the list a refresh fetches. [Quick] reads the newest page of each endpoint, which is where agents
- * started elsewhere appear (the API lists newest first); [Full] reads the newest few hundred, which is what a poll
- * every few minutes can afford; [Deep] pages to the end of both endpoints, which is the only pass that can tell
- * that an old agent was deleted elsewhere. A [Full] pass is promoted to a [Deep] one when the last complete
- * listing was over an hour ago.
+ * started elsewhere appear (the API lists newest first); [Full] re-reads the pages the list has been paged to so
+ * far — the window on screen — and no deeper; [Deep] is the same window read again by hand, to the end of the
+ * list when the window already reaches it. Nothing pages past the window on its own: the pages behind it are
+ * fetched as the reader scrolls to the end of the list ([AgentRepository.loadMore]).
  */
 enum class RefreshDepth { Quick, Full, Deep }
 
@@ -234,8 +237,17 @@ class AgentRepository(
     @Volatile var lastRefreshedAt: Long = 0L
         private set
 
-    /** Epoch millis of the last pass that reached the end of the list — the only one that can reconcile deletions. */
-    @Volatile private var lastCompleteListingAt: Long = 0L
+    /**
+     * Where the list has been paged to: how many v1 pages the window holds, and the cursors past its last page on
+     * each endpoint (null once an endpoint ran out). A refresh re-reads the window and lands here again; [loadMore]
+     * takes the next page from here. Guarded by [publishLock] with the list they describe.
+     */
+    private var pagesLoaded = 0
+    private var nextCursor: String? = null
+    private var legacyCursor: String? = null
+    /** The creation stamp of the oldest row the pages read in sequence reached (`Long.MIN_VALUE` past the last page): where the next page's stretch begins. */
+    private var pagedFloor = Long.MAX_VALUE
+    private var loadingMore: Job? = null
 
     private val _refreshCompleted = MutableStateFlow(0L)
     /** Completed fetches for the current backend, counted: the cue for work that follows each one (the account's pins, for one). */
@@ -275,7 +287,10 @@ class AgentRepository(
     private fun clear() = synchronized(publishLock) {
         owner = null
         lastRefreshedAt = 0L
-        lastCompleteListingAt = 0L
+        pagesLoaded = 0
+        nextCursor = null
+        legacyCursor = null
+        pagedFloor = Long.MAX_VALUE
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
         placements.clear()
@@ -413,6 +428,8 @@ class AgentRepository(
                             row.knownScope == AgentScope.PROJECT_ROOT -> place(row.id, null, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
                         }
                     }
+                    // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
+                    pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
                 }
             }
@@ -431,18 +448,74 @@ class AgentRepository(
     suspend fun refresh(silent: Boolean = false, depth: RefreshDepth = RefreshDepth.Full) {
         val startedIn = token()
         restoreFromCache()
-        val (job, joined) = startOrJoin(silent, deepIfDue(depth))
+        val (job, joined) = startOrJoin(silent, depth)
         if (joined && !silent) publish(null, startedIn) { it.copy(isRefreshing = true) }
         job.join()
     }
 
     /**
-     * Promotes a [RefreshDepth.Full] pass to a complete listing when the last one was over
-     * [COMPLETE_LISTING_EVERY_MS] ago. The windowed pass is what a poll every few minutes can afford; reconciling
-     * deletions and old activity beyond the window needs the whole list, which is worth an hourly pass.
+     * Fetches the page after the window's last one, on both endpoints, and adds its rows to the list: for the reader
+     * reaching the end of the sidebar. One at a time; a refresh in flight is waited for first, since it lands the
+     * cursors this reads from. [RefreshOutcome.Skipped] when there is no page to fetch or one is already being fetched.
      */
-    private fun deepIfDue(depth: RefreshDepth): RefreshDepth =
-        if (depth == RefreshDepth.Full && AppClock.now() - lastCompleteListingAt >= COMPLETE_LISTING_EVERY_MS) RefreshDepth.Deep else depth
+    suspend fun loadMore(): RefreshOutcome {
+        val backend = session.current
+        val startedIn = token()
+        synchronized(this) { inFlight?.job?.takeIf { it.isActive } }?.join()
+        val job = synchronized(publishLock) {
+            if (generation.get() != startedIn || owner !== backend) return RefreshOutcome.Skipped
+            loadingMore?.takeIf { it.isActive }?.let { return RefreshOutcome.Skipped }
+            val cursor = nextCursor ?: return RefreshOutcome.Skipped
+            scope.launch { fetchMore(backend, startedIn, cursor, legacyCursor) }.also { loadingMore = it }
+        }
+        job.join()
+        return if (synchronized(publishLock) { generation.get() == startedIn && !_state.value.isLoadingMore && _state.value.error == null }) RefreshOutcome.Refreshed else RefreshOutcome.Failed
+    }
+
+    private suspend fun fetchMore(backend: CursorBackend, startedIn: Int, cursor: String, legacy: String?) {
+        val api = backend.api
+        val startedAt = AppClock.now()
+        fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
+        // What the page is about to cover: the rows known so far, and where the pages read in sequence so far end.
+        val before = _state.value.agents
+        val knownBefore = before.mapTo(HashSet()) { it.id }
+        val ceiling = synchronized(publishLock) { pagedFloor }
+        publish { it.copy(isLoadingMore = true) }
+        try {
+            coroutineScope {
+                // The legacy list enriches the rows and never gates them: its page is read alongside, best effort.
+                val legacyPage = async { legacy?.let { runCatching { api.listAgentsV0(limit = PAGE_SIZE, cursor = it) }.getOrNull() } }
+                val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
+                val enrichment = legacyPage.await()
+                val more = page.nextCursor?.isNotBlank() == true
+                val pinned = prefs.localAgentState.first().pinnedIds
+                // The page covers the list from where the pages before it ended down to its own oldest row — to the
+                // very end when it is the last page — so a known row created in that stretch that the page did not
+                // return is gone (deleted elsewhere), the way a refresh reconciles the window it re-reads.
+                val pageFloor = if (!more) Long.MIN_VALUE else page.items.minOfOrNull { parseIsoMillis(it.createdAt) } ?: ceiling
+                val seen = page.items.mapTo(HashSet()) { it.id }
+                val landed = publish { s ->
+                    (if (page.items.isNotEmpty()) s.withPage(page.items) else s)
+                        .let { withRows -> enrichment?.agents?.takeIf { it.isNotEmpty() }?.let { v0 -> withRows.withLegacy(v0.associateBy { it.id }) } ?: withRows }
+                        .let { s2 ->
+                            s2.copy(agents = s2.agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis >= ceiling || it.createdAtMillis < pageFloor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
+                        }
+                        .copy(isLoadingMore = false, hasMore = more, error = null)
+                }
+                if (landed) synchronized(publishLock) {
+                    if (generation.get() == startedIn) {
+                        pagesLoaded = (pagesLoaded + 1).coerceAtMost(MAX_PAGES)
+                        nextCursor = page.nextCursor?.takeIf { it.isNotBlank() }
+                        legacyCursor = enrichment?.nextCursor?.takeIf { it.isNotBlank() }
+                        pagedFloor = pageFloor
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            publish { it.copy(isLoadingMore = false, error = t.userMessage()) }
+        }
+    }
 
     /**
      * Fetches run in the repository's own scope so a caller that goes away (a ViewModel being cleared) never
@@ -477,39 +550,51 @@ class AgentRepository(
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
         try {
             var truncated = false
+            var lastCursor: String? = null
+            var pagesRead = 0
+            // The oldest creation in the window read: a known row created after it that the pages did not return is gone.
+            var windowFloor = Long.MAX_VALUE
             val seen = HashSet<String>()
+            val pages = pagesToFetch(depth)
             coroutineScope {
-                val legacy = async { fetchLegacy(api, depth) }
+                val legacy = async { fetchLegacy(api, pages) }
                 var cursor: String? = null
-                var pages = 0
                 do {
                     val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
-                    pages++
+                    pagesRead++
                     seen += page.items.map { it.id }
+                    page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
                     if (page.items.isNotEmpty()) publish { it.withPage(page.items) }
                     cursor = page.nextCursor?.takeIf { it.isNotBlank() }
-                } while (cursor != null && pages < maxPages(depth))
+                } while (cursor != null && pagesRead < pages)
                 truncated = cursor != null
-                legacy.await().takeIf { it.isNotEmpty() }?.let { v0 -> publish { it.withLegacy(v0) } }
+                lastCursor = cursor
+                val (v0, v0Cursor) = legacy.await()
+                if (v0.isNotEmpty()) publish { it.withLegacy(v0) }
+                synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = v0Cursor }
             }
             verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) }
             // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
-            // ones the window never returned, and this keeps the next complete listing from dropping them again.
+            // ones the window never returned, and this keeps the next listing from dropping them again.
             val pinned = prefs.localAgentState.first().pinnedIds
-            // Only a pass that reached the end of the list knows that a row the server did not return is gone
-            // rather than merely beyond where the pass stopped.
+            // A row the server did not return is gone when the pass reached the end of the list, or when the row
+            // sits inside the window the pass did read (the list is newest first, so a row created after the
+            // window's oldest would have been in it); a row beyond where the pass stopped is merely not reached.
             val complete = depth != RefreshDepth.Quick && !truncated
+            val floor = if (complete) Long.MIN_VALUE else if (depth != RefreshDepth.Quick) windowFloor else Long.MAX_VALUE
             val landed = publish { s ->
-                (if (complete) s.withoutUnseen(seen, knownBefore, startedAt, pinned) else s)
+                s.withoutUnseen(seen, knownBefore, startedAt, pinned, floor)
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
-                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null)
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated)
             }
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
             // on, and the previous account's must not give it.
             if (landed) synchronized(publishLock) {
                 if (generation.get() == startedIn) {
                     lastRefreshedAt = AppClock.now()
-                    if (complete) lastCompleteListingAt = lastRefreshedAt
+                    pagesLoaded = pagesRead.coerceAtLeast(1)
+                    nextCursor = lastCursor
+                    pagedFloor = if (complete) Long.MIN_VALUE else windowFloor
                     _refreshCompleted.update { it + 1 }
                 }
             }
@@ -522,24 +607,31 @@ class AgentRepository(
         }
     }
 
-    /** The v0 list is best effort: it enriches rows but never gates them, and its failure is not the list's failure. */
-    private suspend fun fetchLegacy(api: CursorApi, depth: RefreshDepth): Map<String, V0AgentDto> = runCatching {
-        buildMap {
-            var cursor: String? = null
-            var pages = 0
-            do {
-                val page = api.listAgentsV0(limit = PAGE_SIZE, cursor = cursor)
-                pages++
-                page.agents.forEach { put(it.id, it) }
-                cursor = page.nextCursor?.takeIf { it.isNotBlank() }
-            } while (cursor != null && pages < maxPages(depth))
-        }
-    }.getOrDefault(emptyMap())
+    /**
+     * The v0 list is best effort: it enriches rows but never gates them, and its failure is not the list's failure.
+     * Read as many pages as the v1 window, with the cursor past them for [loadMore].
+     */
+    private suspend fun fetchLegacy(api: CursorApi, maxPages: Int): Pair<Map<String, V0AgentDto>, String?> = runCatching {
+        val rows = LinkedHashMap<String, V0AgentDto>()
+        var cursor: String? = null
+        var pages = 0
+        do {
+            val page = api.listAgentsV0(limit = PAGE_SIZE, cursor = cursor)
+            pages++
+            page.agents.forEach { rows[it.id] = it }
+            cursor = page.nextCursor?.takeIf { it.isNotBlank() }
+        } while (cursor != null && pages < maxPages)
+        rows to cursor
+    }.getOrDefault(emptyMap<String, V0AgentDto>() to null)
 
-    private fun maxPages(depth: RefreshDepth) = when (depth) {
+    /**
+     * How many pages a pass reads: the newest one for a poll's quick look, else the window the list has been paged
+     * to (at least one page, and at most [MAX_PAGES] however far the reader scrolled — the rows past that stay as
+     * they were loaded). Nothing reads past the window on its own; that is what [loadMore] is for.
+     */
+    private fun pagesToFetch(depth: RefreshDepth): Int = when (depth) {
         RefreshDepth.Quick -> 1
-        RefreshDepth.Full -> MAX_PAGES
-        RefreshDepth.Deep -> MAX_DEEP_PAGES
+        RefreshDepth.Full, RefreshDepth.Deep -> synchronized(publishLock) { pagesLoaded }.coerceIn(1, MAX_PAGES)
     }
 
     /**
@@ -634,13 +726,14 @@ class AgentRepository(
         map { if (it.source == null || it.id in launchedHere) it else it.copy(source = null) }
 
     /**
-     * After a complete listing, rows the server no longer returns were deleted elsewhere. Kept anyway: rows that were
-     * not known when the fetch started (launched here while the pages were in flight), agents created shortly before
-     * it started (the listing can lag a creation by a moment), and [pinned] agents, which the listing window may
-     * simply have left behind.
+     * Rows the server no longer returns inside the window it was read for were deleted elsewhere: every row created
+     * at or after [floor] (`Long.MIN_VALUE` after a pass that reached the end of the list). Kept anyway: rows that
+     * were not known when the fetch started (launched here while the pages were in flight), agents created shortly
+     * before it started (the listing can lag a creation by a moment), rows older than the window, and [pinned]
+     * agents, which the listing window may simply have left behind.
      */
-    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long, pinned: Set<String>): AgentListState =
-        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
+    private fun AgentListState.withoutUnseen(seen: Set<String>, knownBefore: Set<String>, startedAt: Long, pinned: Set<String>, floor: Long): AgentListState =
+        copy(agents = agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis < floor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
 
     private suspend fun persist() {
         val backend = session.current
@@ -1052,11 +1145,11 @@ class AgentRepository(
 
     companion object {
         private const val PAGE_SIZE = 100
-        /** 500 agents per windowed refresh; the newest come first, and older ones wait for a complete listing. */
+        /**
+         * The most a refresh re-reads: 500 agents, the newest first. The list pages past that only as the reader
+         * scrolls to its end ([loadMore]), and the rows so loaded stay as they were between refreshes.
+         */
         private const val MAX_PAGES = 5
-        /** The safety bound on a complete listing: 3000 agents, past which the app stops asking for more. */
-        private const val MAX_DEEP_PAGES = 30
-        private const val COMPLETE_LISTING_EVERY_MS = 60 * 60 * 1000L
         private const val PERSIST_DELAY_MS = 1_500L
         private const val RECENT_WINDOW_MS = 5 * 60 * 1000L
         /** Run records read per refresh to settle rows the lists left in question (see [verifyRunStatuses]). */

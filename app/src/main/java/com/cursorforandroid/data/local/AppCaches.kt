@@ -1,6 +1,5 @@
 package com.cursorforandroid.data.local
 
-import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
@@ -135,6 +134,11 @@ data class CachedConversation(
     /** The agent row's `updatedAt` when this was fetched; a newer row means the transcript has moved on. */
     val agentUpdatedAtMillis: Long = 0L,
     val local: List<CachedLocalPrompt> = emptyList(),
+    /** Whether [runs] are every run of the chat, or only the newest ones as far as the list was paged ([olderRunsCursor] then says where the rest starts). */
+    val runsComplete: Boolean = true,
+    val olderRunsCursor: String? = null,
+    /** How many of the newest runs were rendered when this was written; the next open starts on the same window. Zero: the default. */
+    val window: Int = 0,
 )
 
 class ConversationCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
@@ -171,83 +175,190 @@ data class CachedTrace(
     val items: List<TimelineItem>,
 )
 
+/** The whole-file format traces were kept in until 0.3.2: every trace of an agent in one entry (see [TraceCache.migrate]). */
 @Serializable
 private data class CachedTraces(val agentId: String, val runs: List<CachedTrace>)
 
+/** What one agent's directory holds, so the newest runs can be kept without reading every file: per run, its stamp and size. */
+@Serializable
+private data class CachedTraceIndex(val runs: List<Entry> = emptyList()) {
+    @Serializable
+    data class Entry(val runId: String, val createdAtMillis: Long, val bytes: Long)
+}
+
 /**
- * The complete traces of finished runs, one file per agent. The API only retains a run's event log for a while
- * (`410 stream_expired` afterwards), so a trace is written the moment it has been seen whole — followed live to its
- * result, or replayed — and opening the chat later shows it from here, whether or not the log still exists.
+ * The complete traces of finished runs, one file per run, under one directory per agent. The API only retains a
+ * run's event log for a while (`410 stream_expired` afterwards), so a trace is written the moment it has been seen
+ * whole — followed live to its result, or replayed — and opening the chat later shows it from here, whether or not
+ * the log still exists. That makes this store the only copy of a run's tool calls once the log is gone, which is why
+ * it is laid out as it is:
  *
- * Tool call payloads (`args`, `result`) are dropped on the way to disk: their summaries are already part of each call,
- * and they can be as large as the files the tool touched. What a call produced that the transcript does render — the
- * clipped diff, file text, question, or the `file://` URI of a generated image — is typed on the call
- * ([com.cursorforandroid.domain.ToolPayload]) and travels with it; a trace written before those existed reads as it did.
+ *  - A run is its own file. Writing one never re-reads or re-serialises the agent's other runs, a file that will not
+ *    decode (a corrupt write, a shape a newer build wrote) costs that run alone, and the conversation reads exactly
+ *    the runs of the window it shows rather than parsing everything the agent ever did to open a chat.
+ *  - The budget bounds runs, not payload. Until 0.3.2 the agent's whole file had to fit 2 MiB, and a trace carries
+ *    each tool call's clipped payload (up to [com.cursorforandroid.domain.ToolPayloadLimits.MAX_TEXT_CHARS] a call),
+ *    so a chat with a few hundred reads and edits filled the budget with its newest handful of runs and the rest were
+ *    dropped from the disk on every write; after a restart those runs were replayed from the server on every open,
+ *    and once their logs had expired their tool calls were gone for good. The per-agent budget is now proportioned to
+ *    the payloads a long chat actually carries, and the oldest runs beyond it go — never a run the conversation just
+ *    watched or replayed.
+ *  - The on-disk shape is read across versions: a trace written by an earlier build whose items still decode is kept,
+ *    where the previous store deleted the agent's whole file on any version bump.
+ *
+ * What a call produced that the transcript renders — the clipped diff, file text, question, or the `file://` URI of a
+ * generated image — is typed on the call ([com.cursorforandroid.domain.ToolPayload]) and travels with it; the raw
+ * `args` and `result` never reach the disk (see [com.cursorforandroid.domain.ToolCall.output]).
  */
 class TraceCache(
     private val cache: JsonDiskCache,
     private val maxAgents: Int = MAX_AGENTS,
     private val maxRunsPerAgent: Int = MAX_RUNS_PER_AGENT,
-    private val maxBytesPerAgent: Int = MAX_BYTES_PER_AGENT,
+    private val maxBytesPerAgent: Long = MAX_BYTES_PER_AGENT,
 ) {
-    /** One writer per agent at a time: adding a run is a read-merge-write of the agent's file. */
+    /** One writer per agent at a time: the index is a read-merge-write, small as it is. */
     private val locks = ConcurrentHashMap<String, Mutex>()
 
-    /** Every trace saved for the agent, by run id. */
-    suspend fun read(agentId: String): Map<String, CachedTrace> =
-        cache.read(agentId, CachedTraces.serializer(), VERSION)?.value?.runs?.associateBy { it.runId } ?: emptyMap()
+    /** Agents whose whole-file trace store has been looked for (and migrated when found) this process. */
+    private val migrated = ConcurrentHashMap.newKeySet<String>()
 
-    /** Adds [traces] to the agent's file, replacing what it held for the same runs; the newest runs are kept. */
+    private fun agentCache(agentId: String): JsonDiskCache = cache.child(JsonDiskCache.sanitize(agentId))
+
+    /** Every trace saved for the agent, by run id. Reads every file; the conversation reads its window with the [read] by ids. */
+    suspend fun read(agentId: String): Map<String, CachedTrace> {
+        migrate(agentId)
+        return read(agentId, runIds(agentId))
+    }
+
+    /** The traces the disk holds for [runIds], by run id: one small file per run named, nothing else touched. */
+    suspend fun read(agentId: String, runIds: Collection<String>): Map<String, CachedTrace> {
+        if (runIds.isEmpty()) return emptyMap()
+        migrate(agentId)
+        val files = agentCache(agentId)
+        val found = LinkedHashMap<String, CachedTrace>()
+        for (runId in runIds.distinct()) {
+            if (runId == INDEX_KEY || !files.has(runId)) continue
+            files.read(runId, CachedTrace.serializer(), READABLE_VERSIONS)?.value?.let { found[runId] = it }
+        }
+        return found
+    }
+
+    /** The runs the agent has a trace for, from the index. */
+    suspend fun runIds(agentId: String): Set<String> {
+        migrate(agentId)
+        return readIndex(agentId).runs.mapTo(LinkedHashSet()) { it.runId }
+    }
+
+    /** Writes [traces], one file each, replacing what the agent had for the same runs, and lets the oldest go past the budget. */
     suspend fun put(agentId: String, traces: Collection<CachedTrace>, token: Int = cache.token()) {
         if (traces.isEmpty()) return
+        migrate(agentId)
+        val files = agentCache(agentId)
         locks.getOrPut(agentId) { Mutex() }.withLock {
-            val merged = (read(agentId) + traces.associate { it.runId to it }).values
-                .sortedByDescending { it.createdAtMillis }
-                .take(maxRunsPerAgent)
-            val kept = CachedTraces(agentId, withinBudget(merged))
-            if (cache.write(agentId, CachedTraces.serializer(), VERSION, kept, token)) cache.prune(maxAgents)
+            val index = readIndex(agentId).runs.associateBy { it.runId }.toMutableMap()
+            var wrote = false
+            for (trace in traces.distinctBy { it.runId }) {
+                if (trace.runId == INDEX_KEY) continue
+                if (files.write(trace.runId, CachedTrace.serializer(), VERSION, trace, token)) {
+                    index[trace.runId] = CachedTraceIndex.Entry(trace.runId, trace.createdAtMillis, files.size(trace.runId))
+                    wrote = true
+                }
+            }
+            if (!wrote) return
+            val kept = withinBudget(index.values.sortedByDescending { it.createdAtMillis })
+            index.keys.filterNot { id -> kept.any { it.runId == id } }.forEach { files.remove(it) }
+            files.write(INDEX_KEY, CachedTraceIndex.serializer(), INDEX_VERSION, CachedTraceIndex(kept), token)
         }
+        cache.pruneChildren(maxAgents)
     }
 
     /**
-     * The newest of [traces] — already ordered newest first — that fit the agent's byte budget. A trace is as long
-     * as the run's log, so a count alone does not bound the file; the oldest are let go of until it does.
+     * The newest runs — already ordered newest first — that fit the agent's budget: at most [maxRunsPerAgent] of them,
+     * and no more bytes than [maxBytesPerAgent] once the newest is in. The newest run is always kept, whatever it weighs.
      */
-    private fun withinBudget(traces: List<CachedTrace>): List<CachedTrace> {
-        var used = 0
-        val kept = ArrayList<CachedTrace>(traces.size)
-        for (trace in traces) {
-            used += CursorJson.encodeToString(CachedTrace.serializer(), trace).length
-            if (kept.isNotEmpty() && used > maxBytesPerAgent) break
-            kept += trace
+    private fun withinBudget(runs: List<CachedTraceIndex.Entry>): List<CachedTraceIndex.Entry> {
+        var used = 0L
+        val kept = ArrayList<CachedTraceIndex.Entry>(runs.size)
+        for (run in runs) {
+            used += run.bytes
+            if (kept.isNotEmpty() && (used > maxBytesPerAgent || kept.size >= maxRunsPerAgent)) break
+            kept += run
         }
         return kept
+    }
+
+    private suspend fun readIndex(agentId: String): CachedTraceIndex =
+        agentCache(agentId).read(INDEX_KEY, CachedTraceIndex.serializer(), INDEX_VERSION)?.value ?: rebuildIndex(agentId)
+
+    /** An index that is missing (a kill between a run's write and the index's) is rebuilt from the files that are there. */
+    private suspend fun rebuildIndex(agentId: String): CachedTraceIndex {
+        val files = agentCache(agentId)
+        val entries = files.keys().filter { it != INDEX_KEY }.mapNotNull { runId ->
+            files.read(runId, CachedTrace.serializer(), READABLE_VERSIONS)?.value?.let { CachedTraceIndex.Entry(runId, it.createdAtMillis, files.size(runId)) }
+        }
+        return CachedTraceIndex(entries)
+    }
+
+    /**
+     * Moves an agent's traces out of the whole-file store an earlier build kept them in, run by run, once per agent
+     * and process. What the old file held is what the new layout starts with; nothing a user already had is lost to
+     * the change of shape.
+     */
+    private suspend fun migrate(agentId: String) {
+        if (!migrated.add(agentId)) return
+        if (!cache.has(agentId)) return
+        val legacy = cache.read(agentId, CachedTraces.serializer(), LEGACY_VERSIONS)?.value
+        if (legacy != null && legacy.runs.isNotEmpty()) {
+            val files = agentCache(agentId)
+            val token = cache.token()
+            locks.getOrPut(agentId) { Mutex() }.withLock {
+                val index = LinkedHashMap<String, CachedTraceIndex.Entry>()
+                for (trace in legacy.runs) {
+                    if (files.write(trace.runId, CachedTrace.serializer(), VERSION, trace, token)) {
+                        index[trace.runId] = CachedTraceIndex.Entry(trace.runId, trace.createdAtMillis, files.size(trace.runId))
+                    }
+                }
+                files.write(INDEX_KEY, CachedTraceIndex.serializer(), INDEX_VERSION, CachedTraceIndex(index.values.sortedByDescending { it.createdAtMillis }), token)
+            }
+        }
+        cache.remove(agentId)
     }
 
     /** Taken when the work that will write starts; see [JsonDiskCache.token]. */
     fun token(): Int = cache.token()
 
-    suspend fun remove(agentId: String) = cache.remove(agentId)
+    suspend fun remove(agentId: String) {
+        migrated.add(agentId)
+        cache.remove(agentId)
+        agentCache(agentId).drop()
+    }
 
-    suspend fun clear() = cache.clear()
+    suspend fun clear() {
+        migrated.clear()
+        cache.clear()
+    }
 
     private companion object {
         /**
-         * 2: tool calls carry their Cursor-worded summary, server and stats, and subagents are tool calls.
-         * 3: a call keeps the clipped output it opens onto instead of the raw payload it was read from, so nothing
-         * has to be stripped on the way to disk (see [ToolCall.output]).
+         * Per-run files. 2 and 3 were the whole-file store's shapes (2: tool calls carry their Cursor-worded summary,
+         * server and stats, and subagents are tool calls; 3: a call keeps the clipped output it opens onto instead
+         * of the raw payload it was read from); 4 is the same [CachedTrace], one file per run.
          */
-        const val VERSION = 3
+        const val VERSION = 4
+        /** A trace written by any build since the per-run layout is read; the items only ever gain fields with defaults. */
+        val READABLE_VERSIONS = 4..VERSION
+        val LEGACY_VERSIONS = listOf(2, 3)
+        const val INDEX_KEY = "_index"
+        const val INDEX_VERSION = 1
         const val MAX_AGENTS = 200
-        /**
-         * Matches how deep the conversation pages its runs, so every run whose trace the load replays can be kept:
-         * keeping fewer meant a long chat replayed the same logs on every open and then lost them for good once
-         * they expired.
-         */
+        /** As deep as a chat can be paged: past this the oldest go, so a chat that never stops cannot fill the disk. */
         const val MAX_RUNS_PER_AGENT = 400
 
-        /** How much of one agent's traces is worth keeping; past this the oldest go, however few runs that is. */
-        const val MAX_BYTES_PER_AGENT = 2 shl 20
+        /**
+         * One agent's traces at most. A tool call's payload is clipped to 40 000 characters, so this is room for some
+         * eight hundred payload-carrying calls before the oldest runs go — a long chat's worth, where 2 MiB was six runs'.
+         */
+        const val MAX_BYTES_PER_AGENT = 32L shl 20
     }
 }
 

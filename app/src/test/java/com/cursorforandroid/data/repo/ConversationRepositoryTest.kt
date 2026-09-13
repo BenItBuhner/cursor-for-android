@@ -797,7 +797,7 @@ class ConversationRepositoryTest {
         assertThat(degraded.activeRunId).isEqualTo("run-2")
         assertThat(degraded.runStatus).isEqualTo(RunStatus.FINISHED)
         // And the degraded shape is never the one written back.
-        assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2").inOrder()
+        assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2")
     }
 
     @Test
@@ -823,9 +823,10 @@ class ConversationRepositoryTest {
     }
 
     /**
-     * The run list is paged until it covers the transcript's prompts. A transcript that failed has none to cover,
-     * so the first page must not pass for the whole list: the older turns would lose their footers, traces and
-     * images, on screen and on disk, and the ones left would pair with the wrong prompts.
+     * A long chat opens on its newest window, and the rest of its run records are paged in behind the first page so
+     * every prompt pairs with its own run. A transcript that then fails to reload must not cut that list back down
+     * to one page: the older turns would lose their footers, traces and images, on screen and on disk, and the ones
+     * left would pair with the wrong prompts.
      */
     @Test
     fun `a transcript that fails does not cut a long chat's run list down to one page`() = runBlocking<Unit> {
@@ -835,8 +836,14 @@ class ConversationRepositoryTest {
         turns.forEach { expireStream(it.first) }
         val conversations = repository()
         conversations.attach("bc-1")
-        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 60 }
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 10 }
         awaitUntil { cache.read("bc-1")?.value?.runs?.size == 60 }
+        // The window is the newest ten turns, paired with their own runs; the fifty before it wait for a scroll-up.
+        val opened = state(conversations)
+        assertThat(opened.hasOlder).isTrue()
+        assertThat(opened.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(51..60).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(opened.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(51..60).map { "run-$it" }.toTypedArray()).inOrder()
+        assertThat(cache.read("bc-1")!!.value.runsComplete).isTrue()
 
         api.failConversation = CursorApiException(500, "internal_error", "Server error.")
         val before = api.listRunsCalls
@@ -844,9 +851,128 @@ class ConversationRepositoryTest {
         awaitUntil { api.listRunsCalls > before && !state(conversations).isLoading }
         delay(100)
 
-        assertThat(state(conversations).items.count { it is RunFooter }).isEqualTo(60)
-        assertThat(state(conversations).items.filterIsInstance<UserMessage>()).hasSize(60)
+        assertThat(state(conversations).items.count { it is RunFooter }).isEqualTo(10)
+        assertThat(state(conversations).items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(51..60).map { "Prompt $it" }.toTypedArray()).inOrder()
         assertThat(cache.read("bc-1")!!.value.runs).hasSize(60)
+        assertThat(state(conversations).hasOlder).isTrue()
+    }
+
+    /** Scrolling up widens the window a page at a time until the first turn; each window pairs its own runs. */
+    @Test
+    fun `scrolling up pages the older turns in, a window at a time, down to the first`() = runBlocking<Unit> {
+        val turns = Array(25) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        api.addFinishedAgent("bc-1", "Agent", *turns)
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 10 }
+        awaitUntil { cache.read("bc-1")?.value?.runsComplete == true }
+
+        conversations.loadOlder("bc-1")
+        awaitUntil { state(conversations).items.count { it is RunFooter } == 20 && !state(conversations).isLoadingOlder }
+        var shown = state(conversations)
+        assertThat(shown.hasOlder).isTrue()
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(6..25).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(6..25).map { "run-$it" }.toTypedArray()).inOrder()
+        // Each footer sits under its own turn: the run's duration is the turn's.
+        assertThat(shown.items.filterIsInstance<RunFooter>().first().durationMs).isEqualTo(6 * 60_000L)
+
+        conversations.loadOlder("bc-1")
+        awaitUntil { state(conversations).items.count { it is RunFooter } == 25 && !state(conversations).isLoadingOlder }
+        shown = state(conversations)
+        assertThat(shown.hasOlder).isFalse()
+        assertThat(shown.items.filterIsInstance<UserMessage>()).hasSize(25)
+        // Asking again at the top changes nothing.
+        conversations.loadOlder("bc-1")
+        delay(100)
+        assertThat(state(conversations).items.count { it is RunFooter }).isEqualTo(25)
+        // The window the reader had open is what the next start renders from disk.
+        awaitUntil { (cache.read("bc-1")?.value?.window ?: 0) >= 25 }
+    }
+
+    /**
+     * A follow-up on a long chat whose run records are still being paged in: its prompt stands on its own until the
+     * server reports it, and the window's older turns keep their own runs meanwhile — whether the transcript or the
+     * run list catches up with the follow-up first.
+     */
+    @Test
+    fun `a follow-up on a long chat pairs the window's turns with their own runs while the list is still paging`() = runBlocking<Unit> {
+        val turns = Array(60) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        // Every turn before the follow-up the fake will file (it stamps those in the morning of the 14th).
+        api.addFinishedAgent("bc-1", "Agent", *turns, firstRunAt = "2026-04-11T00:00:00.000Z")
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        // The pages behind the first are held: the list stays incomplete for the whole of this.
+        api.runsLaterPagesGate = CompletableDeferred()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).items.count { it is RunFooter } == 10 }
+
+        // The run list has the follow-up's run before the transcript has its prompt (the fake appends the prompt on
+        // createRun; take it back out to stage the lag).
+        val runId = "run-followup-1"
+        api.runsHiddenFromList += runId
+        assertThat(conversations.sendFollowUp("bc-1", "Prompt 61").isSuccess).isTrue()
+        api.transcripts["bc-1"] = api.transcripts.getValue("bc-1").filterNot { it.text == "Prompt 61" }
+        awaitUntil { state(conversations).isStreaming }
+        var shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..60).map { "Prompt $it" }.toTypedArray(), "Prompt 61").inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+
+        // The transcript catches up first: the prompt shows once, paired the same way.
+        api.transcripts["bc-1"] = api.transcripts.getValue("bc-1") + V0ConversationMessageDto("srv-61", "user_message", "Prompt 61")
+        var listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading }
+        shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..60).map { "Prompt $it" }.toTypedArray(), "Prompt 61").inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+        assertThat(shown.activeRunId).isEqualTo(runId)
+
+        // Then the run list: the server's copy of the turn takes over and nothing moves.
+        api.runsHiddenFromList -= runId
+        listCalls = api.listRunsCalls
+        conversations.reload("bc-1")
+        awaitUntil { api.listRunsCalls > listCalls && !state(conversations).isLoading }
+        shown = state(conversations)
+        assertThat(shown.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(52..61).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(shown.items.filterIsInstance<RunFooter>().map { it.runId }).containsExactly(*(52..60).map { "run-$it" }.toTypedArray()).inOrder()
+        assertThat(shown.items.map { it.id }).containsNoDuplicates()
+        api.runsLaterPagesGate!!.complete(Unit)
+    }
+
+    /**
+     * A restart renders the window that was open from disk — the older turns' run records included — and the
+     * network only revalidates it; scrolling up afterwards needs no page the disk did not keep.
+     */
+    @Test
+    fun `a restart reopens the chat on the window that was open, from disk`() = runBlocking<Unit> {
+        val turns = Array(25) { Triple("run-${it + 1}", "Prompt ${it + 1}", "Reply ${it + 1}") }
+        api.addFinishedAgent("bc-1", "Agent", *turns)
+        agents.refresh()
+        turns.forEach { expireStream(it.first) }
+        val first = repository()
+        first.attach("bc-1")
+        awaitUntil { !state(first).isLoading && state(first).items.count { it is RunFooter } == 10 }
+        awaitUntil { cache.read("bc-1")?.value?.runsComplete == true }
+        first.loadOlder("bc-1")
+        awaitUntil { state(first).items.count { it is RunFooter } == 20 && !state(first).isLoadingOlder }
+        awaitUntil { cache.read("bc-1")?.value?.window == 20 }
+        first.detach("bc-1")
+
+        api.conversationGate = CompletableDeferred()
+        val next = repository()
+        next.attach("bc-1")
+        awaitUntil { state(next).items.count { it is RunFooter } == 20 }
+        val fromDisk = state(next)
+        assertThat(fromDisk.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly(*(6..25).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(fromDisk.hasOlder).isTrue()
+        // Rendered before the network answered.
+        assertThat(api.conversationGate!!.isCompleted).isFalse()
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !state(next).isLoading }
+        assertThat(state(next).items.count { it is RunFooter }).isEqualTo(20)
     }
 
     /**
@@ -925,11 +1051,11 @@ class ConversationRepositoryTest {
     }
 
     /**
-     * The traces of one agent share a file, and writing it is a read-merge-write of everything already in it. A
-     * chat with fifty finished runs must not turn its opening into fifty of those.
+     * Each replayed trace is written the moment it is whole, to a file of its own: the agent's other runs are never
+     * read back or serialised again for it, and a process that dies after the third replay keeps three traces.
      */
     @Test
-    fun `opening a chat writes the traces it replayed in one pass over the file`() = runBlocking<Unit> {
+    fun `opening a chat writes each replayed trace to its own file as it lands`() = runBlocking<Unit> {
         api.addFinishedAgent(
             "bc-1", "Agent",
             Triple("run-1", "Prompt 1", "Reply 1"),
@@ -945,17 +1071,19 @@ class ConversationRepositoryTest {
 
         val conversations = repository()
         conversations.attach("bc-1")
-        awaitUntil { traces.read("bc-1").size == 3 }
+        awaitUntil { traces.runIds("bc-1").size == 3 }
         delay(150)
 
         assertThat(traces.read("bc-1").keys).containsExactly("run-1", "run-2", "run-3")
-        assertThat(traceWrites.get()).isEqualTo(1)
+        val files = folder.root.walkTopDown().filter { it.isFile && it.path.contains("/traces/") }.map { it.name }.toList()
+        assertThat(files).containsExactly("run-1.json", "run-2.json", "run-3.json", "_index.json")
+        // One write per run and one per index update: nothing was rewritten wholesale.
+        assertThat(traceWrites.get()).isEqualTo(6)
     }
 
     /**
-     * A replay pass keeps what it found even when the screen leaves half-way through, which it does in a
-     * NonCancellable block — so a sign-out that cancels it can see that write arrive once the wipe is over and the
-     * cache open again for the next account.
+     * A settled trace is written at once, under the cache generation the pass started in — so a sign-out that lands
+     * while the pass is still reading refuses the write, and the next account never sees this one's chat.
      */
     @Test
     fun `a trace pass a sign-out cancelled does not write back into the wiped cache`() = runBlocking<Unit> {
@@ -965,22 +1093,59 @@ class ConversationRepositoryTest {
             Triple("run-2", "Prompt 2", "Reply 2"),
         )
         agents.refresh()
-        // run-1's log reads to its end; run-2's never does, so the pass is still under way when the sign-out lands.
-        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
-        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
-        streamer.emit("run-1", RunStreamEvent.Done)
 
         val conversations = repository()
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        // Both replays are under way and neither log has read to its end when the sign-out lands.
+        awaitUntil { "run-1" in streamer.connections && "run-2" in streamer.connections }
         assertThat(traces.read("bc-1")).isEmpty()
-
         traceDisk.invalidate()
         traceDisk.clear()
-        conversations.resetAll()
 
+        // run-1's log then reads to its end: the pass has a trace to write, under the generation it started in.
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking at run-1."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Reply 1", 1_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         delay(200)
         assertThat(traces.read("bc-1")).isEmpty()
+
+        conversations.resetAll()
+        delay(200)
+        assertThat(traces.read("bc-1")).isEmpty()
+    }
+
+    /**
+     * The pass replaying a long chat's runs is not cut short by the run being followed finishing — that used to
+     * replace it with a replay of the one run, and the runs it had not reached stayed text-only until the next fetch.
+     */
+    @Test
+    fun `a run finishing while older runs are being replayed does not cut the replay short`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-1", "Agent", Triple("run-1", "Prompt 1", "Reply 1"), Triple("run-2", "Prompt 2", "Reply 2"))
+        val startedAt = "2026-04-13T22:00:00.000Z"
+        api.runs["run-3"] = RunDto(id = "run-3", agentId = "bc-1", status = "RUNNING", createdAt = startedAt, updatedAt = startedAt)
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-3", updatedAt = startedAt)
+        api.transcripts["bc-1"] = api.transcripts.getValue("bc-1") + V0ConversationMessageDto("run-3-u", "user_message", "Prompt 3")
+        agents.refresh()
+        // The live connection breaks after its first event; the record then says the run is over, without a trace.
+        streamer.dropNextConnection("run-3", afterEvents = 1)
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { state(conversations).isStreaming && "run-1" in streamer.connections && "run-2" in streamer.connections }
+        api.runs["run-3"] = api.runs.getValue("run-3").copy(status = "FINISHED", result = "Reply 3", durationMs = 5_000)
+        streamer.emit("run-3", RunStreamEvent.Status("run-3", RunStatus.RUNNING))
+        awaitUntil { !state(conversations).isStreaming && state(conversations).runStatus == RunStatus.FINISHED }
+
+        // The replays then read to their ends and both traces land: the finish asked for run-3's log and left theirs alone.
+        listOf("run-1", "run-2").forEach { runId ->
+            streamer.emit(runId, RunStreamEvent.Thinking("Looking at $runId."))
+            streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "Reply", 1_000, null))
+            streamer.emit(runId, RunStreamEvent.Done)
+        }
+        awaitUntil { state(conversations).items.count { it is ActivityGroup } == 2 }
+        awaitUntil { traces.runIds("bc-1").containsAll(listOf("run-1", "run-2")) }
+        assertThat(streamer.connections.count { it == "run-1" }).isEqualTo(1)
+        assertThat(streamer.connections.count { it == "run-2" }).isEqualTo(1)
     }
 
     @Test

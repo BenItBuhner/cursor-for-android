@@ -267,6 +267,7 @@ internal fun AppShell(
                 onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
+                onLoadMore = { agentsViewModel.loadMore() },
             ),
             modifier = modifier,
         )

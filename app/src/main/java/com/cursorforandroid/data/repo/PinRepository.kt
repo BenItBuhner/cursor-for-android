@@ -105,6 +105,9 @@ class PinRepository(
     /** Pinned ids whose fetch failed, tried again after the ones never tried, so one bad id starves none. */
     private val deferred = LinkedHashSet<String>()
 
+    /** Where the account's list continues past the pages read this round; null before a round and past the last page. */
+    @Volatile private var accountCursor: String? = null
+
     /** Set after a failure retrying cannot fix (a rejected key, a device policy); cleared by a sign-in or the setting. */
     @Volatile private var halted = false
     private val settingWatcher = AtomicReference<Job?>(null)
@@ -145,6 +148,7 @@ class PinRepository(
         work.cancel()
         work = workScope()
         halted = false
+        accountCursor = null
         revisions.clear()
         synchronized(deferred) { deferred.clear() }
         _state.value = PinSyncState()
@@ -242,6 +246,7 @@ class PinRepository(
             val agentsToken = agents.token()
             val list = api.list()
             if (generation.get() != startedIn) return Result.success(Unit)
+            accountCursor = list.nextCursor
             agents.applyAccountSnapshots(list.composers, agentsToken)
             runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
             if (!pinsEnabled) return Result.success(Unit)
@@ -264,6 +269,34 @@ class PinRepository(
             if (generation.get() != startedIn) return Result.success(Unit)
             noteFailure(t)
             Result.failure(t)
+        }
+    }
+
+    /**
+     * Reads the next page of the account's list — the rows behind the ones the last round read — and folds what it
+     * says onto the rows the same way ([AgentRepository.applyAccountSnapshots], [onList]): for the public list having
+     * paged further ([AgentRepository.loadMore]), so the rows it added learn their names, archive flags, sources,
+     * pull request states and place among the Projects too. Nothing without Extended mode, or past the last page.
+     */
+    suspend fun loadMore(): Result<Unit> {
+        val allowed = capabilities()
+        if (!sessionUsable() || !allowed.accountSession) return Result.success(Unit)
+        val startedIn = generation.get()
+        return serverMutex.withLock {
+            val cursor = accountCursor ?: return@withLock Result.success(Unit)
+            try {
+                val agentsToken = agents.token()
+                val list = api.listMore(cursor)
+                if (generation.get() != startedIn) return@withLock Result.success(Unit)
+                accountCursor = list.nextCursor
+                agents.applyAccountSnapshots(list.composers, agentsToken)
+                runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
+                Result.success(Unit)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (generation.get() == startedIn) noteFailure(t)
+                Result.failure(t)
+            }
         }
     }
 

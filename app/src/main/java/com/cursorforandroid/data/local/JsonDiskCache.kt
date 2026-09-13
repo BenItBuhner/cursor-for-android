@@ -41,16 +41,28 @@ class JsonDiskCache(
     /** A cache rooted at a sub-directory; each domain (agents, conversations, catalog) gets its own. */
     fun child(name: String): JsonDiskCache = JsonDiskCache(File(directory, name), json, nowProvider, dispatcher, epoch)
 
-    suspend fun <T> read(key: String, serializer: KSerializer<T>, version: Int): Entry<T>? = withContext(dispatcher) {
+    suspend fun <T> read(key: String, serializer: KSerializer<T>, version: Int): Entry<T>? = read(key, serializer, listOf(version))
+
+    /**
+     * Reads an entry written under any of [versions]: for a domain whose value type only ever gained fields with
+     * defaults, so that a schema bump does not throw away what an earlier build saved. Anything else reads as a miss.
+     */
+    suspend fun <T> read(key: String, serializer: KSerializer<T>, versions: Iterable<Int>): Entry<T>? = withContext(dispatcher) {
         lockFor(key).withLock {
             val file = fileFor(key)
             if (!file.isFile) return@withLock null
             runCatching {
                 val envelope = json.decodeFromString(Envelope.serializer(serializer), file.readText())
-                if (envelope.version == version) Entry(envelope.value, envelope.savedAtMillis) else null
+                if (envelope.version in versions) Entry(envelope.value, envelope.savedAtMillis) else null
             }.getOrNull().also { if (it == null) file.delete() }
         }
     }
+
+    /** Whether an entry is stored under [key], whatever its version; a stat, not a read. */
+    fun has(key: String): Boolean = fileFor(key).isFile
+
+    /** The size in bytes of the entry stored under [key], or 0 when there is none. */
+    fun size(key: String): Long = fileFor(key).takeIf { it.isFile }?.length() ?: 0L
 
     /**
      * The generation the cache is on. Work that will write later takes one of these when it starts and hands it to
@@ -106,6 +118,19 @@ class JsonDiskCache(
         entryFiles().sortedByDescending { it.lastModified() }.map { it.name.removeSuffix(SUFFIX) }
     }
 
+    /** The names of the child caches that exist on disk (see [child]), most recently written first. */
+    suspend fun childNames(): List<String> = withContext(dispatcher) {
+        childDirectories().sortedByDescending { it.lastModified() }.map { it.name }
+    }
+
+    /** Deletes this cache's directory — every entry and every child — without the generation bump of [clear]. */
+    suspend fun drop() = withContext(dispatcher) { directory.deleteRecursively(); Unit }
+
+    /** Keeps the children bounded: deletes the least recently written child caches beyond [maxChildren], whole. */
+    suspend fun pruneChildren(maxChildren: Int) = withContext(dispatcher) {
+        childDirectories().sortedByDescending { it.lastModified() }.drop(maxChildren).forEach { it.deleteRecursively() }
+    }
+
     /** Keeps the cache bounded: deletes the least recently written entries beyond [maxEntries]. */
     suspend fun prune(maxEntries: Int) = withContext(dispatcher) {
         entryFiles().sortedByDescending { it.lastModified() }.drop(maxEntries).forEach { it.delete() }
@@ -128,16 +153,20 @@ class JsonDiskCache(
 
     private fun tempFiles(): List<File> = directory.listFiles { f -> f.isFile && f.name.endsWith(TMP_SUFFIX) }?.toList() ?: emptyList()
 
+    private fun childDirectories(): List<File> = directory.listFiles { f -> f.isDirectory }?.toList() ?: emptyList()
+
     private fun lockFor(key: String): Mutex = locks.getOrPut(key) { Mutex() }
 
     private fun fileFor(key: String): File = File(directory, sanitize(key) + SUFFIX)
 
-    private companion object {
-        const val SUFFIX = ".json"
-        const val TMP_SUFFIX = ".tmp"
+    companion object {
+        private const val SUFFIX = ".json"
+        private const val TMP_SUFFIX = ".tmp"
         /** Long enough that no live write is ever mistaken for an abandoned one. */
-        const val STALE_TMP_MS = 60_000L
-        val UNSAFE = Regex("[^A-Za-z0-9._-]")
+        private const val STALE_TMP_MS = 60_000L
+        private val UNSAFE = Regex("[^A-Za-z0-9._-]")
+
+        /** A key as it names a file (or a child directory): anything outside `[A-Za-z0-9._-]` replaced, bounded in length. */
         fun sanitize(key: String): String = key.replace(UNSAFE, "_").take(120).ifEmpty { "_" }
     }
 }

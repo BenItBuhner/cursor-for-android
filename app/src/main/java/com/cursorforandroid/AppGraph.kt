@@ -13,6 +13,9 @@ import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.DashboardSlashCommandApi
@@ -205,6 +208,8 @@ class AppGraph(
     private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
     private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account's own transcript of a chat, for the turns whose documented log has expired (`FetchBackgroundComposer`). */
+    private val lazyHeadlessTranscript = lazy { HeadlessConversationApi(lazyAccountRpc.value, lazySessionTokens.value) }
 
     /**
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
@@ -262,6 +267,7 @@ class AppGraph(
     // shims: a graph in default mode never builds the api2 client, and one in Extended mode never builds GitHub's.
     private val accountAgents = object : PinsApi, ComposerLifecycleApi {
         override suspend fun list(): AccountList = lazyAccountAgents.value.list()
+        override suspend fun listMore(cursor: String): AccountList = lazyAccountAgents.value.listMore(cursor)
         override suspend fun pin(ids: Collection<String>) = lazyAccountAgents.value.pin(ids)
         override suspend fun unpin(ids: Collection<String>) = lazyAccountAgents.value.unpin(ids)
         override suspend fun archive(id: String) = lazyAccountAgents.value.archive(id)
@@ -428,7 +434,14 @@ class AppGraph(
             traceCache = caches.traces,
             isForeground = { runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(true) },
             onOpened = { agentId -> LiveNotifications.cancelFinished(app, agentId) },
+            record = accountTranscript,
+            capabilities = capabilities,
+            images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) },
         )
+    }
+
+    private val accountTranscript = object : ConversationRecordApi {
+        override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
