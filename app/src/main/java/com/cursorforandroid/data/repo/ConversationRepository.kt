@@ -218,6 +218,19 @@ class ConversationRepository(
         @Volatile var stops = 0
         /** The terminal runs whose traces [pause] turned away, replayed by [resume]. */
         var deferredTraceRuns: List<RunDto> = emptyList()
+        /**
+         * The run this device's [cancelRun] stopped. A load that was in flight when the cancel went out read the
+         * run's record before it, and starting to follow the run is no word from the run: neither may put the chat
+         * back to running for it (see [statusOf]) — which is what held a steer sent the moment a chat opened until
+         * the stream ended. The run's own events, and a terminal status from anywhere, still have the last word.
+         */
+        @Volatile var cancelledRunId: String? = null
+
+        /** The status a run record gives the chat: an active status for the run this device cancelled stays cancelled. */
+        fun statusOf(run: RunDto): RunStatus {
+            val status = run.statusEnum()
+            return if (status.isActive && run.id == cancelledRunId) RunStatus.CANCELLED else status
+        }
         /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
         var reportedWorkers: Set<String>? = null
         var lastUsedAt = AppClock.now()
@@ -634,7 +647,7 @@ class ConversationRepository(
                                 isLoading = false,
                                 error = null,
                                 activeRunId = latest?.id,
-                                runStatus = latest?.statusEnum(),
+                                runStatus = latest?.let { e.statusOf(it) },
                                 isStreaming = false,
                                 isReconnecting = false,
                                 transcriptUnavailable = unavailable,
@@ -893,7 +906,7 @@ class ConversationRepository(
             // The last screen may have left, or the one still attached been covered, while the load that got here
             // was wrapping up: then nobody is looking, and the next attach or resume decides afresh.
             if (e.attached == 0 || e.paused) return@synchronized false
-            e.publish(mutate = { streamJob = job; live = null }, transform = { copy(activeRunId = run.id, runStatus = RunStatus.parse(run.status), isStreaming = true) })
+            e.publish(mutate = { streamJob = job; live = null }, transform = { copy(activeRunId = run.id, runStatus = e.statusOf(run), isStreaming = true) })
             true
         }
         if (following) job.start() else job.cancel()
@@ -1274,6 +1287,7 @@ class ConversationRepository(
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> {
         val e = entry(agentId)
         return agents.cancelRun(agentId, runId).onSuccess {
+            e.cancelledRunId = runId
             e.state.update { it.copy(runStatus = RunStatus.CANCELLED) }
         }
     }

@@ -304,6 +304,35 @@ class FollowUpRepositoryTest {
     }
 
     @Test
+    fun `a busy answer with no row to wait on is asked again after a while, and a row that says running ends the hold`() = runBlocking<Unit> {
+        // The list has not loaded the chat, so nothing can be marked running when the server says it is busy.
+        api.busyCreateRun = true
+        val followUps = repository(busyRecheckMs = 400)
+        followUps.enqueue("bc-1", "Go on")
+
+        awaitUntil { api.runRequests.size == 1 }
+        delay(200)
+        // Held back rather than asked again at once...
+        assertThat(api.runRequests).hasSize(1)
+        assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
+        // ...and asked again once the recheck interval is up, for as long as nothing says when the turn ends.
+        awaitUntil { api.runRequests.size >= 2 }
+
+        // The row arrives and says running: the hold ends there and then, and the message waits on the row.
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        awaitUntil { agents.agent("bc-1")?.isRunning == true }
+        val asked = api.runRequests.size
+        delay(1_000)
+        assertThat(api.runRequests.size).isAtMost(asked + 1)
+        // The turn ends: the message goes out.
+        api.busyCreateRun = false
+        awaitUntil { streamer.connections.contains("run-1") }
+        finish("run-1")
+        awaitUntil { sent().last() == "Go on" && followUps.state("bc-1").value.queue.isEmpty() }
+    }
+
+    @Test
     fun `a steer whose send stumbles once is tried again rather than failed`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
@@ -422,8 +451,10 @@ class FollowUpRepositoryTest {
         // ended a second time.
         finish("run-1", text = "")
         // The second attempt comes after the record has been read and the row settled from the hub, a few round
-        // trips through the fake API; a loaded CI runner has taken longer than the default wait to get there.
-        awaitUntil(40_000) { api.runRequests.size >= 2 }
+        // trips through the fake API. It used to sit out the repository's whole busy recheck (20 s) whenever the hub
+        // saw the run end between the busy answer and the wait for the row to read running — the change it waited
+        // for had come and gone — which is what timed this test out on loaded runners; the hold now re-reads the row.
+        awaitUntil { api.runRequests.size >= 2 }
         delay(300)
         assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
 
@@ -433,6 +464,38 @@ class FollowUpRepositoryTest {
         assertThat(sent().last()).isEqualTo("Now")
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
         awaitUntil { prompts("bc-1").single { it.text == "Now" }.isPending.not() }
+    }
+
+    /**
+     * The chat is opened and, before its load has answered, the turn is stopped. The load then completes on a record
+     * that predates the cancel — the run still running — and starts following that run. That used to put the chat
+     * back to running for the very run this device had stopped, and a follow-up (a steer's, or the queue's) then
+     * waited on a stream that would report nothing for it: the intermittent 20 s timeout in the sign-out test here.
+     */
+    @Test
+    fun `a follow-up queued after a Stop is not held by a load that re-follows the stopped run`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        api.conversationGate = CompletableDeferred()
+        conversations.attach("bc-1")
+        awaitUntil { api.conversationCalls == 1 }
+        assertThat(conversations.cancelRun("bc-1", "run-1").isSuccess).isTrue()
+
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && it.activeRunId == "run-1" } }
+        // The word from this device stands: the run was stopped, and starting to follow it says nothing to the contrary.
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.CANCELLED)
+
+        // The row took the record's word meanwhile, as it does for any run read; the run's own end corrects it, and a
+        // message queued now goes out then — not held on by a chat that would have gone on saying running for it.
+        val followUps = repository()
+        followUps.enqueue("bc-1", "Now")
+        awaitUntil { streamer.connections.contains("run-1") }
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.CANCELLED, "", 5_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(conversations.state("bc-1").value.let { it.isStreaming && it.activeRunId != "run-1" }).isTrue()
     }
 
     @Test
