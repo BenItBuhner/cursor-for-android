@@ -183,6 +183,9 @@ class LiveNotificationService : Service() {
     private fun onRunFinished(run: TrackedRun) {
         // A cancel was requested by the user somewhere; nothing to announce.
         if (run.status == RunStatus.CANCELLED) return
+        // A Project's coordinator and the agents spawned inside it are the Project view's business, never a card's;
+        // the monitor drops them first, and this is the last word at the point where a card would be posted.
+        if (graph.agents.agent(run.agentId)?.isProjectScoped == true) return
         // The user is looking at this very conversation: the transcript already shows the result.
         val foreground = runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(false)
         if (foreground && graph.conversations.isAttached(run.agentId)) return

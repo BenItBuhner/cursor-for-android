@@ -115,7 +115,9 @@ class FollowUpRepositoryTest {
         retryBaseMs = retryBaseMs,
     )
 
-    private suspend fun awaitUntil(timeoutMs: Long = 5_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
+    // Generous on purpose: these waits are for round trips through the fake API and the hub's own timers, and a
+    // loaded runner (CI, or the whole suite at once) has been seen to take several times longer than a quiet one.
+    private suspend fun awaitUntil(timeoutMs: Long = 20_000, condition: suspend () -> Boolean) = withTimeout(timeoutMs) {
         while (!condition()) delay(10)
     }
 
@@ -421,7 +423,7 @@ class FollowUpRepositoryTest {
         finish("run-1", text = "")
         // The second attempt comes after the record has been read and the row settled from the hub, a few round
         // trips through the fake API; a loaded CI runner has taken longer than the default wait to get there.
-        awaitUntil(15_000) { api.runRequests.size >= 2 }
+        awaitUntil(40_000) { api.runRequests.size >= 2 }
         delay(300)
         assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
 

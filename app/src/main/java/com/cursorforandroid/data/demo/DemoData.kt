@@ -41,6 +41,8 @@ internal object DemoData {
         data class Thought(val text: String) : Step
         data class Tool(val name: String, val arg: String) : Step
         data class Delegate(val description: String) : Step
+        /** A call with arguments and a result as JSON, for tools whose payloads are structured: a coordinator's. */
+        data class Call(val name: String, val args: String, val result: String? = null) : Step
         data object Reply : Step
     }
 
@@ -54,6 +56,43 @@ internal object DemoData {
     private fun sh(command: String) = Step.Tool("run_terminal_cmd", command)
     private fun delegate(description: String) = Step.Delegate(description)
     private val reply = Step.Reply
+
+    /** A coordinator creating a worker (`create_agent`): the worker's name and prompt, and the id Cursor answered with. */
+    private fun createAgent(name: String, prompt: String, agentId: String) = Step.Call(
+        "create_agent",
+        """{"name": ${json(name)}, "prompt": ${json(prompt)}}""",
+        """{"success": {"agent_id": ${json(agentId)}, "message": ${json("Created agent $name")}}}""",
+    )
+
+    /** A coordinator writing to a worker (`send_to_agent`), delivered as a follow-up on the worker's chat. */
+    private fun sendToAgent(agentId: String, title: String, message: String) = Step.Call(
+        "send_to_agent",
+        """{"agent_id": ${json(agentId)}, "title": ${json(title)}, "message": ${json(message)}, "delivery": "followup"}""",
+        """{"success": {"worker_bc_id": ${json(agentId)}, "delivered_as": "followup", "message": "Delivered"}}""",
+    )
+
+    /** A coordinator asking after its workers (`get_agent_status`): one line per worker, as Cursor reports them. */
+    private fun agentStatus(vararg workers: Triple<String, String, String>) = Step.Call(
+        "get_agent_status",
+        """{"agent_ids": [${workers.joinToString { json(it.first) }}]}""",
+        """{"success": {"workers": [${workers.joinToString { (id, name, status) -> """{"bc_id": ${json(id)}, "name": ${json(name)}, "lifecycle": "ACTIVE", "turn_in_flight": ${status == "RUNNING"}, "last_terminal_turn_status": ${json(status)}}""" }}]}}""",
+    )
+
+    /** The coordinator speaking to the user (`send_to_user`). */
+    private fun sendToUser(message: String) = Step.Call("send_to_user", """{"message": ${json(message)}}""", """{"success": {}}""")
+
+    private fun json(text: String): String = buildString {
+        append('"')
+        text.forEach { c ->
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\n' -> append("\\n")
+                else -> append(c)
+            }
+        }
+        append('"')
+    }
 
     /** A finished turn before a seed's current one: its prompt (the user's, or one Cursor injected), replies and trace. */
     class Turn(
@@ -157,6 +196,27 @@ internal object DemoData {
         </task>
         </system_notification>
         <user_query>The beginning of the above subagent result is already visible to the user. Perform any follow-up actions (if needed). DO NOT regurgitate or reiterate its result unless asked. If multiple subagents have now completed and none are still running, briefly summarize the findings and conclusions across all of them. Otherwise, if no follow-ups remain, end your response with a brief third-person confirmation that the subagent has completed.</user_query>
+    """.trimIndent()
+
+    /** How a Project's coordinator hears that one of its workers has finished: the worker's report, framed for the model. */
+    private val WORKER_REPORT = """
+        <timestamp>Tuesday, Mar 3, 2026, 4:12 PM (UTC)</timestamp>
+        <system_notification>
+        The following task has finished. If you were already aware, ignore this notification and do not restate prior responses.
+
+        <task>
+        kind: agent
+        status: success
+        title: Usage events aggregation
+        agent_id: bc-demo-0019
+        detail: This is the last output of the agent:
+
+        Added `usageHourly` and `usageDaily` tables, a cron that rolls events up every ten minutes and an idempotent backfill mutation for the last 30 days. PR #215 merged.
+
+        Agent ID: bc-demo-0019 (can be used with the `resume` parameter to send a follow-up)
+        </task>
+        </system_notification>
+        <user_query>The beginning of the above agent result is already visible to the user. Perform any follow-up actions (if needed). DO NOT regurgitate or reiterate its result unless asked.</user_query>
     """.trimIndent()
 
     private const val REPO_CESIUM = "https://github.com/techlitnow/cesium"
@@ -427,29 +487,35 @@ internal object DemoData {
             replies = listOf("Bumped AGP, Kotlin and the Compose BOM; build and tests green."),
         ),
         // A Cursor Project: the coordinator chat, which plans and delegates rather than writing code, and the chats it
-        // runs — two workers it created and a side chat branched off it (see [composers]).
+        // runs — two workers it created and a side chat branched off it (see [composers]). Its trace is a
+        // coordinator's: workers created, a status check, a message to a worker, and its own words to the user
+        // through `send_to_user`; its current turn was started by a worker's completion notice.
         Seed(
             id = PROJECT_ID, name = "Cesium billing launch", repo = REPO_CESIUM, ageMillis = HOUR + 5 * MIN,
             runStatus = "FINISHED", durationMs = 4 * MIN,
             summary = "Two PRs up: usage aggregation merged, the Stripe webhook handler open and waiting on a proration decision.",
-            prompt = "Take the Cesium billing launch from the metering scaffold to a shippable release: usage aggregation, Stripe checkout and webhooks, the pricing page and a rollout plan. Keep the PRs small and tell me when something needs a decision.",
+            prompt = WORKER_REPORT,
             replies = listOf(
-                "Two PRs are up: the `usage_events` aggregation is merged, and the Stripe webhook handler is open and waiting on one decision — whether a mid-cycle upgrade is prorated or billed from the next cycle. Next tracks: checkout session creation, then the rollout plan.",
+                "The aggregation is merged and the webhook handler has been told to rebase onto it. One decision is open before checkout starts: whether a mid-cycle upgrade is prorated or billed from the next cycle.",
             ),
             trace = listOf(
-                thought("Four tracks, two of them independent: the aggregation feeds the invoice amounts, the webhook handler records payments. Start those, keep the pricing copy in a side chat, hold checkout until the proration question is settled."),
-                read("convex/usage.ts"), read("convex/schema.ts"),
-                delegate("Usage events aggregation"), delegate("Stripe webhook handler"),
+                thought("The aggregation landed, so the invoice amounts have a source. Check where the webhook handler stands before pointing it at the merged tables."),
+                agentStatus(Triple("bc-demo-0019", "Usage events aggregation", "FINISHED"), Triple("bc-demo-0020", "Stripe webhook handler", "RUNNING")),
+                sendToAgent("bc-demo-0020", "Rebase onto the merged aggregation", "PR #215 is merged: rebase onto `main` and read the invoice amounts from `usageDaily` rather than summing `usage_events` yourself."),
+                sendToUser("PR #215 (usage aggregation) is **merged**. The Stripe webhook handler (#218) is open and waiting on one decision: prorate a mid-cycle upgrade, or bill it from the next cycle?"),
                 reply,
             ),
             earlier = listOf(
                 Turn(
-                    prompt = "Kick off the launch: split the work into tracks and start the ones that don't depend on a product decision.",
+                    prompt = "Take the Cesium billing launch from the metering scaffold to a shippable release: usage aggregation, Stripe checkout and webhooks, the pricing page and a rollout plan. Keep the PRs small and tell me when something needs a decision.",
                     replies = listOf("Split the launch into four tracks and started workers on the first two, the usage-event aggregation and the Stripe webhook handler. The pricing copy is a side chat with the marketing brief. I'll report back as each PR opens."),
                     durationMs = 6 * MIN,
                     trace = listOf(
-                        thought("Read the scaffold the earlier chat left before deciding what can start today."),
-                        read("convex/usage.ts"), read("convex/crons.ts"), grep("recordUsage"),
+                        thought("Four tracks, two of them independent: the aggregation feeds the invoice amounts, the webhook handler records payments. Start those, keep the pricing copy in a side chat, hold checkout until the proration question is settled."),
+                        read("convex/usage.ts"), read("convex/schema.ts"), grep("recordUsage"),
+                        createAgent("Usage events aggregation", "Roll the usage events into hourly and daily aggregates with a backfill for the last 30 days. Key the aggregates on the hour and the account so a re-run overwrites rather than doubles.", "bc-demo-0019"),
+                        createAgent("Stripe webhook handler", "Handle Stripe's checkout.session.completed and invoice.paid webhooks, verify the signatures and record each payment against the account. Idempotent on the event id.", "bc-demo-0020"),
+                        sendToUser("Started two workers: **Usage events aggregation** and **Stripe webhook handler**. The pricing copy is a side chat with the marketing brief; checkout waits on the proration decision."),
                         reply,
                     ),
                 ),

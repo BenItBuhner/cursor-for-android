@@ -76,6 +76,36 @@ class WorkHeaderTest {
     }
 
     @Test
+    fun `a coordinator's work is never folded, and its header counts the agents it touched`() {
+        val created = ToolCall(
+            "k1", "create_agent", ToolKind.Coordinator, "completed", "Webhooks",
+            payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Created, listOf(WorkerStatus("bc-w1", "Webhooks")), text = "Handle the webhooks."),
+            linkedAgentIds = listOf("bc-w1"),
+        )
+        val status = ToolCall(
+            "k2", "get_agent_status", ToolKind.Coordinator, "completed", "2 agents",
+            payload = ToolPayload.WorkerAction(ToolPayload.WorkerAction.Kind.Status, listOf(WorkerStatus("bc-w1"), WorkerStatus("bc-w2"))),
+            linkedAgentIds = listOf("bc-w1", "bc-w2"),
+        )
+        val said = ToolCall("k3", "send_to_user", ToolKind.Coordinator, "completed", "Two PRs are up.", payload = ToolPayload.CoordinatorMessage("Two PRs are up."))
+        val coordination = group(ThinkingBlock("Start the independent tracks.", durationSeconds = 2), created, status, said, ThinkingBlock("Now wait."))
+        assertThat(coordination.isCoordination).isTrue()
+        // Open, step by step: the cards are the point, and a thought among them does not fold them.
+        assertThat(coordination.isWorkGrouped).isFalse()
+        assertThat(coordination.header).isEqualTo(WorkHeader("Coordinated", "2 agents"))
+        assertThat(group(created.copy(status = "running", linkedAgentIds = emptyList())).header).isEqualTo(WorkHeader("Coordinating", null))
+        // Mixed with the agent's own reading, the coordinator's calls still keep the group open — the reads become
+        // lines beside the cards — and the header (for the digest) counts the workers.
+        val mixed = group(call(ToolKind.Read, "A.kt"), call(ToolKind.Read, "B.kt"), created, said)
+        assertThat(mixed.isCoordination).isTrue()
+        assertThat(mixed.isWorkGrouped).isFalse()
+        assertThat(mixed.summary.coordinated).isEqualTo(1)
+        assertThat(mixed.header).isEqualTo(WorkHeader("Coordinated", "1 agent"))
+        // The coordinator's tools are none of the Files, Changes or Images lists' business.
+        assertThat(TranscriptContent.of(listOf(coordination)).isEmpty).isTrue()
+    }
+
+    @Test
     fun `the thought row says how long, or briefly, or nothing when untimed`() {
         assertThat(group(ThinkingBlock("Hm.", durationSeconds = 3)).let { it.thoughtAction to it.thoughtDetails }).isEqualTo("Thought" to "3s")
         assertThat(group(ThinkingBlock("Hm.", durationSeconds = 0)).thoughtDetails).isEqualTo("briefly")

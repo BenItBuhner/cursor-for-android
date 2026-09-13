@@ -172,6 +172,7 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
     val icon = when (item.kind) {
         SystemNotification.Kind.Goal -> CursorIcons.Target
         SystemNotification.Kind.Subagent -> CursorIcons.Sparkle
+        SystemNotification.Kind.Worker -> CursorIcons.Multitask
         SystemNotification.Kind.Task -> CursorIcons.Terminal
         SystemNotification.Kind.Other -> CursorIcons.Bell
     }
@@ -181,10 +182,18 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
         NoticeTone.Warning -> colors.orange
         NoticeTone.Error -> colors.red
     }
+    // A worker's (or a cloud subagent's) report names the agent it came from: the row can take the reader there.
+    val controls = LocalTranscriptControls.current
+    val openAgent = item.agentId?.let { id -> controls.onOpenAgent?.let { handler -> { handler(id) } } }
+    val onClick: (() -> Unit)? = when {
+        body != null -> ({ expanded = !expanded })
+        openAgent != null -> openAgent
+        else -> null
+    }
     Column(modifier.fillMaxWidth()) {
         MessageActions(
             text = item.raw,
-            onClick = if (body != null) {{ expanded = !expanded }} else null,
+            onClick = onClick,
             modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
         ) {
             Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -208,6 +217,21 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
                     Spacer(Modifier.width(4.dp))
                     Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
                 }
+                if (openAgent != null) {
+                    Spacer(Modifier.width(if (body != null) 2.dp else 4.dp))
+                    // Its own pressable, so the report can be opened here and the agent's chat there.
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .pressable(openAgent, CircleShape)
+                            .semantics { contentDescription = "Open agent" }
+                            .testTag("open-worker"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(CursorIcons.ChevronRight, null, tint = colors.iconTertiary, modifier = Modifier.size(13.dp))
+                    }
+                }
             }
         }
         if (body != null) {
@@ -228,7 +252,7 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageActions(
+internal fun MessageActions(
     text: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
@@ -479,6 +503,8 @@ private fun ThoughtText(text: String, modifier: Modifier = Modifier) {
  */
 @Composable
 private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
+    // A Project coordinator's call is a card or a row of its own (see CoordinatorContent.kt), never a bare line.
+    if (CoordinatorStep(call, modifier)) return
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }

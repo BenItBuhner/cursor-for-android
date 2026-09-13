@@ -135,13 +135,18 @@ fun ConversationScreen(
     val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
     val controls by viewModel.controls.collectAsStateWithLifecycle()
     val isDemo = graph.session.isDemo
+    // A Project coordinator's cards name its workers by the list's live rows and open their chats (either mode).
+    val agentList by graph.agents.state.collectAsStateWithLifecycle()
+    val agentsById = remember(agentList.agents) { agentList.agents.associateBy { it.id } }
     // The transcript's rows answer the question they show and stop the step they show through the account
     // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
-    val transcriptControls = remember(controls, capabilities) {
+    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent) {
         TranscriptControls(
             state = controls,
             onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
             onCancelToolCall = if (capabilities.steering && !isDemo) ({ callId -> viewModel.cancelToolCall(callId) }) else null,
+            onOpenAgent = onOpenAgent,
+            agentById = { id -> agentsById[id] },
         )
     }
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)

@@ -16,6 +16,7 @@ import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -432,6 +433,18 @@ class AppScreenshotTest {
         }
         compose.waitForIdle()
         capture("38_project_view")
+        // The coordinator's row opens its chat: a Project coordinator's transcript, whose steps are the workers it
+        // created (a card each), the status check, its message to a worker, its own words to the user, and the
+        // worker's completion notice that started the turn.
+        compose.onNodeWithText("Plans the work and delegates it", substring = true).performClick()
+        waitForText("Coordinator", 30_000)
+        compose.waitUntil(30_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
+        // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("Coordinator"))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        compose.waitForIdle()
+        capture("39_project_coordinator_transcript")
+        Espresso.pressBack()
+        compose.waitForIdle()
         Espresso.pressBack()
         compose.waitForIdle()
     }

@@ -201,6 +201,55 @@ class SystemNotificationsTest {
     }
 
     @Test
+    fun `a worker reporting to its Project's coordinator is a Worker row that names the worker's chat`() {
+        // A Project's primary reporting in: `kind: agent` with the worker's cloud id in the header.
+        val report = """
+            <system_notification>
+            The following task has finished.
+
+            <task>
+            kind: agent
+            status: success
+            title: Usage events aggregation
+            agent_id: bc-demo-0019
+            detail: This is the last output of the agent:
+
+            Added the aggregates. PR #215 merged.
+
+            Agent ID: bc-demo-0019 (can be used with the `resume` parameter to send a follow-up)
+            </task>
+            </system_notification>
+            <user_query>The beginning of the above agent result is already visible to the user. Perform any follow-up actions (if needed).</user_query>
+        """.trimIndent()
+        val done = SystemNotifications.parse("m1", report)!!.notifications.single()
+        assertThat(done.kind).isEqualTo(SystemNotification.Kind.Worker)
+        assertThat(done.title).isEqualTo("Worker completed")
+        assertThat(done.summary).isEqualTo("Usage events aggregation")
+        assertThat(done.agentId).isEqualTo("bc-demo-0019")
+        assertThat(done.tone).isEqualTo(NoticeTone.Success)
+        assertThat(done.body).isEqualTo("Added the aggregates. PR #215 merged.")
+
+        // A `worker` by kind, or a report under a worker's source, is one whether or not it carries an id.
+        val byKind = SystemNotifications.parse("m2", "<system_notification>\n<task>\nkind: worker\nstatus: error\ntitle: Webhooks\ndetail: It broke.\n</task>\n</system_notification>")!!.notifications.single()
+        assertThat(byKind.kind).isEqualTo(SystemNotification.Kind.Worker)
+        assertThat(byKind.title).isEqualTo("Worker failed")
+        assertThat(byKind.agentId).isNull()
+        val bySource = SystemNotifications.parse("m3", "<system_notification source=\"worker\">\nWorker bc-demo-0020 asked a question.\nagent_id: bc-demo-0020\n</system_notification>")!!.notifications.single()
+        assertThat(bySource.kind).isEqualTo(SystemNotification.Kind.Worker)
+        assertThat(bySource.title).isEqualTo("Worker update")
+        assertThat(bySource.agentId).isEqualTo("bc-demo-0020")
+
+        // A cloud subagent's report stays a subagent's, and still names the chat it came from.
+        val subagent = SystemNotifications.parse("m4", subagentReport)!!.notifications.single()
+        assertThat(subagent.kind).isEqualTo(SystemNotification.Kind.Subagent)
+        assertThat(subagent.agentId).isEqualTo("bc-6c5768e2-379e-5d25-969b-23cb015f0e15")
+        // A local subagent's handle is not a chat this app could open.
+        val local = SystemNotifications.parse("m5", "<system_notification>\n<task>\nkind: subagent\nstatus: success\ntitle: Explore\ndetail: Found it.\n\nAgent ID: a1b2c3 (resume)\n</task>\n</system_notification>")!!.notifications.single()
+        assertThat(local.kind).isEqualTo(SystemNotification.Kind.Subagent)
+        assertThat(local.agentId).isNull()
+    }
+
+    @Test
     fun `a goal notification without an objective keeps its own first line`() {
         val paused = SystemNotifications.parse("m2", "<system_notification source=\"goal\">\nThe user paused the active goal. Wrap up the current step and stop.\n</system_notification>")!!.notifications.single()
         assertThat(paused.kind).isEqualTo(SystemNotification.Kind.Goal)

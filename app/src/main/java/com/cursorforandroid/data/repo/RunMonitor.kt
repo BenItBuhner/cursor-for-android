@@ -72,8 +72,6 @@ class RunMonitor(
      * take an id out of it.
      */
     private val finishedEmitted = RecentIds(MAX_REMEMBERED_FINISHES)
-    /** Per Project, the names of its workers that finished while the monitor has been up, for the rolled-up card. */
-    private val finishedWorkers = ConcurrentHashMap<String, List<String>>()
 
     private class Tracker(val runId: String, val job: Job)
 
@@ -100,7 +98,9 @@ class RunMonitor(
             agents.state
                 // Rows restored from disk are not tracked until a fetch has confirmed they are still running.
                 .filter { !it.isFromCache }
-                .map { st -> st.agents.filter { it.isRunning }.sortedByDescending { it.updatedAtMillis } }
+                // A Project's coordinator and the agents spawned inside it are not followed here: nothing about them
+                // is announced (see [publishFinished]), so nothing about them is worth a stream.
+                .map { st -> st.agents.filter { it.isRunning && !it.isProjectScoped }.sortedByDescending { it.updatedAtMillis } }
                 .distinctUntilChanged()
                 .collect { reconcile(s, it) }
         }
@@ -220,20 +220,14 @@ class RunMonitor(
     }
 
     /**
-     * Reports a finished run once. A Project's worker never gets a card of its own: its finish is the Project's news,
-     * rolled up with the other workers of that Project that finished while the monitor has been up (see
-     * [TrackedRun.rolledUpInto]), so however many workers a coordinator runs there is one line per Project.
+     * Reports a finished run once. Nothing of a Project is reported — not its coordinator's turn, not a worker's, a
+     * side chat's or a subagent's — whatever the row said when the tracker started: the row is read again here, so a
+     * chat classified as the Project's while its run was being followed is dropped all the same.
      */
     private fun publishFinished(run: TrackedRun) {
+        if (agents.agent(run.agentId)?.isProjectScoped == true) return
         if (!finishedEmitted.add(run.runId)) return
-        _finished.tryEmit(rolledUp(run))
-    }
-
-    private fun rolledUp(run: TrackedRun): TrackedRun {
-        val agent = agents.agent(run.agentId) ?: return run
-        val project = agent.parent?.takeIf { agent.isProjectChild } ?: return run
-        val names = finishedWorkers.compute(project.id) { _, names -> ((names ?: emptyList()) + run.title).takeLast(MAX_ROLLED_UP_WORKERS) }.orEmpty()
-        return run.rolledUpInto(project.id, agents.agent(project.id)?.name, names)
+        _finished.tryEmit(run)
     }
 
     private fun toTracked(agent: Agent, snapshot: LiveRunHub.Snapshot): TrackedRun {
@@ -287,7 +281,5 @@ class RunMonitor(
         private const val FULL_REFRESH_EVERY = 5
         /** Far more finishes than a session sees, and small enough that the ids cost nothing to hold. */
         private const val MAX_REMEMBERED_FINISHES = 256
-        /** Worker names a Project's rolled-up card lists at most; older finishes drop off the front. */
-        private const val MAX_ROLLED_UP_WORKERS = 6
     }
 }

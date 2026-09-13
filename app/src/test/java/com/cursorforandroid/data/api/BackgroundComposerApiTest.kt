@@ -57,7 +57,7 @@ class BackgroundComposerApiTest {
                      {"bcId":"bc-8","name":"Billing launch","projectMetadata":{"appearance":{"icon":"rocket","colorId":"purple"}},"startedAsNewProject":false},
                      {"bcId":"bc-10","name":"Webhook worker","managerAgentId":"bc-8","source":"BACKGROUND_COMPOSER_SOURCE_WEBSITE"},
                      {"bcId":"bc-11","name":"Pricing side chat","sideChatInfo":{"parentBcId":"bc-8","seedTurnCount":3}}
-                   ],"didLoadStatus":true,"hasMore":true,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true,"nextPageToken":"t"}""",
+                   ],"didLoadStatus":true,"hasMore":false,"pinnedBcIds":["bc-1","bc-9"],"didLoadPinnedState":true}""",
             ),
         )
 
@@ -153,6 +153,57 @@ class BackgroundComposerApiTest {
         // Blank links and a record naming itself say nothing; a record without an id is not a snapshot.
         assertThat(BackgroundComposerApi.snapshot(composer(manager = "  ", sideChat = "", subagentParent = "bc-x"))!!.parent).isNull()
         assertThat(BackgroundComposerApi.snapshot(composer(id = " "))).isNull()
+    }
+
+    @Test
+    fun `a list with more behind it is read on, behind the service's cursor, a few pages at most`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        // The first page pages by token; the second by the activity offset the older service answers with; the
+        // third says there is more still, which is left alone.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-1"},{"bcId":"bc-2","managerAgentId":"bc-1"}],"hasMore":true,"nextPageToken":"page-2","pinnedBcIds":["bc-1"],"didLoadPinnedState":true}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-3","managerAgentId":"bc-1"},{"bcId":"bc-2"}],"hasMore":true,"nextPageOffset":"1700000000000"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-4","sideChatInfo":{"parentBcId":"bc-3"}}],"hasMore":true,"nextPageToken":"page-4"}"""))
+
+        val list = api.list()
+
+        // Every page's records, once each (the first word on a repeated record stands), and the first page's pins.
+        assertThat(list.composers.map { it.id }).containsExactly("bc-1", "bc-2", "bc-3", "bc-4").inOrder()
+        assertThat(list.composers.first { it.id == "bc-2" }.parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
+        assertThat(list.composers.first { it.id == "bc-4" }.parent).isEqualTo(AgentParent("bc-3", AgentParentKind.SIDE_CHAT))
+        assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1"), loaded = true))
+        server.takeRequest() // the exchange
+        val first = server.takeRequest().json()
+        assertThat(first["pageToken"]).isNull()
+        assertThat(first["usePageTokens"]).isNull()
+        assertThat(first["lastMessageActivityAtMsOffset"]).isNull()
+        assertThat(first["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("true")
+        val second = server.takeRequest().json()
+        assertThat(second["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
+        assertThat(second["usePageTokens"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(second["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("false")
+        assertThat(second["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
+        val third = server.takeRequest().json()
+        assertThat(third["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000000000")
+        assertThat(third["pageToken"]).isNull()
+        assertThat(server.requestCount).isEqualTo(4)
+    }
+
+    @Test
+    fun `one chat's record is read by id, for a Project the windowed list did not reach`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-8","name":"Billing launch","projectMetadata":{"appearance":{"icon":"rocket","colorId":"purple"}}}],"hasMore":false}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-other"}],"hasMore":false}"""))
+
+        assertThat(api.record("bc-8")).isEqualTo(ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
+        // An answer about another chat is no record of this one.
+        assertThat(api.record("bc-9")).isNull()
+        server.takeRequest() // the exchange
+        val body = server.takeRequest().json()
+        assertThat(body["bcId"]?.jsonPrimitive?.content).isEqualTo("bc-8")
+        assertThat(body["n"]?.jsonPrimitive?.content).isEqualTo("1")
+        assertThat(body["includeArchived"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(body["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("false")
     }
 
     @Test

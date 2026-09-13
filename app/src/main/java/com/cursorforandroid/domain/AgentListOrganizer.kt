@@ -234,12 +234,12 @@ object AgentListOrganizer {
     ): List<AgentRow> = recentRows(organize(agents, prefs, local, query = "", nowMillis = nowMillis, zone = zone))
 
     /**
-     * [recentRows] for sections already organized without a search query: the primary rows once, newest first. A
-     * Project's workers, side chats and subagents are not among them — they belong to the Project's own surface,
-     * and the recents, like the widget, are a primary surface (a pinned child is listed, as it is in the sidebar).
+     * [recentRows] for sections already organized without a search query: the account's own chats once, newest first.
+     * Nothing of a Project is among them — not its coordinator, not its workers, side chats or subagents, pinned or
+     * not: they belong to the Project's own surface, and the recents, like the widget, are a primary surface.
      */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
-        sections.flatMap { it.rows }.filterNot { it.isPlaceholder }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+        sections.flatMap { it.rows }.filterNot { it.isPlaceholder || it.agent.isProjectScoped }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
 
     /**
      * Nests each row under its parent chat when the parent is listed too (see [Agent.parent]), the way the Agents

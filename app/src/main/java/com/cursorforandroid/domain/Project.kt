@@ -58,12 +58,28 @@ data class ProjectLineage(
     val rootId: String,
     val workers: List<WorkerMembership> = emptyList(),
     val children: Map<String, AgentParentKind> = emptyMap(),
+    /** Whether `ListWorkersForManager` answered: only then is [workers] the whole of the root's workers. */
+    val workersRead: Boolean = true,
+    /** Whether `ListBackgroundComposerChildren` answered: only then is [children] the whole of its side chats and subagents. */
+    val childrenRead: Boolean = true,
+    /** What the read that failed said, when one did. */
+    val failure: Throwable? = null,
 ) {
     /** Every chat the root owns, by id, and in what capacity; a worker the children list also names is a worker. */
     val members: Map<String, AgentParentKind>
         get() = children + workers.associate { it.workerId to AgentParentKind.PROJECT_WORKER }
 
     val isEmpty: Boolean get() = workers.isEmpty() && children.isEmpty()
+
+    /** Neither read answered: nothing is known, and nothing may be retracted. */
+    val isUnread: Boolean get() = !workersRead && !childrenRead
+
+    /** The kinds of membership the answers covered in full: what a member absent from them can be released from. */
+    val completeKinds: Set<AgentParentKind>
+        get() = buildSet {
+            if (workersRead) add(AgentParentKind.PROJECT_WORKER)
+            if (childrenRead) { add(AgentParentKind.SIDE_CHAT); add(AgentParentKind.SUBAGENT) }
+        }
 }
 
 /**

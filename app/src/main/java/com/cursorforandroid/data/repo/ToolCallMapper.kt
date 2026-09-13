@@ -154,8 +154,34 @@ object ToolCallMapper {
         }
         ToolKind.Image -> args.string(listOf("prompt")).orEmpty().let { Description(truncate(it, PROMPT_MAX), kind, detail = it.ifBlank { null }) }
         ToolKind.Plan -> Description("", kind)
+        ToolKind.Coordinator -> coordinator(name, args, result)
         ToolKind.Other -> Description("", kind)
     }
+
+    /**
+     * A coordinator's line names the worker: "Created agent Stripe webhook handler", "Messaged agent bc-…", "Checked
+     * agents 2 agents" — the plain form of the rows [ToolPayload.WorkerAction] and [ToolPayload.CoordinatorMessage]
+     * open onto; a message to the user is summarised by its first line.
+     */
+    private fun coordinator(name: String, args: JsonObject?, result: JsonElement?): Description {
+        val resultObj = result.obj()
+        return when (ToolNames.coordinatorTool(name)) {
+            "send_to_user" -> args.string(listOf("message")).let { Description(truncate(it?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), ToolKind.Coordinator, detail = it) }
+            "create_agent" -> Description(args.string(listOf("name")) ?: resultObj?.deep("agent_id").str() ?: "", ToolKind.Coordinator, detail = args.string(listOf("prompt")))
+            "get_agent_status" -> {
+                val workers = resultObj?.deep("workers") as? JsonArray
+                val asked = args?.get("agent_ids") as? JsonArray ?: args?.get("agentIds") as? JsonArray
+                val count = workers?.size ?: asked?.size ?: 0
+                Description(if (count == 0) "" else if (count == 1) "1 agent" else "$count agents", ToolKind.Coordinator)
+            }
+            else -> {
+                val agentId = args.string(AGENT_ID_KEYS) ?: resultObj?.let { obj -> WORKER_ID_KEYS.firstNotNullOfOrNull { obj.deep(it).str() } }
+                Description(agentId.orEmpty(), ToolKind.Coordinator, detail = args.string(listOf("message", "title")))
+            }
+        }
+    }
+
+    private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * An MCP call names its tool and server under `toolName` / `providerIdentifier` (the desktop and the SDK), or
