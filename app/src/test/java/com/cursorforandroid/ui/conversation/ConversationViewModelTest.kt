@@ -393,6 +393,28 @@ class ConversationViewModelTest {
         assertThat(vm.draftText.value).isEqualTo("/multitask fan the suites out")
     }
 
+    @Test
+    fun `an Ask follow-up never waits in this device's queue, and the pill comes off with Extended mode`() = runBlocking {
+        graph.extendedMode.acknowledge()
+        assertThat(graph.extendedMode.enable()).isTrue()
+        val vm = open(RUNNING)
+        withTimeout(10_000) { vm.capabilities.first { it.agentModes } }
+        vm.setModePill(com.cursorforandroid.ui.components.ModePills.Pill.Ask)
+        assertThat(vm.picker { it.mode == com.cursorforandroid.domain.AgentMode.ASK }.modePill).isEqualTo(com.cursorforandroid.ui.components.ModePills.Pill.Ask)
+
+        // The agent is on a turn and the demo has no account queue: the message would go behind the turn on this
+        // device, as an agent turn. It is refused with the reason instead, and the draft stays put.
+        vm.setDraft("Why did the catch-up job stall?")
+        vm.send()
+        assertThat(vm.toastMessage.value).contains("Ask mode follow-ups cannot wait in this device's queue")
+        assertThat(vm.draftText.value).isEqualTo("Why did the catch-up job stall?")
+        assertThat(graph.followUps.state(RUNNING).value.queue).isEmpty()
+
+        // Extended mode goes off under the worn pill: the pill comes off, to "not asked".
+        assertThat(graph.extendedMode.disable()).isTrue()
+        assertThat(vm.picker { it.mode == null }.modePill).isNull()
+    }
+
     private companion object {
         /** "Revenue Scaling Pipeline Research": finished, so it takes a follow-up. */
         const val IDLE = "bc-demo-0002"

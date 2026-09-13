@@ -391,15 +391,33 @@ class FollowUpRepository(
      * grows with each such answer in a row ([busyStreak]), settled against the record before the send is tried again.
      */
     private suspend fun awaitBusyTurn(agentId: String, busyStreak: Int = 0) {
-        val runId = agents.agent(agentId)?.latestRunId
-        if (runId != null && hub.current(agentId, runId)?.finished == true) {
+        if (hubSawRunEnd(agentId)) {
             delay(retryBaseMs shl busyStreak.coerceIn(0, MAX_BUSY_BACKOFF_STEPS))
             settleRow(agentId)
             return
         }
         agents.patch(agentId) { if (it.isRunning) it else it.copy(runStatus = RunStatus.RUNNING) }
         conversations.revalidate(agentId)
-        withTimeoutOrNull(busyRecheckMs) { isIdle(agentId).first { !it } }
+        // The row reads running now, and the caller waits for the turn's end as for any other. Only a row that does
+        // not — none loaded yet, or one no run status makes running — leaves the next attempt nothing to wait on, so
+        // it is held back for a while instead. Held on the state as it stands, re-read as it goes, never on a change
+        // still to come: the hub can see the run end, and put the row back to idle, between the patch above and the
+        // first reading here, and a wait for the row to *become* running then sat out the whole [busyRecheckMs] for
+        // a change that had come and gone — which is what held a steer up for twenty seconds on a loaded machine.
+        // A row the hub's word put back to idle is not held at all: the send may go again (and a busy answer to
+        // that is the case above, with its growing pause).
+        withTimeoutOrNull(busyRecheckMs) {
+            while (isIdleNow(agentId) && !hubSawRunEnd(agentId)) delay(BUSY_HOLD_POLL_MS)
+        }
+    }
+
+    /**
+     * The run the row names is one the hub followed to its end. The record can lag the stream, so a row the hub put
+     * idle is idle whatever the server's next answer says — and nothing to wait on.
+     */
+    private fun hubSawRunEnd(agentId: String): Boolean {
+        val runId = agents.agent(agentId)?.latestRunId ?: return false
+        return hub.current(agentId, runId)?.finished == true
     }
 
     /** Drops everything held for an agent, on disk too; used when it is deleted. */
@@ -638,6 +656,8 @@ class FollowUpRepository(
         const val MAX_ENTRIES = 24
         const val DRAFT_SAVE_DELAY_MS = 400L
         const val BUSY_RECHECK_MS = 20_000L
+        /** How often a message held back by a busy answer with no row to wait on re-reads the row (see [awaitBusyTurn]). */
+        const val BUSY_HOLD_POLL_MS = 250L
         const val IDLE_SETTLE_MS = 10_000L
         const val RETRY_BASE_MS = 1_000L
         /** A cancel that failed for a passing reason is asked this many more times (1 s, then 2 s later). */

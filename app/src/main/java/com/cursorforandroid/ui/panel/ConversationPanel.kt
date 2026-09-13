@@ -100,7 +100,10 @@ fun ConversationPanel(
 @Composable
 private fun PanelSectionView(section: PanelSection, state: PanelState, actions: PanelActions) {
     val availability = section.availability(state.capabilities, state)
-    var expanded by rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(section.expandedByDefault) }
+    // Opened or closed by the reader here, and remembered by the view model for as long as the panel lives: the
+    // panel is composed only while it is open, so a reopened one starts from what the reader left rather than the
+    // defaults. Where nothing remembers (previews, tests), the row's own state is all there is, and it still toggles.
+    var expanded by rememberSaveable("panel-section-${section.id.name}") { mutableStateOf(state.expandedSections[section.id] ?: section.expandedByDefault) }
     // What the section needs is asked for when it is opened, and again when its chat — or the mode, which decides
     // which reads may be made — changes under it.
     LaunchedEffect(expanded, availability is SectionAvailability.Available, state.prUrl, state.agentId, state.capabilities) {
@@ -112,7 +115,7 @@ private fun PanelSectionView(section: PanelSection, state: PanelState, actions: 
         is SectionAvailability.NotForThisChat -> "—"
     }
     Column(Modifier.fillMaxWidth()) {
-        SectionHeader(section, hint, expanded, onToggle = { expanded = !expanded })
+        SectionHeader(section, hint, expanded, onToggle = { expanded = !expanded; actions.setSectionExpanded(section.id, expanded) })
         AnimatedVisibility(visible = expanded) {
             when (availability) {
                 is SectionAvailability.Available -> section.content(state, actions)
@@ -190,6 +193,7 @@ fun rememberPanelActions(
             override fun notify(message: String) {
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
+            override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) = viewModel.setSectionExpanded(id, expanded)
             override fun loadDiff(force: Boolean) = viewModel.loadDiff(force)
             override fun openBranchDiffFile(file: AgentDiffFile) = viewModel.openBranchDiffFile(file)
             override fun loadWorkspace(force: Boolean) = viewModel.loadWorkspace(force)

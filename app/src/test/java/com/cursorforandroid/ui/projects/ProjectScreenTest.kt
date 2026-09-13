@@ -199,4 +199,13 @@ class ProjectScreenTest {
         compose.onNodeWithText("Loading the Project\u2026").assertIsDisplayed()
         compose.onNodeWithText("Loading\u2026").assertIsDisplayed()
     }
+
+    @Test
+    fun `a Project whose coordinator the server refused says so instead of loading for ever`() {
+        show(ProjectViewState(projectId = "bc-p", root = null, rootUnavailable = "Not found (404).", hasSynced = true))
+
+        compose.onNodeWithText("Loading the Project\u2026").assertDoesNotExist()
+        compose.onNodeWithText(rootUnavailableNotice("Not found (404)."), substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Not found (404).", substring = true).assertIsDisplayed()
+    }
 }

@@ -40,6 +40,7 @@ class ConversationPanelTest {
     /** What the sections asked for, so a test can check a section loads on opening. */
     private val asked = mutableListOf<String>()
     private val actions = object : PanelActions by PanelActions.None {
+        override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) { asked += "expanded:${id.name}=$expanded" }
         override fun loadPullRequest(force: Boolean) { asked += "pr" }
         override fun loadArtifacts(force: Boolean) { asked += "artifacts" }
         override fun loadUsage(force: Boolean) { asked += "usage" }
@@ -83,6 +84,29 @@ class ConversationPanelTest {
             compose.onNodeWithText(title).assertIsDisplayed()
         }
         assertThat(PanelRegistry.default().sections.map { it.title }).isEqualTo(expected)
+    }
+
+    @Test
+    fun `a section the reader opened or closed is reported, and a reopened panel starts from what was remembered`() {
+        var panelOpen by mutableStateOf(true)
+        compose.setContent { CursorTheme(mode = ThemeMode.Dark) { if (panelOpen) ConversationPanel(state, actions, onClose = {}) } }
+        // Usage is closed by default; opening it is reported to whoever remembers, and closing Changes too.
+        open(PanelSectionId.Usage)
+        assertThat(asked).contains("expanded:Usage=true")
+        open(PanelSectionId.Changes)
+        assertThat(asked).contains("expanded:Changes=false")
+        assertThat(shown("From the pull request · 3 files")).isFalse()
+
+        // Closed and opened again with what was remembered: Usage open, Changes closed, without a tap.
+        asked.clear()
+        panelOpen = false
+        compose.waitForIdle()
+        state = state.copy(expandedSections = mapOf(PanelSectionId.Usage to true, PanelSectionId.Changes to false))
+        panelOpen = true
+        compose.waitForIdle()
+        scrollTo("section-${PanelSectionId.Changes.name}")
+        assertThat(shown("From the pull request · 3 files")).isFalse()
+        assertThat(asked).contains("usage")
     }
 
     @Test

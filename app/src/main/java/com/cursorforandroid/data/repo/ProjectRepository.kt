@@ -32,6 +32,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -69,6 +71,11 @@ sealed interface ContextState {
 data class ProjectViewState(
     val projectId: String,
     val root: Agent? = null,
+    /**
+     * Why the coordinator's row is missing, when the server refused it (see [ProjectRepository.unavailableParents]);
+     * null while it is still to come, or once it is there.
+     */
+    val rootUnavailable: String? = null,
     val workers: List<ProjectWorker> = emptyList(),
     val sideChats: List<Agent> = emptyList(),
     val subagents: List<Agent> = emptyList(),
@@ -147,6 +154,15 @@ class ProjectRepository(
     /** Parents fetched by id this session, with when; a failed one is asked for again after [RETRY_AFTER_MS]. */
     private val materialized = ConcurrentHashMap<String, Long>()
 
+    private val _unavailableParents = MutableStateFlow<Map<String, String>>(emptyMap())
+    /**
+     * The parents the list names but the server would not give, by id, with the words of the refusal: a Project
+     * deleted since its workers were created, one of another account's, the server unreachable. The sidebar's
+     * stand-in and the Project's view say so rather than "loading" until the next attempt ([RETRY_AFTER_MS]); an
+     * id leaves the map the moment its row arrives, by that attempt or any other read.
+     */
+    val unavailableParents: StateFlow<Map<String, String>> = _unavailableParents.asStateFlow()
+
     private val extras = ConcurrentHashMap<String, MutableStateFlow<Extras>>()
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
@@ -170,7 +186,11 @@ class ProjectRepository(
                 .filter { it.hasLoaded && !it.isFromCache }
                 .map { AgentListOrganizer.missingParentIds(it.agents) }
                 .distinctUntilChanged()
-                .collect { missing -> if (missing.isNotEmpty()) materializeParents(missing) }
+                .collect { missing ->
+                    // A parent the list holds now — by any read — is no longer unavailable, whatever the last attempt said.
+                    _unavailableParents.update { unavailable -> if (unavailable.keys.all { it in missing }) unavailable else unavailable.filterKeys { it in missing } }
+                    if (missing.isNotEmpty()) materializeParents(missing)
+                }
         }
     }
 
@@ -273,8 +293,17 @@ class ProjectRepository(
             for (id in due) {
                 if (agents.token() != token) return
                 materialized[id] = now()
-                if (agents.agent(id) != null) continue
-                if (agents.loadDetail(id).isFailure) continue
+                if (agents.agent(id) != null) {
+                    _unavailableParents.update { it - id }
+                    continue
+                }
+                val failure = agents.loadDetail(id).exceptionOrNull()
+                if (failure != null) {
+                    if (failure is CancellationException) throw failure
+                    _unavailableParents.update { it + (id to failure.userMessage()) }
+                    continue
+                }
+                _unavailableParents.update { it - id }
                 val managesWorkers = agents.state.value.agents.any { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER }
                 if (managesWorkers) agents.applyLineage(id, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token)
             }
@@ -284,7 +313,7 @@ class ProjectRepository(
     // ---- the Project view -------------------------------------------------------------------------------------------
 
     /** The Project as its view shows it, kept current from the agent list and the account's reads. */
-    fun view(projectId: String): Flow<ProjectViewState> = combine(agents.state, extrasOf(projectId)) { list, extra ->
+    fun view(projectId: String): Flow<ProjectViewState> = combine(agents.state, extrasOf(projectId), unavailableParents) { list, extra, unavailable ->
         val root = list.agents.firstOrNull { it.id == projectId }
         val members = list.agents.filter { it.parent?.id == projectId }
         // Workers the account named but the list has not shown yet stand in with what the membership says.
@@ -292,6 +321,7 @@ class ProjectRepository(
         ProjectViewState(
             projectId = projectId,
             root = root,
+            rootUnavailable = if (root == null) unavailable[projectId] else null,
             workers = members.filter { it.parent?.kind == AgentParentKind.PROJECT_WORKER }.map { ProjectWorker(it, extra.memberships[it.id]) } +
                 extra.memberships.values.filter { it.workerId !in listedWorkerIds }.map { ProjectWorker(placeholderWorker(it), it) },
             sideChats = members.filter { it.parent?.kind == AgentParentKind.SIDE_CHAT },
@@ -483,6 +513,7 @@ class ProjectRepository(
     /** On sign-out or a backend switch: nothing fetched for the previous account counts for the next. */
     fun reset() {
         materialized.clear()
+        _unavailableParents.value = emptyMap()
         extras.clear()
         pollers.values.forEach { it.cancel() }
         pollers.clear()
