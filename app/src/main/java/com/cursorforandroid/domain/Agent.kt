@@ -112,10 +112,12 @@ data class GitBranch(
 
 /**
  * A Cursor Project's icon and colour, as the account records them on the Project's chat
- * (`aiserver.v1.ProjectMetadata.appearance`): [icon] is one of the Agents Window's icon names (`lightning`, the
- * default, `rocket`, `folder`, …) and [colorId] one of its ten tones (`default`, `green`, `cyan`, `blue`, `purple`,
- * `magenta`, `orange`, `yellow`, `red`, `brand`). Kept as the strings the account uses; the theme maps them to
- * glyphs and colours, and stands in for names a later build introduces.
+ * (`aiserver.v1.ProjectMetadata.appearance`): [icon] is one of the Agents Window's icon names — the 660 glyphs of
+ * its icon font, `lightning` (the picker's starting point), `rocket`, `folder`, `logo-notion`, `file-type-rust`, …,
+ * or one of their alias spellings — and [colorId] one of its ten tones (`default`, `green`, `cyan`, `blue`,
+ * `purple`, `magenta`, `orange`, `yellow`, `red`, `brand`). Kept as the strings the account uses; `ProjectIcons`
+ * and `ProjectPalette` map them to glyphs and colours, and stand in (the cube, the default tone) for names a later
+ * build introduces.
  */
 @Serializable
 data class ProjectAppearance(val icon: String, val colorId: String)

@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.group
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.ui.icons.ProjectIcons
 
 /**
  * The app's line icons. All glyphs sit on the 24-unit grid and are drawn as strokes, so one set scales from the
@@ -442,34 +443,13 @@ object CursorIcons {
     }
 
     // ------------------------------------------------------------------------------------------------------------
-    // Cursor Projects: the icons a Project can be given (the Agents Window's icon names, Lucide geometry)
+    // Glyphs shared with the panel (Lucide geometry)
     // ------------------------------------------------------------------------------------------------------------
 
-    /** Lucide `zap`: the Projects palette's default icon (`lightning`). */
+    /** Lucide `zap`. */
     val Lightning: ImageVector by lazy {
         icon("Lightning") {
             path("M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z")
-        }
-    }
-
-    val Rocket: ImageVector by lazy {
-        icon("Rocket") {
-            path("M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z")
-            path("m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z")
-            path("M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0")
-            path("M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5")
-        }
-    }
-
-    val Star: ImageVector by lazy {
-        icon("Star") {
-            path("M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z")
-        }
-    }
-
-    val Flag: ImageVector by lazy {
-        icon("Flag") {
-            path("M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528")
         }
     }
 
@@ -494,33 +474,12 @@ object CursorIcons {
         }
     }
 
-    val Heart: ImageVector by lazy {
-        icon("Heart") {
-            path("M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5")
-        }
-    }
-
-    val Moon: ImageVector by lazy {
-        icon("Moon") {
-            path("M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401")
-        }
-    }
-
     val Server: ImageVector by lazy {
         icon("Server") {
             rect(2f, 2f, 20f, 8f, 2f)
             rect(2f, 14f, 20f, 8f, 2f)
             path("M6 6h.01")
             path("M6 18h.01")
-        }
-    }
-
-    val Calendar: ImageVector by lazy {
-        icon("Calendar") {
-            path("M8 2v4")
-            path("M16 2v4")
-            rect(3f, 4f, 18f, 18f, 2f)
-            path("M3 10h18")
         }
     }
 
@@ -548,34 +507,9 @@ object CursorIcons {
     }
 
     /**
-     * The glyph for a Project's icon name as the account spells it (`lightning`, `rocket`, `folder`, …): the ones
-     * drawn here, the app's own glyphs where they match, and [Lightning] — the default the Agents Window also falls
-     * back to — for a name this build does not draw.
+     * The glyph for a Project's icon name as the account spells it (`lightning`, `rocket`, `logo-notion`, …): the
+     * whole catalog the Agents Window offers, drawn from open-licensed geometry, with the cube the desktop itself
+     * falls back to for a name this build does not know. See [ProjectIcons].
      */
-    fun project(iconName: String?): ImageVector = when (iconName?.trim()?.lowercase()) {
-        "rocket" -> Rocket
-        "star" -> Star
-        "flag" -> Flag
-        "code", "brackets-curly" -> Code
-        "database" -> Database
-        "shield" -> Shield
-        "heart" -> Heart
-        "moon" -> Moon
-        "server" -> Server
-        "calendar" -> Calendar
-        "link" -> Link
-        "bug" -> Bug
-        "folder" -> Folder
-        "terminal" -> Terminal
-        "git-branch" -> GitBranch
-        "book-open", "library" -> Book
-        "file-text", "files" -> File
-        "globe", "browser" -> Globe
-        "target" -> Target
-        "cloud" -> Cloud
-        "image", "camera" -> Image
-        "sparkle", "magic-wand" -> Sparkle
-        "layers" -> Layers
-        else -> Lightning
-    }
+    fun project(iconName: String?): ImageVector = ProjectIcons.vector(iconName)
 }
