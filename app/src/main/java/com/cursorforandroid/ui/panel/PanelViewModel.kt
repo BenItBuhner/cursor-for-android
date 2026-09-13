@@ -137,6 +137,12 @@ data class PanelState(
     val pullRequestCreation: RemoteLoad<String> = RemoteLoad.Idle,
     /** What the account has said about the chat's controls (Extended mode): its queue, the last steer, what was held or answered from here. */
     val controls: ConversationControls = ConversationControls.EMPTY,
+    /**
+     * The sections the reader opened or closed, by id, kept for the panel's life: the panel is composed only while
+     * it is open, so without this a reopened panel would forget what was expanded. A section absent here is at its
+     * default.
+     */
+    val expandedSections: Map<PanelSectionId, Boolean> = emptyMap(),
 ) {
     val prUrl: String? get() = agent?.prUrl
     val hasPullRequest: Boolean get() = prUrl != null
@@ -163,6 +169,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val machine = MutableStateFlow<RemoteLoad<MachineStatus>>(RemoteLoad.Idle)
     private val desktop = MutableStateFlow<DesktopState>(DesktopState.Idle)
     private val pullRequestCreation = MutableStateFlow<RemoteLoad<String>>(RemoteLoad.Idle)
+    private val expandedSections = MutableStateFlow<Map<PanelSectionId, Boolean>>(emptyMap())
     private var browseJob: Job? = null
     private var fileJob: Job? = null
     private var pullRequestJob: Job? = null
@@ -185,15 +192,15 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** The reads of the agent's VM and of the account, folded so the main combine stays within its arity. */
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
-    /** [vmLoads] with what the account has said about the chat's controls, for the same reason. */
-    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId)) { vm, controls -> vm to controls }
+    /** [vmLoads] with what the account has said about the chat's controls and the reader's expanded sections, for the same reason. */
+    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), expandedSections) { vm, controls, expanded -> Triple(vm, controls, expanded) }
 
     val state: StateFlow<PanelState> = combine(
         agent,
         graph.conversations.state(agentId),
         content,
         graph.extendedMode.capabilities,
-        combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, (vm, controls) -> Loads(pr, art, use, br, vm, controls) },
+        combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, (vm, controls, expanded) -> Loads(pr, art, use, br, vm, controls, expanded) },
     ) { a, conversation, (transcript, prompts), capabilities, loads ->
         PanelState(
             agentId = agentId,
@@ -214,6 +221,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             desktop = loads.vm.desktop,
             pullRequestCreation = loads.vm.pullRequestCreation,
             controls = loads.controls,
+            expandedSections = loads.expandedSections,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
 
@@ -224,7 +232,13 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val browser: RepoBrowserState,
         val vm: VmLoads,
         val controls: ConversationControls,
+        val expandedSections: Map<PanelSectionId, Boolean>,
     )
+
+    /** Remembers a section the reader opened or closed (see [PanelState.expandedSections]). */
+    fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) {
+        expandedSections.update { it + (id to expanded) }
+    }
 
     private data class VmLoads(
         val diff: RemoteLoad<AgentDiff>,

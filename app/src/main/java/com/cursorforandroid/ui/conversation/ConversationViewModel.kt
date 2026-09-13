@@ -158,6 +158,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.steering.attach(agentId)
         viewModelScope.launch { loadModels() }
         viewModelScope.launch {
+            // Ask and Debug travel on the account's follow-up alone: with the mode turned off under a worn pill, the
+            // pill comes off (to "not asked", as if never picked) rather than stay on to refuse the next send.
+            capabilities.collect { caps ->
+                if (!caps.agentModes) picker.update { if (it.mode?.needsAccountService == true) it.copy(mode = null) else it }
+            }
+        }
+        viewModelScope.launch {
             // The agent's machine reports its skills and commands a moment after it wakes; while the account says the
             // inventory is pending, ask again a few times rather than leave the popover on the built-ins.
             var catalog = graph.slashCommands.load(commandScope(agent.value))
@@ -317,9 +324,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             return
         }
         val accountQueue = caps.accountQueue && !graph.session.isDemo
+        val waiting = graph.followUps.state(agentId).value.queue.isNotEmpty()
         when {
             busy && accountQueue -> queueOnAccount(text, images, options)
-            busy || graph.followUps.state(agentId).value.queue.isNotEmpty() -> enqueue(text, images, options)
+            // This device's queue sends the documented run request, which cannot carry Ask or Debug: a message in
+            // either mode is not put behind the ones waiting there to go out as an agent turn without a word.
+            accountMode && (busy || waiting) -> toast.value = "${options.mode?.label} mode follow-ups cannot wait in this device's queue. Let the queued messages go first, or take the pill off."
+            busy || waiting -> enqueue(text, images, options)
             accountMode -> sendViaAccount(text, images, options)
             else -> sendDocumented(text, images, options)
         }

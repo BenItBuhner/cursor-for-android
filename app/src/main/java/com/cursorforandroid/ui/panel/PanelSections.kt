@@ -60,6 +60,8 @@ interface PanelActions {
     fun openProject(projectId: String)
     /** The panel's own toast. */
     fun notify(message: String)
+    /** The reader opened or closed a section; remembered for the panel's life (see `PanelState.expandedSections`). */
+    fun setSectionExpanded(id: PanelSectionId, expanded: Boolean)
 
     // -- the agent's VM and the account (Extended mode) ---------------------------------------------------------------
 
@@ -120,6 +122,7 @@ interface PanelActions {
             override fun openAgent(agentId: String) = Unit
             override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
+            override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) = Unit
             override fun loadDiff(force: Boolean) = Unit
             override fun openBranchDiffFile(file: AgentDiffFile) = Unit
             override fun loadWorkspace(force: Boolean) = Unit
