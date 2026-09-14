@@ -78,10 +78,15 @@ internal object DemoData {
         """{"success": {"workers": [${workers.joinToString { (id, name, status) -> """{"bc_id": ${json(id)}, "name": ${json(name)}, "lifecycle": "ACTIVE", "turn_in_flight": ${status == "RUNNING"}, "last_terminal_turn_status": ${json(status)}}""" }}]}}""",
     )
 
-    /** The coordinator speaking to the user (`send_to_user`). */
+    /** The coordinator speaking to the user through the older tool (`send_to_user`, `SendToUserArgs {message}`). */
     private fun sendToUser(message: String) = Step.Call("send_to_user", """{"message": ${json(message)}}""", """{"success": {}}""")
-    /** The same tool under the name today's stream gives it. */
-    private fun sendMessage(message: String) = Step.Call("SendMessage", """{"message": ${json(message)}}""", """{"success": {}}""")
+
+    /**
+     * The coordinator speaking to the user through `SendMessage` — the tool Cursor's own client shows as a Project
+     * chat's message — with its arguments and result as the proto's JSON has them (`SendMessageArgs {text {content}}`,
+     * `SendMessageResult {success {timestamp, message_id}}`), which is the shape today's stream carries.
+     */
+    private fun sendMessage(message: String) = Step.Call("SendMessage", """{"text": {"content": ${json(message)}}}""", """{"success": {"timestamp": "1772559120000", "messageId": "msg_demo_${message.length}"}}""")
 
     private fun json(text: String): String = buildString {
         append('"')
@@ -491,7 +496,7 @@ internal object DemoData {
         // A Cursor Project: the coordinator chat, which plans and delegates rather than writing code, and the chats it
         // runs — two workers it created and a side chat branched off it (see [composers]). Its trace is a
         // coordinator's: workers created, a status check, a message to a worker, and its own words to the user
-        // through `SendMessage` (`send_to_user` on the older stream — both spellings are kept here); its plain
+        // through `SendMessage` in today's shape (`send_to_user` on the older stream — both are kept here); its plain
         // replies are its working notes, folded under "Background" in its chat. Its current turn was started by a
         // worker's completion notice.
         Seed(
