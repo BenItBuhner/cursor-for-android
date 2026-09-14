@@ -48,9 +48,9 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
-import com.cursorforandroid.ui.projects.ProjectScreen
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.settings.SettingsScreen
+import com.cursorforandroid.ui.settings.UpdateCopy
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -111,11 +111,7 @@ internal fun AppShell(
     val agentsViewModel: AgentsViewModel = viewModel(factory = AgentsViewModel.Factory(graph))
     val listState by agentsViewModel.uiState.collectAsStateWithLifecycle()
     val topScreen = stack.top.screen
-    val selectedAgentId = when (topScreen) {
-        is Screen.Agent -> topScreen.id
-        is Screen.Project -> topScreen.id
-        else -> null
-    }
+    val selectedAgentId = (topScreen as? Screen.Agent)?.id
     val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
@@ -144,20 +140,16 @@ internal fun AppShell(
     // equal to any other reference to the same function, whatever it captured), so it is skipped and keeps the ones
     // it has. A callback that trusted its captured "a chat is on top" then swapped the New Chat root out for the new
     // chat, cleared its view models — and with them the launch in flight — and left the chat with nothing under it.
+    /**
+     * Opens a chat. A Project's row is its coordinator's chat — the Project is that conversation, with its primaries,
+     * context and actions in the chat's right-side panel — so every row, Project or not, opens the same way.
+     */
     fun openAgent(id: String) {
         closeDrawer()
         stack.openAgent(id)
     }
 
-    fun openProject(id: String) {
-        closeDrawer()
-        stack.openProject(id)
-    }
-
-    /** A Project's row opens the Project; every other row, the chat. Decided from the row as it is now. */
-    fun openRow(row: AgentRow) {
-        if (row.agent.isProjectRoot) openProject(row.agent.id) else openAgent(row.agent.id)
-    }
+    fun openRow(row: AgentRow) = openAgent(row.agent.id)
 
     fun navigateTop(screen: Screen) {
         closeDrawer()
@@ -177,8 +169,8 @@ internal fun AppShell(
 
     LaunchedEffect(deepLinkAgentId) {
         deepLinkAgentId?.let { id ->
-            // A Project's rolled-up notification names the Project; its view is where the workers are.
-            if (graph.agents.agent(id)?.isProjectRoot == true) openProject(id) else openAgent(id)
+            // A Project's rolled-up notification names the Project: that is its coordinator's chat, like any other id.
+            openAgent(id)
             onDeepLinkConsumed()
         }
     }
@@ -239,11 +231,11 @@ internal fun AppShell(
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
-        is Screen.Agent, is Screen.Project -> null
+        is Screen.Agent -> null
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
-        is UpdateState.Available -> if (s.signatureMismatch) null else "Update available · ${s.release.versionName}"
+        is UpdateState.Available -> if (s.signatureMismatch) null else UpdateCopy.available(s.release)
         is UpdateState.Downloaded -> "Update ready to install · ${s.release.versionName}"
         is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
         else -> null
@@ -310,15 +302,6 @@ internal fun AppShell(
                         onOpenSidebar = if (pane.wide) pane.openSidebar else null,
                         onBack = pane.onBack,
                         onOpenAgent = ::openAgent,
-                        onOpenProject = ::openProject,
-                    )
-                    is Screen.Project -> ProjectScreen(
-                        graph = graph,
-                        projectId = screen.id,
-                        onOpenSidebar = if (pane.wide) pane.openSidebar else null,
-                        onBack = pane.onBack,
-                        onOpenAgent = ::openAgent,
-                        onOpenProject = ::openProject,
                     )
                 }
             }

@@ -128,21 +128,20 @@ val LocalPanelGraph = staticCompositionLocalOf<AppGraph?> { null }
 
 /**
  * The [PanelActions] for a live panel: the view model's loads and the platform's clipboard, browser and share
- * sheet. [onToast] surfaces confirmations on the screen's own snackbar; [onOpenAgent] and [onOpenProject] are the
- * host's navigation, absent where the screen cannot navigate.
+ * sheet. [onToast] surfaces confirmations on the screen's own snackbar; [onOpenAgent] is the host's navigation,
+ * absent where the screen cannot navigate.
  */
 @Composable
 fun rememberPanelActions(
     viewModel: PanelViewModel,
     onToast: (String) -> Unit,
     onOpenAgent: ((String) -> Unit)? = null,
-    onOpenProject: ((String) -> Unit)? = null,
 ): PanelActions {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
-    return remember(viewModel, onOpenAgent, onOpenProject) {
+    return remember(viewModel, onOpenAgent) {
         object : PanelActions {
             override fun loadPullRequest(force: Boolean) = viewModel.loadPullRequest(force)
             override fun loadArtifacts(force: Boolean) = viewModel.loadArtifacts(force)
@@ -179,9 +178,6 @@ fun rememberPanelActions(
             }
             override fun openAgent(agentId: String) {
                 onOpenAgent?.invoke(agentId) ?: onToast("This screen cannot open another chat.")
-            }
-            override fun openProject(projectId: String) {
-                onOpenProject?.invoke(projectId) ?: onToast("This screen cannot open a Project.")
             }
             override fun notify(message: String) {
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()

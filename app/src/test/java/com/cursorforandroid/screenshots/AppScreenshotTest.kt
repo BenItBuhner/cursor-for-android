@@ -23,6 +23,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
@@ -430,16 +431,17 @@ class AppScreenshotTest {
         compose.onNodeWithContentDescription("Open sidebar").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         waitForSidebarSections()
-        // The Project's row in the sidebar (the recent card behind the drawer names it too) opens the Project's view.
+        // The Project's row in the sidebar (the recent card behind the drawer names it too) opens the coordinator's
+        // chat: a Project coordinator's transcript, whose steps are the workers it created (a card each), the status
+        // check, its message to a worker, its own words to the user, and the worker's completion notice that
+        // started the turn. There is no Project view in between.
         compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
-        waitForText("Plans the work and delegates it")
-        waitForText("Stripe webhook handler")
-        // The demo stands in for the account: its actions are offered, its context is the named empty state.
-        waitForText("New primary")
-        waitForText("No shared context for this Project yet.")
-        // Opening the row marked the Project read (AppNavHost's row actions); the coordinator's unread badge goes once
-        // that write lands, so the frame waits for it instead of catching the badge or not by timing. Observed from a
-        // background collector: a runBlocking read inside waitUntil would hold the looper the store's emission needs.
+        // The coordinator's SendMessage update reads as a plain reply: its own text is what says the chat is open.
+        waitForText("PR #215 (usage aggregation) is", 30_000)
+        compose.waitUntil(30_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
+        // Opening the row marked the Project read (AppNavHost's row actions); wait for that write so nothing about the
+        // frames depends on catching it. Observed from a background collector: a runBlocking read inside waitUntil
+        // would hold the looper the store's emission needs.
         val markers = AtomicReference<Map<String, Long>>(emptyMap())
         val watching = CoroutineScope(Dispatchers.IO).launch { graph.prefs.localAgentState.collect { markers.set(it.readMarkers) } }
         try {
@@ -447,19 +449,20 @@ class AppScreenshotTest {
         } finally {
             watching.cancel()
         }
-        compose.waitForIdle()
-        capture("38_project_view")
-        // The coordinator's row opens its chat: a Project coordinator's transcript, whose steps are the workers it
-        // created (a card each), the status check, its message to a worker, its own words to the user, and the
-        // worker's completion notice that started the turn.
-        compose.onNodeWithText("Plans the work and delegates it", substring = true).performClick()
-        // The coordinator's SendMessage update reads as a plain reply: its own text is what says the chat is open.
-        waitForText("PR #215 (usage aggregation) is", 30_000)
-        compose.waitUntil(30_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
         // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasTestTag("worker-action"))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("worker-card"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
+        // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —
+        // the primaries with their status and menus, New primary and Adopt a chat (the demo stands in for the
+        // account, so its actions are offered), and the shared context as the named empty state.
+        compose.onNodeWithContentDescription("Open panel").performClick()
+        waitForText("Stripe webhook handler")
+        waitForText("New primary")
+        waitForText("No shared context for this Project yet.")
+        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-Header"))
+        compose.waitForIdle()
+        capture("38_project_panel_section")
         Espresso.pressBack()
         compose.waitForIdle()
         Espresso.pressBack()

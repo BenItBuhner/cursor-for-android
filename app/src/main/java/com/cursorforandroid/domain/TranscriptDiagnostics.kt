@@ -71,7 +71,11 @@ object TranscriptDiagnostics {
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)
-        appendLine("presented: items=${presented.size} folded=${state.items.size - presented.size} staleMessages=${state.items.count { it is ActivityGroup && CoordinatorTranscript.needsRefresh(listOf(it)) }}")
+        val rows = TranscriptRows.of(presented, decision.coordinatorMode, runActive = state.isStreaming || state.runStatus?.isActive == true)
+        appendLine(
+            "presented: items=${presented.size} folded=${state.items.size - presented.size} staleMessages=${state.items.count { it is ActivityGroup && CoordinatorTranscript.needsRefresh(listOf(it)) }}" +
+                " rows=${rows.size} stretches=${rows.count { it is TranscriptRow.Stretch && it.single == null }} messages=${rows.count { it is TranscriptRow.Message }}",
+        )
         appendLine()
         appendLine("items (kind · facts; tool calls: name · kind · status · payload · argKeys · linked · truncated):")
         state.items.forEach { item -> describe(item) }

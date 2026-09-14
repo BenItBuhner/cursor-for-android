@@ -58,9 +58,8 @@ interface PanelActions {
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)
     fun openArtifact(artifact: Artifact)
-    /** Navigates to another chat (a subagent, a Project's primary, a side chat) and to a Project's view; no-ops where the host offers neither. */
+    /** Navigates to another chat — a subagent, a Project's primary or its coordinator, a side chat; a no-op where the host cannot navigate. */
     fun openAgent(agentId: String)
-    fun openProject(projectId: String)
     /** The panel's own toast. */
     fun notify(message: String)
     /** The reader opened or closed a section; remembered for the panel's life (see `PanelState.expandedSections`). */
@@ -119,7 +118,6 @@ interface PanelActions {
             override fun shareText(text: String) = Unit
             override fun openArtifact(artifact: Artifact) = Unit
             override fun openAgent(agentId: String) = Unit
-            override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
             override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) = Unit
             override fun refreshSideChats() = Unit
@@ -184,9 +182,18 @@ class PanelRegistry(val sections: List<PanelSection>) {
     /**
      * The sections the panel draws for this chat, in order: each one that has something to show ([PanelSection.visible])
      * and is not waiting on a mode that is off. A section a private surface gates is left out while the surface is
-     * off rather than shown as an "Extended mode" placeholder; turning the mode on in Settings brings it in.
+     * off rather than shown as an "Extended mode" placeholder; turning the mode on in Settings brings it in. In a
+     * Project coordinator's chat the Project section — the Project's one surface — follows the Overview, ahead of
+     * the code sections a coordinator, which delegates rather than writes, rarely fills.
      */
-    fun shown(capabilities: Capabilities, state: PanelState): List<PanelSection> = sections.filter { it.isShown(capabilities, state) }
+    fun shown(capabilities: Capabilities, state: PanelState): List<PanelSection> {
+        val shown = sections.filter { it.isShown(capabilities, state) }
+        if (state.agent?.looksLikeProject != true) return shown
+        val project = shown.firstOrNull { it.id == PanelSectionId.Project } ?: return shown
+        val rest = shown - project
+        val header = rest.indexOfFirst { it.id == PanelSectionId.Header }
+        return rest.toMutableList().also { it.add(header + 1, project) }
+    }
 
     companion object {
         /** The default panel: what the documented API feeds, and the Extended-mode sections the mode brings in. */

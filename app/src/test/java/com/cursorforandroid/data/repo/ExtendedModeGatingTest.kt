@@ -27,6 +27,7 @@ import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -43,7 +44,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Every private surface, under both settings: with Extended mode off nothing reaches the account service and the
@@ -179,6 +182,96 @@ class ExtendedModeGatingTest {
         assertThat(pins.state.value.active).isTrue()
         awaitUntil { agents.agent("bc-1")?.name == "Renamed on iOS" }
         assertThat(agents.agent("bc-1")?.source).isEqualTo(AgentSource.SLACK)
+    }
+
+    /**
+     * Turning the mode off while a round is inside the account's list read — the setting is written first, then
+     * `AppGraph.extendedMode.onDisabled` resets the pins, which is what is reproduced here. The answer that was on its
+     * way is dropped rather than applied, the next cue asks the account nothing, and a pin made afterwards is the
+     * device's own with nothing recorded as owed to a server.
+     */
+    @Test
+    fun `turned off mid-round, the answer on its way is dropped and the next cue asks the account nothing`() = runBlocking<Unit> {
+        extended = true
+        val agents = agents()
+        val listed = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val attempts = AtomicInteger()
+        val gated = object : PinsApi by account {
+            override suspend fun list(): AccountList {
+                if (attempts.incrementAndGet() == 1) {
+                    listed.complete(Unit)
+                    release.await()
+                }
+                return account.list()
+            }
+        }
+        val handed = CopyOnWriteArrayList<AccountList>()
+        val pins = PinRepository(session, prefs, agents, gated, scope, onList = { list, _ -> handed += list }, capabilities = capabilities)
+        prefs.setPinsMigrated(true)
+
+        // The completed fetch cues the round; the mode goes off while its list read is in flight.
+        agents.refresh()
+        listed.await()
+        extended = false
+        pins.reset()
+        release.complete(Unit)
+        delay(300)
+
+        // Nothing of the answer landed: no pin adopted, no name, nothing handed on; the state is the blank one.
+        assertThat(account.calls).isEmpty()
+        assertThat(handed).isEmpty()
+        assertThat(prefs.localAgentState.first().pinnedIds).isEmpty()
+        assertThat(agents.agent("bc-1")?.name).isEqualTo("One")
+        assertThat(pins.state.value).isEqualTo(PinSyncState())
+
+        // The next completed fetch is the next cue, and it asks the account nothing.
+        agents.refresh()
+        delay(200)
+        assertThat(attempts.get()).isEqualTo(1)
+        assertThat(pins.state.value.active).isFalse()
+
+        // A pin made now is this device's: applied, and not recorded as owed to any server.
+        assertThat(pins.toggle("bc-1").isSuccess).isTrue()
+        assertThat(prefs.localAgentState.first().pinnedIds).containsExactly("bc-1")
+        assertThat(prefs.pendingPinChanges.first()).isEmpty()
+        assertThat(account.calls).isEmpty()
+    }
+
+    /**
+     * A failed round leaves a retry chain behind (five seconds, twenty, a minute); turning the mode off has to end it,
+     * or a retry would be the one private call the setting did not stop. The waits are shortened here to see it out.
+     */
+    @Test
+    fun `turned off while a failed round waits to retry, the retries never come`() = runBlocking<Unit> {
+        extended = true
+        val agents = agents()
+        val attempts = AtomicInteger()
+        val offline = object : PinsApi by account {
+            override suspend fun list(): AccountList {
+                attempts.incrementAndGet()
+                throw IOException("offline")
+            }
+        }
+        val pins = PinRepository(session, prefs, agents, offline, scope, retryDelaysMs = listOf(150L, 150L, 150L), capabilities = capabilities)
+        prefs.setPinsMigrated(true)
+
+        agents.refresh()
+        awaitUntil { pins.state.value.error != null }
+        assertThat(attempts.get()).isEqualTo(1)
+
+        extended = false
+        pins.reset()
+        // Past every wait the chain had left: had it survived, it would have run three more times by now.
+        delay(700)
+        assertThat(attempts.get()).isEqualTo(1)
+        assertThat(pins.state.value).isEqualTo(PinSyncState())
+
+        // And the preference under the option is not the round's to change: still on, for when the mode comes back.
+        assertThat(prefs.pinSyncEnabled.first()).isTrue()
+        extended = true
+        assertThat(pins.sync().isSuccess).isFalse() // offline still; the point is that it asked again, now that it may
+        assertThat(attempts.get()).isEqualTo(2)
     }
 
     // ---- profile ----------------------------------------------------------------------------------------------------

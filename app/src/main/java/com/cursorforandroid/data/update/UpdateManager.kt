@@ -248,8 +248,10 @@ class UpdateManager(
     }
 
     /**
-     * The app came to the foreground: a check every few hours (cheap, thanks to the ETag), and whether or not one
-     * was due, the download a metered network deferred last time can happen now that the phone may be on Wi-Fi.
+     * The app came to the foreground: a check, at most once every [FOREGROUND_CHECK_INTERVAL_MS] (cheap, thanks to
+     * the ETag), and whether or not one was due, the download a metered network deferred last time can happen now
+     * that the phone may be on Wi-Fi. The periodic job keeps its own twelve-hour schedule for a device the app is
+     * not opened on; this is what keeps a release from arriving a day late on one it is.
      */
     suspend fun onAppStarted() = exclusive {
         if (!autoUpdate.first()) return@exclusive
@@ -766,7 +768,12 @@ class UpdateManager(
     companion object {
         /** Android 12: `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` lets an app update itself without a prompt. */
         const val SILENT_SELF_UPDATE_SDK = 31
-        const val FOREGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
+        /**
+         * The least time between two checks made because the app came forward. An hour: a release cut while the
+         * app was open is seen within the hour, and an app opened many times a day spends at most 24 of the 60
+         * anonymous requests GitHub allows the address each hour — leaving room for the periodic job and the button.
+         */
+        const val FOREGROUND_CHECK_INTERVAL_MS = 60 * 60 * 1000L
         /** Long enough that leaving a screen and coming straight back is not an install window. */
         const val BACKGROUND_IDLE_MS = 5_000L
         /** How long a committed session's verdict is still expected; after that the session is treated as orphaned. */

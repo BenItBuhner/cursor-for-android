@@ -44,6 +44,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.SignInMethod
@@ -62,7 +63,6 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
-import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -183,13 +183,6 @@ fun SettingsScreen(
                 }
             }
 
-            if (!isDemo) {
-                Group("Chats")
-                CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                    PinSyncRows(graph)
-                }
-            }
-
             Group("Notifications")
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                 NotificationRows(graph)
@@ -215,12 +208,16 @@ fun SettingsScreen(
             }
 
             // Below About on purpose: nothing about the layout above changes with the setting, and the section reads
-            // as what it is — a choice about undocumented endpoints, not a feature the app leads with.
+            // as what it is — a choice about undocumented endpoints, not a feature the app leads with. Every option
+            // that needs one of those endpoints lives in this card, under the toggle, and only while it is on (see
+            // ExtendedModeRows); the groups above hold only what works on documented data.
             if (!isDemo) {
                 Group("Advanced")
                 CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
                     ExtendedModeRows(graph)
-                    HairlineDivider()
+                }
+                // The exports read what the app already holds and say which mode it held it under; neither needs the mode.
+                CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp).padding(top = 8.dp)) {
                     ProjectDiagnosticsRow(graph)
                     HairlineDivider()
                     TranscriptDiagnosticsRow(graph)
@@ -413,9 +410,9 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit) {
     ToggleRow(
         title = "Automatic updates",
         subtitle = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
-            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and installs them while the app isn't in use."
+            "Checks GitHub when you open the app (at most hourly) and every 12 hours in the background, downloads new releases over Wi-Fi and installs them while the app isn't in use."
         } else {
-            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and lets you know when one is ready to install."
+            "Checks GitHub when you open the app (at most hourly) and every 12 hours in the background, downloads new releases over Wi-Fi and lets you know when one is ready to install."
         },
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
@@ -442,13 +439,19 @@ private fun updateStatusLine(state: UpdateState): String = when (state) {
     UpdateState.Checking -> "Checking GitHub for a newer release…"
     is UpdateState.UpToDate -> "Up to date · ${checkedLabel(state.checkedAtMs)}"
     is UpdateState.Available ->
-        if (state.signatureMismatch) "${state.release.versionName} needs a manual reinstall" else "${state.release.versionName} is available"
+        if (state.signatureMismatch) "${state.release.versionName} needs a manual reinstall" else UpdateCopy.available(state.release)
     is UpdateState.Downloading -> state.fraction?.let { "Downloading ${state.release.versionName}… ${(it * 100).toInt()}%" }
         ?: "Downloading ${state.release.versionName}… ${"%.1f".format(Locale.US, state.bytesRead / 1_048_576.0)} MB"
     is UpdateState.Downloaded -> "${state.release.versionName} is ready · the app closes while it installs"
     is UpdateState.Installing -> if (state.awaitingConfirmation) "Waiting for you to confirm the installation" else "Installing ${state.release.versionName}…"
     is UpdateState.Failed -> state.message
     is UpdateState.Installed -> "Updated to ${state.versionName}"
+}
+
+/** The updater's words that more than one surface shows: the Settings status line and the sidebar's hint row say the same thing. */
+object UpdateCopy {
+    /** "Update available: v0.3.9" — the version with the tag's `v`, so it reads as the release it names. */
+    fun available(release: AppRelease): String = "Update available: v${release.versionName}"
 }
 
 /** "checked just now", "checked 4m ago", "checked Sep 4". */
@@ -503,56 +506,9 @@ internal object CrashReportCopy {
     const val UNAVAILABLE = "Not available in this build: it was made without a project to report to."
 }
 
-/**
- * The pin sync toggle and, under it, where the sync stands: the last time it went through, changes still waiting for
- * the server, or why it is not going through. With Extended mode off there is no sync to toggle — the account is not
- * asked — so the card says where the pins are instead.
- */
+/** A row that reports rather than acts: an icon, a title and a line under it. Shared with the Extended mode section. */
 @Composable
-private fun PinSyncRows(graph: AppGraph) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    val scope = rememberCoroutineScope()
-    val enabled by graph.prefs.pinSyncEnabled.collectAsStateWithLifecycle(initialValue = true)
-    val sync by graph.pins.state.collectAsStateWithLifecycle()
-    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
-
-    if (!extendedMode) {
-        StatusRow(title = ExtendedModeCopy.PINS_LOCAL_TITLE, subtitle = ExtendedModeCopy.PINS_LOCAL_SUBTITLE, warning = false, icon = CursorIcons.Pin)
-        return
-    }
-    Row(
-        Modifier.fillMaxWidth().pressable({ scope.launch { graph.prefs.setPinSyncEnabled(!enabled) } }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text("Sync pinned chats", style = type.base, color = colors.textPrimary)
-            Text(
-                "Pins follow your Cursor account, like the desktop Agents window and the iOS app. Off keeps them on this device.",
-                style = type.small, color = colors.textTertiary,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        CursorToggle(checked = enabled, onCheckedChange = { scope.launch { graph.prefs.setPinSyncEnabled(it) } })
-    }
-    if (enabled && sync.error != null) {
-        HairlineDivider()
-        StatusRow(title = "Pins are staying on this device", subtitle = sync.error.orEmpty(), warning = true)
-    } else if (enabled && sync.pendingCount > 0) {
-        HairlineDivider()
-        StatusRow(
-            title = "Waiting to sync ${sync.pendingCount} ${if (sync.pendingCount == 1) "change" else "changes"}",
-            subtitle = "They go up the next time Cursor is reachable.",
-            warning = false,
-        )
-    } else if (enabled && sync.lastSyncedAtMillis != null) {
-        HairlineDivider()
-        InfoRow("Last synced", TimeFormat.relativeShort(sync.lastSyncedAtMillis ?: 0L, AppClock.now()))
-    }
-}
-
-@Composable
-private fun StatusRow(title: String, subtitle: String, warning: Boolean, icon: ImageVector = if (warning) CursorIcons.Warning else CursorIcons.Cloud) {
+internal fun StatusRow(title: String, subtitle: String, warning: Boolean, icon: ImageVector = if (warning) CursorIcons.Warning else CursorIcons.Cloud) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -602,7 +558,7 @@ private fun LinkRow(label: String, url: String, open: (String) -> Unit) {
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
+internal fun InfoRow(label: String, value: String) {
     val colors = CursorTheme.colors
     Row(Modifier.fillMaxWidth().height(CursorDimens.listRow).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, style = CursorTheme.typography.base, color = colors.textPrimary, modifier = Modifier.weight(1f))
