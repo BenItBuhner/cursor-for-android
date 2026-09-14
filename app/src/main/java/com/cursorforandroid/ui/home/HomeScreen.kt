@@ -138,10 +138,12 @@ fun HomeScreen(
         }
         // The list scrolls edge to edge; the last row must still clear the navigation bar (48dp with three buttons).
         val navigationBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        // The fade sits inside the IME padding so it tracks the visible viewport when the keyboard is up.
+        // The fade sits inside the IME padding so it tracks the visible viewport when the keyboard is up; painted in
+        // the canvas colour, since a list resized on every frame of the keyboard's animation cannot afford an
+        // offscreen layer per frame.
         val recentState = rememberLazyListState()
         LazyColumn(
-            Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState),
+            Modifier.fillMaxSize().imePadding().scrollEdgeFade(recentState, surface = colors.canvas),
             state = recentState,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (onOpenSidebar != null) 8.dp else 48.dp, bottom = 32.dp + navigationBar),
             horizontalAlignment = Alignment.CenterHorizontally,

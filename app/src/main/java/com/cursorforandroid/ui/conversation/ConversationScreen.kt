@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,8 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -70,6 +69,7 @@ import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.keyboardInsetPadding
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.rememberLightboxState
@@ -106,6 +106,7 @@ internal fun ConversationState.showsWorkingRow(): Boolean {
  * newest item grows upward from the bottom edge without moving anything the reader is looking at, and a reader who
  * has scrolled up stays put. New items snap the list back to the bottom only while the reader is following along.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ConversationScreen(
     graph: AppGraph,
@@ -161,7 +162,9 @@ fun ConversationScreen(
         graph.share.consume(incoming.generation)
     }
     val snackbar = remember { SnackbarHostState() }
-    val listState = rememberLazyListState()
+    // The turns just past the top edge are composed ahead of time, so the keyboard leaving uncovers rows that are
+    // already built rather than building them on the frames of its animation (see TranscriptPrefetchStrategy).
+    val listState = rememberLazyListState(prefetchStrategy = remember { TranscriptPrefetchStrategy() })
     val scope = rememberCoroutineScope()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var modelSheet by rememberSaveable { mutableStateOf(false) }
@@ -293,8 +296,10 @@ fun ConversationScreen(
                     reverseLayout = true,
                     // Not fillMaxSize: a short transcript then sizes to its content and reads from the top. Once it
                     // overflows, the items dissolve at whichever edge still has transcript past it rather than clipping
-                    // flat against the header or the composer.
-                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true),
+                    // flat against the header or the composer. The fade is painted in the canvas colour: this list is
+                    // resized on every frame the keyboard moves, and an offscreen dissolve would re-allocate and
+                    // re-render a full-screen layer on each of them.
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter).scrollEdgeFade(listState, reverseLayout = true, surface = colors.canvas),
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -385,8 +390,11 @@ fun ConversationScreen(
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
         val willQueue = isActive || queue.isNotEmpty() || (accountQueue && controls.queue.isNotEmpty())
+        // The composer rests 10dp above the keyboard's edge while there is one, and above the navigation bar otherwise
+        // (keyboardInsetPadding); the transcript above takes whatever height is left and keeps its newest turn on the
+        // composer through the change, being a bottom-anchored list.
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).navigationBarsPadding().imePadding(),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // What is waiting to go out sits right above the box it came from, oldest first, one line each.
