@@ -227,10 +227,10 @@ class ProjectRootsInvariantTest {
         agents.applyLineage("bc-root-3", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         assertThat(agents.knownRoots.value.map { it.id }).contains("bc-root-3")
         // A record with `startedAsNewProject` and no `project_metadata` (the desktop never reads the former), and a
-        // worker's record naming a manager, admit nothing: the latter a candidate only, until the membership answers.
+        // worker's record naming a manager, admit nothing: the desktop makes no Project of a manager (kf reads the
+        // manager's own record alone); the worker is nested under it as under any parent.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-3", record = RecordFields(startedAsNewProject = true)), ComposerSnapshot("bc-plain-4-w", parent = AgentParent("bc-plain-4", AgentParentKind.PROJECT_WORKER))))
         assertThat(agents.knownRoots.value.map { it.id }).containsNoneOf("bc-plain-3", "bc-plain-4")
-        assertThat(agents.managerCandidates()).contains("bc-plain-4")
         // A Project deleted on the server: the public API answers 404 for it. Nothing but the registry knows it
         // (a membership answer named its worker; its own row never loaded): the fetch by id is what lets it go —
         // and the Projects it stands beside are all still there.

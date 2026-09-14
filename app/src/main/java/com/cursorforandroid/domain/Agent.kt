@@ -1,5 +1,6 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.data.api.RecordFields
 import kotlinx.serialization.Serializable
 
 /**
@@ -135,10 +136,11 @@ enum class AgentParentKind { PROJECT_WORKER, SIDE_CHAT, SUBAGENT }
 data class AgentParent(val id: String, val kind: AgentParentKind)
 
 /**
- * Where a chat belongs, decided from its own lineage and never from whether its parent happens to be listed: a
- * [PRIMARY] chat is one of the account's own; a [PROJECT_ROOT] is a Cursor Project's coordinator (or a chat that
- * drives workers the way one does); a [PROJECT_CHILD] is a worker, side chat or cloud subagent — a chat that belongs
- * inside another chat's surface and never among the primary rows, whatever has become of its parent.
+ * Where a chat belongs, by the desktop Agents Window's two predicates and nothing else (see [AgentsWindowList]): a
+ * [PROJECT_CHILD] is a chat with a parent link (`PJr`: a worker, side chat or cloud subagent, drawn under its parent's
+ * row and never among the top-level rows, whatever has become of the parent); a [PROJECT_ROOT] is a top-level chat
+ * whose record carries `projectMetadata` (`kf`: a Cursor Project's coordinator); a [PRIMARY] chat is every other
+ * top-level chat, one of the account's own.
  */
 @Serializable
 enum class AgentScope {
@@ -149,21 +151,12 @@ enum class AgentScope {
 
     companion object {
         /**
-         * Sources the account gives only to chats that hang off another chat; a child by its source alone. Not
-         * `CLOUD_META_AGENT`: a source says how a chat was started, not what it is — an ordinary chat can carry it —
-         * and until 0.3.5 reading it as a child source hid every chat that carried it (a child of nobody is drawn
-         * nowhere). It is no root source either: a root takes the record's own word (see [Agent.scope]).
+         * The scope a record's facts add up to, as the desktop reads them: a parent link makes a child (`PJr`), the
+         * Project flag on a chat with none makes a root (`kf`), everything else — whatever its source — is a chat
+         * of the account's own (`mQa`).
          */
-        val CHILD_SOURCES: Set<AgentSource> = setOf(AgentSource.AS_SIDE_CHAT_FROM_CLOUD, AgentSource.AS_SUBAGENT_FROM_CLOUD)
-
-        /**
-         * The scope a record's lineage facts add up to: a chat with a parent is a child, as is one started as a side
-         * chat or subagent even when its parent went unnamed (a side chat may carry its Project's metadata); one the
-         * account marks as a Project is a root; everything else — whatever its source — is a primary chat.
-         */
-        fun of(isProject: Boolean, parent: AgentParent?, source: AgentSource?): AgentScope = when {
+        fun of(isProject: Boolean, parent: AgentParent?): AgentScope = when {
             parent != null -> PROJECT_CHILD
-            source != null && source in CHILD_SOURCES -> PROJECT_CHILD
             isProject -> PROJECT_ROOT
             else -> PRIMARY
         }
@@ -171,58 +164,55 @@ enum class AgentScope {
 }
 
 /**
- * Which word placed a chat where it is ([Agent.scopeSignal]): the account's own record of the chat naming its
- * manager, side-chat parent or subagent parent — or its `projectMetadata` — ([ACCOUNT_RECORD]); a root's
- * `ListWorkersForManager` answer ([MEMBERSHIP]) or `ListBackgroundComposerChildren` answer ([CHILDREN_LIST]); the
- * source the account gives only to side chats and subagents ([HIDDEN_SOURCE]); a coordinator's own transcript naming
- * it through `create_agent` and the other coordinator tools ([COORDINATOR_TRANSCRIPT], the one word default mode
- * has); an action taken from this app — a worker created, adopted, moved or released ([ACTION]); or nothing yet, the
- * row being what its facts make it. The diagnostics export names it per row so a leak can be traced to the signal
- * that missed.
+ * Which word gave a chat its parent link or its Project flag ([Agent.scopeSignal]), in the desktop's terms (see
+ * [AgentsWindowList]): the chat's own record — `cloudSubagentParent`, `sideChatInfo.parentBcId`, `managerAgentId`,
+ * `projectMetadata` — ([ACCOUNT_RECORD]); a root's `ListWorkersForManager` answer naming it, the desktop's seeded
+ * `managerAgentId` ([MEMBERSHIP]); a root's `ListBackgroundComposerChildren` answer ([CHILDREN_LIST]); an action taken
+ * from this app — a worker created, adopted or moved, the desktop's `_stampListedCloudAgentManager` ([ACTION]); or a
+ * coordinator's own transcript showing `create_agent` bring the worker into being, the one word default mode has for
+ * the `managerAgentId` the record would carry ([COORDINATOR_CREATED]). Nothing else places a chat: not a mention in
+ * a transcript, not a source, not a guess. The diagnostics export names the signal per row.
+ *
+ * [HIDDEN_SOURCE] and [COORDINATOR_TRANSCRIPT] are older builds' words, kept so their disk copies still read; a
+ * placement carrying either is dropped on restore and never made again.
  */
 @Serializable
 enum class LineageSignal {
     ACCOUNT_RECORD,
     MEMBERSHIP,
     CHILDREN_LIST,
+    @Deprecated("A source places nothing (the desktop reads the record's parent link alone); kept for older disk copies.")
     HIDDEN_SOURCE,
+    @Deprecated("A mention in a coordinator's transcript places nothing; kept for older disk copies.")
     COORDINATOR_TRANSCRIPT,
     ACTION,
-    /**
-     * A coordinator's own transcript showing the worker come into being — `create_agent` answering with its id, or
-     * `get_agent_status` listing it among the coordinator's workers. Stronger than a mention ([COORDINATOR_TRANSCRIPT]:
-     * a chat merely messaged or read), which any chat could be the object of; the one positive evidence default mode has.
-     */
     COORDINATOR_CREATED,
     ;
 
-    /** Words of the account service itself, which replace anything a transcript said; both transcript signals yield to them. */
+    /** Words of the account service itself or of an action taken against it; a transcript's word yields to a record. */
     val isAuthoritative: Boolean get() = this != COORDINATOR_TRANSCRIPT && this != COORDINATOR_CREATED
 
-    /**
-     * Positive evidence of lineage: the chat's own record naming its manager or parent, a root's membership or
-     * children answer, an action taken here, a coordinator's transcript showing it created the chat. A mention in a
-     * coordinator's transcript is a hint — it places a chat only until the chat's own record has said otherwise, and
-     * it never takes a chat off the running count or the notifications.
-     */
+    /** A word this build still places by: the desktop's own fields and stamps. The two legacy hints are not. */
+    val isPlacing: Boolean get() = this != COORDINATOR_TRANSCRIPT && this != HIDDEN_SOURCE
+
+    /** Positive evidence of lineage: every placing word is; a mention ([COORDINATOR_TRANSCRIPT]) never was. */
     val isPositiveEvidence: Boolean get() = this != COORDINATOR_TRANSCRIPT
 
     /**
-     * Whether a complete membership answer that no longer names the chat releases it. A membership's, a children
-     * list's or a transcript's word is; the chat's own record naming its parent is not (the record is the chat's,
-     * the membership the Project's), nor is an action taken here a moment ago, which the account may not list yet.
+     * Whether a complete membership or children answer that no longer names the chat releases the stamp. A
+     * membership's, a children list's or a transcript's word is; the chat's own record naming its parent is not (the
+     * record is the chat's, the membership the Project's), nor is an action taken here a moment ago, which the
+     * account may not list yet.
      */
     val isRetractable: Boolean get() = this == MEMBERSHIP || this == CHILDREN_LIST || this == COORDINATOR_TRANSCRIPT || this == COORDINATOR_CREATED
 
     /**
-     * Evidence that a chat heads a Project: its own record's Project flag ([ACCOUNT_RECORD]), being named as the
-     * manager by a worker's record or a membership answer ([MEMBERSHIP]), or an action taken here that made it one
-     * ([ACTION]). Nothing else promotes a chat to a root — not a coordinator's tools in its transcript, not a
-     * `create_agent` call, not a children list (an ordinary chat has subagents and side chats too), not a source
-     * (a "meta agent" is how a chat was started). A chat that is none of these is one of the account's own, whatever
-     * it does.
+     * The one word that names a Project: the chat's own record carrying `projectMetadata` ([ACCOUNT_RECORD]) — the
+     * desktop's `isProject`. A membership answer, an action, a children list, a transcript or a source never makes a
+     * Project of a chat: a chat that manages workers without the flag is an ordinary chat with rows nested under it,
+     * as it is in the Agents Window.
      */
-    val isRootEvidence: Boolean get() = this == ACCOUNT_RECORD || this == MEMBERSHIP || this == ACTION
+    val isRootEvidence: Boolean get() = this == ACCOUNT_RECORD
 }
 
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
@@ -270,46 +260,33 @@ data class Agent(
     /** The Project's icon and colour; null for a chat that is not a Project, or a Project that has not set them. */
     val projectAppearance: ProjectAppearance? = null,
     /**
-     * The chat this one hangs off — the Project whose coordinator delegated to it, the chat it branched from as a
-     * side chat, or the agent that spawned it as a cloud subagent — as the account reports it; null for a chat of
-     * its own. The sidebar nests a chat under its parent when the parent is listed too.
+     * The chat this one hangs off — the desktop's `subagentParentId`: the agent that spawned it as a cloud subagent
+     * (`cloudSubagentParent.parentAgentId`), the chat it branched from as a side chat (`sideChatInfo.parentBcId`), or
+     * the Project whose coordinator manages it (`managerAgentId`), in that precedence — as the account's record
+     * reports it, or as a membership answer, an action here or a coordinator's `create_agent` stamped it (see
+     * [LineageSignal]); null for a chat of its own. The one fact the sidebar nests by (see [AgentsWindowList]).
      */
     val parent: AgentParent? = null,
-    /**
-     * Where the chat belongs, as last decided by something that knows its lineage — the account's record, a
-     * membership answer, a coordinator's transcript naming it — or null when nothing has said yet. Read it through
-     * [scope]. Sticky on purpose: carried across refreshes and kept on disk with the row, and left alone when Extended
-     * mode is turned off, since default mode cannot re-learn it and forgetting it is what lets a worker back into the
-     * primary list.
-     */
-    val knownScope: AgentScope? = null,
     /**
      * The agent has asked a question and is waiting on the answer (`hasPendingInteraction` on the account's record):
      * a Project's view marks such a primary as needing input. Only the account says; false until it has.
      */
     val hasPendingInteraction: Boolean = false,
-    /** Which word placed the chat where [scope] says (see [LineageSignal]); null while nothing has. */
+    /** Which word gave the row its parent link or Project flag (see [LineageSignal]); null while nothing has. */
     val scopeSignal: LineageSignal? = null,
+    /**
+     * The raw values of the fields the desktop's predicates read, as the chat's account record last carried them
+     * (see `RecordFields`); null while no account record has been read for the row — a row the public API alone
+     * gave, which in Extended mode is fetched by id so the record can place it (see `AgentRepository`).
+     */
+    val record: RecordFields? = null,
 ) {
     /**
-     * Where the chat belongs (see [AgentScope]). Any lineage fact on the row scopes it: a parent link or a child's
-     * source makes it a child whatever else was said, and a word that called it a child ([knownScope]) holds until
-     * something authoritative clears both; only then do the Project flag and the kept scope decide. The order is the
-     * safe one — nothing a list merge or a lineage-less account record can do to a row makes a placed child a primary
-     * again — and it is what a row classified before the scope was kept, or by the demo's dataset, is read by too.
+     * Where the chat belongs (see [AgentScope]): the desktop's two predicates, in the desktop's order — a parent link
+     * makes a child (`PJr`), the Project flag on a chat with none makes a root (`kf`), everything else is a chat of
+     * the account's own (`mQa`). Nothing else is read: not the source, not what an older build once decided.
      */
-    val scope: AgentScope
-        get() = when {
-            parent != null -> AgentScope.PROJECT_CHILD
-            source != null && source in AgentScope.CHILD_SOURCES -> AgentScope.PROJECT_CHILD
-            // The record's own flag, and nobody's child by its facts: a root, whatever an older classification kept.
-            isProject -> AgentScope.PROJECT_ROOT
-            knownScope == AgentScope.PROJECT_CHILD -> AgentScope.PROJECT_CHILD
-            // A kept root scope stands on root evidence alone (see [LineageSignal.isRootEvidence]): a coordinator's
-            // transcript, a children list or a source made no Project of a chat, whatever an older build kept.
-            knownScope == AgentScope.PROJECT_ROOT -> if (scopeSignal?.isRootEvidence == true) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
-            else -> knownScope ?: AgentScope.PRIMARY
-        }
+    val scope: AgentScope get() = AgentScope.of(isProject, parent)
     /**
      * A Project at the top of its tree: the chat the Projects group lists. The Agents Window's rule as well — a
      * Project that is itself somebody's subagent or side chat is shown where its parent is.
@@ -323,15 +300,13 @@ data class Agent(
      */
     val isProjectScoped: Boolean get() = scope != AgentScope.PRIMARY
     /**
-     * [isProjectScoped] on positive evidence alone (see [LineageSignal.isPositiveEvidence]): the record's own
-     * lineage fields, a membership or children answer, an action taken here, or the row's own facts. A chat placed
-     * by nothing but a coordinator's transcript is still nested under the coordinator, but it is counted among the
-     * running agents and notifies like any chat of the account's until the account itself says whose it is.
+     * [isProjectScoped]: every word that places a chat now is positive evidence (the record's own fields, a
+     * membership or children answer, an action taken here, a coordinator's `create_agent`), so the two are one. Kept
+     * under the name the notification and widget code reads.
      */
-    val isProjectScopedByEvidence: Boolean
-        get() = isProjectScoped && (scopeSignal?.isPositiveEvidence != false || isProject || (source != null && source in AgentScope.CHILD_SOURCES))
-    /** Drawn as a Project — with its icon and colour — whether the account said so or its own transcript did. */
-    val looksLikeProject: Boolean get() = isProject || isProjectRoot
+    val isProjectScopedByEvidence: Boolean get() = isProjectScoped
+    /** Drawn as a Project — with its icon and colour: the desktop's `kf`, a top-level chat the record flags. */
+    val looksLikeProject: Boolean get() = isProjectRoot
     /**
      * The name of the chat's model, for the composer chip and the list row. Rows recorded by earlier versions carry
      * the variant's parameters after the name ("Composer 2 · Fast", "Claude 5 · 1M context · Max effort"); only the

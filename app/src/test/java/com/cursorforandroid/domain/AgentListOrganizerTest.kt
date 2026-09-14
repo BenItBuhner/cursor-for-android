@@ -28,7 +28,6 @@ class AgentListOrganizerTest {
         isProject: Boolean = false,
         parent: String? = null,
         parentKind: AgentParentKind = AgentParentKind.PROJECT_WORKER,
-        knownScope: AgentScope? = null,
         scopeSignal: LineageSignal? = null,
     ) = Agent(
         id = id,
@@ -47,7 +46,6 @@ class AgentListOrganizerTest {
         source = source,
         isProject = isProject,
         parent = parent?.let { AgentParent(it, parentKind) },
-        knownScope = knownScope,
         scopeSignal = scopeSignal,
     )
 
@@ -76,7 +74,7 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `chats nest under a listed parent, wait under a stand-in for an unloaded one, and a pin keeps a chat out of the tree`() {
+    fun `chats nest under their parent's row, a child of an unloaded parent is not drawn, and a pinned child stays under its parent`() {
         val agents = listOf(
             agent("project", updatedAgo = 3 * hour, isProject = true),
             agent("worker-new", updatedAgo = 0, parent = "project"),
@@ -89,30 +87,25 @@ class AgentListOrganizerTest {
         )
         val local = LocalAgentState(pinnedIds = setOf("pinned-worker"))
         val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
-        assertThat(sections.map { it.title }).containsExactly("Projects", "Pinned", "Today").inOrder()
+        // VuC pins top-level headers only: the pinned worker stays under its Project, and there is no Pinned section.
+        assertThat(sections.map { it.title }).containsExactly("Projects", "Today").inOrder()
         val projects = sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
-        val project = projects.first { it.agent.id == "project" }
+        val project = projects.single()
         // Children in the list's order (newest first), with children of their own beneath them.
-        assertThat(project.children.map { it.agent.id }).containsExactly("worker-new", "worker-old", "side").inOrder()
+        assertThat(project.children.map { it.agent.id }).containsExactly("worker-new", "worker-old", "side", "pinned-worker").inOrder()
         assertThat(project.children[1].children.map { it.agent.id }).containsExactly("grandchild")
-        assertThat(project.descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
-        assertThat(sections.ids(AgentListOrganizer.PINNED_KEY)).containsExactly("pinned-worker")
-        // The worker of a Project the list has not loaded waits under a stand-in for it, never among the chats.
-        val standIn = projects.first { it.agent.id == "bc-gone" }
-        assertThat(standIn.isPlaceholder).isTrue()
-        assertThat(standIn.agent.name).isEqualTo(AgentListOrganizer.PLACEHOLDER_NAME)
-        assertThat(standIn.agent.isProjectRoot).isTrue()
-        assertThat(standIn.children.map { it.agent.id }).containsExactly("orphan")
+        assertThat(project.descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side", "pinned-worker").inOrder()
+        // PJr: the child of a parent the list has not loaded is a child all the same — never a top-level row — and
+        // is not drawn until the parent's row is (the repository fetches it by id, as the desktop hydrates it).
+        assertThat(sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).doesNotContain("orphan")
         assertThat(sections.ids("date:Today")).containsExactly("plain")
         // The recent surface is for the account's own chats: no Project, no worker — not even a pinned one.
         assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
-        // A filter never drops a Project: it is listed with its whole tree, pinned children aside; nor a pinned chat,
-        // which is shown by the user's word whatever the filters say; the plain chat answers to the filter as ever.
+        // A Project's row answers the archive filter alone: it is listed with its whole tree; the plain chat answers to the filter as ever.
         val running = AgentListOrganizer.organize(agents.map { if (it.id == "worker-new") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
-        assertThat(running.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, AgentListOrganizer.PINNED_KEY).inOrder()
-        assertThat(running.first().rows.map { it.agent.id }).containsExactly("project", "bc-gone").inOrder()
-        assertThat(running.first().rows.first().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
-        assertThat(running.last().rows.map { it.agent.id }).containsExactly("pinned-worker")
+        assertThat(running.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY)
+        assertThat(running.first().rows.map { it.agent.id }).containsExactly("project")
+        assertThat(running.first().rows.first().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side", "pinned-worker").inOrder()
         // A filter that drops a chat of the account's own hides its children with it; they never stand on their own.
         val plainTree = listOf(agent("plain", updatedAgo = hour), agent("sub", parent = "plain", parentKind = AgentParentKind.SUBAGENT, runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE))
         assertThat(AgentListOrganizer.organize(plainTree, ListPreferences(statuses = setOf(StatusFilter.Running)), LocalAgentState(), nowMillis = now, zone = zone)).isEmpty()
@@ -125,7 +118,7 @@ class AgentListOrganizerTest {
         assertThat(found.children.map { it.agent.id }).containsExactly("side")
         // A match on the parent keeps its whole tree.
         val byProject = AgentListOrganizer.organize(agents, ListPreferences(), local, query = "project", nowMillis = now, zone = zone)
-        assertThat(byProject.single().rows.single().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
+        assertThat(byProject.single().rows.single().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side", "pinned-worker").inOrder()
     }
 
     // ---- the isolation rule, one case per way a worker used to leak into the chat list -------------------------------
@@ -134,18 +127,18 @@ class AgentListOrganizerTest {
         AgentListOrganizer.organize(agents, prefs, local, query = query, nowMillis = now, zone = zone).flatMap { it.rows }.map { it.agent.id }
 
     @Test
-    fun `a project-scoped chat is never a primary row, whatever became of its parent`() {
+    fun `a chat with a parent link is never a top-level row, whatever became of its parent`() {
         val project = agent("project", isProject = true)
         val worker = agent("worker", parent = "project")
         val side = agent("side", parent = "project", parentKind = AgentParentKind.SIDE_CHAT)
         val subagent = agent("sub", parent = "plain", parentKind = AgentParentKind.SUBAGENT)
         val plain = agent("plain")
 
-        // Cause 3: the parent is archived and the default Status filter hides it.
+        // Cause 3: the parent is archived and the default Status filter hides it: its children go with its row.
         val archived = project.copy(lifecycle = AgentLifecycle.ARCHIVED)
         assertThat(primaryIds(listOf(archived, worker, side, plain, subagent))).containsExactly("plain")
         // Cause 3, as it was: the parent filtered out by repository while its workers keep their repositories. The
-        // Project now stands whatever the Repo filter says, and its workers sit under it — never among the chats.
+        // Project stands whatever the Repo filter says, and its workers sit under it — never among the chats.
         val noRepo = project.copy(repoUrl = null)
         val byRepo = AgentListOrganizer.organize(listOf(noRepo, worker, side, plain), ListPreferences(repos = setOf("acme/app")), LocalAgentState(), nowMillis = now, zone = zone)
         assertThat(byRepo.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, "date:Today").inOrder()
@@ -154,21 +147,23 @@ class AgentListOrganizerTest {
         assertThat(byRepo.ids("date:Today")).containsExactly("plain")
         // Cause 3: the parent is searched away.
         assertThat(primaryIds(listOf(project, worker, side, plain), query = "plain")).containsExactly("plain")
-        // Cause 3 and 4: the parent is beyond the listing window, or in the gap between the two windows.
+        // Cause 3 and 4: the parent is beyond the listing window, or in the gap between the two windows: PJr makes
+        // children of the worker and the side chat all the same, and neither is drawn until the parent's row is.
         val sections = AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
-        assertThat(sections.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, "date:Today").inOrder()
+        assertThat(sections.map { it.key }).containsExactly("date:Today")
         assertThat(sections.ids("date:Today")).containsExactly("plain")
-        assertThat(sections.first().rows.single().isPlaceholder).isTrue()
-        assertThat(sections.first().rows.single().children.map { it.agent.id }).containsExactly("worker")
-        // A side chat of an unloaded chat waits unseen: its parent need not be a Project.
-        assertThat(sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).doesNotContain("side")
-        // Once the server has refused the Project's row, the stand-in says so rather than "loading".
+        assertThat(sections.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).containsNoneOf("worker", "side")
+        // Once the server has refused the parent's row, its children wait under a stand-in that says so — an
+        // ordinary row, not a Project (the desktop draws neither; the stand-in keeps the chats reachable).
         val refused = AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, unavailableProjects = setOf("project"))
-        assertThat(refused.first().rows.single().let { it.isPlaceholder && it.agent.name == AgentListOrganizer.UNAVAILABLE_NAME }).isTrue()
-        assertThat(refused.first().rows.single().children.map { it.agent.id }).containsExactly("worker")
-        assertThat(AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, unavailableProjects = setOf("other")).first().rows.single().agent.name).isEqualTo(AgentListOrganizer.PLACEHOLDER_NAME)
+        assertThat(refused.map { it.key }).containsExactly("date:Today")
+        val standIn = refused.single().rows.first { it.agent.id == "project" }
+        assertThat(standIn.isPlaceholder && standIn.agent.name == AgentListOrganizer.UNAVAILABLE_NAME).isTrue()
+        assertThat(standIn.agent.isProjectRoot).isFalse()
+        assertThat(standIn.children.map { it.agent.id }).containsExactly("worker", "side")
+        assertThat(AgentListOrganizer.organize(listOf(worker, side, plain), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone, unavailableProjects = setOf("other")).single().rows.map { it.agent.id }).containsExactly("plain")
         // The stand-in is not a recent chat, and nothing under it is.
-        assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
+        assertThat(AgentListOrganizer.recentRows(refused).map { it.agent.id }).containsExactly("plain")
         // Which parents to fetch: the ones named but not held, once each.
         assertThat(AgentListOrganizer.missingParentIds(listOf(worker, side, plain, subagent))).containsExactly("project")
         assertThat(AgentListOrganizer.missingParentIds(listOf(worker, side, subagent))).containsExactly("project", "plain").inOrder()
@@ -176,47 +171,47 @@ class AgentListOrganizerTest {
     }
 
     @Test
-    fun `a chat classified by its source or by a kept scope stays out of the primary rows without a parent link`() {
-        // Cause 2: the record carried a child's source but no parent id.
+    fun `the desktop's two predicates decide the scope - the parent link and the Project flag - and nothing else`() {
+        // A source says how a chat was started, never where it belongs: the desktop reads the parent link alone, so
+        // a side chat or subagent whose record names no parent is a chat of the account's own (as it is there).
         val sideBySource = agent("side", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
         val subBySource = agent("sub", source = AgentSource.AS_SUBAGENT_FROM_CLOUD)
-        assertThat(sideBySource.scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(primaryIds(listOf(sideBySource, subBySource, agent("plain")))).containsExactly("plain")
-        // A chat started as a cloud meta agent is a chat of the account's own unless its record flags it a Project:
-        // neither a child of nobody, drawn nowhere (what hid Projects until 0.3.5), nor a Project by its source
-        // (what put ordinary chats among the Projects in 0.3.6).
+        assertThat(sideBySource.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(primaryIds(listOf(sideBySource, subBySource, agent("plain")))).containsExactly("plain", "side", "sub")
+        // A chat started as a cloud meta agent is a chat of the account's own unless its record flags it a Project.
         val meta = agent("meta", source = AgentSource.CLOUD_META_AGENT)
         assertThat(meta.scope).isEqualTo(AgentScope.PRIMARY)
         val withMeta = AgentListOrganizer.organize(listOf(meta, agent("plain")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
         assertThat(withMeta.none { it.key == AgentListOrganizer.PROJECTS_KEY }).isTrue()
         assertThat(withMeta.flatMap { it.rows }.map { it.agent.id }).containsExactly("meta", "plain")
-        // Cause 5: the classification outlives the source it came from (Extended mode turned off wipes the source).
-        val kept = sideBySource.copy(source = null, knownScope = AgentScope.PROJECT_CHILD)
-        assertThat(kept.scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(primaryIds(listOf(kept, agent("plain")))).containsExactly("plain")
-        // A kept root is a Project on the evidence it was kept with (a membership naming it as manager); one kept on
-        // no evidence — a coordinator by its own transcript alone — is a chat of the account's own.
-        assertThat(agent("hinted", knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PRIMARY)
-        val coordinator = agent("coord", knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP)
-        assertThat(coordinator.isProjectRoot).isTrue()
-        assertThat(coordinator.looksLikeProject).isTrue()
-        val sections = AgentListOrganizer.organize(listOf(coordinator, agent("w", parent = "coord")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
-        assertThat(sections.single().key).isEqualTo(AgentListOrganizer.PROJECTS_KEY)
+        // A coordinator without the flag — a Multitask chat, a chat that manages workers a membership names — is an
+        // ordinary top-level row with its workers nested under it (the desktop's row-with-children), not a Project.
+        val coordinator = agent("coord", scopeSignal = LineageSignal.MEMBERSHIP)
+        assertThat(coordinator.isProjectRoot).isFalse()
+        assertThat(coordinator.looksLikeProject).isFalse()
+        val sections = AgentListOrganizer.organize(listOf(coordinator, agent("w", parent = "coord", scopeSignal = LineageSignal.MEMBERSHIP)), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
+        assertThat(sections.single().key).isEqualTo("date:Today")
+        assertThat(sections.single().rows.single().agent.id).isEqualTo("coord")
         assertThat(sections.single().rows.single().children.map { it.agent.id }).containsExactly("w")
-        // The row's own lineage facts come first — a parent link or a child's source makes a child whatever was
-        // kept — then the record's Project flag; a kept child scope with nothing behind it is an older reading and
-        // does not outvote the flag.
+        // PJr before kf: a parent link makes a child of a flagged Project too; the flag alone makes a root; the
+        // source changes nothing either way.
         assertThat(agent("x", isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(agent("x", isProject = true, parent = "y").scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(agent("x", isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("x", isProject = true, parent = "y").looksLikeProject).isFalse()
+        assertThat(agent("x", isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(agent("x").scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(agent("x", parent = "y", knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(agent("x", isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        assertThat(agent("x", knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("x", parent = "y").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        // The desktop's rule for each, as the export prints it.
+        assertThat(AgentsWindowList.place(agent("x", isProject = true), setOf("x"), emptySet()).rule).startsWith("kf top-level Project")
+        assertThat(AgentsWindowList.place(agent("x", isProject = true, parent = "y"), setOf("x", "y"), emptySet()).rule).startsWith("PJr child of y via managerAgentId")
+        assertThat(AgentsWindowList.place(agent("x", parent = "y", parentKind = AgentParentKind.SIDE_CHAT), setOf("x"), emptySet()).rule).contains("via sideChatInfo.parentBcId")
+        assertThat(AgentsWindowList.place(agent("x", parent = "y", parentKind = AgentParentKind.SIDE_CHAT), setOf("x"), emptySet()).rule).contains("parent row not loaded")
+        assertThat(AgentsWindowList.place(agent("x"), setOf("x"), setOf("x")).rule).endsWith("→ Pinned (VuC)")
+        assertThat(AgentsWindowList.place(agent("x"), setOf("x"), emptySet()).rule).endsWith("→ time section (f3v)")
     }
 
     @Test
-    fun `a pinned worker is the one child listed among the primary rows, and it still carries its own children`() {
+    fun `a pinned worker stays under its Project with its own children, and no primary surface lists it`() {
         val agents = listOf(
             agent("project", isProject = true),
             agent("worker", parent = "project"),
@@ -224,12 +219,13 @@ class AgentListOrganizerTest {
         )
         val local = LocalAgentState(pinnedIds = setOf("worker"))
         val sections = AgentListOrganizer.organize(agents, ListPreferences(), local, nowMillis = now, zone = zone)
-        assertThat(sections.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, AgentListOrganizer.PINNED_KEY).inOrder()
-        assertThat(sections.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("project")
-        assertThat(sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.single().children).isEmpty()
-        val pinned = sections.first { it.key == AgentListOrganizer.PINNED_KEY }.rows.single()
-        assertThat(pinned.agent.id).isEqualTo("worker")
-        assertThat(pinned.children.map { it.agent.id }).containsExactly("deep")
+        // VuC picks pins from the top-level headers: a pinned child is nested like any other, and there is no Pinned section.
+        assertThat(sections.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY)
+        val project = sections.single().rows.single()
+        assertThat(project.agent.id).isEqualTo("project")
+        assertThat(project.children.map { it.agent.id }).containsExactly("worker")
+        assertThat(project.children.single().isPinned).isTrue()
+        assertThat(project.children.single().children.map { it.agent.id }).containsExactly("deep")
         // The sidebar's word is the sidebar's: the recents and the widget list nothing of a Project, pinned or not.
         assertThat(AgentListOrganizer.recentRows(sections)).isEmpty()
         val running = agents.map { if (it.id == "deep") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }
@@ -473,7 +469,7 @@ class AgentListOrganizerTest {
             agent("pinned", updatedAgo = 3 * day),
         )
         val sections = AgentListOrganizer.organize(agents, ListPreferences(), LocalAgentState(pinnedIds = setOf("pinned")), nowMillis = now, zone = zone)
-        assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday", "This week", "Older").inOrder()
+        assertThat(sections.map { it.title }).containsExactly("Pinned", "Today", "Yesterday", "Last 7 Days", "Older").inOrder()
         assertThat(sections.first().rows.single().agent.id).isEqualTo("pinned")
         assertThat(sections.flatMap { it.rows }.map { it.agent.id }).containsNoDuplicates()
     }
@@ -483,9 +479,10 @@ class AgentListOrganizerTest {
         val today = LocalDate.of(2027, 1, 15)
         assertThat(AgentListOrganizer.dateBucket(today, today)).isEqualTo("Today")
         assertThat(AgentListOrganizer.dateBucket(today.minusDays(1), today)).isEqualTo("Yesterday")
-        assertThat(AgentListOrganizer.dateBucket(today.minusDays(6), today)).isEqualTo("This week")
-        assertThat(AgentListOrganizer.dateBucket(today.minusDays(7), today)).isEqualTo("Last week")
-        assertThat(AgentListOrganizer.dateBucket(today.minusDays(14), today)).isEqualTo("This month")
+        assertThat(AgentListOrganizer.dateBucket(today.minusDays(6), today)).isEqualTo("Last 7 Days")
+        assertThat(AgentListOrganizer.dateBucket(today.minusDays(7), today)).isEqualTo("Last 30 Days")
+        assertThat(AgentListOrganizer.dateBucket(today.minusDays(29), today)).isEqualTo("Last 30 Days")
+        assertThat(AgentListOrganizer.dateBucket(today.minusDays(30), today)).isEqualTo("Older")
         assertThat(AgentListOrganizer.dateBucket(today.minusMonths(2), today)).isEqualTo("Older")
     }
 

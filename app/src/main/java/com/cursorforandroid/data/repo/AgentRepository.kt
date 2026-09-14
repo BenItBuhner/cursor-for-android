@@ -19,6 +19,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.CachedLineage
 import com.cursorforandroid.data.local.CachedPlacement
+import com.cursorforandroid.data.local.CachedRecord
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
@@ -265,33 +266,37 @@ class AgentRepository(
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /**
-     * Where each chat belongs, as every source has said so far — the account's records, a root's membership and
-     * children answers, a coordinator's transcript, an action taken here (see [LineageSignal]) — by chat id: a parent
-     * for a child, none for a root. Applied to every row on every publication (see [publish]), so a row the public
-     * list re-adds, a page that lands after the word did, or a list restored from disk is placed the same as the row
-     * that was there when the word came. Cleared with the list.
+     * The parent links stamped onto chats beside their records, the way the desktop stamps them (see
+     * [AgentsWindowList]): a root's `ListWorkersForManager` answer naming a worker (the desktop's seeded
+     * `managerAgentId`), a root's children answer, an action taken here (`_stampListedCloudAgentManager`), a
+     * coordinator's `create_agent` in default mode — by chat id. Applied to every row on every publication (see
+     * [publish]) together with the row's own record, so a row the public list re-adds, a page that lands after the
+     * word did, or a list restored from disk is placed the same. Cleared with the list. A stamp never names a root:
+     * a Project is the record's `projectMetadata` and nothing else (the desktop's `kf`).
      */
     private val placements = ConcurrentHashMap<String, Placement>()
 
-    private class Placement(val parent: AgentParent?, val signal: LineageSignal)
+    private class Placement(val parent: AgentParent, val signal: LineageSignal, val atMillis: Long = AppClock.now())
 
     /** Bumped whenever the registry changes without a row changing, so the disk copy follows (see [persist]). */
     private val registryChanges = MutableStateFlow(0L)
 
     /**
-     * Chats whose own account record contradicted a coordinator's transcript about them: the record named no manager
-     * or parent while the transcript had placed them. The hint is refused for them from then on — a transcript
-     * republished while its chat is open would otherwise place the chat again every time — until positive evidence
-     * (which overrides a hint anyway) or a reset.
+     * Rows the account was asked for a record of and gave none (a chat the account does not list) or could not be
+     * asked (offline), by id, with when to ask again (see [materializeRecords]).
      */
-    private val hintRefused: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val recordUnresolved = ConcurrentHashMap<String, Long>()
+    private val recordMutex = Mutex()
 
     /**
-     * Sources the account gave chats the list does not hold yet, by id: a side chat's or subagent's source is a
-     * lineage fact (see [AgentScope.CHILD_SOURCES]), and the public page that brings the row later carries none.
-     * Applied by the classification pass when the row arrives; forgotten with the account's sources.
+     * The account's records of chats the list does not hold yet, by id — the account list and the public list are
+     * windowed differently, and the record read now dresses the row a later page brings (see [Agent.placed]), so
+     * the row is published placed, as the desktop publishes every row with its record. Bounded, oldest first out;
+     * kept on disk with the list. Guarded by [publishLock].
      */
-    private val rememberedSources = ConcurrentHashMap<String, AgentSource>()
+    private val pendingRecords = object : LinkedHashMap<String, RecordFields>(256, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, RecordFields>?): Boolean = size > MAX_PENDING_RECORDS
+    }
 
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
@@ -337,6 +342,14 @@ class AgentRepository(
                 .distinctUntilChanged()
                 .collect { missing -> if (missing.isNotEmpty()) resolvePinned() }
         }
+        scope.launch {
+            // A row without its account record — brought by a page, the running scan, a pin, a fetch by id — is
+            // asked for it (see [materializeRecords]) as soon as it shows, so it is placed the way the desktop
+            // would place it and not the way the public API's bare row reads.
+            _state.filter { it.hasLoaded && !it.isFromCache }.map { st -> st.agents.filter { it.record == null }.mapTo(HashSet()) { it.id } }
+                .distinctUntilChanged()
+                .collect { bare -> if (bare.isNotEmpty()) materializeRecords() }
+        }
     }
 
     fun agent(id: String): Agent? = _state.value.agents.firstOrNull { it.id == id }
@@ -361,9 +374,8 @@ class AgentRepository(
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
         placements.clear()
-        hintRefused.clear()
-        rememberedSources.clear()
-        managerCandidates.clear()
+        recordUnresolved.clear()
+        pendingRecords.clear()
         rootRecords.clear()
         _knownRoots.value = emptyList()
         rootUnresolved.clear()
@@ -373,10 +385,11 @@ class AgentRepository(
 
     /**
      * Records a root in the registry, merging what was known (see [KnownRoot.merged]); true when the registry
-     * changed. A word from a coordinator's transcript alone is a mention, not a root: only evidence names one.
+     * changed. Only the record's own flag names one: the desktop's `kf` (`projectMetadata` present on a chat with no
+     * parent link); a membership answer, an action, a transcript or a source never does.
      */
     private fun noteRoot(root: KnownRoot): Boolean {
-        if (root.id.isBlank() || !root.signal.isRootEvidence || !root.isEvidenced) return false
+        if (root.id.isBlank() || !root.isEvidenced) return false
         val current = rootRecords[root.id]
         val next = current?.merged(root) ?: root
         if (next == current) return false
@@ -386,17 +399,15 @@ class AgentRepository(
     }
 
     /**
-     * Re-validates a registry root against the evidence it carries after one source withdrew its word: [flagged]
-     * false when the record no longer carries the populated flag, [membershipWorkers] zero when a membership answer
-     * named nobody. A root left with no evidence leaves the registry, its root placement with it, and its row is one
-     * of the account's own again.
+     * Re-validates a registry root after a source's later word: [flagged] false when its record no longer carries
+     * `projectMetadata` (the desktop's `isProject` gone: the root leaves, its row a chat of the account's own),
+     * [membershipWorkers] what the last `ListWorkersForManager` answer counted (kept for the export, no evidence).
      */
-    private fun revalidateRoot(id: String, flagged: Boolean? = null, membershipWorkers: Int? = null, namedBy: Int? = null) {
+    private fun revalidateRoot(id: String, flagged: Boolean? = null, membershipWorkers: Int? = null) {
         val current = rootRecords[id] ?: return
         val next = current.copy(
             flagged = flagged ?: current.flagged,
             membershipWorkers = membershipWorkers ?: current.membershipWorkers,
-            namedBy = namedBy ?: current.namedBy,
         )
         if (next.isEvidenced) {
             if (next != current) {
@@ -406,69 +417,25 @@ class AgentRepository(
             return
         }
         rootRecords.remove(id)
-        placements[id]?.takeIf { it.parent == null }?.let { placements.remove(id) }
         publishRoots()
     }
 
     /**
-     * Re-validates the registry against a pass over the account list: a root whose record the pass carried, neither
-     * flagged as a Project nor named as anyone's manager, has the account's own word against it and leaves — its row
-     * a chat of the account's own. A root the pass did not reach is left as it was (silence drops nothing); one made
-     * here by an action stays until the account has listed it once.
+     * Re-validates the registry against a pass over the account list: a root whose record the pass carried without
+     * `projectMetadata` has the account's own word against it and leaves — its row a chat of the account's own. A
+     * root the pass did not reach is left as it was (silence drops nothing). [managers] is what workers' records
+     * named as manager: information for the export, since the desktop makes no Project of a manager.
      */
-    fun revalidateRegistry(seen: Set<String>, roots: Set<String>, managers: Set<String>, startedIn: Int = token()) {
+    fun revalidateRegistry(seen: Set<String>, roots: Set<String>, managers: Set<String> = emptySet(), startedIn: Int = token()) {
         if (seen.isEmpty()) return
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
-            // The pass carried the record: it is the record's word on the flag. What stands on a membership answer
-            // or an action is that source's to withdraw.
-            val stale = ArrayList<String>()
-            rootRecords.values.filter { it.id in seen && it.id !in roots }.forEach { root ->
-                val next = root.copy(flagged = false)
-                if (next.isEvidenced) {
-                    if (next != root) rootRecords[root.id] = next
-                } else {
-                    stale += root.id
-                }
-            }
-            managers.forEach { id -> managerCandidates.putIfAbsent(id, 1) }
-            if (stale.isEmpty()) {
-                publishRoots()
-                return
-            }
-            stale.forEach { id ->
-                rootRecords.remove(id)
-                placements[id]?.takeIf { it.parent == null }?.let { placements.remove(id) }
-            }
+            val stale = rootRecords.values.filter { it.id in seen && it.id !in roots }.map { it.id }
+            managers.forEach { id -> rootRecords[id]?.let { known -> if (known.namedBy == 0) rootRecords[id] = known.copy(namedBy = 1) } }
+            stale.forEach { rootRecords.remove(it) }
             publishRoots()
-            publish(null, startedIn) { s ->
-                var changed = false
-                val next = s.agents.map { row ->
-                    if (row.id !in stale || row.parent != null) return@map row
-                    if (!row.isProject && row.knownScope != AgentScope.PROJECT_ROOT) return@map row
-                    changed = true
-                    row.copy(isProject = false, knownScope = null, scopeSignal = null)
-                }
-                if (changed) s.copy(agents = next) else s
-            }
+            if (stale.isNotEmpty()) publish(null, startedIn) { it }
         }
-    }
-
-    /**
-     * Chats a worker's record names as its manager, with how many do: candidates for the membership read
-     * (`ListWorkersForManager` is what admits a manager to the registry), not roots. Kept in memory; the next account
-     * round names them again.
-     */
-    private val managerCandidates = ConcurrentHashMap<String, Int>()
-
-    /** The chats workers' records name as manager, for the membership pass to confirm or not. */
-    fun managerCandidates(): Set<String> = managerCandidates.keys.toSet()
-
-    /** How many rows or placements name [id] as their manager on their record's word. */
-    private fun workersNaming(id: String): Int {
-        val rows = _state.value.agents.count { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER && it.scopeSignal == LineageSignal.ACCOUNT_RECORD }
-        val placed = placements.count { (_, p) -> p.parent?.id == id && p.parent.kind == AgentParentKind.PROJECT_WORKER && p.signal == LineageSignal.ACCOUNT_RECORD }
-        return maxOf(rows, placed)
     }
 
     private fun forgetRoot(id: String) {
@@ -568,12 +535,13 @@ class AgentRepository(
         }
 
     /**
-     * Places every row by the lineage known of it: the registry's word ([placements]) first, then the row's own facts.
-     * A child placement puts the row under its parent; a root placement makes it a Project's coordinator unless it is
-     * itself somebody's child; a row nothing has placed is read by its facts (a parent link, a child's source, the
-     * Project flag) and keeps the scope it was kept with otherwise. Nothing here ever makes a placed child a primary
-     * row: that takes an authoritative retraction (see [applyAccountSnapshots], [applyLineage], [clearLineage]).
-     * The list is returned as it was when no row changes, so a publication of the same rows stays the same value.
+     * Places every row the desktop's way (see [AgentsWindowList]): the parent link is the record's own
+     * `subagentParentId` — `cloudSubagentParent.parentAgentId`, else `sideChatInfo.parentBcId`, else `managerAgentId`
+     * — with the stamps the desktop makes over it (an action taken here overrides the listed record until the record
+     * has caught up; a membership or children answer, or a coordinator's `create_agent`, fills in what the record
+     * did not carry); the Project flag is the record's `projectMetadata`, or the registry's word for a row whose
+     * record is not read yet. Nothing else is read. The list is returned as it was when no row changes, so a
+     * publication of the same rows stays the same value.
      */
     private fun AgentListState.classified(): AgentListState {
         if (agents.isEmpty()) return this
@@ -586,84 +554,46 @@ class AgentRepository(
     }
 
     private fun Agent.placed(): Agent {
-        // A source the account gave the chat before its row arrived is the row's from here on.
-        var row = if (source == null) rememberedSources[id]?.let { copy(source = it) } ?: this else this
-        // The registry's word on a root — that it is one, its look — dresses a row the public API gave bare: the
-        // scope it stands in and the evidence it stands on, never the record's own flag (which stays the record's,
-        // so a root the registry lets go is undressed by the same pass).
+        // The record: read with the row, or read before the row arrived (see [pendingRecords]).
+        val record = record ?: synchronized(publishLock) { pendingRecords.remove(id) }
+        val stamp = placements[id]?.takeIf { it.signal.isPlacing && it.parent.id != id }
+            // A coordinator's transcript is default mode's word for a record it cannot read; a record read says all there is.
+            ?.takeUnless { it.signal == LineageSignal.COORDINATOR_CREATED && record != null }
+        // The record's own parent link: from the raw fields when the record has been read, else the link the row
+        // was last given by a record (a row from the disk, or the demo's dataset).
+        val recordParent = if (record != null) record.desktopParent else parent?.takeIf { scopeSignal == LineageSignal.ACCOUNT_RECORD }
+        val action = stamp?.takeIf { it.signal == LineageSignal.ACTION }
+        val (nextParent, nextSignal) = when {
+            action != null -> action.parent to LineageSignal.ACTION
+            recordParent != null -> recordParent to LineageSignal.ACCOUNT_RECORD
+            stamp != null -> stamp.parent to stamp.signal
+            else -> null to null
+        }
+        // The Project flag: the record's `projectMetadata` when the record has been read; the registry's word
+        // (a record read elsewhere: a scan, an earlier round) for a row the public API alone gave.
         val root = rootRecords[id]
-        if (root != null && row.parent == null) {
-            if (!row.isProject && (row.knownScope != AgentScope.PROJECT_ROOT || row.scopeSignal?.isRootEvidence != true)) {
-                row = row.copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = root.signal)
-            }
-            if (row.projectAppearance == null && root.appearance != null) row = row.copy(projectAppearance = root.appearance)
-        } else if (root == null && row.parent == null && !row.isProject && row.knownScope == AgentScope.PROJECT_ROOT && placements[id]?.parent == null && placements[id] == null) {
-            // A root scope nothing backs any more — the registry let the root go, the record does not flag it — is
-            // an older word: the row is a chat of the account's own, and the look the registry lent it goes too.
-            row = row.copy(knownScope = null, scopeSignal = null, projectAppearance = null)
+        val nextProject = when {
+            record != null -> record.projectMetadata != null
+            root != null -> true
+            else -> isProject
         }
-        return row.placedBy(placements[id])
-    }
-
-    private fun Agent.placedBy(known: Placement?): Agent {
-        // A coordinator's transcript is no word on a chat running on one of the user's own machines: a coordinator
-        // that messages a Remote Control chat is not its manager. Only the account's own evidence places such a chat.
-        val placement = known?.takeUnless { !it.signal.isAuthoritative && envType == EnvType.MACHINE }
-        return when {
-            placement?.parent != null -> {
-                if (parent == placement.parent && knownScope == AgentScope.PROJECT_CHILD && scopeSignal == placement.signal) this
-                else copy(parent = placement.parent, knownScope = AgentScope.PROJECT_CHILD, scopeSignal = placement.signal)
-            }
-            placement != null -> when {
-                // A root that is itself somebody's child stays where its parent is (the Agents Window's rule too).
-                parent != null -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
-                knownScope == AgentScope.PROJECT_ROOT && scopeSignal == placement.signal -> this
-                else -> copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = placement.signal)
-            }
-            // Nothing said: the row's own facts, kept with it, are its placement — the record's own flag first.
-            parent != null -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
-            source != null && source in AgentScope.CHILD_SOURCES -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.HIDDEN_SOURCE)
-            isProject -> if (knownScope == AgentScope.PROJECT_ROOT && scopeSignal == LineageSignal.ACCOUNT_RECORD) this else copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD)
-            // A child scope with no parent and no child source behind it is an older build's reading (a source
-            // read as a child's then): nothing holds it, and the row is a chat of its own.
-            knownScope == AgentScope.PROJECT_CHILD -> copy(knownScope = null, scopeSignal = null)
-            // A root scope nothing evidences — a transcript's, a children list's, a source's, an older build's —
-            // is no root: the row is a chat of its own (the registry admits no such root either).
-            knownScope == AgentScope.PROJECT_ROOT && scopeSignal?.isRootEvidence != true -> copy(knownScope = null, scopeSignal = null)
-            else -> this
-        }
+        val nextAppearance = projectAppearance ?: root?.appearance?.takeIf { nextProject }
+        val signal = nextSignal ?: if (nextProject) (root?.signal ?: scopeSignal?.takeIf { it == LineageSignal.ACCOUNT_RECORD } ?: LineageSignal.ACCOUNT_RECORD) else null
+        return if (nextParent == parent && nextProject == isProject && signal == scopeSignal && nextAppearance == projectAppearance && record == this.record) this
+        else copy(parent = nextParent, isProject = nextProject, scopeSignal = signal, projectAppearance = nextAppearance, record = record)
     }
 
     /**
-     * Records a word about where [id] belongs: under [parent], or (null) at the head of a Project. An authoritative
-     * word replaces anything; a coordinator's transcript, the one hint, fills in only what nothing authoritative has
-     * placed. True when the registry changed.
+     * Stamps a parent link onto [id] the way the desktop does (see [placements]); true when the registry changed. A
+     * stamp from a legacy signal (a source, a transcript's mention) is refused: nothing places by those any more.
      */
-    private fun place(id: String, parent: AgentParent?, signal: LineageSignal, membershipCount: Int = 0): Boolean {
-        if (id.isBlank() || parent?.id == id) return false
-        // A root placement stands on root evidence alone: a transcript, a children list or a source never makes a
-        // Project of a chat (see [LineageSignal.isRootEvidence]).
-        if (parent == null && !signal.isRootEvidence) return false
-        if (!signal.isAuthoritative && id in hintRefused) return false
+    private fun place(id: String, parent: AgentParent, signal: LineageSignal): Boolean {
+        if (id.isBlank() || parent.id.isBlank() || parent.id == id || !signal.isPlacing) return false
         val current = placements[id]
-        if (current != null && !signal.isAuthoritative && current.signal.isAuthoritative) return false
-        // A mention in a transcript never replaces evidence, the transcript's own included (a worker it created).
-        if (current != null && !signal.isPositiveEvidence && current.signal.isPositiveEvidence) return false
-        // A Project that is itself somebody's child is shown where its parent is: a root's word does not lift it out.
-        if (parent == null && current?.parent != null && current.signal.isAuthoritative) return false
+        // A stamp made by an action here stands until a record has caught up with it; another source's word does
+        // not replace it meanwhile.
+        if (current != null && current.signal == LineageSignal.ACTION && signal != LineageSignal.ACTION && AppClock.now() - current.atMillis < ACTION_GRACE_MS) return false
         if (current != null && current.parent == parent && current.signal == signal) return false
-        if (parent == null) {
-            // A root placement is the registry's: without evidence for the entry there is no placement either — a
-            // row kept as a root by an older build on a bare flag or a hint is not placed as one again.
-            val known = rootRecords[id]
-            val note = KnownRoot(
-                id, archived = known?.archived ?: false, signal = signal, lastSeenMillis = AppClock.now(),
-                flagged = known?.flagged ?: false, record = known?.record,
-                membershipWorkers = if (signal == LineageSignal.MEMBERSHIP) maxOf(1, membershipCount) else known?.membershipWorkers ?: 0,
-                namedBy = known?.namedBy ?: managerCandidates[id] ?: 0,
-            )
-            if (!noteRoot(note) && rootRecords[id] == null) return false
-        }
         placements[id] = Placement(parent, signal)
         registryChanges.update { it + 1 }
         return true
@@ -710,40 +640,40 @@ class AgentRepository(
             // account session, so no list read) they are not this install's to show, whichever earlier launch or
             // build learned them.
             val accountSession = capabilities().accountSession
-            // A row's Project flag from the disk is not trusted: an older build set it on `startedAsNewProject`. The
-            // registry's strict entries dress the roots they know; the account's next round re-reads the flag.
-            val kept = entry.value.map { if (it.isProject) it.copy(isProject = false) else it }
+            // A row is placed by its record's raw fields, kept with it; a row an older build wrote without them
+            // carries a flag that build may have set on `startedAsNewProject`, so the flag is dropped and re-read —
+            // the registry dresses the roots it knows meanwhile. A parent link an older build stamped from a
+            // source or a transcript's mention places nothing any more.
+            val kept = entry.value.map { row ->
+                when {
+                    row.record != null -> row
+                    row.parent != null && row.scopeSignal?.isPlacing == false -> row.copy(isProject = false, parent = null, scopeSignal = null)
+                    row.isProject -> row.copy(isProject = false)
+                    else -> row
+                }
+            }
             val rows = if (accountSession) kept else kept.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
-            // The words kept with the list about chats no row carries (see [persist]); the sources only while the account's word may be kept.
+            // The words kept with the list about chats no row carries (see [persist]).
             val lineage = cache.readLineage()
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else {
-                    // What the rows were placed by last time is the registry's starting word, so the rows the next
-                    // fetch brings — and any it re-adds — are placed the same before the account has spoken again.
+                    // The stamps the rows were placed by last time — a membership's, an action's, a created worker's
+                    // — so the rows the next fetch brings are placed the same before the account has spoken again.
                     rows.forEach { row ->
-                        when {
-                            row.parent != null -> place(row.id, row.parent, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
-                            row.knownScope == AgentScope.PROJECT_ROOT -> place(row.id, null, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
-                        }
+                        val parent = row.parent ?: return@forEach
+                        val signal = row.scopeSignal ?: return@forEach
+                        if (signal != LineageSignal.ACCOUNT_RECORD && signal.isPlacing) place(row.id, parent, signal)
                     }
                     lineage?.placements?.forEach { word ->
-                        val parent = word.parentId?.let { AgentParent(it, word.kind ?: AgentParentKind.PROJECT_WORKER) }
-                        place(word.id, parent, word.signal)
+                        val parentId = word.parentId ?: return@forEach
+                        if (word.signal.isPlacing) place(word.id, AgentParent(parentId, word.kind ?: AgentParentKind.PROJECT_WORKER), word.signal)
                     }
-                    // Only entries with strict evidence come back: a flag with its icon, a membership count, an action.
-                    // What an older build admitted on a bare flag (`projectMetadata: {}`), a worker's record, a
-                    // transcript, a children list or a source is re-learned from the account, not from the disk.
-                    lineage?.roots?.filter { it.signal.isRootEvidence && it.isEvidencedStrictly }?.forEach { noteRoot(it) }
-                    // A row kept as a root on the record's own flag, or on positive evidence, seeds the registry; one
-                    // a coordinator's transcript merely mentioned does not — a hint is no word on what the chat is.
-                    // A row kept as a root on an action stands; one kept on the flag or a membership is re-read from
-                    // the registry's entry (above), whose evidence is the record's raw fields or the answer's count.
-                    rows.filter { it.isProjectRoot && it.parent == null && it.scopeSignal == LineageSignal.ACTION }.forEach { row ->
-                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, LineageSignal.ACTION, row.updatedAtMillis))
-                    }
-                    lineage?.hintRefused?.let { hintRefused += it }
-                    if (accountSession) lineage?.sources?.forEach { (id, source) -> if (source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
+                    // The account's records of chats the rows did not hold, for the pages that bring them.
+                    if (accountSession) lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
+                    // Only entries whose record's flag was read with its fields come back: what an older build
+                    // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
+                    lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
                     // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
                     pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
@@ -827,6 +757,7 @@ class AgentRepository(
                     }
                 }
             }
+            materializeRecords(startedIn)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { it.copy(isLoadingMore = false, error = t.userMessage()) }
@@ -940,6 +871,9 @@ class AgentRepository(
                 materializeRunning(startedIn)
                 resolvePinned(startedIn)
                 materializeRoots(startedIn)
+                // Then every row still without its account record is asked for it, so the desktop's predicates
+                // place the rows the public endpoints brought bare.
+                materializeRecords(startedIn)
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -1049,8 +983,43 @@ class AgentRepository(
     /** The pinned ids the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedPinned(): Set<String> = pinnedUnresolved.keys.toSet()
 
-    /** The chats whose record contradicted a coordinator's transcript about them, for the diagnostics. */
-    fun hintRefusedIds(): Set<String> = hintRefused.toSet()
+    /**
+     * Extended mode: every row the public API alone gave — a page's row before the account's round reached it, an
+     * agent the running scan named, a pinned chat, a root fetched by id — is asked for its account record by id, so
+     * the desktop's predicates have the record's fields to read (see [Agent.placed]). The desktop never shows a row
+     * without its record; this is the closest the public list can come. Running rows first, then the newest; a few
+     * per pass, the next pass takes the rest; a chat the account gave no record for is asked again after
+     * [RECORD_RETRY_MS]. Nothing is asked in default mode or in the demo.
+     */
+    suspend fun materializeRecords(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_RECORDS) {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache || !capabilities().accountSession) return
+        recordMutex.withLock {
+            val now = AppClock.now()
+            val due = _state.value.agents
+                .filter { it.record == null && it.id !in pendingLaunches && (recordUnresolved[it.id]?.let { until -> now >= until } ?: true) }
+                .sortedWith(compareByDescending<Agent> { it.isRunning }.thenByDescending { it.updatedAtMillis })
+                .take(budget)
+            for (row in due) {
+                if (generation.get() != startedIn) return
+                val record = try {
+                    recordOf(row.id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    recordUnresolved[row.id] = now + PINNED_RETRY_MS
+                    continue
+                }
+                if (record == null) {
+                    recordUnresolved[row.id] = now + RECORD_RETRY_MS
+                    continue
+                }
+                applyAccountSnapshots(listOf(record), startedIn)
+            }
+        }
+    }
+
+    /** Rows asked for an account record that gave none or could not be asked, for the diagnostics. */
+    fun unresolvedRecords(): Set<String> = recordUnresolved.keys.toSet()
 
     /** A row stood in from an account record alone: the name and archive flag the record gives, nothing the public API would. */
     private fun ComposerSnapshot.toStandIn(): Agent = Agent(
@@ -1071,6 +1040,8 @@ class AgentRepository(
         projectAppearance = projectAppearance,
         parent = parent,
         hasPendingInteraction = hasPendingInteraction,
+        scopeSignal = if (parent != null || isProject) LineageSignal.ACCOUNT_RECORD else null,
+        record = record,
     )
 
     /**
@@ -1158,11 +1129,6 @@ class AgentRepository(
      */
     fun applySources(sources: Map<String, AgentSource>, startedIn: Int = token()) {
         if (sources.isEmpty()) return
-        synchronized(publishLock) {
-            if (generation.get() != startedIn) return
-            val held = _state.value.agents.mapTo(HashSet()) { it.id }
-            sources.forEach { (id, source) -> if (id !in held && source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
-        }
         publish(null, startedIn) { it.withSources(sources) }
     }
 
@@ -1173,7 +1139,6 @@ class AgentRepository(
      */
     fun forgetAccountSources(launchedHere: Set<String>) {
         if (session.isDemo) return
-        rememberedSources.clear()
         _state.update { s -> s.copy(agents = s.agents.withoutAccountSources(launchedHere)) }
     }
 
@@ -1201,9 +1166,9 @@ class AgentRepository(
             // yet — goes to the disk with them, so a restart places a later page the same. Bounded: the words about
             // chats nowhere near the list are the first to go.
             val held = s.agents.mapTo(HashSet()) { it.id }
-            val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent?.id, p.parent?.kind, p.signal) }
-            val sources = rememberedSources.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).associate { (id, source) -> id to source }
-            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, sources, hintRefused.take(MAX_PERSISTED_PLACEMENTS).toSet(), rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS)))
+            val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent.id, p.parent.kind, p.signal) }
+            val records = pendingRecords.entries.filter { (id, _) -> id !in held }.map { (id, fields) -> CachedRecord(id, fields) }
+            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records))
         }
         cache.write(agents, token, lineage)
     }
@@ -1222,8 +1187,19 @@ class AgentRepository(
             dto.latestRunId?.let { runId -> runCatching { api.getRun(id, runId) }.getOrNull() }
         }
         val merged = dto.mergeInto(agent(id), run)
-        upsert(merged, startedIn)
-        merged
+        // Extended mode: the row lands with its account record, as every row of the desktop's list does, so it is
+        // published placed rather than published bare and moved once the record has been read.
+        val record = if (merged.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
+        if (record != null && noteRecords(listOf(record), startedIn)) {
+            publish(null, startedIn) { s ->
+                val exists = s.agents.any { it.id == merged.id }
+                s.copy(agents = if (exists) s.agents.map { if (it.id == merged.id) merged else it } else listOf(merged) + s.agents).withAccountSnapshots(listOf(record))
+            }
+            noteRunning(listOf(record), startedIn)
+        } else {
+            upsert(merged, startedIn)
+        }
+        agent(id) ?: merged
     }
 
     /**
@@ -1447,86 +1423,73 @@ class AgentRepository(
     }
 
     /**
-     * Folds the account list's name, archive flag and Project facts onto the rows already shown. Official apps rename
-     * and archive here, and a v1 list that has not caught up (or never will — the public archive is a different
-     * write) would otherwise keep the old title or leave a chat sitting in the open list.
-     *
-     * Lineage is folded in one direction only. A record that names the chat's manager, side-chat parent or subagent
-     * parent, or carries `projectMetadata`, places it (see [LineageSignal.ACCOUNT_RECORD]). A record that names
-     * nothing does not unplace it: workers reach the list without a `managerAgentId` — an adopted chat's record never
-     * carried one, and the list is windowed, so the same worker is in one read and out of the next — and until 0.3.0
-     * every such read put the worker back among the primary rows, over the membership that had placed it, which is
-     * how Projects' chats leaked into the list and the notifications on accounts with many of them. The one retraction
-     * honoured is the record's own: a chat this list itself had placed, whose record no longer says so, was released.
+     * Folds in the account's records: the desktop's `_makeAgentHeader` for each. A record names the chat, says
+     * whether it is archived, carries the raw fields the desktop's predicates read (its `projectMetadata`, its
+     * `cloudSubagentParent`, `sideChatInfo.parentBcId` and `managerAgentId`), its source, its pending question and
+     * its execution status. The record's word is the row's from here on (see [Agent.placed]): a stamp made by an
+     * action here stands over it until the record has caught up, a membership's fills in only what the record does
+     * not carry, a coordinator's `create_agent` yields to it. Every Project the records flag goes to the root
+     * registry, and a root whose record no longer carries the flag leaves it.
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
-        // Managers a worker's record in this batch no longer names: what stood on those records is recounted below.
-        val withdrawnFrom = HashSet<String>()
-        synchronized(publishLock) {
-            if (generation.get() != startedIn) return
-            composers.filter { it.parent == null }.forEach { snap ->
-                (_state.value.agents.firstOrNull { it.id == snap.id }?.parent ?: placements[snap.id]?.parent)?.takeIf { it.kind == AgentParentKind.PROJECT_WORKER }?.let { withdrawnFrom += it.id }
-            }
-            // The account's word about chats the pages do not hold yet is kept for when they arrive: the account
-            // list and the public list are windowed differently, and a worker's record read now places the row a
-            // later page brings — otherwise it would sit among the primary rows until the account named it again.
-            val held = _state.value.agents.mapTo(HashSet()) { it.id }
-            val now = AppClock.now()
-            composers.forEach { snap ->
-                // Every Project the account's records call one goes to the root registry, with its name and look —
-                // the Projects group is drawn from the registry, whether or not the pages hold the row.
-                if (snap.scope == AgentScope.PROJECT_ROOT) {
-                    // The desktop's flag, with the record's raw fields kept as the entry's evidence.
-                    noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
-                } else if (rootRecords[snap.id]?.flagged == true) {
-                    // The record's own word: the flag it carried it no longer does. Still a root while a membership
-                    // answer or an action holds it; one of the account's own otherwise.
-                    revalidateRoot(snap.id, flagged = false)
-                }
-            }
-            // A worker's record naming its manager makes the manager a candidate for the membership read — the
-            // account's `ListWorkersForManager` is what admits it — and nothing more: an ordinary chat's cloud
-            // subagents name it as parent, never as manager, and a manager with no membership is no Project.
-            composers.mapNotNull { snap -> snap.parent?.takeIf { it.kind == AgentParentKind.PROJECT_WORKER }?.id }
-                .groupingBy { it }.eachCount()
-                .forEach { (manager, count) ->
-                    managerCandidates.merge(manager, count) { a, b -> maxOf(a, b) }
-                    rootRecords[manager]?.let { known -> if (known.namedBy != count) rootRecords[manager] = known.copy(namedBy = maxOf(known.namedBy, count)) }
-                }
-            composers.filter { it.id !in held }.forEach { snap ->
-                when {
-                    snap.parent != null -> place(snap.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
-                    snap.scope == AgentScope.PROJECT_ROOT && placements[snap.id]?.parent == null -> place(snap.id, null, LineageSignal.ACCOUNT_RECORD)
-                    // The record's own earlier word, withdrawn, for a row the pages do not hold: its placement goes with it.
-                    placements[snap.id]?.let { it.parent != null && it.signal == LineageSignal.ACCOUNT_RECORD } == true -> placements.remove(snap.id)
-                }
-                snap.source?.takeIf { it in AgentScope.CHILD_SOURCES }?.let { rememberedSources[snap.id] = it }
-            }
-        }
+        if (!noteRecords(composers, startedIn)) return
         publish(null, startedIn) { it.withAccountSnapshots(composers) }
-        if (withdrawnFrom.isNotEmpty()) {
-            synchronized(publishLock) {
-                if (generation.get() == startedIn) {
-                    withdrawnFrom.forEach { manager ->
-                        val naming = workersNaming(manager)
-                        if (naming == 0) managerCandidates.remove(manager) else managerCandidates[manager] = naming
-                        revalidateRoot(manager, namedBy = naming)
-                    }
-                    publish(null, startedIn) { it }
-                }
+        noteRunning(composers, startedIn)
+    }
+
+    /**
+     * The registry's half of [applyAccountSnapshots], under the lock: every Project the records flag goes to the root
+     * registry and a root whose record no longer carries the flag leaves it; a stamp the record has caught up with
+     * goes; the record of a chat the list does not hold is kept for the row (see [pendingRecords]). False when the
+     * list has been reset since [startedIn].
+     */
+    private fun noteRecords(composers: List<ComposerSnapshot>, startedIn: Int): Boolean = synchronized(publishLock) {
+        if (generation.get() != startedIn) return false
+        val now = AppClock.now()
+        val held = _state.value.agents.mapTo(HashSet()) { it.id }
+        composers.forEach { snap ->
+            if (snap.scope == AgentScope.PROJECT_ROOT) {
+                noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
+            } else if (rootRecords[snap.id]?.flagged == true) {
+                revalidateRoot(snap.id, flagged = false)
             }
-        }
-        // The account's list carries its own word on what is running, for every composer in its window — a
-        // Project's workers and side chats included; it is the Extended half of the running scan (see [RunningScan]).
-        if (composers.any { it.status != null }) {
-            synchronized(publishLock) {
-                if (generation.get() == startedIn) {
-                    _runningScan.update { it.copy(accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id }, accountAtMillis = AppClock.now()) }
+            // The record has caught up with a stamp — or has had long enough to — and is the word from here on.
+            placements[snap.id]?.let { stamp ->
+                val caughtUp = when (stamp.signal) {
+                    LineageSignal.ACTION -> snap.parent == stamp.parent || now - stamp.atMillis >= ACTION_GRACE_MS
+                    LineageSignal.COORDINATOR_CREATED -> true
+                    else -> snap.parent != null
                 }
+                if (caughtUp) placements.remove(snap.id)
+            }
+            recordUnresolved.remove(snap.id)
+            if (snap.id !in held) pendingRecords[snap.id] = snap.recordFields() else pendingRecords.remove(snap.id)
+        }
+        true
+    }
+
+    /**
+     * The account's list carries its own word on what is running, for every composer in its window — a Project's
+     * workers and side chats included; it is the Extended half of the running scan (see [RunningScan]).
+     */
+    private fun noteRunning(composers: List<ComposerSnapshot>, startedIn: Int) {
+        if (composers.none { it.status != null }) return
+        synchronized(publishLock) {
+            if (generation.get() == startedIn) {
+                _runningScan.update { it.copy(accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id }, accountAtMillis = AppClock.now()) }
             }
         }
     }
+
+    /** The record's raw fields, or the same made from what the snapshot carries when it has none (the demo's, a test's). */
+    private fun ComposerSnapshot.recordFields(): RecordFields = record ?: RecordFields(
+        projectMetadata = if (isProject) "{}" else null,
+        managerAgentId = parent?.takeIf { it.kind == AgentParentKind.PROJECT_WORKER }?.id,
+        subagentParentId = parent?.takeIf { it.kind == AgentParentKind.SUBAGENT }?.id,
+        sideChatParentId = parent?.takeIf { it.kind == AgentParentKind.SIDE_CHAT }?.id,
+        source = source?.name,
+    )
 
     /** [materializeRunning] for the pin sync's round, once the account list has landed. */
     suspend fun reconcileRunning(startedIn: Int = token()) = materializeRunning(startedIn)
@@ -1543,59 +1506,17 @@ class AgentRepository(
                 false -> if (agent.lifecycle == AgentLifecycle.ARCHIVED) AgentLifecycle.IDLE else agent.lifecycle
                 null -> agent.lifecycle
             }
-            val placement = placements[agent.id]
-            var parent = agent.parent
-            var knownScope = agent.knownScope
-            var signal = agent.scopeSignal
-            when {
-                snap.parent != null -> {
-                    place(agent.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
-                    parent = snap.parent
-                    knownScope = AgentScope.PROJECT_CHILD
-                    signal = LineageSignal.ACCOUNT_RECORD
-                }
-                // The record's own earlier word, withdrawn: the chat was released, or its parent unlinked. And a
-                // record that names no parent is the account's word against a coordinator's transcript alone: the
-                // hint placed the chat only until the chat's own record spoke, and the record says it is its own.
-                placement != null && placement.parent != null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative) -> {
-                    placements.remove(agent.id)
-                    if (!placement.signal.isAuthoritative) hintRefused += agent.id
-                    parent = null
-                    knownScope = if (snap.scope == AgentScope.PROJECT_ROOT) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
-                    signal = if (snap.scope == AgentScope.PROJECT_ROOT) LineageSignal.ACCOUNT_RECORD else null
-                }
-                // A row a transcript alone placed, with no registry word left (a restart): the record says it is its own.
-                placement == null && agent.parent != null && agent.scopeSignal?.isAuthoritative == false -> {
-                    hintRefused += agent.id
-                    parent = null
-                    knownScope = if (snap.scope == AgentScope.PROJECT_ROOT) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
-                    signal = if (snap.scope == AgentScope.PROJECT_ROOT) LineageSignal.ACCOUNT_RECORD else null
-                }
-            }
-            val recordRoot = snap.scope == AgentScope.PROJECT_ROOT
-            if (recordRoot && parent == null && placements[agent.id]?.parent == null) {
-                place(agent.id, null, LineageSignal.ACCOUNT_RECORD)
-                knownScope = AgentScope.PROJECT_ROOT
-                signal = LineageSignal.ACCOUNT_RECORD
-            } else if (!recordRoot && placement != null && placement.parent == null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative)) {
-                // A Project the record no longer calls one, or a root a transcript alone made of a chat the record calls its own.
-                placements.remove(agent.id)
-                if (!placement.signal.isAuthoritative) hintRefused += agent.id
-                if (knownScope == AgentScope.PROJECT_ROOT) {
-                    knownScope = null
-                    signal = null
-                }
-            }
+            // The record's fields are the row's; the classification pass ([Agent.placed]) reads the parent link and
+            // the flag from them, over the stamps that still stand.
+            val record = snap.recordFields()
             val updated = agent.copy(
                 name = name,
                 lifecycle = lifecycle,
                 isProject = snap.isProject,
                 projectAppearance = snap.projectAppearance ?: agent.projectAppearance?.takeIf { snap.isProject },
-                parent = parent,
-                knownScope = knownScope,
-                scopeSignal = signal,
-                // The record's source rides along (the list's sources land separately): a side chat's or subagent's
-                // source is a lineage fact of its own, and the classification pass reads it.
+                parent = snap.parent,
+                scopeSignal = if (snap.parent != null || snap.isProject) LineageSignal.ACCOUNT_RECORD else null,
+                record = record,
                 source = snap.source ?: agent.source,
                 hasPendingInteraction = snap.hasPendingInteraction,
             )
@@ -1605,72 +1526,54 @@ class AgentRepository(
     }
 
     /**
-     * Folds in who belongs to [rootId]: every chat in [members] is its child, in the capacity given, and the root is a
-     * Project's coordinator; the word is [signal]'s. The account's own answers ([LineageSignal.MEMBERSHIP],
-     * [LineageSignal.CHILDREN_LIST], an [LineageSignal.ACTION] taken here) replace whatever the rows had, and — for the
-     * kinds in [retract], which an answer covered in full — release the chats of that kind the root had and the
-     * answer no longer names, unless the chat's own record still names the root. A coordinator's transcript (the one
-     * signal default mode has, see `CoordinatorLineage`) only fills in what nothing authoritative has placed.
-     * Rows the list does not hold yet are placed when they arrive: the word is kept in the registry.
+     * Stamps who belongs to [rootId], the way the desktop does: every chat in [members] is its child in the capacity
+     * given, by [signal]'s word — a membership answer (the desktop's seeded `managerAgentId`), a children answer, an
+     * action taken here (`_stampListedCloudAgentManager`), a coordinator's `create_agent` in default mode. For the
+     * kinds in [retract], which an answer covered in full, the stamps of that kind the root had and the answer no
+     * longer names are dropped; a chat whose own record names the root keeps the record's link. Rows the list does
+     * not hold yet are placed when they arrive: the stamp is kept. Nothing here makes a Project of [rootId]: that is
+     * the record's `projectMetadata` alone (a membership count is kept on the registry's entry for the export).
      */
     fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, signal: LineageSignal, retract: Set<AgentParentKind> = emptySet(), startedIn: Int = token()) {
-        if (rootId.isBlank()) return
+        if (rootId.isBlank() || !signal.isPlacing) return
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
-            val machines = if (signal.isAuthoritative) emptySet() else _state.value.agents.filter { it.envType == EnvType.MACHINE }.mapTo(HashSet()) { it.id }
-            members.forEach { (id, kind) -> if (id != rootId && id !in machines) place(id, AgentParent(rootId, kind), signal) }
+            members.forEach { (id, kind) -> if (id != rootId) place(id, AgentParent(rootId, kind), signal) }
             if (retract.isNotEmpty() && signal.isAuthoritative) {
                 placements.entries.removeAll { (id, placement) ->
-                    val parent = placement.parent ?: return@removeAll false
-                    parent.id == rootId && parent.kind in retract && id !in members && placement.signal.isRetractable
+                    placement.parent.id == rootId && placement.parent.kind in retract && id !in members && placement.signal.isRetractable
                 }
             }
-            // The root itself takes root evidence: a membership that names a worker, or an action taken here. A
-            // children list (an ordinary chat's subagents and side chats), a coordinator's transcript or an empty
-            // membership answer makes no Project of the chat — and a membership answer with nobody in it is the
-            // account withdrawing what a worker's record once said, if nothing else still says it.
-            val workers = members.values.count { it == AgentParentKind.PROJECT_WORKER }
-            when {
-                // A worker created under it or adopted into it here, or a membership answer naming a worker.
-                (signal == LineageSignal.ACTION || signal == LineageSignal.MEMBERSHIP) && workers > 0 -> {
-                    place(rootId, null, signal, membershipCount = workers)
-                    if (signal == LineageSignal.MEMBERSHIP) revalidateRoot(rootId, membershipWorkers = workers)
-                }
-                // A complete membership answer naming nobody withdraws what a membership held.
-                signal == LineageSignal.MEMBERSHIP && AgentParentKind.PROJECT_WORKER in retract -> revalidateRoot(rootId, membershipWorkers = 0)
+            if (signal == LineageSignal.MEMBERSHIP && (AgentParentKind.PROJECT_WORKER in retract || members.isNotEmpty())) {
+                revalidateRoot(rootId, membershipWorkers = members.values.count { it == AgentParentKind.PROJECT_WORKER })
             }
-            publish(null, startedIn) { s ->
-                if (retract.isEmpty()) return@publish s
-                var changed = false
-                val next = s.agents.map { agent ->
-                    val parent = agent.parent ?: return@map agent
-                    val released = parent.id == rootId && parent.kind in retract && agent.id !in members && placements[agent.id] == null &&
-                        agent.scopeSignal?.isRetractable != false
-                    if (!released) agent else agent.copy(parent = null, knownScope = AgentScope.PRIMARY, scopeSignal = null).also { changed = true }
-                }
-                if (changed) s.copy(agents = next) else s
-            }
+            publish(null, startedIn) { it }
         }
     }
 
-    /** [applyLineage] with the account's word ([authoritative]) or a coordinator's transcript's. */
+    /** [applyLineage] with the account's word ([authoritative]: a membership answer) or a coordinator's `create_agent`. */
     fun applyLineage(rootId: String, members: Map<String, AgentParentKind>, authoritative: Boolean, startedIn: Int = token()) =
-        applyLineage(rootId, members, if (authoritative) LineageSignal.MEMBERSHIP else LineageSignal.COORDINATOR_TRANSCRIPT, startedIn = startedIn)
+        applyLineage(rootId, members, if (authoritative) LineageSignal.MEMBERSHIP else LineageSignal.COORDINATOR_CREATED, startedIn = startedIn)
 
-    /** Releases [agentId] from whatever it hung off (an action taken here: `ClearWorkerManager`): a chat of its own again. */
+    /**
+     * Releases [agentId] from whatever it hung off (an action taken here: `ClearWorkerManager`, the desktop's
+     * `_clearListedCloudAgentManager`): the stamp goes, and the listed record's `managerAgentId` with it, so the row
+     * is a chat of its own until the account lists it again.
+     */
     fun clearLineage(agentId: String, startedIn: Int = token()) {
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
             placements.remove(agentId)
             publish(null, startedIn) { s ->
                 val row = s.agents.firstOrNull { it.id == agentId } ?: return@publish s
-                if (row.parent == null && row.knownScope != AgentScope.PROJECT_CHILD) return@publish s
-                s.copy(agents = s.agents.map { if (it.id == agentId) it.copy(parent = null, knownScope = AgentScope.PRIMARY, scopeSignal = null) else it })
+                val record = row.record?.copy(managerAgentId = null)
+                if (row.parent == null && record == row.record) return@publish s
+                s.copy(agents = s.agents.map { if (it.id == agentId) it.copy(parent = null, scopeSignal = null, record = record) else it })
             }
         }
     }
 
-    /** Which word placed [agentId], for the diagnostics; null when nothing beyond the row's own record has. */
+    /** The stamp on [agentId], for the diagnostics; null when the row is placed by its record alone. */
     fun placementOf(agentId: String): Pair<AgentParent?, LineageSignal>? = placements[agentId]?.let { it.parent to it.signal }
 
     suspend fun delete(agentId: String): Result<Unit> = runCatching {
@@ -1710,6 +1613,14 @@ class AgentRepository(
         private const val MAX_PERSISTED_PLACEMENTS = 2_000
         /** Roots the registry knows and no page holds, fetched by id per pass. */
         private const val MAX_MATERIALIZED_ROOTS = 8
+        /** Rows without an account record, asked for one by id per pass (see [materializeRecords]). */
+        private const val MAX_MATERIALIZED_RECORDS = 16
+        /** Records of chats the list does not hold, kept for the rows to come (see [pendingRecords]). */
+        private const val MAX_PENDING_RECORDS = 3_000
+        /** A row the account gave no record for is asked again after this long. */
+        const val RECORD_RETRY_MS = 10 * 60_000L
+        /** How long a stamp made by an action here stands over a record that has not caught up with it (the desktop keeps its stamp until the next list refresh). */
+        const val ACTION_GRACE_MS = 5 * 60_000L
         /** How long a fetch's first publication waits for the account's list (see [accountPrime]). */
         const val ACCOUNT_WORD_WAIT_MS = 4_000L
         /**

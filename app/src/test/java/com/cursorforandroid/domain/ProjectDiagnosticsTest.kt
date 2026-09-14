@@ -18,11 +18,11 @@ class ProjectDiagnosticsTest {
     @Test
     fun `the report names every row by its id's tail, scope and signal, and carries no text of the account's`() {
         val rows = listOf(
-            agent("bc-11111111-root", "Cursor for Android") { it.copy(isProject = true, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD) },
-            agent("bc-22222222-created", "New chat creation issue") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.ACCOUNT_RECORD, runStatus = RunStatus.RUNNING) },
-            agent("bc-33333333-adopted", "Model picker stability") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.MEMBERSHIP) },
+            agent("bc-11111111-root", "Cursor for Android") { it.copy(isProject = true, scopeSignal = LineageSignal.ACCOUNT_RECORD, record = com.cursorforandroid.data.api.RecordFields(projectMetadata = "{}")) },
+            agent("bc-22222222-created", "New chat creation issue") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.ACCOUNT_RECORD, runStatus = RunStatus.RUNNING, record = com.cursorforandroid.data.api.RecordFields(managerAgentId = "bc-11111111-root")) },
+            agent("bc-33333333-adopted", "Model picker stability") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.MEMBERSHIP) },
             agent("bc-44444444-side", "Pricing copy") { it.copy(source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD) },
-            agent("bc-55555555-orphan", "Station intelligence v3 rewrite") { it.copy(parent = AgentParent("bc-99999999-gone", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.COORDINATOR_TRANSCRIPT) },
+            agent("bc-55555555-orphan", "Station intelligence v3 rewrite") { it.copy(parent = AgentParent("bc-99999999-gone", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.COORDINATOR_CREATED) },
             agent("bc-66666666-plain", "Cesium") { it.copy(lifecycle = AgentLifecycle.ARCHIVED) },
         )
         val report = ProjectDiagnostics.render(

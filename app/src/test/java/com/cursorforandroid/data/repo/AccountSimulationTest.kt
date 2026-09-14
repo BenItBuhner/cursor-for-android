@@ -108,9 +108,16 @@ class AccountSimulationTest {
         val root: String? get() = manager ?: adoptedBy ?: sideChatOf
         /** The record carries `project_metadata` at all: the desktop's `isProject`. */
         val metadataPresent: Boolean get() = isProject || emptyMetadata
-        val projectScoped: Boolean get() = metadataPresent || coordinator || root != null
-        /** A chat of the account's own: no Project's, nobody's child. */
-        val own: Boolean get() = !projectScoped && subagentOf == null
+        /** The desktop's `subagentParentId`: the one parent link, whatever the parent is. */
+        val desktopParent: String? get() = subagentOf ?: sideChatOf ?: manager ?: adoptedBy
+        /** The desktop's `PJr`: a child, drawn under its parent's row and never at the top level. */
+        val desktopChild: Boolean get() = desktopParent != null
+        /** The desktop's `kf`: a top-level chat the record flags — the Projects section. */
+        val desktopProject: Boolean get() = !desktopChild && metadataPresent
+        /** A Project's coordinator or a chat inside one — what the Project's own view and the notification rule are about. */
+        val projectScoped: Boolean get() = desktopProject || root != null
+        /** A chat of the account's own: a top-level chat the record does not flag (a coordinator without the flag is one, as it is in the Agents Window). */
+        val own: Boolean get() = !desktopChild && !metadataPresent
         /**
          * The record as the app reads it (see `BackgroundComposerApi.snapshot`), the desktop's predicate: the flag is
          * `project_metadata` present on a record with no parent; `startedAsNewProject` flags nothing.
@@ -119,7 +126,7 @@ class AccountSimulationTest {
             id = id,
             name = name,
             archived = archived,
-            isProject = metadataPresent && root == null && subagentOf == null,
+            isProject = metadataPresent,
             projectAppearance = appearance?.takeIf { isProject && root == null },
             record = RecordFields(
                 projectMetadata = when {
@@ -333,8 +340,14 @@ class AccountSimulationTest {
         }
     }
 
-    /** The status scan reads twenty pages of twenty: the whole account, so the running set is the server's. */
-    private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 20)
+    /**
+     * The status scan reads twenty pages of twenty: the whole account, so the running set is the server's. The rows it
+     * brings bare are asked for their record by id, as the graph asks the account (Extended mode only).
+     */
+    private fun agents() = AgentRepository(
+        session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 20,
+        recordOf = { id -> if (extended) account.record(id) else null },
+    )
 
     private fun projectsOf(agents: AgentRepository) = ProjectRepository(session, agents, account, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L))
 
@@ -363,11 +376,16 @@ class AccountSimulationTest {
         }
     }
 
-    /** The Projects: the seven by their records and memberships, the archived one, and the `{}`-metadata chat the desktop's predicate makes one. */
-    private val expectedRoots get() = projects.map { it.id }.toSet() + "bc-emptymeta"
-    private val visibleRoots get() = projects.filterNot { it.archived }.map { it.name } + "Empty project metadata"
+    /**
+     * The Projects, by the desktop's `kf` alone: the six whose records carry `project_metadata`, the archived one, and
+     * the `{}`-metadata chat. Codex Meter is none — its record has only `startedAsNewProject`, which the desktop never
+     * reads — so it is a chat of the account's own with its two workers nested under its row, as the Agents Window draws it.
+     */
+    private val expectedRoots get() = projects.filterNot { it.newProjectFlagOnly }.map { it.id }.toSet() + "bc-emptymeta"
+    private val visibleRoots get() = projects.filterNot { it.archived || it.newProjectFlagOnly }.map { it.name } + "Empty project metadata"
 
     /** The state 0.3.4 left on disk after one account round: the roots read as children by their source, the placements, the sources. */
+    @Suppress("DEPRECATION")
     private suspend fun write034State() {
         val rows = chats.sortedByDescending { it.activityMillis }.take(60).map { c ->
             Agent(
@@ -376,13 +394,7 @@ class AccountSimulationTest {
                 url = "https://cursor.com/agents/${c.id}", createdAtMillis = c.activityMillis, updatedAtMillis = c.activityMillis, latestRunId = "run-${c.id}",
                 repoUrl = null, startingRef = null, source = c.source, isProject = c.isProject, projectAppearance = c.appearance,
                 parent = c.manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) } ?: c.sideChatOf?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) },
-                // 0.3.4 kept a coordinator's row as a root by its record and read it as a child by its source.
-                knownScope = when {
-                    c.root != null -> AgentScope.PROJECT_CHILD
-                    c.isProject -> AgentScope.PROJECT_ROOT
-                    c.source == AgentSource.CLOUD_META_AGENT -> AgentScope.PROJECT_CHILD
-                    else -> null
-                },
+                // 0.3.4 wrote no record fields with its rows; a coordinator's row was placed by its source then.
                 scopeSignal = when {
                     c.root != null -> LineageSignal.ACCOUNT_RECORD
                     c.isProject -> LineageSignal.ACCOUNT_RECORD
@@ -394,7 +406,7 @@ class AccountSimulationTest {
         // What 0.3.6 added on top: the meta-agent chats dressed as Projects — rows flagged, and registry entries
         // admitted on the source alone (no evidence fields yet) — which the first pass must take back.
         val poisoned = rows.map { row ->
-            if (byId[row.id]?.source == AgentSource.CLOUD_META_AGENT && byId[row.id]?.projectScoped == false) row.copy(isProject = true, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD) else row
+            if (byId[row.id]?.source == AgentSource.CLOUD_META_AGENT && byId[row.id]?.projectScoped == false) row.copy(isProject = true, scopeSignal = LineageSignal.ACCOUNT_RECORD) else row
         }
         val held = rows.mapTo(HashSet()) { it.id }
         val lineage = CachedLineage(
@@ -415,27 +427,29 @@ class AccountSimulationTest {
         assertWithMessage("$label: every Project renders").that(group.map { it.agent.name }).containsExactlyElementsIn(visibleRoots)
         assertWithMessage("$label: the archived Project waits behind the filter").that(group.map { it.agent.id }).doesNotContain("bc-retro")
         val primary = sections.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }
-        val leaked = primary.filter { byId[it.agent.id]?.projectScoped == true && !it.isPinned }
+        val leaked = primary.filter { byId[it.agent.id]?.projectScoped == true }
         assertWithMessage("$label: nothing of a Project among the primary rows").that(leaked.map { it.agent.id }).isEmpty()
         assertWithMessage("$label: the pinned Remote Control chat and the pinned chat are listed")
             .that(sections.firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows?.map { it.agent.id }.orEmpty()).containsExactly("bc-codex", "bc-market")
         val loadedOwn = agents.state.value.agents.filter { byId[it.id]?.own == true }
         assertWithMessage("$label: no chat of the account's own is read as a Project's").that(loadedOwn.filter { it.isProjectScoped }.map { it.id }).isEmpty()
         // A root takes the record's word alone: the registry names the Projects and nothing else — not a chat
-        // started as a meta agent, not one that spawned subagents, not an archived chat of the account's own.
+        // started as a meta agent, not one that spawned subagents, not a coordinator without the flag, not an
+        // archived chat of the account's own.
         assertWithMessage("$label: the registry holds the Projects and nothing else").that(agents.knownRoots.value.map { it.id })
-            .containsNoneOf("bc-meta-1", "bc-meta-2", "bc-meta-3", "bc-spawner-1", "bc-spawner-2", "bc-market", "bc-newflag")
+            .containsNoneOf("bc-meta-1", "bc-meta-2", "bc-meta-3", "bc-spawner-1", "bc-spawner-2", "bc-market", "bc-newflag", "bc-meter")
         assertThat(agents.knownRoots.value.all { it.isEvidenced }).isTrue()
         // A pinned chat that spawned subagents and carries startedAsNewProject is a pinned chat, its subagents under it.
         agents.agent("bc-market")?.let { assertWithMessage("$label: Market Opportunities is a chat of the account's own").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
         agents.agent("bc-newflag")?.let { assertWithMessage("$label: startedAsNewProject alone flags nothing").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
+        agents.agent("bc-meter")?.let { assertWithMessage("$label: a coordinator without project_metadata is a chat of the account's own (kf)").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
         // `project_metadata: {}` is the desktop's flag: a Project with no members, drawn as the desktop draws it.
         agents.agent("bc-emptymeta")?.let { assertWithMessage("$label: an empty project_metadata is the desktop's flag").that(it.scope).isEqualTo(AgentScope.PROJECT_ROOT) }
         assertThat(primary.map { it.agent.id }).containsNoneOf("bc-market-sub1", "bc-market-sub2")
         // The evidence string names exactly what admitted each root, and the record's raw fields ride with it.
         agents.knownRoots.value.forEach { root ->
-            assertWithMessage("$label: ${root.id} evidence").that(root.evidence).matches("(record flag project_metadata=\\S+|membership \\d+|action here)( \\+ .*)?")
-            if (root.flagged) assertWithMessage("$label: ${root.id} record").that(root.record?.projectMetadata).isNotNull()
+            assertWithMessage("$label: ${root.id} evidence").that(root.evidence).matches("kf: record project_metadata=\\S+, no subagentParentId( \\+ .*)?")
+            assertWithMessage("$label: ${root.id} record").that(root.record?.projectMetadata).isNotNull()
         }
         agents.knownRoots.value.firstOrNull { it.id == "bc-emptymeta" }?.let { assertThat(it.record?.describe()).startsWith("project_metadata={} manager_agent_id=- cloud_subagent_parent=- side_chat_parent=- started_as_new_project=false") }
         agents.agent("bc-meta-1")?.let { assertWithMessage("$label: a meta agent chat is a chat of the account's own").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
@@ -446,6 +460,54 @@ class AccountSimulationTest {
             assertWithMessage("$label: a chat's subagents sit under it").that(spawner.children.map { it.agent.id }).contains("bc-spawner-1-sub1")
         }
         assertThat(primary.map { it.agent.id }).containsNoneOf("bc-spawner-1-sub1", "bc-spawner-1-sub2", "bc-spawner-2-sub1")
+        assertDesktopTopLevel(label, agents, sections)
+    }
+
+    /**
+     * The desktop Agents Window's composition of this account, row for row (see `AgentsWindowList`): the top-level
+     * set is exactly the loaded chats without a parent link — `subagentParentId` empty — Projects (`kf`) in the
+     * Projects section, the pinned ones in Pinned, the rest in the time sections; every loaded child is nested under
+     * its parent's row when the parent's row is loaded and drawn nowhere else; a coordinator without the flag
+     * (Codex Meter, a Multitask-style chat) is an ordinary top-level row with its workers under it.
+     */
+    private fun assertDesktopTopLevel(label: String, agents: AgentRepository, sections: List<com.cursorforandroid.domain.AgentSection>) {
+        val loaded = agents.state.value.agents.associateBy { it.id }
+        val topLevelRows = sections.flatMap { it.rows }
+        val topLevelIds = topLevelRows.map { it.agent.id }.toSet()
+        val expectedTopLevel = loaded.values.filter { row -> byId[row.id]?.let { c -> !c.desktopChild && !c.archived } ?: !row.isArchived }.map { it.id }.toSet()
+        assertWithMessage("$label: the top-level set is the desktop's (mQa: every loaded row without a parent link, and no other)")
+            .that(topLevelIds.filter { it in loaded }).containsExactlyElementsIn(expectedTopLevel)
+        val expectedProjects = expectedTopLevel.filter { byId.getValue(it).desktopProject }.toSet()
+        val projectIds = sections.firstOrNull { it.key == AgentListOrganizer.PROJECTS_KEY }?.rows?.map { it.agent.id }?.filter { it in loaded }.orEmpty()
+        assertWithMessage("$label: the Projects section is kf over the top level").that(projectIds).containsExactlyElementsIn(expectedProjects)
+        // Every loaded child sits under its parent's row (any parent: a Project, Codex Meter, Market Opportunities,
+        // a chat with subagents), never at the top level; a child whose parent's row is not loaded is not drawn.
+        fun descendants(rows: List<com.cursorforandroid.domain.AgentRow>): List<com.cursorforandroid.domain.AgentRow> = rows.flatMap { listOf(it) + descendants(it.children) }
+        val drawn = descendants(topLevelRows)
+        loaded.values.filter { byId[it.id]?.desktopChild == true }.forEach { child ->
+            val chat = byId.getValue(child.id)
+            assertWithMessage("$label: ${child.id} is a child (PJr)").that(topLevelIds).doesNotContain(child.id)
+            val parentRow = drawn.firstOrNull { it.agent.id == chat.desktopParent }
+            if (parentRow != null && !chat.archived) {
+                assertWithMessage("$label: ${child.id} is nested under ${chat.desktopParent}").that(parentRow.children.map { it.agent.id }).contains(child.id)
+            } else {
+                assertWithMessage("$label: ${child.id} is not drawn without its parent's row").that(drawn.map { it.agent.id }).doesNotContain(child.id)
+            }
+        }
+        // The rule the export prints for each row is the desktop's, and names the field the parent link came from.
+        loaded.values.forEach { row ->
+            val rule = com.cursorforandroid.domain.AgentsWindowList.place(row, loaded.keys, setOf("bc-codex", "bc-market")).rule
+            val chat = byId.getValue(row.id)
+            when {
+                chat.desktopChild -> assertWithMessage("$label: rule for ${row.id}").that(rule).startsWith("PJr child of")
+                chat.desktopProject -> assertWithMessage("$label: rule for ${row.id}").that(rule).startsWith("kf top-level Project")
+                else -> assertWithMessage("$label: rule for ${row.id}").that(rule).startsWith("mQa top-level")
+            }
+            if (chat.manager != null) assertThat(rule).contains("via managerAgentId")
+            if (chat.subagentOf != null) assertThat(rule).contains("via cloudSubagentParent.parentAgentId")
+            if (chat.sideChatOf != null) assertThat(rule).contains("via sideChatInfo.parentBcId")
+            if (chat.adoptedBy != null && row.record != null) assertThat(rule).contains("via ListWorkersForManager")
+        }
     }
 
     @Test
@@ -479,22 +541,28 @@ class AccountSimulationTest {
         assertThat(scan.attempts).isAtLeast(2)
         assertThat(scan.pagesRead).isEqualTo(2)
         assertThat(scan.complete).isTrue()
-        // The flagged Projects are in the registry from the pass; the two known by their workers alone (Noetic has no
-        // look, Codex Meter only the new-project flag) come in with the membership pass, on ListWorkersForManager's word.
-        assertThat(agents.knownRoots.value.map { it.id }).containsAtLeast("bc-shipyard", "bc-jobs", "bc-revenue", "bc-murmur", "bc-mobile", "bc-retro", "bc-noetic", "bc-emptymeta")
-        assertThat(agents.managerCandidates()).contains("bc-meter")
+        // The flagged Projects are in the registry from the pass — the record's `project_metadata`, the desktop's
+        // `kf`; Codex Meter, whose record has only `startedAsNewProject`, is none, its two workers or not.
+        assertThat(agents.knownRoots.value.map { it.id }).containsExactlyElementsIn(expectedRoots)
+        assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-meter")
         // The memberships place the adopted workers, and the rows of the roots the pages did not hold are fetched by id.
         awaitUntil("the memberships to be read") { projects.memberCounts.first().keys.containsAll(expectedRoots - "bc-retro") }
-        assertThat(agents.knownRoots.value.map { it.id }).containsExactlyElementsIn(expectedRoots)
         // Noetic's record carries `project_metadata` without an appearance: the flag all the same, the desktop's way.
-        assertThat(agents.knownRoots.value.first { it.id == "bc-noetic" }.evidence).startsWith("record flag project_metadata={}")
-        assertThat(agents.knownRoots.value.first { it.id == "bc-meter" }.evidence).startsWith("membership 2")
-        assertThat(agents.knownRoots.value.first { it.id == "bc-shipyard" }.evidence).startsWith("""record flag project_metadata={"appearance":{"icon":"logo-github","colorId":"blue"}}""")
+        assertThat(agents.knownRoots.value.first { it.id == "bc-noetic" }.evidence).startsWith("kf: record project_metadata={}")
+        assertThat(agents.knownRoots.value.first { it.id == "bc-shipyard" }.evidence).startsWith("""kf: record project_metadata={"appearance":{"icon":"logo-github","colorId":"blue"}}""")
         awaitUntil("every root's row to be fetched") { expectedRoots.all { agents.agent(it) != null } }
+        // Every row the running scan brought bare — a worker of an older Project, beyond the account's window — has
+        // been asked for its record, so the desktop's predicates had the record's fields to read.
+        awaitUntil("every loaded row to have its record") { agents.state.value.agents.all { it.record != null } }
         assertInvariants("after the first launch", agents, projects)
-        // The counts are the account's: 31, 8, 115, 28, 6, 17, 2 — and none for the `{}` Project.
+        // The counts are the account's: 31, 8, 115, 28, 6, 17 — and none for the `{}` Project.
         val group = sections(agents, projects).first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
-        assertThat(group.associate { it.agent.name to it.shownCount }).containsAtLeast("Shipyard", 31, "Revenue Scaling Pipeline", 115, "Codex Meter", 2, "Noetic", 28, "Empty project metadata", 0)
+        assertThat(group.associate { it.agent.name to it.shownCount }).containsAtLeast("Shipyard", 31, "Revenue Scaling Pipeline", 115, "Noetic", 28, "Empty project metadata", 0)
+        // Codex Meter is an ordinary row with its two workers under it — the desktop's row-with-children for a
+        // coordinator the record does not flag.
+        awaitUntil("Codex Meter's workers to be loaded") { agents.agent("bc-meter-m1") != null && agents.agent("bc-meter-m2") != null }
+        val meter = sections(agents, projects).filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }.first { it.agent.id == "bc-meter" }
+        assertThat(meter.children.map { it.agent.id }).containsExactly("bc-meter-m1", "bc-meter-m2")
         // The running count is the server's running set less the Projects' own: the roots and their members are
         // never counted, and never notified.
         val serverRunning = chats.filter { it.running && !it.projectScoped }.map { it.id }.toSet()
@@ -555,7 +623,7 @@ class AccountSimulationTest {
         val group = sections(agents, projects).firstOrNull { it.key == AgentListOrganizer.PROJECTS_KEY }?.rows.orEmpty()
         assertWithMessage("the Projects among the newest 200 records reappear").that(group.map { it.agent.name })
             .containsExactly("Revenue Scaling Pipeline", "Shipyard", "Cursor for Android", "Job & Bounty Research", "Empty project metadata")
-        assertWithMessage("the older ones stay missing").that(group.map { it.agent.id }).containsNoneOf("bc-noetic", "bc-murmur", "bc-meter")
+        assertWithMessage("the older ones stay missing").that(group.map { it.agent.id }).containsNoneOf("bc-noetic", "bc-murmur")
         assertThat(projects.lastRootScan.value!!.pagesRead).isEqualTo(1)
 
         // The same account with the pages reachable: the next pass names every flagged Project, and the membership
@@ -584,27 +652,24 @@ class AccountSimulationTest {
     }
 
     @Test
-    fun `a coordinator's row is a root by its record alone, a child's by its parent, never by its source`() {
+    fun `a coordinator's row is a root by its record alone, a child's by its parent link, never by its source`() {
         val root = Agent(
             id = "bc-x", name = "X", lifecycle = AgentLifecycle.IDLE, runStatus = RunStatus.FINISHED, envType = EnvType.CLOUD, envName = null, url = "",
             createdAtMillis = 1, updatedAtMillis = 1, latestRunId = null, repoUrl = null, startingRef = null,
             source = AgentSource.CLOUD_META_AGENT, isProject = true,
         )
         assertThat(root.scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        // A source says how a chat was started, never what it is: a meta agent without the flag is a chat of its own.
+        // A source says how a chat was started, never what it is: a meta agent without the flag is a chat of its own,
+        // and so is a side chat whose record names no parent (the desktop reads the parent link alone).
         assertThat(root.copy(isProject = false).scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(root.copy(isProject = false, source = null).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(root.copy(isProject = false, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PRIMARY)
+        // A parent link makes a child of anything, a flagged Project included (kf needs no subagentParentId).
         assertThat(root.copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(root.copy(isProject = false, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        // 0.3.4's reading of a meta agent as a child of nobody is re-read by the record's flag.
-        assertThat(root.copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.HIDDEN_SOURCE).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        // A kept root scope stands on root evidence alone: a transcript's or a children list's makes no Project.
-        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.COORDINATOR_CREATED).scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.CHILDREN_LIST).scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        assertThat(AgentScope.of(isProject = true, parent = null, source = AgentSource.AS_SUBAGENT_FROM_CLOUD)).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(AgentScope.of(isProject = false, parent = null, source = AgentSource.CLOUD_META_AGENT)).isEqualTo(AgentScope.PRIMARY)
-        assertThat(AgentScope.of(isProject = false, parent = null, source = AgentSource.AS_SUBAGENT_FROM_CLOUD)).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(root.copy(parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT)).looksLikeProject).isFalse()
+        assertThat(AgentScope.of(isProject = true, parent = AgentParent("bc-p", AgentParentKind.SUBAGENT))).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(AgentScope.of(isProject = false, parent = null)).isEqualTo(AgentScope.PRIMARY)
+        assertThat(AgentScope.of(isProject = true, parent = null)).isEqualTo(AgentScope.PROJECT_ROOT)
     }
 
     /**

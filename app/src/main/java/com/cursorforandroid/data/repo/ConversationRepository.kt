@@ -750,13 +750,11 @@ class ConversationRepository(
             coordinatorLineage(items)
         }
         if (workers != null) {
-            // What the coordinator's tools returned as its own workers is positive evidence; what they merely
-            // addressed is a hint, which the chat's own record can take back.
-            // The coordinator's tools are the coordinator's alone: a transcript carrying them makes its chat a root
-            // on evidence, whatever else it names.
-            val (created, mentioned) = workers
-            agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
-            if (mentioned.size > created.size) agents.applyLineage(agentId, (mentioned - created).associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_TRANSCRIPT)
+            // Only what the coordinator's tools returned as workers it created is placed — the `managerAgentId` the
+            // account's record carries for a created worker, which default mode cannot read. A chat the coordinator
+            // merely messaged or read is placed by nothing (the desktop reads no transcript at all).
+            val (created, _) = workers
+            if (created.isNotEmpty()) agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
         }
     }
 

@@ -146,25 +146,27 @@ class PinnedResolutionTest {
     }
 
     @Test
-    fun `a pinned chat a coordinator's transcript named is a pinned row still, and its own record puts it back among the account's chats`() = runBlocking<Unit> {
+    fun `a pinned chat a coordinator's create_agent named stays under the coordinator, and its own record puts it back among the account's chats`() = runBlocking<Unit> {
         extended = true
         prefs.setPinnedIds(setOf("bc-machine", "bc-2"))
         val agents = agents()
         agents.refresh()
-        // A coordinator messaged both: the transcript's hint. The machine chat is never placed by a hint; the plain chat is, until its record speaks.
+        // Default mode's one word: the coordinator's create_agent named both. A pinned child is a child (VuC pins
+        // top-level headers only), so neither is a Pinned row while the stamp stands.
         agents.applyLineage("bc-1", mapOf("bc-machine" to AgentParentKind.PROJECT_WORKER, "bc-2" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agents.agent("bc-machine")?.isProjectScoped).isFalse()
+        assertThat(agents.agent("bc-machine")?.isProjectScoped).isTrue()
         assertThat(agents.agent("bc-2")?.isProjectScoped).isTrue()
-        assertThat(agents.agent("bc-2")?.isProjectScopedByEvidence).isFalse()
-        val pinnedRows = sections(agents, pinned = setOf("bc-machine", "bc-2")).first { it.key == AgentListOrganizer.PINNED_KEY }.rows.map { it.agent.id }
-        assertThat(pinnedRows).containsExactly("bc-2", "bc-machine")
-        // The account's record of bc-2 names no manager: the hint is withdrawn, and refused when the transcript repeats it.
+        assertThat(sections(agents, pinned = setOf("bc-machine", "bc-2")).none { it.key == AgentListOrganizer.PINNED_KEY }).isTrue()
+        // The account's records name no manager for either: the record is the word, and the transcript's stamp is
+        // not made again over a record that has been read — both are pinned rows of the account's own.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-2"), ComposerSnapshot("bc-machine")))
         assertThat(agents.agent("bc-2")?.isProjectScoped).isFalse()
+        assertThat(agents.agent("bc-machine")?.isProjectScoped).isFalse()
         agents.applyLineage("bc-1", mapOf("bc-2" to AgentParentKind.PROJECT_WORKER), authoritative = false)
         assertThat(agents.agent("bc-2")?.isProjectScoped).isFalse()
-        assertThat(agents.hintRefusedIds()).containsExactly("bc-2")
-        // Positive evidence still places it: the record naming the manager, or the root's membership.
+        val pinnedRows = sections(agents, pinned = setOf("bc-machine", "bc-2")).first { it.key == AgentListOrganizer.PINNED_KEY }.rows.map { it.agent.id }
+        assertThat(pinnedRows).containsExactly("bc-2", "bc-machine")
+        // The account's own word still places it: the record naming the manager, or the root's membership.
         agents.applyLineage("bc-1", mapOf("bc-2" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
         assertThat(agents.agent("bc-2")?.parent).isEqualTo(AgentParent("bc-1", AgentParentKind.PROJECT_WORKER))
         assertThat(agents.agent("bc-2")?.isProjectScopedByEvidence).isTrue()

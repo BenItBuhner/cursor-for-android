@@ -303,7 +303,7 @@ class ListInvariantsPropertyTest {
                     6 -> {
                         // The disk holds the rows as last persisted; a restart starts from them (and the registry from what they carry).
                         steps += "restart"
-                        fun List<com.cursorforandroid.domain.Agent>.lineage() = map { Triple(it.id, it.parent, it.knownScope to it.scopeSignal) }.toSet()
+                        fun List<com.cursorforandroid.domain.Agent>.lineage() = map { Triple(it.id, it.parent, it.isProject to it.scopeSignal) }.toSet()
                         val persisted = agents.state.value.agents.lineage()
                         withTimeout(5_000) { while (cache.read()?.value?.lineage() != persisted) delay(5) }
                         // The process is gone with its repository: nothing of the old instance writes the disk again.

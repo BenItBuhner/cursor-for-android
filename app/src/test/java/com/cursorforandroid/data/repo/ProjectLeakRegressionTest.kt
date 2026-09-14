@@ -96,7 +96,10 @@ class ProjectLeakRegressionTest {
         scope.cancel()
     }
 
-    private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10, capabilities = capabilities)
+    /** The account's records by id, for the rows fetched by id (see `AgentRepository.loadDetail`): the desktop's list comes with them. */
+    private val records = java.util.concurrent.ConcurrentHashMap<String, ComposerSnapshot>()
+
+    private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10, capabilities = capabilities, recordOf = { records[it] })
 
     private fun projects(agents: AgentRepository) = ProjectRepository(session, agents, lineage, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities)
 
@@ -180,14 +183,14 @@ class ProjectLeakRegressionTest {
     }
 
     @Test
-    fun `a coordinator's transcript places what nothing authoritative has, and yields to what has`() = runBlocking<Unit> {
+    fun `a coordinator's create_agent places what no record has, and yields to a record`() = runBlocking<Unit> {
         val agents = seed()
         agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        // The transcript nests the chats it names; it makes no Project of the chat that names them (that takes
-        // the record's word), so bc-p stays a chat of the account's own with two chats under it.
+        // The transcript nests the workers it created; it makes no Project of the chat that created them (that takes
+        // the record's flag), so bc-p stays a chat of the account's own with two chats under it.
         assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agents.knownRoots.value).isEmpty()
-        assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_TRANSCRIPT)
+        assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_CREATED)
         assertThat(agents.agent("bc-x")?.isProjectChild).isTrue()
         // The account then says bc-x is a Project of its own under a different parent: its word stands over the hint.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x", parent = AgentParent("bc-w2", AgentParentKind.SUBAGENT))))
@@ -215,7 +218,7 @@ class ProjectLeakRegressionTest {
         assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.MEMBERSHIP)
         assertThat(primaryIds(agents)).containsExactly("bc-x")
         // A row deleted from the list and listed again keeps its place: the registry remembers, not just the row.
-        agents.upsert(agents.agent("bc-w1")!!.copy(parent = null, knownScope = null, scopeSignal = null))
+        agents.upsert(agents.agent("bc-w1")!!.copy(parent = null, scopeSignal = null))
         assertThat(agents.agent("bc-w1")?.isProjectChild).isTrue()
     }
 
@@ -223,9 +226,8 @@ class ProjectLeakRegressionTest {
     fun `every root the list knows is asked for its memberships, not only the ones inside the account window`() = runBlocking<Unit> {
         val agents = seed()
         // bc-p's own record is outside the account window (its last activity is older than two hundred other chats'):
-        // the list learned it is a root only from a worker's record naming it, or from an earlier session.
-        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
-        agents.applyLineage("bc-p", emptyMap(), LineageSignal.MEMBERSHIP)
+        // the discovery pass over the whole list read it, and a worker's record in the window names it.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)), ComposerSnapshot("bc-p", isProject = true, record = com.cursorforandroid.data.api.RecordFields(projectMetadata = "{}"))))
         lineage.workers = mapOf("bc-p" to listOf(WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED), WorkerMembership("bc-w2", "bc-p", WorkerSpawnKind.CREATED), WorkerMembership("bc-a", "bc-p", WorkerSpawnKind.ADOPTED)))
         lineage.children = mapOf("bc-p" to listOf(ComposerSnapshot("bc-s", parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)))
 
@@ -289,8 +291,9 @@ class ProjectLeakRegressionTest {
         // and every publication after it reaches the collector in order. A collector racing the record on another
         // thread could see that earlier list, or miss the one that brings the coordinator.
         val watching = launch(start = CoroutineStart.UNDISPATCHED) { agents.state.drop(1).collect { published += it.agents } }
-        // The worker's record makes bc-p a candidate; the account's membership answer is what makes it a root, and
-        // the watcher asks for it before the row is fetched.
+        // The worker's record names bc-p; the watcher fetches bc-p by id, and the row lands with its account record
+        // — the flag that makes it a root — in the one publication, as a row of the desktop's list would.
+        records["bc-p"] = ComposerSnapshot("bc-p", isProject = true, record = com.cursorforandroid.data.api.RecordFields(projectMetadata = "{}"))
         lineage.workers = mapOf("bc-p" to listOf(WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED)))
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
@@ -325,33 +328,36 @@ class ProjectLeakRegressionTest {
     }
 
     @Test
-    fun `a released membership places nothing, and takes a placed worker back among the account's chats`() = runBlocking<Unit> {
+    fun `a membership listed stands, one absent from a complete answer is released, and its status is the worker's run status`() = runBlocking<Unit> {
         val agents = seed()
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true)))
-        // The account keeps a row for a worker it released, marked so: that row is evidence the chat is its own.
+        // A worker placed earlier by a membership the answer no longer lists was released on another client.
+        agents.applyLineage("bc-p", mapOf("bc-w2" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
+        assertThat(agents.agent("bc-w2")?.isProjectChild).isTrue()
+        // `WorkerManagerMembership.status` is the worker's `BackgroundComposerStatus`, nothing about the membership:
+        // a finished worker is as much a member as a running one (the desktop seeds the header's status from it).
         lineage.workers = mapOf(
             "bc-p" to listOf(
-                WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED, status = "MANAGER_WORKER_MEMBERSHIP_STATUS_ACTIVE"),
-                WorkerMembership("bc-a", "bc-p", WorkerSpawnKind.ADOPTED, status = "MANAGER_WORKER_MEMBERSHIP_STATUS_RELEASED"),
-                WorkerMembership("bc-w2", "bc-p", WorkerSpawnKind.CREATED, status = "removed"),
+                WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED, status = "BACKGROUND_COMPOSER_STATUS_RUNNING"),
+                WorkerMembership("bc-a", "bc-p", WorkerSpawnKind.ADOPTED, status = "BACKGROUND_COMPOSER_STATUS_FINISHED"),
             ),
         )
         val projects = projects(agents)
         projects.syncLineage(listOf("bc-p"))
         assertThat(agents.agent("bc-w1")?.isProjectChild).isTrue()
-        assertThat(agents.agent("bc-a")?.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(agents.agent("bc-w2")?.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(WorkerMembership("x", "y", status = null).isActive).isTrue()
-        assertThat(WorkerMembership("x", "y", status = "MANAGER_WORKER_MEMBERSHIP_STATUS_UNSPECIFIED").isActive).isTrue()
-        // A worker placed earlier whose membership the account now marks released is released here too.
-        agents.applyLineage("bc-p", mapOf("bc-a" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
         assertThat(agents.agent("bc-a")?.isProjectChild).isTrue()
+        assertThat(agents.agent("bc-w2")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(WorkerMembership("x", "y", status = "BACKGROUND_COMPOSER_STATUS_RUNNING").runStatus).isEqualTo(com.cursorforandroid.domain.RunStatus.RUNNING)
+        assertThat(WorkerMembership("x", "y", status = "FINISHED").runStatus).isEqualTo(com.cursorforandroid.domain.RunStatus.FINISHED)
+        assertThat(WorkerMembership("x", "y", status = null).runStatus).isNull()
+        // A worker whose own record names the root keeps the record's link whatever the answer lists.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w2", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         projects.syncLineage(listOf("bc-p"))
-        assertThat(agents.agent("bc-a")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.agent("bc-w2")?.isProjectChild).isTrue()
     }
 
     @Test
-    fun `a coordinator's transcript never places a chat on the user's machine, and its record puts back a chat it did place`() = runBlocking<Unit> {
+    fun `a record read is the last word over a coordinator's create_agent, for a machine chat as for any`() = runBlocking<Unit> {
         api.addIdleAgent("bc-p", "Cursor for Android", "run-p")
         api.addRunningAgent("bc-x", "Cesium", "run-x")
         val at = "2026-04-13T18:30:00.000Z"
@@ -359,23 +365,23 @@ class ProjectLeakRegressionTest {
         api.runs["run-m"] = com.cursorforandroid.data.api.dto.RunDto(id = "run-m", agentId = "bc-m", status = "RUNNING", createdAt = at, updatedAt = at)
         val agents = agents()
         agents.refresh()
-        // The coordinator messaged both: the transcript names them as if they were its workers.
+        // Default mode's one word: the coordinator's create_agent named both as its workers.
         agents.applyLineage("bc-p", mapOf("bc-m" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agents.agent("bc-m")?.isProjectScoped).isFalse()
+        assertThat(agents.agent("bc-m")?.isProjectScoped).isTrue()
         assertThat(agents.agent("bc-x")?.isProjectScoped).isTrue()
-        assertThat(agents.agent("bc-x")?.isProjectScopedByEvidence).isFalse()
-        // bc-p is no Project on its transcript's word: a chat of the account's own with bc-x nested under it.
-        assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-p")
-        // The account's record of bc-x names nothing: the hint is withdrawn and refused; positive evidence still places.
+        // bc-p is no Project on its transcript's word: a chat of the account's own with the two nested under it.
+        assertThat(primaryIds(agents)).containsExactly("bc-p")
+        // The account's records name no parent for either: the record is the word, and the transcript's stamp goes
+        // — and is not made again over a record that has been read.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x"), ComposerSnapshot("bc-m")))
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.agent("bc-m")?.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-p", "bc-x")
         agents.applyLineage("bc-p", mapOf("bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(agents.hintRefusedIds()).containsExactly("bc-x")
+        // The record naming the manager places it; so does a membership answer, for the machine chat as for any.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(agents.agent("bc-x")?.isProjectScopedByEvidence).isTrue()
-        // Even the account's membership does not make the machine chat a worker on a hint; its own membership would.
         agents.applyLineage("bc-p", mapOf("bc-m" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
         assertThat(agents.agent("bc-m")?.isProjectChild).isTrue()
     }
@@ -394,36 +400,39 @@ class ProjectLeakRegressionTest {
             listOf(
                 ComposerSnapshot("bc-p", isProject = true),
                 ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)),
-                ComposerSnapshot("bc-s", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
+                ComposerSnapshot("bc-s", parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
             ),
         )
         agents.loadMore()
         agents.loadMore()
         assertThat(agents.agent("bc-w1")?.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
         assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.ACCOUNT_RECORD)
-        assertThat(agents.agent("bc-s")?.source).isEqualTo(AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
+        assertThat(agents.agent("bc-w1")?.record?.managerAgentId).isEqualTo("bc-p")
+        assertThat(agents.agent("bc-s")?.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SIDE_CHAT))
         assertThat(agents.agent("bc-s")?.isProjectChild).isTrue()
         assertThat(primaryIds(agents)).isEmpty()
     }
 
     @Test
-    fun `the scope reads the row's facts first - a parent link or a child's source is never outvoted`() {
+    fun `the scope is the desktop's two predicates - the parent link, then the Project flag - and never the source`() {
         val base = com.cursorforandroid.domain.Agent(
             id = "bc-w", name = "Worker", lifecycle = com.cursorforandroid.domain.AgentLifecycle.ACTIVE, runStatus = null,
             envType = com.cursorforandroid.domain.EnvType.CLOUD, envName = null, url = "", createdAtMillis = 0, updatedAtMillis = 0, latestRunId = null, repoUrl = null, startingRef = null,
         )
-        assertThat(base.copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(base.copy(source = AgentSource.AS_SUBAGENT_FROM_CLOUD, knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        // A kept child scope with no parent and no child's source behind it is an older reading; the record's own flag is the fact.
-        assertThat(base.copy(isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        assertThat(base.copy(isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        // A source says how a chat was started, never what it is: a meta agent's is no root source.
-        assertThat(base.copy(source = AgentSource.CLOUD_META_AGENT).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(base.copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(base.copy(isProject = true, parent = AgentParent("bc-p", AgentParentKind.SUBAGENT)).scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(base.copy(isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        // A kept root scope stands on root evidence alone: kept on none, the chat is one of the account's own.
-        assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // A source says how a chat was started, never where it belongs.
+        assertThat(base.copy(source = AgentSource.AS_SUBAGENT_FROM_CLOUD).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(base.copy(isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(base.copy(source = AgentSource.CLOUD_META_AGENT).scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(base.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(base.copy(knownScope = AgentScope.PROJECT_CHILD).isProjectScoped).isTrue()
+        // The record's raw fields decide the same way, in the desktop's precedence.
+        val fields = com.cursorforandroid.data.api.RecordFields(managerAgentId = "bc-p", sideChatParentId = "bc-s", subagentParentId = "bc-sub")
+        assertThat(fields.desktopParent).isEqualTo(AgentParent("bc-sub", AgentParentKind.SUBAGENT))
+        assertThat(fields.copy(subagentParentId = null).desktopParent).isEqualTo(AgentParent("bc-s", AgentParentKind.SIDE_CHAT))
+        assertThat(fields.copy(subagentParentId = null, sideChatParentId = null).desktopParent).isEqualTo(AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
+        assertThat(com.cursorforandroid.data.api.RecordFields(projectMetadata = "{}").isProject).isTrue()
+        assertThat(com.cursorforandroid.data.api.RecordFields(startedAsNewProject = true).isProject).isFalse()
     }
 }

@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PullRequestStatus
@@ -105,11 +106,17 @@ data class CachedLineage(
     val hintRefused: Set<String> = emptySet(),
     /** The root registry (see [KnownRoot]): every Project the account was known to have, whether or not a row is on disk. */
     val roots: List<KnownRoot> = emptyList(),
+    /** The account's records of chats no row on disk holds, for the pages that bring them (see `AgentRepository.pendingRecords`). */
+    val records: List<CachedRecord> = emptyList(),
 )
 
-/** One chat's placement: under [parentId] in the capacity of [kind], or (null) at the head of a Project; by [signal]'s word. */
+/** One chat's placement: under [parentId] in the capacity of [kind], by [signal]'s word ([parentId] null is an older build's root placement, read no more). */
 @Serializable
 data class CachedPlacement(val id: String, val parentId: String? = null, val kind: AgentParentKind? = null, val signal: LineageSignal)
+
+/** One chat's account record, the fields the desktop's predicates read, for a chat no row on disk holds. */
+@Serializable
+data class CachedRecord(val id: String, val fields: RecordFields)
 
 class AgentListCache(private val cache: JsonDiskCache) {
     suspend fun read(): JsonDiskCache.Entry<List<Agent>>? =

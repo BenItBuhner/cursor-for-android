@@ -49,8 +49,8 @@ interface ProjectLineageApi {
             failure = t
             null
         }
-        val children = try {
-            children(rootId).associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
+        val childRecords = try {
+            children(rootId)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -60,10 +60,11 @@ interface ProjectLineageApi {
         return ProjectLineage(
             rootId = rootId,
             workers = workers.orEmpty(),
-            children = children.orEmpty(),
+            children = childRecords.orEmpty().associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) },
             workersRead = workers != null,
-            childrenRead = children != null,
+            childrenRead = childRecords != null,
             failure = failure,
+            childRecords = childRecords.orEmpty(),
         )
     }
 }
