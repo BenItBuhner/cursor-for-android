@@ -25,6 +25,13 @@ object ProjectDiagnostics {
         val placementOf: (String) -> Pair<AgentParent?, LineageSignal>?,
         val rootSyncs: Map<String, RootSync>,
         val pinnedIds: Set<String> = emptySet(),
+        /** Pinned ids the list does not hold and could not fetch (see `AgentRepository.unresolvedPinned`). */
+        val unresolvedPinned: Set<String> = emptySet(),
+        /** The dedicated running pass, when one has run (see [RunningScan]). */
+        val runningScan: RunningScan? = null,
+        /** Chats whose record contradicted a coordinator's transcript about them; the hint is refused for them. */
+        val hintRefused: Set<String> = emptySet(),
+        val envTypes: Map<String, String> = emptyMap(),
     )
 
     fun render(input: Input): String = buildString {
@@ -37,6 +44,38 @@ object ProjectDiagnostics {
         appendLine("rows=${rows.size} primary=${primaries.size} roots=${roots.size} children=${children.size} running=${rows.count { it.isRunning }} archived=${rows.count { it.isArchived }}")
         val orphans = children.filter { child -> child.parent != null && rows.none { it.id == child.parent.id } }
         if (orphans.isNotEmpty()) appendLine("childrenWithoutLoadedParent=${orphans.size} parents=${orphans.mapNotNull { it.parent?.id }.distinct().joinToString(",") { tail(it) }}")
+
+        appendLine()
+        appendLine("pinned (id · resolution · scope · env):")
+        if (input.pinnedIds.isEmpty()) appendLine("  none")
+        input.pinnedIds.sorted().forEach { id ->
+            val row = rows.firstOrNull { it.id == id }
+            val resolution = when {
+                row != null -> "shown"
+                id in input.unresolvedPinned -> "UNRESOLVED (not in the pages, fetch by id failed)"
+                else -> "MISSING (not in the pages, fetch pending)"
+            }
+            appendLine("  ${tail(id)} $resolution ${row?.scope?.name?.removePrefix("PROJECT_") ?: "-"} ${row?.envType?.name ?: "-"}")
+        }
+
+        appendLine()
+        val scan = input.runningScan
+        val listRunning = rows.filter { it.isRunning }
+        val counted = listRunning.filter { !it.isProjectScopedByEvidence }
+        appendLine("running: list=${listRunning.size} counted=${counted.size} excludedByEvidence=${listRunning.size - counted.size}" +
+            (scan?.let { " scan=${it.ids.size} pages=${it.pagesRead} complete=${it.complete} scannedAt=${if (it.scannedAtMillis > 0) java.time.Instant.ofEpochMilli(it.scannedAtMillis) else "-"} account=${it.accountIds?.size ?: "-"} accountAt=${if (it.accountAtMillis > 0) java.time.Instant.ofEpochMilli(it.accountAtMillis) else "-"}" } ?: " scan=never"))
+        if (scan != null) {
+            appendLine("running set (id · in scan · in account · in list · scope · counted):")
+            (scan.all + listRunning.map { it.id }).sorted().forEach { id ->
+                val row = rows.firstOrNull { it.id == id }
+                appendLine(
+                    "  ${tail(id)} ${if (id in scan.ids) "scan" else "-"} ${if (scan.accountIds?.contains(id) == true) "account" else "-"} " +
+                        "${if (row == null) "NOT-LOADED" else if (row.isRunning) "running" else "row:${row.runStatus?.name ?: "-"}"} ${row?.scope?.name?.removePrefix("PROJECT_") ?: "-"} " +
+                        (if (row != null && row.isRunning) (if (row.isProjectScopedByEvidence) "excluded" else "counted") else "-"),
+                )
+            }
+        }
+        if (input.hintRefused.isNotEmpty()) appendLine("hintRefused=${input.hintRefused.sorted().joinToString(",") { tail(it) }}")
 
         appendLine()
         appendLine("roots (id · signal · children by kind · last membership pass):")
@@ -52,7 +91,7 @@ object ProjectDiagnostics {
         pendingRoots.forEach { appendLine("  ${tail(it)} (not loaded) ${input.rootSyncs[it]?.let { s -> "sync=workers:${s.workersRead} children:${s.childrenRead}" } ?: "sync=never"}") }
 
         appendLine()
-        appendLine("rows (id · scope · signal · parent · kind · source · lifecycle · run · flags):")
+        appendLine("rows (id · scope · evidence · parent · kind · source · env · lifecycle · run · flags):")
         val order = compareBy<Agent>({ it.scope.ordinal }, { it.parent?.id ?: "" }, { it.id })
         rows.sortedWith(order).forEach { row ->
             val flags = listOfNotNull(
@@ -61,21 +100,50 @@ object ProjectDiagnostics {
                 "pinned".takeIf { row.id in input.pinnedIds },
                 "project".takeIf { row.isProject },
                 "needsInput".takeIf { row.hasPendingInteraction },
+                "hintOnly".takeIf { row.isProjectScoped && !row.isProjectScopedByEvidence },
                 "knownScope=${row.knownScope?.name}".takeIf { row.knownScope != null && row.knownScope != row.scope },
             )
             appendLine(
                 listOf(
                     "  ${tail(row.id)}",
                     row.scope.name.removePrefix("PROJECT_"),
-                    row.scopeSignal?.name ?: signalOf(row, input),
+                    evidenceOf(row, input),
                     row.parent?.let { tail(it.id) } ?: "-",
                     row.parent?.kind?.name ?: "-",
                     row.source?.name ?: "-",
+                    row.envType.name,
                     row.lifecycle.name,
                     row.runStatus?.name ?: "-",
                     flags.joinToString(",").ifEmpty { "-" },
                 ).joinToString(" "),
             )
+        }
+    }
+
+    /**
+     * What placed the row, as evidence: the registry's word with the root it names ("membership(…a1b2c3)",
+     * "hint(…a1b2c3)"), else the row's own record ("record.parent", "record.source", "record.isProject"), else the
+     * scope it was kept with, else nothing.
+     */
+    private fun evidenceOf(row: Agent, input: Input): String {
+        fun word(signal: LineageSignal) = when (signal) {
+            LineageSignal.ACCOUNT_RECORD -> "record"
+            LineageSignal.MEMBERSHIP -> "membership"
+            LineageSignal.CHILDREN_LIST -> "children"
+            LineageSignal.HIDDEN_SOURCE -> "source"
+            LineageSignal.COORDINATOR_TRANSCRIPT -> "hint"
+            LineageSignal.COORDINATOR_CREATED -> "created"
+            LineageSignal.ACTION -> "action"
+        }
+        input.placementOf(row.id)?.let { (parent, signal) -> return if (parent != null) "${word(signal)}(${tail(parent.id)})" else "${word(signal)}(root)" }
+        // The registry has no word: what the row itself carries — the signal it was kept with, or its own facts.
+        row.scopeSignal?.let { signal -> return "${word(signal)}${row.parent?.let { "(${tail(it.id)})" } ?: if (row.isProjectRoot) "(root)" else ""}:row" }
+        return when {
+            row.parent != null -> "record.parent"
+            row.source != null && row.source in AgentScope.CHILD_SOURCES -> "record.source"
+            row.isProject -> "record.isProject"
+            row.knownScope != null -> "kept"
+            else -> "none"
         }
     }
 

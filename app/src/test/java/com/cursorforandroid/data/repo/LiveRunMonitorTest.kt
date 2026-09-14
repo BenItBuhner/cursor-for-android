@@ -16,6 +16,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunFooter
@@ -139,8 +140,8 @@ class LiveRunMonitorTest {
         streamer.emit("run-w1", RunStreamEvent.Status("run-w1", RunStatus.RUNNING))
         awaitUntil { running().firstOrNull { it.agentId == "bc-w1" }?.phase == LivePhase.Running }
 
-        // The lineage lands (the coordinator's transcript named the worker, or the account listed it): both leave the card.
-        agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        // The lineage lands (the coordinator's transcript shows it created the worker, or the account listed it): both leave the card.
+        agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER), LineageSignal.COORDINATOR_CREATED)
         awaitUntil { running().isEmpty() }
         assertThat(monitor.state.value.runningCount).isEqualTo(0)
 

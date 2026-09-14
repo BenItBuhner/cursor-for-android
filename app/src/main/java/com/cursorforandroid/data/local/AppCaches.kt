@@ -3,6 +3,9 @@ package com.cursorforandroid.data.local
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
@@ -87,14 +90,33 @@ class PullRequestCache(private val cache: JsonDiskCache) {
 }
 
 @Serializable
-private data class CachedAgentList(val agents: List<Agent>)
+private data class CachedAgentList(val agents: List<Agent>, val lineage: CachedLineage? = null)
+
+/**
+ * What the account has said about where chats belong, kept with the list: the placements of chats the pages did not
+ * hold when the word came (their rows carry nothing yet), and the sources it gave them. Restored with the rows, so a
+ * restart does not lose the evidence a later page will be placed by.
+ */
+@Serializable
+data class CachedLineage(
+    val placements: List<CachedPlacement> = emptyList(),
+    val sources: Map<String, AgentSource> = emptyMap(),
+    val hintRefused: Set<String> = emptySet(),
+)
+
+/** One chat's placement: under [parentId] in the capacity of [kind], or (null) at the head of a Project; by [signal]'s word. */
+@Serializable
+data class CachedPlacement(val id: String, val parentId: String? = null, val kind: AgentParentKind? = null, val signal: LineageSignal)
 
 class AgentListCache(private val cache: JsonDiskCache) {
     suspend fun read(): JsonDiskCache.Entry<List<Agent>>? =
         cache.read(KEY, CachedAgentList.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.agents, it.savedAtMillis) }
 
-    suspend fun write(agents: List<Agent>, token: Int = cache.token()) {
-        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents), token)
+    /** The lineage kept with the list (see [CachedLineage]); null when the list was written without one. */
+    suspend fun readLineage(): CachedLineage? = cache.read(KEY, CachedAgentList.serializer(), VERSION)?.value?.lineage
+
+    suspend fun write(agents: List<Agent>, token: Int = cache.token(), lineage: CachedLineage? = null) {
+        cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents, lineage), token)
     }
 
     /** Taken when the work that will write starts; see [JsonDiskCache.token]. */

@@ -216,7 +216,8 @@ class AgentRepositoryTest {
         assertThat(repo.state.value.agents).hasSize(100)
         assertThat(repo.state.value.agents.all { it.repoUrl == "https://github.com/acme/app" }).isTrue()
         assertThat(api.listAgentsCalls).isEqualTo(1)
-        assertThat(api.listAgentsV0Calls).isEqualTo(1)
+        // The legacy list is read further than the window: its statuses are the running scan (five pages, or the end).
+        assertThat(api.listAgentsV0Calls).isEqualTo(3)
 
         // The reader reaches the end of the list: the next page, on both endpoints, and the page after that.
         api.laterPagesGate = CompletableDeferred()
@@ -233,7 +234,7 @@ class AgentRepositoryTest {
         assertThat(repo.state.value.agents.map { it.name }).contains("Agent 0")
         assertThat(repo.state.value.hasMore).isFalse()
         assertThat(api.listAgentsCalls).isEqualTo(3)
-        assertThat(api.listAgentsV0Calls).isEqualTo(3)
+        assertThat(api.listAgentsV0Calls).isEqualTo(5)
         // Past the last page there is nothing to ask for.
         assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Skipped)
         assertThat(api.listAgentsCalls).isEqualTo(3)
@@ -307,7 +308,8 @@ class AgentRepositoryTest {
         val repo = repository()
         repo.refresh(depth = RefreshDepth.Quick)
         assertThat(api.listAgentsCalls).isEqualTo(1)
-        assertThat(api.listAgentsV0Calls).isEqualTo(1)
+        // Two legacy pages: the whole list, for the running scan.
+        assertThat(api.listAgentsV0Calls).isEqualTo(2)
         assertThat(repo.state.value.agents).hasSize(100)
         assertThat(repo.state.value.hasMore).isTrue()
         repo.refresh()
@@ -730,14 +732,17 @@ class AgentRepositoryTest {
         assertThat(agent("bc-late").parent).isEqualTo(AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))
         assertThat(agent("bc-late").scope).isEqualTo(AgentScope.PROJECT_CHILD)
 
-        // The account's list speaks for what it names: a record that names a parent or a Project places the row, a
-        // record silent on lineage leaves the hint where it is (it is how workers without a `managerAgentId` leaked).
+        // The account's list speaks for what it names: a record that names a parent or a Project places the row; a
+        // record silent on lineage is the account's word against a transcript's mention, and takes the hint back —
+        // while a membership's or a record's own placement stands (it is how workers without a `managerAgentId` leaked).
         repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-c", isProject = true), ComposerSnapshot("bc-w"), ComposerSnapshot("bc-late", parent = AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))))
-        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(agent("bc-w").scopeSignal).isEqualTo(LineageSignal.COORDINATOR_TRANSCRIPT)
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agent("bc-w").parent).isNull()
         assertThat(agent("bc-late").scopeSignal).isEqualTo(LineageSignal.ACCOUNT_RECORD)
         assertThat(agent("bc-c").isProject).isTrue()
-        // A record naming another parent replaces the hint; the hint never takes it back.
+        // The hint is refused from then on; a record naming a parent places the row, and no hint takes it elsewhere.
+        repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PRIMARY)
         repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w", parent = AgentParent("bc-other", AgentParentKind.SUBAGENT))))
         assertThat(agent("bc-w").parent).isEqualTo(AgentParent("bc-other", AgentParentKind.SUBAGENT))
         repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)

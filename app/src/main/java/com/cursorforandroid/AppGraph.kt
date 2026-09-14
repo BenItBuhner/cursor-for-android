@@ -353,6 +353,8 @@ class AppGraph(
             demoComposers = DemoData.composers,
             account = accountAgents,
             capabilities = capabilities,
+            // A pinned chat the public API will not give (Extended mode): stood in from its account record.
+            recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
         )
     }
     val agents: AgentRepository get() = lazyAgents.value
@@ -669,6 +671,9 @@ class AppGraph(
                 placementOf = agents::placementOf,
                 rootSyncs = syncs.mapValues { (_, s) -> ProjectDiagnostics.RootSync(s.workersRead, s.childrenRead, s.workerCount, s.childCount, s.notice) },
                 pinnedIds = prefs.localAgentState.first().pinnedIds,
+                unresolvedPinned = agents.unresolvedPinned(),
+                runningScan = agents.runningScan.value.takeIf { it.hasScanned },
+                hintRefused = agents.hintRefusedIds(),
             ),
         )
     }

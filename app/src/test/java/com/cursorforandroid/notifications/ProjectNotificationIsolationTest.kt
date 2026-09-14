@@ -20,6 +20,7 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
@@ -186,19 +187,26 @@ class ProjectNotificationIsolationTest {
                 ),
             ),
         )
+        // A status check lists the coordinator's workers: the coordinator's own word that bc-s is one of them.
         streamer.emit(
             "run-p",
             RunStreamEvent.ToolCall(
                 SseToolCallDto(
                     callId = "c2",
-                    name = "send_to_agent",
+                    name = "get_agent_status",
                     status = "completed",
-                    args = buildJsonObject { put("agent_id", JsonPrimitive("bc-s")); put("message", JsonPrimitive("Draft the pricing copy.")) },
-                    result = buildJsonObject { putJsonObject("success") { put("worker_bc_id", JsonPrimitive("bc-s")); put("delivered_as", JsonPrimitive("followup")) } },
+                    args = buildJsonObject { put("agent_ids", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("bc-w"), JsonPrimitive("bc-s")))) },
+                    result = buildJsonObject {
+                        putJsonObject("success") {
+                            put("workers", kotlinx.serialization.json.JsonArray(listOf(buildJsonObject { put("bc_id", JsonPrimitive("bc-w")); put("name", JsonPrimitive("Stripe webhook handler")) }, buildJsonObject { put("bc_id", JsonPrimitive("bc-s")); put("name", JsonPrimitive("Pricing copy")) })))
+                        }
+                    },
                 ),
             ),
         )
-        awaitUntil { agents.agent("bc-p")?.scope == AgentScope.PROJECT_ROOT && agents.agent("bc-w")?.isProjectChild == true && agents.agent("bc-s")?.isProjectChild == true }
+        awaitUntil { agents.agent("bc-p")?.scope == AgentScope.PROJECT_ROOT && agents.agent("bc-w")?.isProjectScopedByEvidence == true && agents.agent("bc-s")?.isProjectScopedByEvidence == true }
+        assertThat(agents.agent("bc-w")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_CREATED)
+        assertThat(agents.agent("bc-s")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_CREATED)
         conversations.detach("bc-p")
         assertNothingOfTheProjectNotifies()
     }
@@ -223,7 +231,11 @@ class ProjectNotificationIsolationTest {
     fun `a signed-in decision is the same rule - the scope, not the mode, is what is read`() {
         val signedIn = session.state.value
         assertThat(signedIn).isInstanceOf(SessionState.SignedIn::class.java)
+        // A mention in a coordinator's transcript alone nests a chat but is no evidence: it still counts and notifies.
         agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), authoritative = false)
+        assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-w", "bc-s", "bc-x"), serviceActive = false))
+        // The coordinator's tools showing it made them is.
+        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), LineageSignal.COORDINATOR_CREATED)
         assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-x"), serviceActive = false))
         // Every chat placed inside a Project, and the Project itself, is off the notification surfaces.
         val state = agents.state.value

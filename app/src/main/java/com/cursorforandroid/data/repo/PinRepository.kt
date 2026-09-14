@@ -249,6 +249,10 @@ class PinRepository(
             accountCursor = list.nextCursor
             agents.applyAccountSnapshots(list.composers, agentsToken)
             runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
+            // The account's statuses named what is running; whatever of it no page holds is fetched by id now, and
+            // the pins the list does not hold are resolved whether or not the pins themselves are synced.
+            agents.reconcileRunning(agentsToken)
+            agents.resolvePinned(agentsToken)
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
             if (server.loaded) {

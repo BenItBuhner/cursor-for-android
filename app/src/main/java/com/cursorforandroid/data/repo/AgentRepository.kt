@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
@@ -15,6 +16,8 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
+import com.cursorforandroid.data.local.CachedLineage
+import com.cursorforandroid.data.local.CachedPlacement
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Agent
@@ -31,6 +34,7 @@ import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.RunningScan
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
@@ -45,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -196,11 +201,31 @@ class AgentRepository(
      * public API alone: archive there only, no rename, and no row remembers a source the account gave it.
      */
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
+    /**
+     * One chat's account record by id (Extended mode), for a pinned chat the public API will not give: the row is
+     * stood in from the record so the pin is never blank. Null (the default) when there is no account to ask.
+     */
+    private val recordOf: suspend (String) -> ComposerSnapshot? = { null },
+    /** How many `/v0/agents` pages the running pass reads on a refresh (see [RunningScan]). */
+    private val runningScanPages: Int = RUNNING_SCAN_PAGES,
+    /** How many agents the running scan named that no page holds are fetched by id per pass. */
+    private val maxMaterializedRunning: Int = MAX_MATERIALIZED_RUNNING,
 ) {
     private val restoreMutex = Mutex()
 
     private val _state = MutableStateFlow(AgentListState())
     val state: StateFlow<AgentListState> = _state.asStateFlow()
+
+    private val _runningScan = MutableStateFlow(RunningScan())
+    /** The account's running agents as the dedicated pass last found them (see [RunningScan]); reset with the list. */
+    val runningScan: StateFlow<RunningScan> = _runningScan.asStateFlow()
+
+    /**
+     * Pinned chats the list does not hold and could not fetch, by id, with when they were last tried: asked again
+     * after [PINNED_RETRY_MS]. What the diagnostics report as unresolved pins.
+     */
+    private val pinnedUnresolved = ConcurrentHashMap<String, Long>()
+    private val pinnedMutex = Mutex()
 
     private class InFlight(val depth: RefreshDepth, val job: Job)
 
@@ -233,6 +258,24 @@ class AgentRepository(
 
     private class Placement(val parent: AgentParent?, val signal: LineageSignal)
 
+    /** Bumped whenever the registry changes without a row changing, so the disk copy follows (see [persist]). */
+    private val registryChanges = MutableStateFlow(0L)
+
+    /**
+     * Chats whose own account record contradicted a coordinator's transcript about them: the record named no manager
+     * or parent while the transcript had placed them. The hint is refused for them from then on — a transcript
+     * republished while its chat is open would otherwise place the chat again every time — until positive evidence
+     * (which overrides a hint anyway) or a reset.
+     */
+    private val hintRefused: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Sources the account gave chats the list does not hold yet, by id: a side chat's or subagent's source is a
+     * lineage fact (see [AgentScope.CHILD_SOURCES]), and the public page that brings the row later carries none.
+     * Applied by the classification pass when the row arrives; forgotten with the account's sources.
+     */
+    private val rememberedSources = ConcurrentHashMap<String, AgentSource>()
+
     /** Epoch millis of the last completed fetch for the current backend; zero before the first one and after a [reset]. */
     @Volatile var lastRefreshedAt: Long = 0L
         private set
@@ -264,11 +307,18 @@ class AgentRepository(
             scope.launch {
                 // Every fetched list and every local change after it (a run finishing, an archive, a launch) reaches
                 // the disk, so the next start shows them; conflated so a burst of patches costs one write.
-                _state.filter { it.hasLoaded && !it.isFromCache }.map { it.agents }.distinctUntilChanged().conflate().collect {
+                combine(_state.filter { it.hasLoaded && !it.isFromCache }.map { it.agents }.distinctUntilChanged(), registryChanges) { agents, _ -> agents }.conflate().collect {
                     delay(persistDelayMs)
                     persist()
                 }
             }
+        }
+        scope.launch {
+            // A pin is a promise the chat is shown: whenever the pins or the rows change, any pinned chat the list
+            // does not hold is fetched by id (see [resolvePinned]), whatever page it would have been on.
+            combine(_state.filter { it.hasLoaded && !it.isFromCache }.map { st -> st.agents.mapTo(HashSet()) { it.id } }, prefs.localAgentState.map { it.pinnedIds }) { held, pinned -> pinned - held }
+                .distinctUntilChanged()
+                .collect { missing -> if (missing.isNotEmpty()) resolvePinned() }
         }
     }
 
@@ -294,6 +344,10 @@ class AgentRepository(
         _refreshCompleted.value = 0L
         _state.value = AgentListState()
         placements.clear()
+        hintRefused.clear()
+        rememberedSources.clear()
+        _runningScan.value = RunningScan()
+        pinnedUnresolved.clear()
     }
 
     /**
@@ -340,7 +394,15 @@ class AgentRepository(
     }
 
     private fun Agent.placed(): Agent {
-        val placement = placements[id]
+        // A source the account gave the chat before its row arrived is the row's from here on.
+        val row = if (source == null) rememberedSources[id]?.let { copy(source = it) } ?: this else this
+        return row.placedBy(placements[id])
+    }
+
+    private fun Agent.placedBy(known: Placement?): Agent {
+        // A coordinator's transcript is no word on a chat running on one of the user's own machines: a coordinator
+        // that messages a Remote Control chat is not its manager. Only the account's own evidence places such a chat.
+        val placement = known?.takeUnless { !it.signal.isAuthoritative && envType == EnvType.MACHINE }
         return when {
             placement?.parent != null -> {
                 if (parent == placement.parent && knownScope == AgentScope.PROJECT_CHILD && scopeSignal == placement.signal) this
@@ -367,12 +429,16 @@ class AgentRepository(
      */
     private fun place(id: String, parent: AgentParent?, signal: LineageSignal): Boolean {
         if (id.isBlank() || parent?.id == id) return false
+        if (!signal.isAuthoritative && id in hintRefused) return false
         val current = placements[id]
         if (current != null && !signal.isAuthoritative && current.signal.isAuthoritative) return false
+        // A mention in a transcript never replaces evidence, the transcript's own included (a worker it created).
+        if (current != null && !signal.isPositiveEvidence && current.signal.isPositiveEvidence) return false
         // A Project that is itself somebody's child is shown where its parent is: a root's word does not lift it out.
         if (parent == null && current?.parent != null && current.signal.isAuthoritative) return false
         if (current != null && current.parent == parent && current.signal == signal) return false
         placements[id] = Placement(parent, signal)
+        registryChanges.update { it + 1 }
         return true
     }
 
@@ -416,7 +482,10 @@ class AgentRepository(
             // Sources the account list gave the rows were written to disk with them; with Extended mode off (no
             // account session, so no list read) they are not this install's to show, whichever earlier launch or
             // build learned them.
-            val rows = if (capabilities().accountSession) entry.value else entry.value.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
+            val accountSession = capabilities().accountSession
+            val rows = if (accountSession) entry.value else entry.value.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
+            // The words kept with the list about chats no row carries (see [persist]); the sources only while the account's word may be kept.
+            val lineage = cache.readLineage()
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else {
@@ -428,6 +497,12 @@ class AgentRepository(
                             row.knownScope == AgentScope.PROJECT_ROOT -> place(row.id, null, row.scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
                         }
                     }
+                    lineage?.placements?.forEach { word ->
+                        val parent = word.parentId?.let { AgentParent(it, word.kind ?: AgentParentKind.PROJECT_WORKER) }
+                        place(word.id, parent, word.signal)
+                    }
+                    lineage?.hintRefused?.let { hintRefused += it }
+                    if (accountSession) lineage?.sources?.forEach { (id, source) -> if (source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
                     // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
                     pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
@@ -556,8 +631,11 @@ class AgentRepository(
             var windowFloor = Long.MAX_VALUE
             val seen = HashSet<String>()
             val pages = pagesToFetch(depth)
+            var legacyRead = LegacyRead()
             coroutineScope {
-                val legacy = async { fetchLegacy(api, pages) }
+                // The legacy list is read further than the window: its pages carry the one execution status per agent
+                // the documented API has, so the pass over them is also the running scan (see [RunningScan]).
+                val legacy = async { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) }
                 var cursor: String? = null
                 do {
                     val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
@@ -569,11 +647,14 @@ class AgentRepository(
                 } while (cursor != null && pagesRead < pages)
                 truncated = cursor != null
                 lastCursor = cursor
-                val (v0, v0Cursor) = legacy.await()
-                if (v0.isNotEmpty()) publish { it.withLegacy(v0) }
-                synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = v0Cursor }
+                legacyRead = legacy.await()
+                if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
+                synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = legacyRead.windowCursor }
             }
             verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) }
+            if (legacyRead.pagesRead > 0) {
+                _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
+            }
             // Pinned rows outlive the listing window, as they do in the desktop sidebar; the pin sync fetches the
             // ones the window never returned, and this keeps the next listing from dropping them again.
             val pinned = prefs.localAgentState.first().pinnedIds
@@ -598,6 +679,12 @@ class AgentRepository(
                     _refreshCompleted.update { it + 1 }
                 }
             }
+            // The pass ends by reconciling the pages with what stands apart from them: the agents the running scan
+            // named that no page holds, and the pinned chats no page holds, are fetched by id.
+            if (landed) {
+                materializeRunning(startedIn)
+                resolvePinned(startedIn)
+            }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->
@@ -608,21 +695,127 @@ class AgentRepository(
     }
 
     /**
-     * The v0 list is best effort: it enriches rows but never gates them, and its failure is not the list's failure.
-     * Read as many pages as the v1 window, with the cursor past them for [loadMore].
+     * What one pass over the legacy list read: its rows by id, the cursor past the window's pages (for [loadMore]),
+     * and the running scan — every agent whose status the pages called active, how many pages that took, and
+     * whether the pass reached the end of the list.
      */
-    private suspend fun fetchLegacy(api: CursorApi, maxPages: Int): Pair<Map<String, V0AgentDto>, String?> = runCatching {
+    private class LegacyRead(
+        val rows: Map<String, V0AgentDto> = emptyMap(),
+        val windowCursor: String? = null,
+        val running: Set<String> = emptySet(),
+        val pagesRead: Int = 0,
+        val complete: Boolean = false,
+    )
+
+    /**
+     * The v0 list is best effort: it enriches rows but never gates them, and its failure is not the list's failure.
+     * Read as many pages as the v1 window ([windowPages]) for the cursor past them, and on to [scanPages] for the
+     * running scan; a failure part-way keeps what was read.
+     */
+    private suspend fun fetchLegacy(api: CursorApi, windowPages: Int, scanPages: Int): LegacyRead {
         val rows = LinkedHashMap<String, V0AgentDto>()
+        val running = LinkedHashSet<String>()
+        var windowCursor: String? = null
         var cursor: String? = null
         var pages = 0
-        do {
-            val page = api.listAgentsV0(limit = PAGE_SIZE, cursor = cursor)
-            pages++
-            page.agents.forEach { rows[it.id] = it }
-            cursor = page.nextCursor?.takeIf { it.isNotBlank() }
-        } while (cursor != null && pages < maxPages)
-        rows to cursor
-    }.getOrDefault(emptyMap<String, V0AgentDto>() to null)
+        var complete = false
+        try {
+            do {
+                val page = api.listAgentsV0(limit = PAGE_SIZE, cursor = cursor)
+                pages++
+                page.agents.forEach { row ->
+                    rows[row.id] = row
+                    if (RunStatus.parse(row.status).isActive) running += row.id
+                }
+                cursor = page.nextCursor?.takeIf { it.isNotBlank() }
+                if (pages == windowPages) windowCursor = cursor
+                if (cursor == null) complete = true
+            } while (cursor != null && pages < scanPages)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // What was read stands; the scan is as far as it got.
+        }
+        return LegacyRead(rows, windowCursor, running, pages, complete)
+    }
+
+    /**
+     * Fetches by id every agent the running scan named that the loaded pages do not hold — an old chat with a fresh
+     * follow-up, a chat beyond the window — so the live tracking and the running count see it. A few per pass; the
+     * next pass takes the rest.
+     */
+    private suspend fun materializeRunning(startedIn: Int) {
+        val scan = _runningScan.value
+        val held = _state.value.agents.mapTo(HashSet()) { it.id }
+        val missing = scan.all.filter { it !in held }.take(maxMaterializedRunning)
+        for (id in missing) {
+            if (generation.get() != startedIn) return
+            loadDetail(id)
+        }
+    }
+
+    /**
+     * A pinned chat is always shown, whatever page it would have been on, whatever it runs on and whatever it was
+     * classified as: every pinned id the list does not hold is fetched by id through the public API, and when that
+     * will not give it (a chat the public API does not know), stood in from its account record where there is one.
+     * A chat that could not be fetched is asked for again after [PINNED_RETRY_MS]; the diagnostics name it meanwhile.
+     */
+    suspend fun resolvePinned(startedIn: Int = token()) {
+        // The demo's list is its whole dataset: nothing of it is beyond a page.
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
+        pinnedMutex.withLock {
+            val pinned = prefs.localAgentState.first().pinnedIds
+            val held = _state.value.agents.mapTo(HashSet()) { it.id }
+            pinnedUnresolved.keys.retainAll(pinned)
+            val now = AppClock.now()
+            val due = pinned.filter { it !in held && (pinnedUnresolved[it]?.let { tried -> now >= tried } ?: true) }
+            for (id in due) {
+                if (generation.get() != startedIn) return
+                val fetched = loadDetail(id)
+                if (fetched.isSuccess) {
+                    pinnedUnresolved.remove(id)
+                    continue
+                }
+                val record = runCatching { recordOf(id) }.getOrNull()
+                if (record != null && generation.get() == startedIn) {
+                    upsert(record.toStandIn(), startedIn)
+                    pinnedUnresolved.remove(id)
+                } else {
+                    // Tried again after a while (offline, a server that is down); a chat the server says is gone,
+                    // much later — the account may still come to know it once Extended mode is on.
+                    val gone = (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404
+                    pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                }
+            }
+        }
+    }
+
+    /** The pinned ids the list does not hold and could not fetch, for the diagnostics. */
+    fun unresolvedPinned(): Set<String> = pinnedUnresolved.keys.toSet()
+
+    /** The chats whose record contradicted a coordinator's transcript about them, for the diagnostics. */
+    fun hintRefusedIds(): Set<String> = hintRefused.toSet()
+
+    /** A row stood in from an account record alone: the name and archive flag the record gives, nothing the public API would. */
+    private fun ComposerSnapshot.toStandIn(): Agent = Agent(
+        id = id,
+        name = name?.trim()?.takeIf { it.isNotEmpty() } ?: "Chat",
+        lifecycle = if (archived == true) AgentLifecycle.ARCHIVED else AgentLifecycle.UNKNOWN,
+        runStatus = status,
+        envType = EnvType.UNKNOWN,
+        envName = null,
+        url = "https://cursor.com/agents/$id",
+        createdAtMillis = 0L,
+        updatedAtMillis = 0L,
+        latestRunId = null,
+        repoUrl = null,
+        startingRef = null,
+        source = source,
+        isProject = isProject,
+        projectAppearance = projectAppearance,
+        parent = parent,
+        hasPendingInteraction = hasPendingInteraction,
+    )
 
     /**
      * How many pages a pass reads: the newest one for a poll's quick look, else the window the list has been paged
@@ -709,6 +902,11 @@ class AgentRepository(
      */
     fun applySources(sources: Map<String, AgentSource>, startedIn: Int = token()) {
         if (sources.isEmpty()) return
+        synchronized(publishLock) {
+            if (generation.get() != startedIn) return
+            val held = _state.value.agents.mapTo(HashSet()) { it.id }
+            sources.forEach { (id, source) -> if (id !in held && source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
+        }
         publish(null, startedIn) { it.withSources(sources) }
     }
 
@@ -719,6 +917,7 @@ class AgentRepository(
      */
     fun forgetAccountSources(launchedHere: Set<String>) {
         if (session.isDemo) return
+        rememberedSources.clear()
         _state.update { s -> s.copy(agents = s.agents.withoutAccountSources(launchedHere)) }
     }
 
@@ -739,12 +938,18 @@ class AgentRepository(
         val backend = session.current
         if (cache == null || backend.isDemo) return
         // The cache generation belongs to the list being written, so a wipe between here and the file refuses it.
-        val (token, agents) = synchronized(publishLock) {
+        val (token, agents, lineage) = synchronized(publishLock) {
             val s = _state.value
             if (!s.hasLoaded || s.isFromCache) return
-            cache.token() to s.agents.filterNot { it.id in pendingLaunches }
+            // The registry's word about chats the rows do not carry themselves — above all the ones no page holds
+            // yet — goes to the disk with them, so a restart places a later page the same. Bounded: the words about
+            // chats nowhere near the list are the first to go.
+            val held = s.agents.mapTo(HashSet()) { it.id }
+            val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent?.id, p.parent?.kind, p.signal) }
+            val sources = rememberedSources.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).associate { (id, source) -> id to source }
+            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, sources, hintRefused.take(MAX_PERSISTED_PLACEMENTS).toSet()))
         }
-        cache.write(agents, token)
+        cache.write(agents, token, lineage)
     }
 
     /**
@@ -1000,8 +1205,34 @@ class AgentRepository(
      */
     fun applyAccountSnapshots(composers: List<ComposerSnapshot>, startedIn: Int = token()) {
         if (composers.isEmpty()) return
+        synchronized(publishLock) {
+            if (generation.get() != startedIn) return
+            // The account's word about chats the pages do not hold yet is kept for when they arrive: the account
+            // list and the public list are windowed differently, and a worker's record read now places the row a
+            // later page brings — otherwise it would sit among the primary rows until the account named it again.
+            val held = _state.value.agents.mapTo(HashSet()) { it.id }
+            composers.filter { it.id !in held }.forEach { snap ->
+                when {
+                    snap.parent != null -> place(snap.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
+                    snap.isProject && placements[snap.id]?.parent == null -> place(snap.id, null, LineageSignal.ACCOUNT_RECORD)
+                }
+                snap.source?.takeIf { it in AgentScope.CHILD_SOURCES }?.let { rememberedSources[snap.id] = it }
+            }
+        }
         publish(null, startedIn) { it.withAccountSnapshots(composers) }
+        // The account's list carries its own word on what is running, for every composer in its window — a
+        // Project's workers and side chats included; it is the Extended half of the running scan (see [RunningScan]).
+        if (composers.any { it.status != null }) {
+            synchronized(publishLock) {
+                if (generation.get() == startedIn) {
+                    _runningScan.update { it.copy(accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id }, accountAtMillis = AppClock.now()) }
+                }
+            }
+        }
     }
+
+    /** [materializeRunning] for the pin sync's round, once the account list has landed. */
+    suspend fun reconcileRunning(startedIn: Int = token()) = materializeRunning(startedIn)
 
     private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
         if (composers.isEmpty()) return this
@@ -1026,9 +1257,19 @@ class AgentRepository(
                     knownScope = AgentScope.PROJECT_CHILD
                     signal = LineageSignal.ACCOUNT_RECORD
                 }
-                // The record's own earlier word, withdrawn: the chat was released, or its parent unlinked.
-                placement != null && placement.signal == LineageSignal.ACCOUNT_RECORD && placement.parent != null -> {
+                // The record's own earlier word, withdrawn: the chat was released, or its parent unlinked. And a
+                // record that names no parent is the account's word against a coordinator's transcript alone: the
+                // hint placed the chat only until the chat's own record spoke, and the record says it is its own.
+                placement != null && placement.parent != null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative) -> {
                     placements.remove(agent.id)
+                    if (!placement.signal.isAuthoritative) hintRefused += agent.id
+                    parent = null
+                    knownScope = if (snap.isProject) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
+                    signal = if (snap.isProject) LineageSignal.ACCOUNT_RECORD else null
+                }
+                // A row a transcript alone placed, with no registry word left (a restart): the record says it is its own.
+                placement == null && agent.parent != null && agent.scopeSignal?.isAuthoritative == false -> {
+                    hintRefused += agent.id
                     parent = null
                     knownScope = if (snap.isProject) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
                     signal = if (snap.isProject) LineageSignal.ACCOUNT_RECORD else null
@@ -1038,9 +1279,10 @@ class AgentRepository(
                 place(agent.id, null, LineageSignal.ACCOUNT_RECORD)
                 knownScope = AgentScope.PROJECT_ROOT
                 signal = LineageSignal.ACCOUNT_RECORD
-            } else if (!snap.isProject && placement != null && placement.parent == null && placement.signal == LineageSignal.ACCOUNT_RECORD) {
-                // A Project the record no longer calls one.
+            } else if (!snap.isProject && placement != null && placement.parent == null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative)) {
+                // A Project the record no longer calls one, or a root a transcript alone made of a chat the record calls its own.
                 placements.remove(agent.id)
+                if (!placement.signal.isAuthoritative) hintRefused += agent.id
                 if (knownScope == AgentScope.PROJECT_ROOT) {
                     knownScope = null
                     signal = null
@@ -1078,7 +1320,8 @@ class AgentRepository(
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
             place(rootId, null, signal)
-            members.forEach { (id, kind) -> if (id != rootId) place(id, AgentParent(rootId, kind), signal) }
+            val machines = if (signal.isAuthoritative) emptySet() else _state.value.agents.filter { it.envType == EnvType.MACHINE }.mapTo(HashSet()) { it.id }
+            members.forEach { (id, kind) -> if (id != rootId && id !in machines) place(id, AgentParent(rootId, kind), signal) }
             if (retract.isNotEmpty() && signal.isAuthoritative) {
                 placements.entries.removeAll { (id, placement) ->
                     val parent = placement.parent ?: return@removeAll false
@@ -1145,6 +1388,15 @@ class AgentRepository(
 
     companion object {
         private const val PAGE_SIZE = 100
+        /** `/v0/agents` pages the running scan reads on a refresh: the newest five hundred agents by the list's order. */
+        const val RUNNING_SCAN_PAGES = 5
+        /** Agents the running scan named that no page holds, fetched by id per pass. */
+        private const val MAX_MATERIALIZED_RUNNING = 12
+        /** A pinned chat that could not be fetched is tried again after this long; one the server called gone, after [PINNED_GONE_RETRY_MS]. */
+        const val PINNED_RETRY_MS = 5 * 60_000L
+        const val PINNED_GONE_RETRY_MS = 30 * 60_000L
+        /** Registry words about chats the rows do not carry, kept on disk at most. */
+        private const val MAX_PERSISTED_PLACEMENTS = 2_000
         /**
          * The most a refresh re-reads: 500 agents, the newest first. The list pages past that only as the reader
          * scrolls to its end ([loadMore]), and the rows so loaded stay as they were between refreshes.
