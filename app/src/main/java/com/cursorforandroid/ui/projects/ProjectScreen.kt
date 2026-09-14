@@ -51,7 +51,6 @@ import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.ProjectWorker
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
@@ -113,7 +112,6 @@ fun ProjectScreen(
         onMove = { sheet = ProjectSheet.Move(it.id, it.name) },
         onNewWorker = { sheet = ProjectSheet.NewWorker },
         onAdopt = { sheet = ProjectSheet.Adopt },
-        onNewSideChat = { sheet = ProjectSheet.NewSideChat },
         onEditAppearance = { sheet = ProjectSheet.Appearance },
         onLoadContext = viewModel::loadContext,
         onContextUp = viewModel::contextUp,
@@ -138,7 +136,6 @@ fun ProjectScreen(
             onDismiss = { sheet = null },
         )
         ProjectSheet.Adopt -> AdoptSheet(candidates = adoptable, onPick = viewModel::adopt, onDismiss = { sheet = null })
-        ProjectSheet.NewSideChat -> NameSheet(title = "New side chat", placeholder = "Name (optional)", action = "Start", onConfirm = viewModel::startSideChat, onDismiss = { sheet = null })
         ProjectSheet.Appearance -> AppearanceSheet(current = state.root?.projectAppearance, onPick = viewModel::updateAppearance, onDismiss = { sheet = null })
         is ProjectSheet.Steer -> SteerSheet(workerName = open.name, onSteer = { text -> viewModel.steer(open.agentId, text) }, onDismiss = { sheet = null })
         is ProjectSheet.Move -> MoveSheet(workerName = open.name, projects = otherProjects, onPick = { viewModel.reparent(open.agentId, it) }, onDismiss = { sheet = null })
@@ -157,7 +154,6 @@ internal class ProjectActions(
     val onMove: (Agent) -> Unit,
     val onNewWorker: () -> Unit,
     val onAdopt: () -> Unit,
-    val onNewSideChat: () -> Unit,
     val onEditAppearance: () -> Unit,
     val onLoadContext: (String) -> Unit,
     val onContextUp: () -> Unit,
@@ -244,15 +240,12 @@ internal fun ProjectBody(
             item("adopt") { ActionRow(CursorIcons.Layers, "Adopt a chat", "Bring one of your chats into the Project", enabled = !busy, onClick = actions.onAdopt) }
         }
 
-        item("side-hdr") { SectionLabel(if (state.sideChats.isEmpty()) "Side chats" else "Side chats \u00B7 ${state.sideChats.size}") }
-        items(state.sideChats, key = { "side:${it.id}" }) { side ->
-            AgentLine(side, local, nowMillis, subtitle = "Side chat", onOpen = { actions.onOpenAgent(side) })
-        }
-        item("side-action") {
-            when {
-                !state.actionsAvailable -> if (state.sideChats.isEmpty()) EmptyRow("No side chats.")
-                state.sideChatAvailability == SideChatAvailability.COMING_TO_CURSOR -> NoticeRow(SIDE_CHATS_COMING, icon = CursorIcons.Clock)
-                else -> ActionRow(CursorIcons.Plus, "New side chat", "Branch a conversation off the coordinator", enabled = !busy, onClick = actions.onNewSideChat)
+        // The coordinator's side chats are part of its tree; starting one is the coordinator chat's own business, in
+        // its panel's Side chats section, as for any chat.
+        if (state.sideChats.isNotEmpty()) {
+            item("side-hdr") { SectionLabel("Side chats \u00B7 ${state.sideChats.size}") }
+            items(state.sideChats, key = { "side:${it.id}" }) { side ->
+                AgentLine(side, local, nowMillis, subtitle = "Side chat", onOpen = { actions.onOpenAgent(side) })
             }
         }
 
@@ -486,9 +479,6 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
     else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
 }
-
-/** The named state of a side chat Cursor will not start for a cloud chat yet (spec §4). */
-const val SIDE_CHATS_COMING = "Side chats for cloud agents are coming to Cursor"
 
 /**
  * The coordinator's line when Cursor would not give its row ([ProjectViewState.rootUnavailable]): the chats below

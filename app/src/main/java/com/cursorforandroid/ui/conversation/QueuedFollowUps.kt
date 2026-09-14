@@ -5,16 +5,20 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -153,9 +157,12 @@ private fun QueuedFollowUpRow(
 
 /**
  * The account's queue for the chat (Extended mode), in the same rows as the device's: what the desktop and the web
- * show above their composers, in the order the server will send it. Each row's glyphs are remove, edit and send now;
- * edit opens the row into a line of its own with save and cancel, the account told meanwhile that the message is
- * being reworded (`MarkFollowupEditing`). A row the account has in flight from here shows a ring instead.
+ * show above their composers, in the order the server will send it. Each row's glyphs are remove, edit and send
+ * now — and, while a turn is under way and steering is on, steer now, which delivers the message into the running
+ * turn instead of after it (`InjectBackgroundComposerContext` with the queued message promoted). Edit opens the row
+ * into a line of its own with save and cancel, the account told meanwhile that the message is being reworded
+ * (`MarkFollowupEditing`). With more than one message queued, a row's menu moves it up or down the order
+ * (`ReorderPendingFollowup`). A row the account has in flight from here shows a ring instead.
  */
 @Composable
 fun AccountQueueRows(
@@ -166,6 +173,10 @@ fun AccountQueueRows(
     onUpdate: (PendingFollowup, String) -> Unit,
     onEditing: (PendingFollowup, Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** Delivers a queued message into the turn under way as a steer; null while nothing is running, or the surface is off. */
+    onSteerNow: ((PendingFollowup) -> Unit)? = null,
+    /** Moves a queued message one place earlier (`up`) or later; null when the order cannot be changed from here. */
+    onMove: ((PendingFollowup, up: Boolean) -> Unit)? = null,
 ) {
     Column(modifier.animateContentSize().testTag("account-queue"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         queue.forEachIndexed { index, item ->
@@ -176,6 +187,8 @@ fun AccountQueueRows(
                     count = queue.size,
                     inFlight = item.id in inFlightIds,
                     onSendNow = { onSendNow(item) },
+                    onSteerNow = onSteerNow?.let { steer -> { steer(item) } },
+                    onMove = onMove?.takeIf { queue.size > 1 }?.let { move -> { up -> move(item, up) } },
                     onRemove = { onRemove(item) },
                     onUpdate = { text -> onUpdate(item, text) },
                     onEditing = { editing -> onEditing(item, editing) },
@@ -192,6 +205,8 @@ private fun AccountQueueRow(
     count: Int,
     inFlight: Boolean,
     onSendNow: () -> Unit,
+    onSteerNow: (() -> Unit)?,
+    onMove: ((Boolean) -> Unit)?,
     onRemove: () -> Unit,
     onUpdate: (String) -> Unit,
     onEditing: (Boolean) -> Unit,
@@ -199,6 +214,7 @@ private fun AccountQueueRow(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     var editing by rememberSaveable(item.id) { mutableStateOf(false) }
+    var menuOpen by rememberSaveable(item.id) { mutableStateOf(false) }
     // The caret starts at the end of the message, where a rewording most often continues.
     var text by rememberSaveable(item.id, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(item.text, TextRange(item.text.length))) }
     Row(
@@ -244,7 +260,17 @@ private fun AccountQueueRow(
                     SpinnerRing(size = 11.dp)
                 }
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (onMove != null) {
+                        Box {
+                            GlyphButton(CursorIcons.More, "Reorder queued follow-up", colors.iconTertiary) { menuOpen = true }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
+                                MenuItem("Move up", CursorIcons.ArrowUp, enabled = position > 1) { menuOpen = false; onMove(true) }
+                                MenuItem("Move down", CursorIcons.ArrowDown, enabled = position < count) { menuOpen = false; onMove(false) }
+                            }
+                        }
+                    }
+                    if (onSteerNow != null) GlyphButton(CursorIcons.Target, "Steer now", colors.iconTertiary, onSteerNow)
                     GlyphButton(CursorIcons.Trash, "Remove queued follow-up", colors.iconTertiary, onRemove)
                     GlyphButton(CursorIcons.Pencil, "Edit queued follow-up", colors.iconTertiary) { text = TextFieldValue(item.text, TextRange(item.text.length)); editing = true; onEditing(true) }
                     GlyphButton(CursorIcons.ArrowUp, "Send now", colors.iconPrimary, onSendNow)
@@ -252,6 +278,21 @@ private fun AccountQueueRow(
             }
         }
     }
+}
+
+/** One line of the reorder menu: the direction's glyph and word, dimmed at the end of the queue it cannot move past. */
+@Composable
+private fun MenuItem(label: String, icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val tint = if (enabled) colors.textPrimary else colors.textQuaternary
+    DropdownMenuItem(
+        text = { Text(label, style = CursorTheme.typography.base, color = tint) },
+        leadingIcon = { Icon(icon, null, tint = if (enabled) colors.iconSecondary else colors.iconQuaternary, modifier = Modifier.size(16.dp)) },
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(start = 12.dp, end = 20.dp),
+        modifier = Modifier.height(40.dp),
+    )
 }
 
 /** A bare glyph the size of the composer's chevrons, on a ripple disc no bigger than the row is tall. */

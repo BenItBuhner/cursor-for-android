@@ -316,19 +316,77 @@ class ProjectRepositoryTest {
 
         val refused = projects.startSideChat("bc-p", "Pricing")
         assertThat(refused.isFailure).isTrue()
-        assertThat(projects.view("bc-p").first().sideChatAvailability).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
+        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
 
         // A different failure is an error, not the named state.
         lineage.sideChatFailure = ConnectRpcException(400, "invalid_argument", "name too long")
         projects.startSideChat("bc-p", "x".repeat(200))
-        assertThat(projects.view("bc-p").first().sideChatAvailability).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
+        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
 
-        // The day it answers, the side chat is the Project's and the state says so.
+        // The day it answers, the side chat is the Project's and the state says so — for the account, not one chat.
         lineage.sideChatFailure = null
         api.addIdleAgent("bc-side", "Pricing", "run-side")
         assertThat(projects.startSideChat("bc-p", "Pricing").getOrNull()).isEqualTo("bc-side")
-        assertThat(projects.view("bc-p").first().sideChatAvailability).isEqualTo(SideChatAvailability.AVAILABLE)
+        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.AVAILABLE)
         assertThat(agents.agent("bc-side")?.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SIDE_CHAT))
+        assertThat(agents.agent("bc-side")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        // Sign-out forgets what the account said.
+        projects.reset()
+        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.UNKNOWN)
+    }
+
+    @Test
+    fun `any chat can branch a side chat and read its children, and neither makes a Project of it`() = runBlocking<Unit> {
+        extended = true
+        api.addIdleAgent("bc-x", "Plain chat", "run-x")
+        api.addIdleAgent("bc-s1", "Pricing side chat", "run-s1")
+        api.addIdleAgent("bc-s2", "Contrast side chat", "run-s2")
+        api.addIdleAgent("bc-sub", "A subagent", "run-sub")
+        val agents = agents()
+        agents.refresh()
+        val projects = projects(agents)
+
+        // Started from here: the side chat hangs off the plain chat by its record's word; the chat stays one of the account's own.
+        api.addIdleAgent("bc-side", "Pricing", "run-side")
+        assertThat(projects.startSideChat("bc-x", "Pricing").getOrNull()).isEqualTo("bc-side")
+        assertThat(agents.agent("bc-side")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+        assertThat(agents.agent("bc-side")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.agent("bc-x")?.isProjectRoot).isFalse()
+
+        // Read from the account: the children list places its members and lets go of the one it no longer names.
+        lineage.children = mapOf(
+            "bc-x" to listOf(
+                ComposerSnapshot("bc-s1", parent = AgentParent("bc-x", AgentParentKind.SIDE_CHAT)),
+                ComposerSnapshot("bc-s2", parent = AgentParent("bc-x", AgentParentKind.SIDE_CHAT)),
+                ComposerSnapshot("bc-sub", parent = AgentParent("bc-x", AgentParentKind.SUBAGENT)),
+            ),
+        )
+        val read = projects.refreshChildren("bc-x")
+        assertThat(read).isEqualTo(VmRead.Loaded(2))
+        assertThat(lineage.calls).contains("children:bc-x")
+        assertThat(agents.agent("bc-s1")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+        assertThat(agents.agent("bc-s2")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+        assertThat(agents.agent("bc-sub")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SUBAGENT))
+        assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        lineage.children = mapOf("bc-x" to listOf(ComposerSnapshot("bc-s1", parent = AgentParent("bc-x", AgentParentKind.SIDE_CHAT))))
+        assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.Loaded(1))
+        assertThat(agents.agent("bc-s2")?.parent).isNull()
+        assertThat(agents.agent("bc-s2")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.agent("bc-s1")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+
+        // A refusal is a named failure, one that says the method is gone marked as such.
+        lineage.failing = ConnectRpcException(404, "unimplemented", "gone")
+        val failed = projects.refreshChildren("bc-x")
+        assertThat(failed).isInstanceOf(VmRead.Failed::class.java)
+        assertThat((failed as VmRead.Failed).endpointChanged).isTrue()
+        lineage.failing = null
+
+        // Off: nothing is called, and the answer names the mode.
+        extended = false
+        lineage.calls.clear()
+        assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.NotAvailable(ProjectRepository.NEEDS_EXTENDED_MODE))
+        assertThat(lineage.calls).isEmpty()
     }
 
     @Test

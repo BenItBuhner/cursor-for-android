@@ -8,20 +8,22 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 
-/** The panel's sections, top to bottom, by the names the spec gives them (§7). */
+/**
+ * The panel's sections, top to bottom: the set cursor.com/agents keeps beside a conversation — its facts, the code
+ * changes, the pull request under review, the files, the artifacts — plus the chat's side chats, its Project where
+ * it has one, and the usage the documented API reports. The queue is not a section: queued follow-ups sit above the
+ * composer, where Cursor's own clients put them (see `QueuedFollowUps`).
+ */
 enum class PanelSectionId(val title: String) {
     Header("Overview"),
     PendingQuestion("Pending question"),
     Changes("Changes"),
     PullRequest("Pull request"),
     Files("Files"),
-    Media("Images and media"),
     Artifacts("Artifacts"),
-    Queue("Queue and steering"),
+    SideChats("Side chats"),
     Project("Project"),
-    Remote("Remote"),
     Usage("Usage"),
-    Share("Share"),
 }
 
 /**
@@ -33,7 +35,8 @@ sealed interface SectionAvailability {
 
     /**
      * The section reads or writes through Cursor's undocumented endpoints, which Extended mode gates. [reason] says
-     * what it would show; [ready] is false while no build carries the section even with the mode on.
+     * what it would show; [ready] is false while no build carries the section even with the mode on. A section in
+     * this state is left out of the panel rather than shown as a placeholder (see [PanelRegistry.shown]).
      */
     data class RequiresExtended(val reason: String, val ready: Boolean = false) : SectionAvailability
 
@@ -55,13 +58,20 @@ interface PanelActions {
     fun copyText(text: String, confirmation: String = "Copied")
     fun shareText(text: String)
     fun openArtifact(artifact: Artifact)
-    /** Navigates to another chat (a subagent, a Project's primary) and to a Project's view; no-ops where the host offers neither. */
+    /** Navigates to another chat (a subagent, a Project's primary, a side chat) and to a Project's view; no-ops where the host offers neither. */
     fun openAgent(agentId: String)
     fun openProject(projectId: String)
     /** The panel's own toast. */
     fun notify(message: String)
     /** The reader opened or closed a section; remembered for the panel's life (see `PanelState.expandedSections`). */
     fun setSectionExpanded(id: PanelSectionId, expanded: Boolean)
+
+    // -- side chats ---------------------------------------------------------------------------------------------------
+
+    /** Re-reads the chat's side chats from the account (`ListBackgroundComposerChildren`, Extended mode). */
+    fun refreshSideChats()
+    /** Branches a side chat off this chat (`StartSideChatBackgroundComposer`, Extended mode); [name] is optional. */
+    fun startSideChat(name: String?)
 
     // -- the agent's VM and the account (Extended mode) ---------------------------------------------------------------
 
@@ -85,23 +95,12 @@ interface PanelActions {
     // The chat's controls on the account (Extended mode; see SteeringRepository). Each reports its outcome through [notify].
     /** Answers the `ask_question` call [callId] the agent is waiting on. */
     fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>)
-    /** Steers the turn under way without stopping it. */
-    fun steer(text: String)
     fun pauseRun()
     fun resumeRun()
     /** The documented cancel of the run under way. */
     fun stopRun()
     /** Wakes the chat's machine ahead of a follow-up. */
     fun wake()
-    fun cancelToolCall(callId: String)
-    /** The account's queue: re-read it, and one queued message's send now, removal, move, rewording, editing flag, or delivery as a steer. */
-    fun refreshQueue()
-    fun queueSendNow(followupId: String)
-    fun queueDelete(followupId: String)
-    fun queueMove(followupId: String, up: Boolean)
-    fun queueUpdate(followupId: String, text: String)
-    fun queueMarkEditing(followupId: String, editing: Boolean)
-    fun queueSteerNow(followupId: String)
 
     companion object {
         /** Does nothing; for previews and tests of the sections' rendering. */
@@ -123,6 +122,8 @@ interface PanelActions {
             override fun openProject(projectId: String) = Unit
             override fun notify(message: String) = Unit
             override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) = Unit
+            override fun refreshSideChats() = Unit
+            override fun startSideChat(name: String?) = Unit
             override fun loadDiff(force: Boolean) = Unit
             override fun openBranchDiffFile(file: AgentDiffFile) = Unit
             override fun loadWorkspace(force: Boolean) = Unit
@@ -135,31 +136,28 @@ interface PanelActions {
             override fun closeDesktop() = Unit
             override fun createPullRequest() = Unit
             override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = Unit
-            override fun steer(text: String) = Unit
             override fun pauseRun() = Unit
             override fun resumeRun() = Unit
             override fun stopRun() = Unit
             override fun wake() = Unit
-            override fun cancelToolCall(callId: String) = Unit
-            override fun refreshQueue() = Unit
-            override fun queueSendNow(followupId: String) = Unit
-            override fun queueDelete(followupId: String) = Unit
-            override fun queueMove(followupId: String, up: Boolean) = Unit
-            override fun queueUpdate(followupId: String, text: String) = Unit
-            override fun queueMarkEditing(followupId: String, editing: Boolean) = Unit
-            override fun queueSteerNow(followupId: String) = Unit
         }
     }
 }
 
 /**
- * One section of the panel. The registry is a list of these, so a later build adds an Extended-mode section — or
- * fills in a placeholder — by registering a section under the same id, without touching the panel.
+ * One section of the panel. The registry is a list of these, so a later build adds a section — or replaces one — by
+ * registering it under the same id, without touching the panel.
  */
 class PanelSection(
     val id: PanelSectionId,
     val icon: ImageVector,
     val title: String = id.title,
+    /**
+     * Whether the section belongs in this chat's panel at all, given the mode and the chat: a section with nothing
+     * to show — no pull request, no artifacts, no question waiting, no Project — is left out rather than rendered
+     * as an empty row or a placeholder. What it would have offered stays reachable elsewhere (see [PanelRegistry.shown]).
+     */
+    val visible: (Capabilities, PanelState) -> Boolean = { _, _ -> true },
     /** What the section needs before it can show anything, given the mode and the chat. */
     val availability: (Capabilities, PanelState) -> SectionAvailability = { _, _ -> SectionAvailability.Available },
     /** A few words beside the title — "3 files", "Open · checks passed" — or null. */
@@ -168,7 +166,11 @@ class PanelSection(
     /** Runs when the section is opened: the read it needs. */
     val onOpen: (PanelActions) -> Unit = {},
     val content: @Composable (PanelState, PanelActions) -> Unit,
-)
+) {
+    /** [visible] for this chat, and not gated on a mode that is off: the rule the panel draws sections by. */
+    fun isShown(capabilities: Capabilities, state: PanelState): Boolean =
+        visible(capabilities, state) && availability(capabilities, state) !is SectionAvailability.RequiresExtended
+}
 
 /** The panel's sections in order. Immutable; [with] returns a registry with one section replaced or appended. */
 class PanelRegistry(val sections: List<PanelSection>) {
@@ -179,8 +181,15 @@ class PanelRegistry(val sections: List<PanelSection>) {
 
     operator fun get(id: PanelSectionId): PanelSection? = sections.firstOrNull { it.id == id }
 
+    /**
+     * The sections the panel draws for this chat, in order: each one that has something to show ([PanelSection.visible])
+     * and is not waiting on a mode that is off. A section a private surface gates is left out while the surface is
+     * off rather than shown as an "Extended mode" placeholder; turning the mode on in Settings brings it in.
+     */
+    fun shown(capabilities: Capabilities, state: PanelState): List<PanelSection> = sections.filter { it.isShown(capabilities, state) }
+
     companion object {
-        /** The default-mode panel: what the documented API feeds, and a named placeholder for every Extended-mode section. */
+        /** The default panel: what the documented API feeds, and the Extended-mode sections the mode brings in. */
         fun default(): PanelRegistry = PanelRegistry(DefaultPanelSections.all)
     }
 }

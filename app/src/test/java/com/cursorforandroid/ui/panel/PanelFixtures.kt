@@ -5,6 +5,8 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.Artifact
@@ -19,6 +21,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.MachineStatus
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestDetails
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestView
@@ -247,6 +250,38 @@ object PanelFixtures {
         runStatus = RunStatus.RUNNING,
         machine = RemoteLoad.Loaded(MachineStatus("studio-mac", connected = true, isInUse = true, activeAgentId = "bc-machine")),
     )
+
+    /** Two chats branched off the chat as side chats, as the list hangs them under it: one still working, one done. */
+    val sideChats = listOf(
+        agent.copy(
+            id = "bc-side-1",
+            name = "Should the widget follow the toggle?",
+            runStatus = RunStatus.RUNNING,
+            branches = emptyList(),
+            updatedAtMillis = NOW - 12 * 60_000L,
+            parent = AgentParent("bc-demo", AgentParentKind.SIDE_CHAT),
+            source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD,
+        ),
+        agent.copy(
+            id = "bc-side-2",
+            name = "Light theme contrast check",
+            runStatus = RunStatus.FINISHED,
+            branches = emptyList(),
+            updatedAtMillis = NOW - 50 * 60_000L,
+            parent = AgentParent("bc-demo", AgentParentKind.SIDE_CHAT),
+            source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD,
+        ),
+    )
+
+    /** The chat in Extended mode with its side chats read from the account. */
+    fun withSideChats(): PanelState = loaded().copy(
+        capabilities = Capabilities.EXTENDED,
+        sideChats = sideChats,
+        sideChatsLoad = RemoteLoad.Loaded(Unit),
+    )
+
+    /** The chat as a Project's coordinator, by the account's record. */
+    fun projectRoot(): PanelState = loaded().copy(agent = agent.copy(isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
 
     /** The question a run is paused on, as the stream carries it: an `ask_question` call still running. */
     val question = ToolPayload.Question(

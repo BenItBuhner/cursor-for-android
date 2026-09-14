@@ -26,6 +26,8 @@ import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ScmHost
 import com.cursorforandroid.data.repo.SteeringRepository
+import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
@@ -137,6 +139,14 @@ data class PanelState(
     val pullRequestCreation: RemoteLoad<String> = RemoteLoad.Idle,
     /** What the account has said about the chat's controls (Extended mode): its queue, the last steer, what was held or answered from here. */
     val controls: ConversationControls = ConversationControls.EMPTY,
+    /** The chats branched off this one as side chats, as the agent list knows them, newest first. */
+    val sideChats: List<Agent> = emptyList(),
+    /** The account's read of the chat's children (Extended); [RemoteLoad.Unsupported] names why not, otherwise. */
+    val sideChatsLoad: RemoteLoad<Unit> = RemoteLoad.Idle,
+    /** Whether Cursor starts side chats for cloud chats on this account, as far as the attempts made here have shown. */
+    val sideChatAvailability: SideChatAvailability = SideChatAvailability.UNKNOWN,
+    /** Starting a side chat from here: idle until asked; the new chat's id once Cursor has started it. */
+    val sideChatCreation: RemoteLoad<String> = RemoteLoad.Idle,
     /**
      * The sections the reader opened or closed, by id, kept for the panel's life: the panel is composed only while
      * it is open, so without this a reopened panel would forget what was expanded. A section absent here is at its
@@ -169,6 +179,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val machine = MutableStateFlow<RemoteLoad<MachineStatus>>(RemoteLoad.Idle)
     private val desktop = MutableStateFlow<DesktopState>(DesktopState.Idle)
     private val pullRequestCreation = MutableStateFlow<RemoteLoad<String>>(RemoteLoad.Idle)
+    private val sideChatsLoad = MutableStateFlow<RemoteLoad<Unit>>(RemoteLoad.Idle)
+    private val sideChatCreation = MutableStateFlow<RemoteLoad<String>>(RemoteLoad.Idle)
     private val expandedSections = MutableStateFlow<Map<PanelSectionId, Boolean>>(emptyMap())
     private var browseJob: Job? = null
     private var fileJob: Job? = null
@@ -178,9 +190,16 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private var machineJob: Job? = null
     private var desktopJob: Job? = null
     private var creationJob: Job? = null
+    private var sideChatsJob: Job? = null
 
     private val agent: StateFlow<Agent?> = graph.agents.state.map { s -> s.agents.firstOrNull { it.id == agentId } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.agents.agent(agentId))
+
+    /** The chats the list hangs off this one as side chats, newest first — in either mode, from whatever placed them. */
+    private val sideChats: StateFlow<List<Agent>> = graph.agents.state
+        .map { s -> s.agents.filter { it.parent?.id == agentId && it.parent.kind == AgentParentKind.SIDE_CHAT }.sortedByDescending { it.updatedAtMillis } }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** The tool payloads read off the timeline, recomputed only when the items change and off the main thread. */
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -192,15 +211,17 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** The reads of the agent's VM and of the account, folded so the main combine stays within its arity. */
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
-    /** [vmLoads] with what the account has said about the chat's controls and the reader's expanded sections, for the same reason. */
-    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), expandedSections) { vm, controls, expanded -> Triple(vm, controls, expanded) }
+    /** The chat's side chats and what the account has said about them, folded for the same reason. */
+    private val sideChatLoads = combine(sideChats, sideChatsLoad, graph.projects.sideChatAvailability, sideChatCreation) { chats, load, availability, creation -> SideChatLoads(chats, load, availability, creation) }
+    /** [vmLoads] with what the account has said about the chat's controls, its side chats and the reader's expanded sections. */
+    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections) { vm, controls, side, expanded -> ExtendedLoads(vm, controls, side, expanded) }
 
     val state: StateFlow<PanelState> = combine(
         agent,
         graph.conversations.state(agentId),
         content,
         graph.extendedMode.capabilities,
-        combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, (vm, controls, expanded) -> Loads(pr, art, use, br, vm, controls, expanded) },
+        combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, extended -> Loads(pr, art, use, br, extended) },
     ) { a, conversation, (transcript, prompts), capabilities, loads ->
         PanelState(
             agentId = agentId,
@@ -215,13 +236,17 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             artifacts = loads.artifacts,
             usage = loads.usage,
             browser = loads.browser.withRepository(a),
-            diff = loads.vm.diff,
-            workspace = loads.vm.workspace,
-            machine = loads.vm.machine,
-            desktop = loads.vm.desktop,
-            pullRequestCreation = loads.vm.pullRequestCreation,
-            controls = loads.controls,
-            expandedSections = loads.expandedSections,
+            diff = loads.extended.vm.diff,
+            workspace = loads.extended.vm.workspace,
+            machine = loads.extended.vm.machine,
+            desktop = loads.extended.vm.desktop,
+            pullRequestCreation = loads.extended.vm.pullRequestCreation,
+            controls = loads.extended.controls,
+            sideChats = loads.extended.sideChats.chats,
+            sideChatsLoad = loads.extended.sideChats.load,
+            sideChatAvailability = loads.extended.sideChats.availability,
+            sideChatCreation = loads.extended.sideChats.creation,
+            expandedSections = loads.extended.expandedSections,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
 
@@ -230,9 +255,21 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val artifacts: RemoteLoad<List<Artifact>>,
         val usage: RemoteLoad<AgentUsage>,
         val browser: RepoBrowserState,
+        val extended: ExtendedLoads,
+    )
+
+    private data class ExtendedLoads(
         val vm: VmLoads,
         val controls: ConversationControls,
+        val sideChats: SideChatLoads,
         val expandedSections: Map<PanelSectionId, Boolean>,
+    )
+
+    private data class SideChatLoads(
+        val chats: List<Agent>,
+        val load: RemoteLoad<Unit>,
+        val availability: SideChatAvailability,
+        val creation: RemoteLoad<String>,
     )
 
     /** Remembers a section the reader opened or closed (see [PanelState.expandedSections]). */
@@ -262,20 +299,40 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** Each answers what to tell the reader — the account's outcome, or nothing — or fails with the reason; see [SteeringRepository]. */
     suspend fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>): Result<String?> = graph.steering.answerQuestion(agentId, callId, answers).map { it.message }
-    suspend fun steer(text: String): Result<String?> = graph.steering.steer(agentId, text).map { it.message }
     suspend fun pauseRun(): Result<String?> = graph.steering.pause(agentId).map { "Paused; resume when you're ready." }
     suspend fun resumeRun(): Result<String?> = graph.steering.resume(agentId).map { "Resumed." }
     suspend fun stopRun(): Result<String?> = graph.conversations.cancelActiveRun(agentId).map { null }
     suspend fun wake(): Result<String?> = graph.steering.wake(agentId).map { if (it) "Waking the agent's machine." else "The machine was already awake." }
-    suspend fun cancelToolCall(callId: String): Result<String?> = graph.steering.cancelToolCall(agentId, callId).map { if (it) "Stopping that step." else "That step had already finished." }
-    suspend fun refreshQueue() = graph.steering.refreshQueue(agentId)
-    suspend fun queueSendNow(followupId: String): Result<String?> = graph.steering.submitPendingNow(agentId, followupId).map { null }
-    suspend fun queueDelete(followupId: String): Result<String?> = graph.steering.deletePending(agentId, followupId).map { null }
-    suspend fun queueMove(followupId: String, up: Boolean): Result<String?> = graph.steering.movePending(agentId, followupId, up).map { null }
-    suspend fun queueUpdate(followupId: String, text: String): Result<String?> =
-        graph.steering.updatePending(agentId, followupId, text).map { null }.also { graph.steering.markEditing(agentId, followupId, editing = false) }
-    suspend fun queueMarkEditing(followupId: String, editing: Boolean): Result<String?> = graph.steering.markEditing(agentId, followupId, editing).map { null }
-    suspend fun queueSteerNow(followupId: String): Result<String?> = graph.steering.promotePending(agentId, followupId).map { it.message }
+
+    // -- side chats ----------------------------------------------------------------------------------------------------
+
+    /**
+     * Re-reads the chat's children from the account (`ListBackgroundComposerChildren`, Extended); the rows follow
+     * through the agent list. Without the capability the load names why, and no call is made.
+     */
+    fun refreshSideChats() {
+        if (sideChatsJob?.isActive == true) return
+        sideChatsLoad.value = RemoteLoad.Loading
+        sideChatsJob = viewModelScope.launch {
+            sideChatsLoad.value = when (val read = graph.projects.refreshChildren(agentId)) {
+                is VmRead.Loaded -> RemoteLoad.Loaded(Unit)
+                is VmRead.NotAvailable -> RemoteLoad.Unsupported(read.reason)
+                is VmRead.Failed -> RemoteLoad.Failed(read.message, retryable = !read.endpointChanged)
+            }
+        }
+    }
+
+    /** Branches a side chat off this chat (`StartSideChatBackgroundComposer`); the new row joins the list under it. */
+    suspend fun startSideChat(name: String?): Result<String?> {
+        if (sideChatCreation.value is RemoteLoad.Loading) return Result.success(null)
+        sideChatCreation.value = RemoteLoad.Loading
+        val result = graph.projects.startSideChat(agentId, name?.trim()?.takeIf { it.isNotEmpty() })
+        sideChatCreation.value = result.fold(
+            onSuccess = { RemoteLoad.Loaded(it) },
+            onFailure = { RemoteLoad.Failed(it.userMessage(), retryable = it !is IllegalStateException) },
+        )
+        return result.map { "Side chat started." }
+    }
 
     private fun promptImagesOf(items: List<TimelineItem>): List<MessageAttachment> = items.filterIsInstance<UserMessage>().flatMap { it.attachments }
 
