@@ -278,7 +278,9 @@ class ProjectRepository(
             // The Projects' records and the workers' records naming them: roots and placements, held or not — the
             // pages read count whether or not the pass reached the end.
             if (scan.roots.isNotEmpty() || scan.children.isNotEmpty()) agents.applyAccountSnapshots(scan.roots + scan.children, token)
-            scan.managers.forEach { manager -> agents.applyLineage(manager, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token) }
+            // The pass is the account's word on every record it carried: a registry root among them that is neither
+            // a Project nor a manager by its record is no root (what an older build admitted on a source or a hint).
+            agents.revalidateRegistry(scan.seenIds, scan.roots.mapTo(HashSet()) { it.id }, scan.managers, token)
             // A pass that read to the end, or as far as it is allowed to, is done; one a page failed is tried again.
             val finished = scan.failure == null && (scan.complete || scan.truncated)
             if (finished) {
@@ -426,9 +428,10 @@ class ProjectRepository(
                     continue
                 }
                 // Placed before its row lands, so the row is published as a root and never as a chat of its own
-                // for the moment between the fetch and the placement.
-                val managesWorkers = agents.state.value.agents.any { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER }
-                if (managesWorkers) agents.applyLineage(id, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token)
+                // for the moment between the fetch and the placement — on the account's word alone: workers whose
+                // records or memberships name it, not ones a coordinator's transcript merely mentioned.
+                val workers = agents.state.value.agents.filter { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER && it.scopeSignal?.isRootEvidence == true }.map { it.id }
+                if (workers.isNotEmpty()) agents.applyLineage(id, workers.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, startedIn = token)
                 val failure = agents.loadDetail(id).exceptionOrNull()
                 if (failure != null) {
                     if (failure is CancellationException) throw failure

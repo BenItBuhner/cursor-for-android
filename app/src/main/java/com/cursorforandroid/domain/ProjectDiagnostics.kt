@@ -43,6 +43,8 @@ object ProjectDiagnostics {
         val accountRound: AccountRoundSummary? = null,
         /** What the last fetch by id of each unresolved root answered. */
         val rootFailures: Map<String, String> = emptyMap(),
+        /** Settings › Notifications, the Project half: what the live count includes, whose finishes are cards. */
+        val notificationPrefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
     )
 
     data class RootScanSummary(
@@ -92,7 +94,7 @@ object ProjectDiagnostics {
         appendLine()
         val scan = input.runningScan
         val listRunning = rows.filter { it.isRunning }
-        val counted = listRunning.filter { !it.isProjectScopedByEvidence }
+        val counted = listRunning.filter { input.notificationPrefs.countsLive(it) }
         appendLine("running: list=${listRunning.size} counted=${counted.size} excludedByEvidence=${listRunning.size - counted.size}" +
             (scan?.let { " scan=${it.ids.size} pages=${it.pagesRead} complete=${it.complete} scannedAt=${if (it.scannedAtMillis > 0) java.time.Instant.ofEpochMilli(it.scannedAtMillis) else "-"} account=${it.accountIds?.size ?: "-"} accountAt=${if (it.accountAtMillis > 0) java.time.Instant.ofEpochMilli(it.accountAtMillis) else "-"}" } ?: " scan=never"))
         if (scan != null) {
@@ -102,7 +104,7 @@ object ProjectDiagnostics {
                 appendLine(
                     "  ${tail(id)} ${if (id in scan.ids) "scan" else "-"} ${if (scan.accountIds?.contains(id) == true) "account" else "-"} " +
                         "${if (row == null) "NOT-LOADED" else if (row.isRunning) "running" else "row:${row.runStatus?.name ?: "-"}"} ${row?.scope?.name?.removePrefix("PROJECT_") ?: "-"} " +
-                        (if (row != null && row.isRunning) (if (row.isProjectScopedByEvidence) "excluded" else "counted") else "-"),
+                        (if (row != null && row.isRunning) (if (input.notificationPrefs.countsLive(row)) "counted" else "excluded") else "-"),
                 )
             }
         }
@@ -125,11 +127,11 @@ object ProjectDiagnostics {
             } ?: "never"),
         )
         input.rootFailures.entries.sortedBy { it.key }.forEach { (id, why) -> appendLine("  fetch by id failed ${tail(id)}: ${redactNotice(why)}") }
-        appendLine("registry (id · signal · row · archived · members · seen):")
+        appendLine("registry (id · signal · evidence · row · archived · members · seen):")
         input.knownRoots.sortedBy { it.id }.forEach { root ->
             val row = rows.firstOrNull { it.id == root.id }
             appendLine(
-                "  ${tail(root.id)} ${root.signal.name} ${if (row != null) "row" else if (root.id in input.unresolvedRoots) "UNRESOLVED" else "stand-in"} " +
+                "  ${tail(root.id)} ${root.signal.name} [${root.evidence}] ${if (row != null) "row" else if (root.id in input.unresolvedRoots) "UNRESOLVED" else "stand-in"} " +
                     "${if (root.archived) "archived" else "-"} ${input.memberCounts[root.id] ?: "-"} ${if (root.lastSeenMillis > 0) java.time.Instant.ofEpochMilli(root.lastSeenMillis) else "-"}",
             )
         }

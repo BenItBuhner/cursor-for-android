@@ -150,25 +150,21 @@ enum class AgentScope {
     companion object {
         /**
          * Sources the account gives only to chats that hang off another chat; a child by its source alone. Not
-         * `CLOUD_META_AGENT`: a "meta agent" is an agent that drives other agents — a Project's coordinator — and
-         * until 0.3.5 reading it as a child source hid every Project whose coordinator carried it (a child of
-         * nobody is drawn nowhere), which is where Projects went missing from the group.
+         * `CLOUD_META_AGENT`: a source says how a chat was started, not what it is — an ordinary chat can carry it —
+         * and until 0.3.5 reading it as a child source hid every chat that carried it (a child of nobody is drawn
+         * nowhere). It is no root source either: a root takes the record's own word (see [Agent.scope]).
          */
         val CHILD_SOURCES: Set<AgentSource> = setOf(AgentSource.AS_SIDE_CHAT_FROM_CLOUD, AgentSource.AS_SUBAGENT_FROM_CLOUD)
-
-        /** Sources the account gives to a chat that heads a Project: the coordinator started as a cloud meta agent. */
-        val ROOT_SOURCES: Set<AgentSource> = setOf(AgentSource.CLOUD_META_AGENT)
 
         /**
          * The scope a record's lineage facts add up to: a chat with a parent is a child, as is one started as a side
          * chat or subagent even when its parent went unnamed (a side chat may carry its Project's metadata); one the
-         * account marks as a Project is a root, as is one started as a meta agent; everything else is a primary chat.
+         * account marks as a Project is a root; everything else — whatever its source — is a primary chat.
          */
         fun of(isProject: Boolean, parent: AgentParent?, source: AgentSource?): AgentScope = when {
             parent != null -> PROJECT_CHILD
             source != null && source in CHILD_SOURCES -> PROJECT_CHILD
             isProject -> PROJECT_ROOT
-            source != null && source in ROOT_SOURCES -> PROJECT_ROOT
             else -> PRIMARY
         }
     }
@@ -217,6 +213,16 @@ enum class LineageSignal {
      * the membership the Project's), nor is an action taken here a moment ago, which the account may not list yet.
      */
     val isRetractable: Boolean get() = this == MEMBERSHIP || this == CHILDREN_LIST || this == COORDINATOR_TRANSCRIPT || this == COORDINATOR_CREATED
+
+    /**
+     * Evidence that a chat heads a Project: its own record's Project flag ([ACCOUNT_RECORD]), being named as the
+     * manager by a worker's record or a membership answer ([MEMBERSHIP]), or an action taken here that made it one
+     * ([ACTION]). Nothing else promotes a chat to a root — not a coordinator's tools in its transcript, not a
+     * `create_agent` call, not a children list (an ordinary chat has subagents and side chats too), not a source
+     * (a "meta agent" is how a chat was started). A chat that is none of these is one of the account's own, whatever
+     * it does.
+     */
+    val isRootEvidence: Boolean get() = this == ACCOUNT_RECORD || this == MEMBERSHIP || this == ACTION
 }
 
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
@@ -298,8 +304,10 @@ data class Agent(
             source != null && source in AgentScope.CHILD_SOURCES -> AgentScope.PROJECT_CHILD
             // The record's own flag, and nobody's child by its facts: a root, whatever an older classification kept.
             isProject -> AgentScope.PROJECT_ROOT
-            source != null && source in AgentScope.ROOT_SOURCES -> AgentScope.PROJECT_ROOT
             knownScope == AgentScope.PROJECT_CHILD -> AgentScope.PROJECT_CHILD
+            // A kept root scope stands on root evidence alone (see [LineageSignal.isRootEvidence]): a coordinator's
+            // transcript, a children list or a source made no Project of a chat, whatever an older build kept.
+            knownScope == AgentScope.PROJECT_ROOT -> if (scopeSignal?.isRootEvidence == true) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
             else -> knownScope ?: AgentScope.PRIMARY
         }
     /**
@@ -321,7 +329,7 @@ data class Agent(
      * running agents and notifies like any chat of the account's until the account itself says whose it is.
      */
     val isProjectScopedByEvidence: Boolean
-        get() = isProjectScoped && (scopeSignal?.isPositiveEvidence != false || isProject || (source != null && (source in AgentScope.CHILD_SOURCES || source in AgentScope.ROOT_SOURCES)))
+        get() = isProjectScoped && (scopeSignal?.isPositiveEvidence != false || isProject || (source != null && source in AgentScope.CHILD_SOURCES))
     /** Drawn as a Project — with its icon and colour — whether the account said so or its own transcript did. */
     val looksLikeProject: Boolean get() = isProject || isProjectRoot
     /**

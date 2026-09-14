@@ -22,18 +22,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Settings › Advanced: exports the redacted account of where every chat was placed — which are Projects, which
  * their workers, side chats and subagents, and which signal placed each (see `ProjectDiagnostics`) — through the
- * share sheet, so a Project's chat that still shows among the account's own can be sent as a dump rather than
- * described. Ids are shortened to their tails; no names, prompts or tokens leave the device. [share] is what is done
- * with the text; the default opens the system's share sheet.
+ * share sheet in one tap — as text and as a `.txt` file through the app's FileProvider — so a Project's chat that
+ * still shows among the account's own can be sent as a dump rather than described. Ids are shortened to their
+ * tails; no names, prompts or tokens leave the device. [share] is what is done with the text; the default opens the
+ * system's share sheet.
  */
 @Composable
 fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
@@ -43,12 +46,22 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     val send = share ?: { report ->
+        // The report goes as a file as well as text: a heavy account's report runs to hundreds of lines, more than
+        // some receivers take as text, and a `.txt` attaches to mail, Slack or Drive as it is.
+        val file = runCatching {
+            File(context.cacheDir, "diagnostics").apply { mkdirs() }.resolve("cursor-project-diagnostics-${System.currentTimeMillis()}.txt").also { it.writeText(report) }
+        }.getOrNull()
+        val uri = file?.let { runCatching { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }.getOrNull() }
         val intent = Intent(Intent.ACTION_SEND).apply {
             setType("text/plain")
             putExtra(Intent.EXTRA_SUBJECT, "Cursor for Android · Project diagnostics")
             putExtra(Intent.EXTRA_TEXT, report)
+            if (uri != null) {
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
         }
-        runCatching { context.startActivity(Intent.createChooser(intent, "Share Project diagnostics")) }
+        runCatching { context.startActivity(Intent.createChooser(intent, "Share Project diagnostics").apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }) }
             .onFailure { Toast.makeText(context, "Nothing on this device can receive the report.", Toast.LENGTH_SHORT).show() }
     }
     Row(
