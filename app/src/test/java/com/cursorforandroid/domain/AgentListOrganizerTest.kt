@@ -178,9 +178,15 @@ class AgentListOrganizerTest {
         // Cause 2: the record carried a child's source but no parent id.
         val sideBySource = agent("side", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
         val subBySource = agent("sub", source = AgentSource.AS_SUBAGENT_FROM_CLOUD)
-        val meta = agent("meta", source = AgentSource.CLOUD_META_AGENT)
         assertThat(sideBySource.scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(primaryIds(listOf(sideBySource, subBySource, meta, agent("plain")))).containsExactly("plain")
+        assertThat(primaryIds(listOf(sideBySource, subBySource, agent("plain")))).containsExactly("plain")
+        // A cloud meta agent is a coordinator: a Project among the Projects, never a chat among the chats — and
+        // never a child of nobody, drawn nowhere (what hid Projects until 0.3.5).
+        val meta = agent("meta", source = AgentSource.CLOUD_META_AGENT)
+        assertThat(meta.scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        val withMeta = AgentListOrganizer.organize(listOf(meta, agent("plain")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
+        assertThat(withMeta.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.map { it.agent.id }).containsExactly("meta")
+        assertThat(withMeta.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }.map { it.agent.id }).containsExactly("plain")
         // Cause 5: the classification outlives the source it came from (Extended mode turned off wipes the source).
         val kept = sideBySource.copy(source = null, knownScope = AgentScope.PROJECT_CHILD)
         assertThat(kept.scope).isEqualTo(AgentScope.PROJECT_CHILD)
@@ -192,13 +198,16 @@ class AgentListOrganizerTest {
         val sections = AgentListOrganizer.organize(listOf(coordinator, agent("w", parent = "coord")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
         assertThat(sections.single().key).isEqualTo(AgentListOrganizer.PROJECTS_KEY)
         assertThat(sections.single().rows.single().children.map { it.agent.id }).containsExactly("w")
-        // The row's own lineage facts come first — a parent link makes a child whatever was kept — and a kept word
-        // that called it a child holds; only then do the Project flag and the kept scope decide.
+        // The row's own lineage facts come first — a parent link or a child's source makes a child whatever was
+        // kept — then the record's Project flag; a kept child scope with nothing behind it is an older reading and
+        // does not outvote the flag.
         assertThat(agent("x", isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(agent("x", isProject = true, parent = "y").scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("x", isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(agent("x").scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agent("x", parent = "y", knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(agent("x", isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(agent("x", isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(agent("x", knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
     }
 
     @Test

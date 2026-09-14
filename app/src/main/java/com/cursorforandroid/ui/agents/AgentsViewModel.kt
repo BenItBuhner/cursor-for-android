@@ -232,8 +232,11 @@ class AgentsViewModel(
      * them. The pull requests the page brings are looked up like any row's. Ignored while a page is already on its way.
      */
     fun loadMore() = viewModelScope.launch {
-        if (graph.agents.loadMore() != RefreshOutcome.Refreshed) return@launch
+        val list = graph.agents.state.value
+        if (!list.hasMore || list.isLoadingMore || list.isRefreshing) return@launch
+        // The account's page first, so the rows the public page brings are published placed and named.
         graph.pins.loadMore()
+        if (graph.agents.loadMore() != RefreshOutcome.Refreshed) return@launch
         refreshPullRequests()
     }
 

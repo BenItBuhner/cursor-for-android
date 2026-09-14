@@ -155,6 +155,53 @@ class BackgroundComposerApiTest {
         assertThat(BackgroundComposerApi.snapshot(composer(id = " "))).isNull()
     }
 
+    /**
+     * The root discovery pass reads the list to its end: by token where the service gives one, by the page's oldest
+     * activity where it does not (the older service's `last_message_activity_at_ms_offset`), and a page that fails
+     * ends the pass with what the pages before it said, not with nothing. A page that brings nothing new is the end.
+     */
+    @Test
+    fun `the discovery pass pages by token or by activity, and keeps what it read when a page fails`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{},"lastMessageActivityAtMs":"1700000009000"},{"bcId":"bc-w1","managerAgentId":"bc-r1","lastMessageActivityAtMs":"1700000008000"}],"hasMore":true,"nextPageToken":"page-2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r2","source":"BACKGROUND_COMPOSER_SOURCE_CLOUD_META_AGENT","lastMessageActivityAtMs":"1700000007000"},{"bcId":"bc-x","lastMessageActivityAtMs":"1700000006000"}],"hasMore":true}"""))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
+        val partial = api.scanRoots(maxPages = 10)
+        assertThat(partial.roots.map { it.id }).containsExactly("bc-r1", "bc-r2").inOrder()
+        assertThat(partial.children.map { it.id }).containsExactly("bc-w1")
+        assertThat(partial.pagesRead).isEqualTo(2)
+        assertThat(partial.records).isEqualTo(4)
+        assertThat(partial.complete).isFalse()
+        assertThat(partial.failure).startsWith("page 3:")
+        server.takeRequest() // the exchange
+        val first = server.takeRequest().json()
+        assertThat(first["usePageTokens"]?.jsonPrimitive?.content).isEqualTo("true")
+        assertThat(first["pageToken"]).isNull()
+        val second = server.takeRequest().json()
+        assertThat(second["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
+        // No token came back with the second page: the third is asked for by the page's oldest activity.
+        val third = server.takeRequest().json()
+        assertThat(third["pageToken"]).isNull()
+        assertThat(third["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000006000")
+
+        // The pass again: to the end this time, a repeated page being the end whatever the flag says.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}}],"hasMore":true,"nextPageToken":"p2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","startedAsNewProject":true}],"hasMore":true,"nextPageToken":"p3"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","startedAsNewProject":true}],"hasMore":true,"nextPageToken":"p4"}"""))
+        val whole = api.scanRoots(maxPages = 10)
+        assertThat(whole.roots.map { it.id }).containsExactly("bc-r1", "bc-r3").inOrder()
+        assertThat(whole.complete).isTrue()
+        assertThat(whole.failure).isNull()
+        assertThat(whole.pagesRead).isEqualTo(3)
+
+        // A pass that read as many pages as it may is not a failure: the next one reads again.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}}],"hasMore":true,"nextPageToken":"p2"}"""))
+        val capped = api.scanRoots(maxPages = 1)
+        assertThat(capped.truncated).isTrue()
+        assertThat(capped.complete).isFalse()
+        assertThat(capped.failure).isNull()
+    }
+
     @Test
     fun `a list with more behind it hands back the service's cursor, and the pages behind it are read on demand`() = runBlocking<Unit> {
         server.enqueue(session("s"))
@@ -184,7 +231,8 @@ class BackgroundComposerApiTest {
         server.takeRequest() // the exchange
         val firstRequest = server.takeRequest().json()
         assertThat(firstRequest["pageToken"]).isNull()
-        assertThat(firstRequest["usePageTokens"]).isNull()
+        // Tokens are asked for from the first page: the service names the next page's token only when asked.
+        assertThat(firstRequest["usePageTokens"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(firstRequest["lastMessageActivityAtMsOffset"]).isNull()
         assertThat(firstRequest["includePinnedState"]?.jsonPrimitive?.content).isEqualTo("true")
         val secondRequest = server.takeRequest().json()

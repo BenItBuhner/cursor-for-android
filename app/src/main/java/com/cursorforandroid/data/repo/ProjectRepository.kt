@@ -28,6 +28,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -94,14 +95,22 @@ data class ProjectViewState(
     val isEmpty: Boolean get() = workers.isEmpty() && sideChats.isEmpty() && subagents.isEmpty()
 }
 
-/** What the last root discovery pass found (see [ProjectRepository.discoverRoots]): roots named, pages read, whether it reached the end. */
+/**
+ * The root discovery pass as it stands (see [ProjectRepository.discoverRoots]): whether one has run, is running,
+ * finished, stopped part-way or failed; what it found; what stopped it; how many attempts this one has taken.
+ */
 data class RootScanRecord(
-    val rootsFound: Int,
-    val pagesRead: Int,
-    val complete: Boolean,
+    val status: Status = Status.Never,
+    val rootsFound: Int = 0,
+    val pagesRead: Int = 0,
+    val records: Int = 0,
+    val complete: Boolean = false,
     val notice: String? = null,
     val atMillis: Long = 0L,
-)
+    val attempts: Int = 0,
+) {
+    enum class Status { Never, Running, Done, Partial, Failed }
+}
 
 /** What one root's last membership pass answered: which of the two reads did, how many it named, and what went wrong. */
 data class LineageSyncRecord(
@@ -141,6 +150,8 @@ class ProjectRepository(
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
     /** Whether the account's Project reads and writes may be made (Extended mode). Everything, for tests of the sync itself. */
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
+    /** The waits before a failed or partial discovery pass is tried again, by attempt (see [discoverRoots]). */
+    private val retryDelaysMs: List<Long> = RETRY_DELAYS_MS,
 ) {
     /** What the account's reads add to one Project beyond the agent list. */
     private data class Extras(
@@ -222,13 +233,18 @@ class ProjectRepository(
     /** What the last root discovery pass found, for the diagnostics; null before one. */
     val lastRootScan: StateFlow<RootScanRecord?> = _lastRootScan.asStateFlow()
 
+    private val retryJob = AtomicReference<Job?>(null)
+    @Volatile private var scanAttempts = 0
+
     /**
      * The root discovery pass (Extended mode): the whole account list, page after page, for every record that is a
      * Project's and every record that names a manager or a parent — folded into the root registry and the placement
      * registry, whether or not the loaded pages hold the rows — then the roots the registry knows and the list does
-     * not are fetched by id. At most once per [ROOT_SCAN_INTERVAL_MS] (the pin round runs every refresh); [force]
-     * for a pass now. Default mode has no list to scan: its registry is what earlier sessions and the coordinators'
-     * transcripts filled, and its roots are fetched by id all the same.
+     * not are fetched by id. It runs on the first account round of the process (the moment the session exists),
+     * then at most once per [ROOT_SCAN_INTERVAL_MS]; [force] for a pass now. A pass that failed or stopped short of
+     * the end keeps what it read and is tried again with a growing delay ([RETRY_DELAYS_MS]); what it found and what
+     * stopped it are in [lastRootScan] for the diagnostics. Default mode has no list to scan: its registry is what
+     * earlier sessions and the coordinators' transcripts filled, and its roots are fetched by id all the same.
      */
     suspend fun discoverRoots(force: Boolean = false) {
         if (session.isDemo) return
@@ -242,26 +258,60 @@ class ProjectRepository(
                 return
             }
             val token = agents.token()
+            val attempt = ++scanAttempts
+            _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Running, attempts = attempt) }
             val scan = try {
                 api.scanRoots(ROOT_SCAN_PAGES)
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                _lastRootScan.value = RootScanRecord(0, 0, false, describeFailure(t), now())
+                _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Failed, notice = describeFailure(t), atMillis = now(), attempts = attempt) }
+                scheduleRetry(attempt)
                 agents.materializeRoots(token)
                 return
             }
-            lastRootScanAtMillis = now()
             if (scan == null || agents.token() != token) {
+                _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Never, attempts = attempt) }
                 agents.materializeRoots(token)
                 return
             }
-            // The Projects' records and the workers' records naming them: roots and placements, held or not.
-            agents.applyAccountSnapshots(scan.roots + scan.children, token)
+            // The Projects' records and the workers' records naming them: roots and placements, held or not — the
+            // pages read count whether or not the pass reached the end.
+            if (scan.roots.isNotEmpty() || scan.children.isNotEmpty()) agents.applyAccountSnapshots(scan.roots + scan.children, token)
             scan.managers.forEach { manager -> agents.applyLineage(manager, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token) }
-            _lastRootScan.value = RootScanRecord(scan.roots.size + scan.managers.size, scan.pagesRead, scan.complete, null, now())
-            agents.materializeRoots(token)
+            // A pass that read to the end, or as far as it is allowed to, is done; one a page failed is tried again.
+            val finished = scan.failure == null && (scan.complete || scan.truncated)
+            if (finished) {
+                lastRootScanAtMillis = now()
+                scanAttempts = 0
+                retryJob.getAndSet(null)?.cancel()
+            } else {
+                scheduleRetry(attempt)
+            }
+            _lastRootScan.value = RootScanRecord(
+                status = if (finished) RootScanRecord.Status.Done else RootScanRecord.Status.Partial,
+                rootsFound = scan.roots.size + scan.managers.size,
+                pagesRead = scan.pagesRead,
+                records = scan.records,
+                complete = scan.complete,
+                notice = scan.failure ?: if (scan.truncated) "stopped at $ROOT_SCAN_PAGES pages with more to read" else null,
+                atMillis = now(),
+                attempts = attempt,
+            )
+            agents.materializeRoots(token, budget = ROOT_FETCH_BUDGET)
         }
+    }
+
+    /** Another pass after a delay that grows with the attempt; one at a time, and a pass that finished cancels it. */
+    private fun scheduleRetry(attempt: Int) {
+        val delayMs = retryDelaysMs.getOrNull(attempt - 1) ?: retryDelaysMs.last()
+        val job = scope.launch {
+            delay(delayMs)
+            discoverRoots(force = true)
+            // The roots the pass has just named need their memberships read too.
+            syncLineage()
+        }
+        retryJob.getAndSet(job)?.cancel()
     }
 
     /** The account's member count per root — workers and children the last membership pass named — for the rows' counts. */
@@ -375,6 +425,10 @@ class ProjectRepository(
                     _unavailableParents.update { it - id }
                     continue
                 }
+                // Placed before its row lands, so the row is published as a root and never as a chat of its own
+                // for the moment between the fetch and the placement.
+                val managesWorkers = agents.state.value.agents.any { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER }
+                if (managesWorkers) agents.applyLineage(id, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token)
                 val failure = agents.loadDetail(id).exceptionOrNull()
                 if (failure != null) {
                     if (failure is CancellationException) throw failure
@@ -382,8 +436,6 @@ class ProjectRepository(
                     continue
                 }
                 _unavailableParents.update { it - id }
-                val managesWorkers = agents.state.value.agents.any { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER }
-                if (managesWorkers) agents.applyLineage(id, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token)
             }
         }
     }
@@ -596,6 +648,11 @@ class ProjectRepository(
         pollers.values.forEach { it.cancel() }
         pollers.clear()
         attached.clear()
+        retryJob.getAndSet(null)?.cancel()
+        lastRootScanAtMillis = 0L
+        scanAttempts = 0
+        _lastRootScan.value = null
+        countsFlow.value = emptyMap()
     }
 
     /**
@@ -635,10 +692,14 @@ class ProjectRepository(
 
     companion object {
         private const val MAX_ROOTS_PER_SYNC = 20
-        /** Pages of the account list the root discovery pass reads at most (see [discoverRoots]): two thousand records. */
-        const val ROOT_SCAN_PAGES = 10
+        /** Pages of the account list the root discovery pass reads at most (see [discoverRoots]): five thousand records. */
+        const val ROOT_SCAN_PAGES = 25
         /** How often the account list is scanned for roots in full. */
         const val ROOT_SCAN_INTERVAL_MS = 10 * 60_000L
+        /** The waits before a failed or partial pass is tried again, by attempt. */
+        val RETRY_DELAYS_MS = listOf(15_000L, 60_000L, 4 * 60_000L, 10 * 60_000L)
+        /** Roots fetched by id after a discovery pass, the moment the registry grows most; the refresh's passes fetch fewer. */
+        const val ROOT_FETCH_BUDGET = 24
         private const val MAX_MATERIALIZED = 8
         private const val RETRY_AFTER_MS = 30 * 60_000L
         private const val POLL_INTERVAL_MS = 20_000L

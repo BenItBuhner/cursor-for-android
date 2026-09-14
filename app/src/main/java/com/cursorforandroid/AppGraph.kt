@@ -357,7 +357,18 @@ class AppGraph(
             capabilities = capabilities,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
-        )
+        ).also { repo ->
+            // The account layer — the pin repository's round: the account's list with its names, looks, sources,
+            // lineage fields and running statuses, the pins, the pull request states, and off it the root discovery
+            // and the memberships — is read ahead of every fetch's first publication, and the round follows the
+            // fetch. It used to be cued by whatever first touched the pin repository: since 0.2.0 built the graph
+            // lazily that was a pin toggle, Settings, or the sidebar scrolled to its end, so on an ordinary launch
+            // with Extended mode on the account's list was never read, and everything drawn from it (Project icons,
+            // the workers' places, the running set) came and went with the user's scrolling. Resolved at call time,
+            // so building the list does not build the pins; the read itself asks the capabilities, and with
+            // Extended mode off it returns at once.
+            repo.accountPrime = { pins.primeForFetch() }
+        }
     }
     val agents: AgentRepository get() = lazyAgents.value
 
@@ -596,10 +607,9 @@ class AppGraph(
             // A pull request the browser stood in for can now be read through the account.
             if (lazyReviews.isInitialized()) reviews.reset()
             session.refreshAccountProfile()
-            if (lazyPins.isInitialized()) {
-                pins.reset()
-                pins.sync()
-            }
+            // Built if it was not yet: the account's list is read the moment the mode allows it.
+            pins.reset()
+            pins.sync()
         }
     }
 
@@ -680,8 +690,16 @@ class AppGraph(
                 hintRefused = agents.hintRefusedIds(),
                 knownRoots = agents.knownRoots.value,
                 unresolvedRoots = agents.unresolvedRoots(),
-                rootScan = if (lazyProjects.isInitialized()) projects.lastRootScan.value?.let { ProjectDiagnostics.RootScanSummary(it.rootsFound, it.pagesRead, it.complete, it.atMillis.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.notice) } else null,
+                rootScan = if (lazyProjects.isInitialized()) {
+                    projects.lastRootScan.value?.let {
+                        ProjectDiagnostics.RootScanSummary(it.status.name, it.rootsFound, it.pagesRead, it.records, it.complete, it.atMillis.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.notice, it.attempts)
+                    }
+                } else null,
                 memberCounts = if (lazyProjects.isInitialized()) projects.memberCounts.first() else emptyMap(),
+                accountRound = if (lazyPins.isInitialized()) {
+                    pins.state.value.let { ProjectDiagnostics.AccountRoundSummary(true, it.active, it.isSyncing, it.lastSyncedAtMillis?.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.error) }
+                } else null,
+                rootFailures = agents.rootFailures(),
             ),
         )
     }

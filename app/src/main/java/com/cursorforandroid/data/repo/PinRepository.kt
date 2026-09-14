@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.IOException
@@ -73,6 +75,8 @@ class PinRepository(
     private val maxMaterialized: Int = MAX_MATERIALIZED,
     /** Handed every account list read, with the agents token taken before the read (see [AgentRepository.token]). */
     private val onList: suspend (AccountList, Int) -> Unit = { _, _ -> },
+    /** The waits before a failed round is tried again, by attempt (see [syncWithRetry]). */
+    private val retryDelaysMs: List<Long> = RETRY_DELAYS_MS,
     /**
      * Whether the account may be read at all, and whether the pins may follow it (Extended mode). Everything, for
      * tests of the sync itself; the graph passes the setting, under which the default leaves the account alone and
@@ -118,11 +122,32 @@ class PinRepository(
             // agents. Nothing here reads the preferences before that: constructing the graph must stay side-effect free.
             agents.refreshCompleted.filter { it > 0L }.collect {
                 watchSetting()
-                sync()
+                syncWithRetry()
             }
         }
         scope.launch { session.backend.drop(1).collect { reset() } }
     }
+
+    /**
+     * A round, and — when it failed for a reason retrying can fix (the session not minted yet on a cold start, a
+     * page the network dropped) — the same round again after a growing wait. The account's list is what the Project
+     * icons, the workers' places and the running set are drawn from, so a failed first round is not left until the
+     * next refresh. One retry chain at a time; a reset cancels it with the rest of the round's work.
+     */
+    private fun syncWithRetry() {
+        retryJob.getAndSet(null)?.cancel()
+        val job = work.launch {
+            var attempt = 0
+            while (isActive) {
+                val result = sync()
+                if (result.isSuccess || halted || attempt >= retryDelaysMs.size) return@launch
+                delay(retryDelaysMs[attempt++])
+            }
+        }
+        retryJob.set(job)
+    }
+
+    private val retryJob = AtomicReference<Job?>(null)
 
     /** Turning the setting on syncs right away, and forgives an earlier permanent failure. Started once, lazily. */
     private fun watchSetting() {
@@ -145,9 +170,11 @@ class PinRepository(
         // Bumped under the lock the local flip holds, so a tap cannot find the generation current and then write the
         // previous account's pin: either it has already flipped and this invalidates its round, or it sees this one.
         localMutex.withLock { generation.incrementAndGet() }
+        retryJob.getAndSet(null)?.cancel()
         work.cancel()
         work = workScope()
         halted = false
+        primed = null
         accountCursor = null
         revisions.clear()
         synchronized(deferred) { deferred.clear() }
@@ -243,12 +270,9 @@ class PinRepository(
                 if (migrating) prefs.setPinsMigrated(true)
             }
 
+            // The list a fetch's prime read moments ago is this round's; otherwise it is read now.
             val agentsToken = agents.token()
-            val list = api.list()
-            if (generation.get() != startedIn) return Result.success(Unit)
-            accountCursor = list.nextCursor
-            agents.applyAccountSnapshots(list.composers, agentsToken)
-            runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
+            val list = primed?.takeIf { now() - it.atMillis < PRIME_FRESH_MS }?.list?.also { primed = null } ?: readList(startedIn) ?: return Result.success(Unit)
             // The account's statuses named what is running; whatever of it no page holds is fetched by id now, and
             // the pins the list does not hold are resolved whether or not the pins themselves are synced.
             agents.reconcileRunning(agentsToken)
@@ -273,6 +297,44 @@ class PinRepository(
             if (generation.get() != startedIn) return Result.success(Unit)
             noteFailure(t)
             Result.failure(t)
+        }
+    }
+
+    private class Primed(val list: AccountList, val atMillis: Long)
+    @Volatile private var primed: Primed? = null
+
+    /**
+     * The account's list, read and applied: its names, looks, lineage fields and statuses onto the rows and into the
+     * placement and root registries ([AgentRepository.applyAccountSnapshots]), then [onList]. Null when the account
+     * changed under the read. What both the round and the fetch's prime do first.
+     */
+    private suspend fun readList(startedIn: Int): AccountList? {
+        val agentsToken = agents.token()
+        val list = api.list()
+        if (generation.get() != startedIn) return null
+        accountCursor = list.nextCursor
+        agents.applyAccountSnapshots(list.composers, agentsToken)
+        runCatching { onList(list, agentsToken) }.onFailure { if (it is CancellationException) throw it }
+        return list
+    }
+
+    /**
+     * The account's list read ahead of a fetch of the public list, so the page the fetch publishes is placed by the
+     * account's word at once (see [AgentRepository.accountPrime]): nothing without the session or the mode, and a
+     * failure is the round's to retry — the round that follows the fetch reuses this read while it is fresh.
+     */
+    suspend fun primeForFetch() {
+        val allowed = capabilities()
+        if (!sessionUsable() || !allowed.accountSession) return
+        val startedIn = generation.get()
+        serverMutex.withLock {
+            if (generation.get() != startedIn) return
+            try {
+                readList(startedIn)?.let { primed = Primed(it, now()) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (generation.get() == startedIn) noteFailure(t)
+            }
         }
     }
 
@@ -380,8 +442,12 @@ class PinRepository(
         else -> t.message ?: "Couldn't sync pins."
     }
 
-    private companion object {
+    companion object {
         /** Pinned agents outside the list window fetched per sync (two requests each). */
-        const val MAX_MATERIALIZED = 12
+        private const val MAX_MATERIALIZED = 12
+        /** The waits before a failed round is tried again, by attempt. */
+        val RETRY_DELAYS_MS = listOf(5_000L, 20_000L, 60_000L)
+        /** How long a fetch's prime stands in for the round's own list read. */
+        const val PRIME_FRESH_MS = 20_000L
     }
 }

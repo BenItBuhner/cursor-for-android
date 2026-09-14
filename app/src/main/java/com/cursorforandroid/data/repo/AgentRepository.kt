@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -396,19 +397,37 @@ class AgentRepository(
      * a stand-in: a few per pass, each tried again after a while when it failed. A root the server says is gone
      * (404) leaves the registry: that is the record's own word, the one thing that drops a root.
      */
-    suspend fun materializeRoots(startedIn: Int = token()) {
+    suspend fun materializeRoots(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_ROOTS) {
         if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
         rootMutex.withLock {
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             val now = AppClock.now()
-            val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(MAX_MATERIALIZED_ROOTS)
+            val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(budget)
             for (id in due) {
                 if (generation.get() != startedIn) return
                 val fetched = loadDetail(id)
+                if (fetched.isSuccess) {
+                    rootUnresolved.remove(id)
+                    rootFailures.remove(id)
+                    continue
+                }
+                val failure = fetched.exceptionOrNull()
+                val gone = (failure as? CursorApiException)?.httpCode == 404
+                // The public API's refusal is not the last word while the account still has the record: the row
+                // stands in from the record (its name, look and archive flag), as a pinned chat's does.
+                val asked = runCatching { recordOf(id) }
+                val record = asked.getOrNull()
+                val accountAnswered = asked.isSuccess && !session.isDemo && capabilities().accountSession
                 when {
-                    fetched.isSuccess -> rootUnresolved.remove(id)
-                    (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404 -> {
+                    record != null && generation.get() == startedIn -> {
+                        upsert(record.toStandIn(), startedIn)
+                        rootUnresolved[id] = now + PINNED_RETRY_MS
+                        rootFailures[id] = "stood in from the account record; public API: ${failure?.describe() ?: "-"}"
+                    }
+                    gone && accountAnswered -> {
+                        // Gone on both counts: the one word that drops a root.
                         rootUnresolved.remove(id)
+                        rootFailures.remove(id)
                         synchronized(publishLock) {
                             if (generation.get() == startedIn) {
                                 placements.remove(id)
@@ -416,14 +435,24 @@ class AgentRepository(
                             }
                         }
                     }
-                    else -> rootUnresolved[id] = now + PINNED_RETRY_MS
+                    else -> {
+                        rootUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                        rootFailures[id] = failure?.describe() ?: "failed"
+                    }
                 }
             }
         }
     }
 
+    private fun Throwable.describe(): String = "${javaClass.simpleName}: ${message ?: "-"}"
+
     /** The roots the registry knows and the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedRoots(): Set<String> = rootUnresolved.keys.toSet()
+
+    /** What the last fetch by id of each unresolved root answered, for the diagnostics. */
+    fun rootFailures(): Map<String, String> = rootFailures.toMap()
+
+    private val rootFailures = ConcurrentHashMap<String, String>()
 
     /**
      * The account the list belongs to right now. Captured when an operation starts and handed to every publication
@@ -495,10 +524,14 @@ class AgentRepository(
                 knownScope == AgentScope.PROJECT_ROOT && scopeSignal == placement.signal -> this
                 else -> copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = placement.signal)
             }
-            // Nothing said: the row's own facts, kept with it, are its placement.
+            // Nothing said: the row's own facts, kept with it, are its placement — the record's own flag first.
             parent != null -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
             source != null && source in AgentScope.CHILD_SOURCES -> if (knownScope == AgentScope.PROJECT_CHILD) this else copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = scopeSignal ?: LineageSignal.HIDDEN_SOURCE)
-            isProject && knownScope != AgentScope.PROJECT_CHILD -> if (knownScope == AgentScope.PROJECT_ROOT) this else copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = scopeSignal ?: LineageSignal.ACCOUNT_RECORD)
+            isProject -> if (knownScope == AgentScope.PROJECT_ROOT) this else copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD)
+            source != null && source in AgentScope.ROOT_SOURCES -> if (knownScope == AgentScope.PROJECT_ROOT) this else copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD)
+            // A child scope with no parent and no child source behind it is an older build's reading (a source
+            // read as a child's then, a coordinator's since): nothing holds it, and the row is a chat of its own.
+            knownScope == AgentScope.PROJECT_CHILD -> copy(knownScope = null, scopeSignal = null)
             else -> this
         }
     }
@@ -696,12 +729,23 @@ class AgentRepository(
         return job to false
     }
 
+    /**
+     * The account's list read ahead of a fetch's first publication (Extended mode): set by the graph to the pin
+     * repository's read, so the rows a page brings are published already placed — the workers under their
+     * Projects, the coordinators as roots — rather than published bare and moved once the account has spoken. The
+     * fetch starts it with the first page's request and waits for it [ACCOUNT_WORD_WAIT_MS] at most; a read that
+     * is slower, or fails, holds nothing up (the rows are re-placed when it lands or is retried).
+     */
+    @Volatile var accountPrime: (suspend () -> Unit)? = null
+
     private suspend fun fetch(silent: Boolean, depth: RefreshDepth) {
         val backend = session.current
         val api = backend.api
         val startedAt = AppClock.now()
         dropForeignList(backend)
         val startedIn = generation.get()
+        // The account's word is asked for alongside the first page, and waited for before that page is published.
+        val prime = accountPrime?.takeIf { !backend.isDemo }?.let { hook -> scope.async { runCatching { hook() }.exceptionOrNull()?.let { if (it is CancellationException) throw it } } }
         // The rows as they were when the fetch started. Rows that appear while the pages are in flight and are not in
         // the server's answer were launched here meanwhile; the complete-listing cleanup below must not make a chat
         // the user just started vanish. And a row whose latest run is not the one it had is a new turn to verify.
@@ -730,7 +774,10 @@ class AgentRepository(
                     pagesRead++
                     seen += page.items.map { it.id }
                     page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
-                    if (page.items.isNotEmpty()) publish { it.withPage(page.items) }
+                    if (page.items.isNotEmpty()) {
+                        if (pagesRead == 1) prime?.let { withTimeoutOrNull(ACCOUNT_WORD_WAIT_MS) { it.join() } }
+                        publish { it.withPage(page.items) }
+                    }
                     cursor = page.nextCursor?.takeIf { it.isNotBlank() }
                 } while (cursor != null && pagesRead < pages)
                 truncated = cursor != null
@@ -1304,9 +1351,9 @@ class AgentRepository(
             composers.forEach { snap ->
                 // Every Project the account's records call one goes to the root registry, with its name and look —
                 // the Projects group is drawn from the registry, whether or not the pages hold the row.
-                if (snap.isProject && snap.parent == null) {
+                if (snap.scope == AgentScope.PROJECT_ROOT) {
                     noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now))
-                } else if (rootRecords[snap.id]?.signal == LineageSignal.ACCOUNT_RECORD && !snap.isProject) {
+                } else if (rootRecords[snap.id]?.signal == LineageSignal.ACCOUNT_RECORD && snap.scope != AgentScope.PROJECT_ROOT) {
                     // The record's own word: what it called a Project it no longer does.
                     forgetRoot(snap.id)
                 }
@@ -1318,7 +1365,7 @@ class AgentRepository(
             composers.filter { it.id !in held }.forEach { snap ->
                 when {
                     snap.parent != null -> place(snap.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
-                    snap.isProject && placements[snap.id]?.parent == null -> place(snap.id, null, LineageSignal.ACCOUNT_RECORD)
+                    snap.scope == AgentScope.PROJECT_ROOT && placements[snap.id]?.parent == null -> place(snap.id, null, LineageSignal.ACCOUNT_RECORD)
                 }
                 snap.source?.takeIf { it in AgentScope.CHILD_SOURCES }?.let { rememberedSources[snap.id] = it }
             }
@@ -1368,22 +1415,23 @@ class AgentRepository(
                     placements.remove(agent.id)
                     if (!placement.signal.isAuthoritative) hintRefused += agent.id
                     parent = null
-                    knownScope = if (snap.isProject) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
-                    signal = if (snap.isProject) LineageSignal.ACCOUNT_RECORD else null
+                    knownScope = if (snap.scope == AgentScope.PROJECT_ROOT) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
+                    signal = if (snap.scope == AgentScope.PROJECT_ROOT) LineageSignal.ACCOUNT_RECORD else null
                 }
                 // A row a transcript alone placed, with no registry word left (a restart): the record says it is its own.
                 placement == null && agent.parent != null && agent.scopeSignal?.isAuthoritative == false -> {
                     hintRefused += agent.id
                     parent = null
-                    knownScope = if (snap.isProject) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
-                    signal = if (snap.isProject) LineageSignal.ACCOUNT_RECORD else null
+                    knownScope = if (snap.scope == AgentScope.PROJECT_ROOT) AgentScope.PROJECT_ROOT else AgentScope.PRIMARY
+                    signal = if (snap.scope == AgentScope.PROJECT_ROOT) LineageSignal.ACCOUNT_RECORD else null
                 }
             }
-            if (snap.isProject && parent == null && placements[agent.id]?.parent == null) {
+            val recordRoot = snap.scope == AgentScope.PROJECT_ROOT
+            if (recordRoot && parent == null && placements[agent.id]?.parent == null) {
                 place(agent.id, null, LineageSignal.ACCOUNT_RECORD)
                 knownScope = AgentScope.PROJECT_ROOT
                 signal = LineageSignal.ACCOUNT_RECORD
-            } else if (!snap.isProject && placement != null && placement.parent == null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative)) {
+            } else if (!recordRoot && placement != null && placement.parent == null && (placement.signal == LineageSignal.ACCOUNT_RECORD || !placement.signal.isAuthoritative)) {
                 // A Project the record no longer calls one, or a root a transcript alone made of a chat the record calls its own.
                 placements.remove(agent.id)
                 if (!placement.signal.isAuthoritative) hintRefused += agent.id
@@ -1503,6 +1551,8 @@ class AgentRepository(
         private const val MAX_PERSISTED_PLACEMENTS = 2_000
         /** Roots the registry knows and no page holds, fetched by id per pass. */
         private const val MAX_MATERIALIZED_ROOTS = 8
+        /** How long a fetch's first publication waits for the account's list (see [accountPrime]). */
+        const val ACCOUNT_WORD_WAIT_MS = 4_000L
         /**
          * The most a refresh re-reads: 500 agents, the newest first. The list pages past that only as the reader
          * scrolls to its end ([loadMore]), and the rows so loaded stay as they were between refreshes.

@@ -11,6 +11,7 @@ import com.cursorforandroid.data.api.ProjectLineageApi
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
@@ -28,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -96,8 +98,10 @@ class ProjectLeakRegressionTest {
 
     private fun projects(agents: AgentRepository) = ProjectRepository(session, agents, lineage, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities)
 
-    private fun primaryIds(agents: AgentRepository): List<String> =
-        AgentListOrganizer.organize(agents.state.value.agents, ListPreferences(), LocalAgentState(), nowMillis = 1_800_000_000_000L, zone = ZoneOffset.UTC)
+    private fun primaryIds(agents: AgentRepository): List<String> = primaryIds(agents.state.value.agents)
+
+    private fun primaryIds(rows: List<Agent>): List<String> =
+        AgentListOrganizer.organize(rows, ListPreferences(), LocalAgentState(), nowMillis = 1_800_000_000_000L, zone = ZoneOffset.UTC)
             .flatMap { it.rows }.filterNot { it.agent.isProjectRoot }.map { it.agent.id }
 
     /** The account as it showed: a Project, two workers the account created, one it adopted, a side chat, a chat of its own. */
@@ -269,14 +273,24 @@ class ProjectLeakRegressionTest {
         // One page of two; the second worker, running beyond it, is fetched by the running scan all the same.
         assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-w1", "bc-x", "bc-w2")
         assertThat(agents.state.value.hasMore).isTrue()
-        // The account's first page says whose the worker is; the coordinator is beyond the public list's first page.
+        // The account's first page says whose the worker is; the coordinator is beyond the public list's first page,
+        // and the watcher fetches it by id the moment a row names it — so its absence from the list is momentary,
+        // and no assertion here depends on catching it. What holds at every publication, before and after the
+        // fetch lands, is the ordering: the worker is never a primary row, and the coordinator's row is placed as a
+        // root in the publication that brings it, never landing as a chat of its own first.
+        val published = java.util.concurrent.CopyOnWriteArrayList<List<Agent>>()
+        val watching = launch(Dispatchers.Default) { agents.state.collect { published += it.agents } }
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
-        assertThat(AgentListOrganizer.missingParentIds(agents.state.value.agents)).containsExactly("bc-p")
-        // Fetched by id so it can head its tree, and marked a coordinator by the worker that names it.
         withTimeout(5_000) { while (agents.agent("bc-p") == null) delay(10) }
+        watching.cancel()
         assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
+        published.forEach { rows ->
+            assertThat(primaryIds(rows)).doesNotContain("bc-w1")
+            rows.firstOrNull { it.id == "bc-p" }?.let { root -> assertThat(root.isProjectRoot).isTrue() }
+        }
+        assertThat(published.any { rows -> rows.any { it.id == "bc-p" } }).isTrue()
 
         // The reader pages on: the coordinator's own row lands with the second worker's, and the account's next page
         // says whose the second worker is.
@@ -386,7 +400,10 @@ class ProjectLeakRegressionTest {
         )
         assertThat(base.copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(base.copy(source = AgentSource.AS_SUBAGENT_FROM_CLOUD, knownScope = AgentScope.PRIMARY).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(base.copy(isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        // A kept child scope with no parent and no child's source behind it is an older reading; the record's own flag is the fact.
+        assertThat(base.copy(isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(base.copy(isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        assertThat(base.copy(source = AgentSource.CLOUD_META_AGENT).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(base.copy(isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(base.scope).isEqualTo(AgentScope.PRIMARY)
