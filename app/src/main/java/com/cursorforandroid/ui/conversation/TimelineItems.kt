@@ -150,11 +150,28 @@ private fun AssistantMessageView(item: AssistantMessage, modifier: Modifier) {
         BackgroundMessage(item, modifier)
         return
     }
+    ReplyMessage(item.markdown, isStreaming = item.isStreaming, modifier = modifier)
+}
+
+/**
+ * The agent's reply as the transcript shows one: bare prose, no surface of its own. The same view renders a
+ * Project coordinator's `SendMessage` update (see `CoordinatorMessageView`), which is the coordinator's reply and
+ * reads exactly like any agent's. [color] is the prose's colour; [text] is what press-and-hold copies.
+ */
+@Composable
+internal fun ReplyMessage(
+    markdown: String,
+    isStreaming: Boolean,
+    modifier: Modifier = Modifier,
+    text: String = markdown,
+    color: Color = CursorTheme.colors.textPrimary,
+) {
     MessageActions(
-        text = item.markdown,
+        text = text,
+        enabled = text.isNotBlank(),
         modifier = modifier.fillMaxWidth().bleed(horizontal = 6.dp, vertical = 4.dp).clip(CursorTheme.shapes.lg),
     ) {
-        MarkdownText(item.markdown, Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), streaming = item.isStreaming)
+        MarkdownText(markdown, Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), color = color, streaming = isStreaming)
     }
 }
 
