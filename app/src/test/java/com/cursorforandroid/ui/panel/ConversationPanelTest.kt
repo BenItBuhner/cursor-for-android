@@ -392,17 +392,22 @@ class ConversationPanelTest {
     }
 
     @Test
-    fun `the Project section is the Projects work's own, for a coordinator or a chat placed under one`() {
+    fun `the Project section is the Project's one surface, for a coordinator or a chat placed under one, and leads a coordinator's panel`() {
         val project = PanelRegistry.default()[PanelSectionId.Project]!!
         assertThat(project.isShown(Capabilities.DOCUMENTED, PanelFixtures.loaded())).isFalse()
         assertThat(project.isShown(Capabilities.EXTENDED, PanelFixtures.loaded())).isFalse()
         assertThat(project.isShown(Capabilities.DOCUMENTED, PanelFixtures.projectRoot())).isTrue()
         assertThat(project.hint(PanelFixtures.projectRoot())).isEqualTo("Coordinator")
+        // In the coordinator's chat the Project follows the Overview, open; in a primary's it keeps the registry's place.
+        assertThat(titles(PanelFixtures.projectRoot())).isEqualTo(listOf("Overview", "Project", "Changes", "Pull request", "Files", "Artifacts", "Usage"))
+        val worker = PanelFixtures.loaded().copy(agent = PanelFixtures.agent.copy(parent = AgentParent("bc-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.MEMBERSHIP))
+        assertThat(titles(worker)).isEqualTo(listOf("Overview", "Changes", "Pull request", "Files", "Artifacts", "Project", "Usage"))
+        assertThat(project.expandedByDefault).isTrue()
 
         // Rendered on its own, without the graph it owns a view model through, it says so rather than crashing.
         state = PanelFixtures.projectRoot()
         show()
-        open(PanelSectionId.Project)
+        scrollTo("section-Project")
         assertThat(shown("The Project section needs the app to render")).isTrue()
     }
 

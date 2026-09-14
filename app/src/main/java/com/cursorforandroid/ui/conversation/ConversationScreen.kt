@@ -119,9 +119,8 @@ fun ConversationScreen(
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
-    /** Where the panel's Project section sends the reader: another chat, or a Project's view. */
+    /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
-    onOpenProject: ((String) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -242,7 +241,7 @@ fun ConversationScreen(
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
-    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onOpenProject = onOpenProject)
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
     // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
     val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
