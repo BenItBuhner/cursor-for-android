@@ -29,6 +29,7 @@ class AgentListOrganizerTest {
         parent: String? = null,
         parentKind: AgentParentKind = AgentParentKind.PROJECT_WORKER,
         knownScope: AgentScope? = null,
+        scopeSignal: LineageSignal? = null,
     ) = Agent(
         id = id,
         name = name,
@@ -47,6 +48,7 @@ class AgentListOrganizerTest {
         isProject = isProject,
         parent = parent?.let { AgentParent(it, parentKind) },
         knownScope = knownScope,
+        scopeSignal = scopeSignal,
     )
 
     private fun List<AgentSection>.ids(key: String) = first { it.key == key }.rows.map { it.agent.id }
@@ -180,19 +182,22 @@ class AgentListOrganizerTest {
         val subBySource = agent("sub", source = AgentSource.AS_SUBAGENT_FROM_CLOUD)
         assertThat(sideBySource.scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(primaryIds(listOf(sideBySource, subBySource, agent("plain")))).containsExactly("plain")
-        // A cloud meta agent is a coordinator: a Project among the Projects, never a chat among the chats — and
-        // never a child of nobody, drawn nowhere (what hid Projects until 0.3.5).
+        // A chat started as a cloud meta agent is a chat of the account's own unless its record flags it a Project:
+        // neither a child of nobody, drawn nowhere (what hid Projects until 0.3.5), nor a Project by its source
+        // (what put ordinary chats among the Projects in 0.3.6).
         val meta = agent("meta", source = AgentSource.CLOUD_META_AGENT)
-        assertThat(meta.scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(meta.scope).isEqualTo(AgentScope.PRIMARY)
         val withMeta = AgentListOrganizer.organize(listOf(meta, agent("plain")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
-        assertThat(withMeta.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.map { it.agent.id }).containsExactly("meta")
-        assertThat(withMeta.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }.map { it.agent.id }).containsExactly("plain")
+        assertThat(withMeta.none { it.key == AgentListOrganizer.PROJECTS_KEY }).isTrue()
+        assertThat(withMeta.flatMap { it.rows }.map { it.agent.id }).containsExactly("meta", "plain")
         // Cause 5: the classification outlives the source it came from (Extended mode turned off wipes the source).
         val kept = sideBySource.copy(source = null, knownScope = AgentScope.PROJECT_CHILD)
         assertThat(kept.scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(primaryIds(listOf(kept, agent("plain")))).containsExactly("plain")
-        // A kept root is a Project whether or not the account ever said so (a coordinator by its own transcript).
-        val coordinator = agent("coord", knownScope = AgentScope.PROJECT_ROOT)
+        // A kept root is a Project on the evidence it was kept with (a membership naming it as manager); one kept on
+        // no evidence — a coordinator by its own transcript alone — is a chat of the account's own.
+        assertThat(agent("hinted", knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PRIMARY)
+        val coordinator = agent("coord", knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP)
         assertThat(coordinator.isProjectRoot).isTrue()
         assertThat(coordinator.looksLikeProject).isTrue()
         val sections = AgentListOrganizer.organize(listOf(coordinator, agent("w", parent = "coord")), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)

@@ -90,7 +90,10 @@ class FinishWatchdog(
         // A fresh process knows the list only from disk, which is where the rows that were running last time are. A
         // Project's coordinator and the agents spawned inside it are never announced, so they are not worth a read.
         agents.restoreFromCache()
-        val before = agents.state.value.agents.filter { it.isRunning && !it.isProjectScopedByEvidence && it.latestRunId != null }
+        val projectPrefs = prefs.projectNotifications.first()
+        // Only the chats whose finish would be a card are worth a read (Settings › Notifications says which of a
+        // Project's are); the count reported at the end is every running agent's all the same.
+        val before = agents.state.value.agents.filter { it.isRunning && projectPrefs.announces(it) && it.latestRunId != null }
         if (before.isEmpty()) return Outcome.Done
 
         // A list from disk, or one the app last fetched a while ago, is brought up to date first. The fetch reads the
@@ -119,8 +122,8 @@ class FinishWatchdog(
             }
             val settled = agents.agent(was.id) ?: continue
             if (settled.runStatus == RunStatus.CANCELLED) continue
-            // The refresh may have placed the row inside a Project since the check began: then it is not announced.
-            if (settled.isProjectScopedByEvidence) continue
+            // The refresh may have placed the row inside a Project since the check began: then the setting decides.
+            if (!projectPrefs.announces(settled)) continue
             val local = prefs.localAgentState.first()
             if (local.isSnoozed(was.id, nowProvider())) continue
             // Claimed first so two checks cannot both announce it, and given back when the card did not go out:
@@ -129,7 +132,9 @@ class FinishWatchdog(
             if (!announced.add(key)) continue
             if (!announce(trackedRun(settled, runId, record))) announced.remove(key)
         }
-        val running = agents.state.value.agents.count { it.isRunning && !it.isProjectScopedByEvidence }
+        // What keeps the watchdog watching is a chat whose finish would be a card; a Project's chats still running
+        // are the live notification's count, not a reason to read again.
+        val running = agents.state.value.agents.count { it.isRunning && projectPrefs.announces(it) }
         return if (running > 0) Outcome.Watching(running) else Outcome.Done
     }
 

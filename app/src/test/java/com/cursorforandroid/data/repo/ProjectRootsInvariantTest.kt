@@ -16,6 +16,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.ListPreferences
@@ -208,10 +209,21 @@ class ProjectRootsInvariantTest {
         // The account list's next window names none of them: nothing changes.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-0"), ComposerSnapshot("bc-plain-1")))
         assertThat(agents.knownRoots.value).hasSize(7)
-        // A record that no longer calls the chat a Project takes it out; an archived one stays, archived.
+        // A record that no longer calls the chat a Project withdraws the flag — the root stands while a worker's
+        // record still names it as manager (that is evidence of its own); an archived one stays, archived.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-2"), ComposerSnapshot("bc-root-3", isProject = true, archived = true)))
-        assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-root-2")
+        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.flagged).isFalse()
+        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.managerOf).isAtLeast(1)
         assertThat(agents.knownRoots.value.first { it.id == "bc-root-3" }.archived).isTrue()
+        // The worker's record withdraws the manager too, and the membership answer names nobody: no evidence is
+        // left, and the root leaves — its row a chat of the account's own.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-2-w1")))
+        agents.applyLineage("bc-root-2", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
+        assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-root-2")
+        assertThat(agents.agent("bc-root-2")?.scope).isEqualTo(AgentScope.PRIMARY)
+        // A membership answer with nobody in it does not take out a root whose record still flags it.
+        agents.applyLineage("bc-root-3", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
+        assertThat(agents.knownRoots.value.map { it.id }).contains("bc-root-3")
         // A Project deleted on the server: the public API answers 404 for it. Nothing but the registry knows it
         // (a worker's record named it as manager; its own row never loaded): the fetch by id is what lets it go —
         // and the Projects it stands beside are all still there.

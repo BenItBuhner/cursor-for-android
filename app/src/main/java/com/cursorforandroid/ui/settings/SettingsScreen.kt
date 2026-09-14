@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,6 +45,7 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.domain.CursorUser
+import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
@@ -284,6 +286,48 @@ private fun NotificationRows(graph: AppGraph) {
             subtitle = "Adds the status-bar chip and the lock-screen card on Android 16.",
             onClick = { runCatching { context.startActivity(liveUpdatesIntent) } },
         )
+    }
+    // The Project half (see ProjectNotificationPrefs): the live count is every running agent by default, the
+    // cards for a Project's chats off by default; each its own switch.
+    val project by graph.prefs.projectNotifications.collectAsStateWithLifecycle(initialValue = ProjectNotificationPrefs.DEFAULT)
+    HairlineDivider()
+    ToggleRow(
+        title = "Count Project agents in the live notification",
+        subtitle = "The running count includes Project coordinators, their workers and side chats.",
+        checked = project.countProjectAgentsInLive,
+        tag = "notif-count-project-agents",
+    ) { scope.launch { graph.prefs.setCountProjectAgentsInLive(it) } }
+    HairlineDivider()
+    ToggleRow(
+        title = "Notify for Project coordinators",
+        subtitle = "A card when a Project's coordinator finishes a turn or asks a question.",
+        checked = project.notifyProjectCoordinators,
+        tag = "notif-project-coordinators",
+    ) { scope.launch { graph.prefs.setNotifyProjectCoordinators(it) } }
+    HairlineDivider()
+    ToggleRow(
+        title = "Notify for agents inside Projects",
+        subtitle = "A card when a worker, side chat or subagent inside a Project finishes or asks a question.",
+        checked = project.notifyProjectMembers,
+        tag = "notif-project-members",
+    ) { scope.launch { graph.prefs.setNotifyProjectMembers(it) } }
+}
+
+/** One settings switch: the title and its explanation, the toggle at the trailing edge, the whole row pressable. */
+@Composable
+private fun ToggleRow(title: String, subtitle: String, checked: Boolean, tag: String, onChange: (Boolean) -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(
+        Modifier.fillMaxWidth().pressable({ onChange(!checked) }, CursorTheme.shapes.lg).testTag(tag).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = type.base, color = colors.textPrimary)
+            Text(subtitle, style = type.small, color = colors.textTertiary)
+        }
+        Spacer(Modifier.width(12.dp))
+        CursorToggle(checked = checked, onCheckedChange = onChange)
     }
 }
 

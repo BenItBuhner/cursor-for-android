@@ -22,6 +22,7 @@ import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.domain.WidgetList
@@ -50,13 +51,16 @@ import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Nothing of a Project notifies — not its coordinator, not a worker, a side chat or a subagent — and none of them
- * reaches the recents or the widget. The rule is read at every point a card could come from: the decision that starts
- * the service, the monitor that follows runs and reports finishes, the watchdog that stands in for the service, and
- * the primary surfaces. This drives each of them through the way the classification actually arrives in each mode:
- * in default mode from the coordinator's own transcript, whose `create_agent` / `send_to_agent` calls name its workers
- * (the one lineage signal the documented API carries); in Extended mode from the account's list, which says of every
- * chat whether it is a Project and whose child it is. Robolectric only because [SessionManager] needs a Context.
+ * The live notification counts every running agent — a Project's coordinator, its workers and side chats, and the
+ * account's own chats alike (Settings › Notifications, "Count Project agents in the live notification", on by
+ * default) — while the cards for a Project's chats stay off by default, and none of them reaches the recents or the
+ * widget. The rule is read at every point a card could come from: the decision that starts the service, the
+ * monitor that follows runs and reports finishes, the watchdog that stands in for the service, and the primary
+ * surfaces. This drives each of them through the way the classification actually arrives in each mode: in default
+ * mode from the coordinator's own transcript, whose `create_agent` / `get_agent_status` calls name its workers (the
+ * one lineage signal the documented API carries — it nests the workers, and makes no Project of the chat: a root
+ * takes the record's word); in Extended mode from the account's list, which says of every chat whether it is a
+ * Project and whose child it is. Robolectric only because [SessionManager] needs a Context.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -108,7 +112,8 @@ class ProjectNotificationIsolationTest {
         while (!condition()) delay(10)
     }
 
-    private fun decision() = liveDecision(session.state.value, agents.state.value, enabled = true, serviceActive = false)
+    private fun decision(prefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT) =
+        liveDecision(session.state.value, agents.state.value, enabled = true, serviceActive = false, scan = agents.runningScan.value, projectPrefs = prefs)
 
     private fun watchdog() = FinishWatchdog(
         session = session,
@@ -128,39 +133,49 @@ class ProjectNotificationIsolationTest {
         api.v0[agentId] = api.v0.getValue(agentId).copy(status = "FINISHED")
     }
 
-    /** What every surface says once the Project's chats are known for what they are. */
-    private suspend fun assertNothingOfTheProjectNotifies() {
-        assertThat(agents.agent("bc-p")!!.isProjectScoped).isTrue()
+    /**
+     * What every surface says once the Project's chats are known for what they are: the live count is every running
+     * agent, the cards are the account's own chats' — and the coordinator's when it is no Project by the record
+     * ([rootIsProject] false: a chat that drives workers from its transcript is a chat of the account's own).
+     */
+    private suspend fun assertProjectCountedButNotAnnounced(rootIsProject: Boolean) {
+        assertThat(agents.agent("bc-p")!!.isProjectRoot).isEqualTo(rootIsProject)
         assertThat(agents.agent("bc-w")!!.isProjectChild).isTrue()
         assertThat(agents.agent("bc-x")!!.isProjectScoped).isFalse()
-        // The decision that starts the foreground service counts only the account's own chat.
-        assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-x"), serviceActive = false))
-        // The monitor follows only that chat and never reports the others' finishes.
+        // The decision that starts the foreground service counts every running agent, the Project's included.
+        assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-w", "bc-s", "bc-x"), serviceActive = false))
+        // With the switch off, only the chats outside the Project.
+        val outside = if (rootIsProject) setOf("bc-x") else setOf("bc-p", "bc-x")
+        assertThat(decision(ProjectNotificationPrefs(countProjectAgentsInLive = false))).isEqualTo(LiveDecision.Track(outside, serviceActive = false))
+        // The monitor follows them all and counts them all, and reports the finishes of the ones whose cards are on.
         monitor.start()
-        awaitUntil { monitor.state.value.hasReconciled }
-        assertThat(monitor.state.value.running.map { it.agentId }).containsExactly("bc-x")
-        assertThat(monitor.state.value.runningCount).isEqualTo(1)
+        awaitUntil { monitor.state.value.hasReconciled && monitor.state.value.running.size == 4 }
+        assertThat(monitor.state.value.running.map { it.agentId }).containsExactly("bc-p", "bc-w", "bc-s", "bc-x")
+        assertThat(monitor.state.value.runningCount).isEqualTo(4)
         finishOnServer("bc-w", "run-w")
         finishOnServer("bc-p", "run-p")
         agents.refresh(silent = true)
         streamer.emit("run-x", RunStreamEvent.Result("run-x", RunStatus.FINISHED, "Done.", 10_000, null))
         streamer.emit("run-x", RunStreamEvent.Done)
-        awaitUntil { finished.size == 1 }
-        delay(100)
-        assertThat(finished.map { it.agentId }).containsExactly("bc-x")
-        // The watchdog, standing in for the service, announces none of them either — only a chat of the account's
-        // own that finished while nothing followed it — and has nothing left to watch once that chat is told, the
-        // side chat still running notwithstanding.
+        awaitUntil { finished.any { it.agentId == "bc-x" } }
+        delay(200)
+        assertThat(finished.map { it.agentId }).contains("bc-x")
+        assertThat(finished.map { it.agentId }).doesNotContain("bc-w")
+        assertThat(finished.map { it.agentId }).doesNotContain("bc-s")
+        if (rootIsProject) assertThat(finished.map { it.agentId }).doesNotContain("bc-p")
+        // The watchdog, standing in for the service, announces the account's own chat that finished while nothing
+        // followed it and none of the Project's; the side chat still running is the live notification's count, not
+        // a reason for the watchdog to read again.
         monitor.stop()
         api.addRunningAgent("bc-y", "Second plain chat", "run-y")
         agents.refresh(silent = true)
         finishOnServer("bc-y", "run-y")
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced.map { it.agentId }).containsExactly("bc-y")
-        // The primary surfaces list only the account's own chat, whatever its state.
+        // The primary surfaces list only the account's own chats, whatever their state.
         val all = agents.state.value.agents
         val recent = WidgetList.rows(WidgetMode.Recent, all, ListPreferences(), LocalAgentState(), nowMillis = now, zone = ZoneOffset.UTC)
-        assertThat(recent.map { it.agent.id }).containsExactly("bc-x", "bc-y")
+        assertThat(recent.map { it.agent.id }).containsExactlyElementsIn(if (rootIsProject) listOf("bc-x", "bc-y") else listOf("bc-p", "bc-x", "bc-y"))
         val running = WidgetList.rows(WidgetMode.Running, all, ListPreferences(), LocalAgentState(), nowMillis = now, zone = ZoneOffset.UTC)
         assertThat(running).isEmpty()
         assertThat(all.first { it.id == "bc-s" }.isRunning).isTrue()
@@ -204,11 +219,14 @@ class ProjectNotificationIsolationTest {
                 ),
             ),
         )
-        awaitUntil { agents.agent("bc-p")?.scope == AgentScope.PROJECT_ROOT && agents.agent("bc-w")?.isProjectScopedByEvidence == true && agents.agent("bc-s")?.isProjectScopedByEvidence == true }
+        awaitUntil { agents.agent("bc-w")?.isProjectScopedByEvidence == true && agents.agent("bc-s")?.isProjectScopedByEvidence == true }
         assertThat(agents.agent("bc-w")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_CREATED)
         assertThat(agents.agent("bc-s")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_CREATED)
+        // The transcript nests the workers under the chat; it makes no Project of it — that takes the record's word.
+        assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.knownRoots.value).isEmpty()
         conversations.detach("bc-p")
-        assertNothingOfTheProjectNotifies()
+        assertProjectCountedButNotAnnounced(rootIsProject = false)
     }
 
     @Test
@@ -224,7 +242,33 @@ class ProjectNotificationIsolationTest {
         )
         assertThat(agents.agent("bc-p")!!.scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(agents.agent("bc-s")!!.scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertNothingOfTheProjectNotifies()
+        assertProjectCountedButNotAnnounced(rootIsProject = true)
+    }
+
+    @Test
+    fun `the cards for a Project's chats come back with their switches, the coordinator's and the members' apart`() {
+        agents.applyAccountSnapshots(
+            listOf(
+                ComposerSnapshot("bc-p", isProject = true),
+                ComposerSnapshot("bc-w", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)),
+                ComposerSnapshot("bc-s", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
+                ComposerSnapshot("bc-x"),
+            ),
+        )
+        val root = agents.agent("bc-p")!!
+        val worker = agents.agent("bc-w")!!
+        val side = agents.agent("bc-s")!!
+        val own = agents.agent("bc-x")!!
+        val defaults = ProjectNotificationPrefs.DEFAULT
+        assertThat(listOf(root, worker, side).map { defaults.announces(it) }).containsExactly(false, false, false)
+        assertThat(defaults.announces(own)).isTrue()
+        val coordinators = ProjectNotificationPrefs(notifyProjectCoordinators = true)
+        assertThat(listOf(root, worker, side).map { coordinators.announces(it) }).containsExactly(true, false, false).inOrder()
+        val members = ProjectNotificationPrefs(notifyProjectMembers = true)
+        assertThat(listOf(root, worker, side).map { members.announces(it) }).containsExactly(false, true, true).inOrder()
+        // The live count is a switch of its own: every running agent by default, the account's own alone without.
+        assertThat(listOf(root, worker, side, own).map { defaults.countsLive(it) }).containsExactly(true, true, true, true)
+        assertThat(listOf(root, worker, side, own).map { ProjectNotificationPrefs(countProjectAgentsInLive = false).countsLive(it) }).containsExactly(false, false, false, true).inOrder()
     }
 
     @Test
@@ -234,12 +278,15 @@ class ProjectNotificationIsolationTest {
         // A mention in a coordinator's transcript alone nests a chat but is no evidence: it still counts and notifies.
         agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), authoritative = false)
         assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-w", "bc-s", "bc-x"), serviceActive = false))
-        // The coordinator's tools showing it made them is.
+        // The coordinator's tools showing it made them is evidence for the workers' places — and every running agent
+        // counts in the live notification all the same; only the switch takes the Project's chats off the count.
         agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), LineageSignal.COORDINATOR_CREATED)
-        assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-x"), serviceActive = false))
-        // Every chat placed inside a Project, and the Project itself, is off the notification surfaces.
+        assertThat(decision()).isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-w", "bc-s", "bc-x"), serviceActive = false))
+        // The chat itself is no Project on its transcript's word: it stays a chat of the account's own.
+        assertThat(agents.agent("bc-p")!!.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(decision(ProjectNotificationPrefs(countProjectAgentsInLive = false))).isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-x"), serviceActive = false))
         val state = agents.state.value
-        assertThat(state.agents.filter { it.isProjectScoped }.map { it.id }).containsExactly("bc-p", "bc-w", "bc-s")
-        assertThat(liveDecision(signedIn, state.copy(agents = state.agents.filter { it.isProjectScoped }), enabled = true, serviceActive = true)).isEqualTo(LiveDecision.Idle)
+        assertThat(state.agents.filter { it.isProjectScoped }.map { it.id }).containsExactly("bc-w", "bc-s")
+        assertThat(liveDecision(signedIn, state.copy(agents = state.agents.filter { it.isProjectScoped }), enabled = true, serviceActive = true, projectPrefs = ProjectNotificationPrefs(countProjectAgentsInLive = false))).isEqualTo(LiveDecision.Idle)
     }
 }

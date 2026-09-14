@@ -511,6 +511,7 @@ class AppGraph(
             agents = agents,
             hub = liveRuns,
             runRecord = { agentId, runId -> session.current.api.getRun(agentId, runId) },
+            notificationPrefs = prefs.projectNotifications,
         )
     }
     val runMonitor: RunMonitor get() = lazyRunMonitor.value
@@ -700,6 +701,7 @@ class AppGraph(
                     pins.state.value.let { ProjectDiagnostics.AccountRoundSummary(true, it.active, it.isSyncing, it.lastSyncedAtMillis?.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.error) }
                 } else null,
                 rootFailures = agents.rootFailures(),
+                notificationPrefs = prefs.projectNotifications.first(),
             ),
         )
     }

@@ -18,6 +18,7 @@ import com.cursorforandroid.R
 import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.domain.LiveActivityState
+import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
 import com.cursorforandroid.util.AppClock
@@ -138,7 +139,7 @@ class LiveNotificationService : Service() {
             monitor.finished.collect { run ->
                 val local = graph.prefs.localAgentState.first()
                 if (local.isSnoozed(run.agentId, AppClock.now())) return@collect
-                onRunFinished(run)
+                onRunFinished(run, graph.prefs.projectNotifications.first())
             }
         }
         monitor.start()
@@ -180,12 +181,12 @@ class LiveNotificationService : Service() {
         return state.withoutQuiet(quietIds)
     }
 
-    private fun onRunFinished(run: TrackedRun) {
+    private fun onRunFinished(run: TrackedRun, projectPrefs: ProjectNotificationPrefs) {
         // A cancel was requested by the user somewhere; nothing to announce.
         if (run.status == RunStatus.CANCELLED) return
-        // A Project's coordinator and the agents spawned inside it are the Project view's business, never a card's;
-        // the monitor drops them first, and this is the last word at the point where a card would be posted.
-        if (graph.agents.agent(run.agentId)?.isProjectScopedByEvidence == true) return
+        // A Project's coordinator's or member's finish is a card only when Settings › Notifications asks for it;
+        // the monitor drops the others first, and this is the last word at the point where a card would be posted.
+        graph.agents.agent(run.agentId)?.let { agent -> if (!projectPrefs.announces(agent)) return }
         // The user is looking at this very conversation: the transcript already shows the result.
         val foreground = runCatching { ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) }.getOrDefault(false)
         if (foreground && graph.conversations.isAttached(run.agentId)) return

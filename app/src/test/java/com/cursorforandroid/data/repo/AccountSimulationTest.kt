@@ -21,7 +21,6 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
-import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentParent
@@ -30,8 +29,11 @@ import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.LiveRunning
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RunStatus
@@ -95,9 +97,13 @@ class AccountSimulationTest {
         val manager: String? = null,
         val adoptedBy: String? = null,
         val sideChatOf: String? = null,
+        /** A cloud subagent of an ordinary chat: hangs off it, and makes no Project of it. */
+        val subagentOf: String? = null,
     ) {
         val root: String? get() = manager ?: adoptedBy ?: sideChatOf
         val projectScoped: Boolean get() = isProject || newProjectFlag || root != null
+        /** A chat of the account's own: no Project's, nobody's child. */
+        val own: Boolean get() = !projectScoped && subagentOf == null
         /** The record as the app reads it: `projectMetadata` or the "New Project" flag makes a Project's chat. */
         fun snapshot(): ComposerSnapshot = ComposerSnapshot(
             id = id,
@@ -105,7 +111,9 @@ class AccountSimulationTest {
             archived = archived,
             isProject = (isProject || newProjectFlag) && manager == null,
             projectAppearance = appearance,
-            parent = manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) } ?: sideChatOf?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) },
+            parent = manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
+                ?: sideChatOf?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
+                ?: subagentOf?.let { AgentParent(it, AgentParentKind.SUBAGENT) },
             source = source,
             status = if (running) RunStatus.RUNNING else RunStatus.FINISHED,
         )
@@ -180,7 +188,7 @@ class AccountSimulationTest {
         override suspend fun unpin(ids: Collection<String>) = Unit
 
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> = memberships[managerId].orEmpty()
-        override suspend fun children(parentId: String): List<ComposerSnapshot> = chats.filter { it.sideChatOf == parentId }.map { it.snapshot() }
+        override suspend fun children(parentId: String): List<ComposerSnapshot> = chats.filter { it.sideChatOf == parentId || it.subagentOf == parentId }.map { it.snapshot() }
         override suspend fun record(id: String): ComposerSnapshot? = byId[id]?.snapshot()
 
         override suspend fun scanRoots(maxPages: Int): RootScan {
@@ -272,6 +280,16 @@ class AccountSimulationTest {
         }
         all += Chat("bc-codex", "Codex-Poly-Bot Scaling", now - 500 * 3_600_000L, running = true, machine = true, source = AgentSource.EDITOR)
         all += Chat("bc-market", "Market Opportunities", now - 26 * 3_600_000L, source = AgentSource.SLACK)
+        // Chats that are no Projects however they look: three started as cloud meta agents (no Project flag, no
+        // workers), one of them running; two ordinary chats that spawned cloud subagents, whose records name them.
+        all += Chat("bc-meta-1", "Meta agent chat one", now - 40 * 60_000L, running = true, source = AgentSource.CLOUD_META_AGENT)
+        all += Chat("bc-meta-2", "Meta agent chat two", now - 9 * 3_600_000L, source = AgentSource.CLOUD_META_AGENT)
+        all += Chat("bc-meta-3", "Meta agent chat three", now - 300 * 3_600_000L, archived = true, source = AgentSource.CLOUD_META_AGENT)
+        all += Chat("bc-spawner-1", "Refactor with subagents", now - 50 * 60_000L, running = true, source = AgentSource.EDITOR)
+        all += Chat("bc-spawner-1-sub1", "Subagent: tests", now - 45 * 60_000L, running = true, source = AgentSource.AS_SUBAGENT_FROM_CLOUD, subagentOf = "bc-spawner-1")
+        all += Chat("bc-spawner-1-sub2", "Subagent: docs", now - 44 * 60_000L, source = AgentSource.AS_SUBAGENT_FROM_CLOUD, subagentOf = "bc-spawner-1")
+        all += Chat("bc-spawner-2", "Research with a subagent", now - 250 * 3_600_000L, source = AgentSource.EDITOR)
+        all += Chat("bc-spawner-2-sub1", "Subagent: sources", now - 249 * 3_600_000L, source = AgentSource.AS_SUBAGENT_FROM_CLOUD, subagentOf = "bc-spawner-2")
         chats = all
         chats.forEach { byId[it.id] = it }
         // The public API's picture of the same account.
@@ -283,7 +301,8 @@ class AccountSimulationTest {
         }
     }
 
-    private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 2)
+    /** The status scan reads twenty pages of twenty: the whole account, so the running set is the server's. */
+    private fun agents() = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 20)
 
     private fun projectsOf(agents: AgentRepository) = ProjectRepository(session, agents, account, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L))
 
@@ -339,16 +358,21 @@ class AccountSimulationTest {
                 },
             )
         }
+        // What 0.3.6 added on top: the meta-agent chats dressed as Projects — rows flagged, and registry entries
+        // admitted on the source alone (no evidence fields yet) — which the first pass must take back.
+        val poisoned = rows.map { row ->
+            if (byId[row.id]?.source == AgentSource.CLOUD_META_AGENT && byId[row.id]?.projectScoped == false) row.copy(isProject = true, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD) else row
+        }
         val held = rows.mapTo(HashSet()) { it.id }
         val lineage = CachedLineage(
             placements = chats.filter { it.id !in held && (it.manager != null || it.sideChatOf != null) }.take(100).map { c ->
                 CachedPlacement(c.id, c.manager ?: c.sideChatOf, if (c.manager != null) AgentParentKind.PROJECT_WORKER else AgentParentKind.SIDE_CHAT, LineageSignal.ACCOUNT_RECORD)
-            } + projects.map { CachedPlacement(it.id, null, null, LineageSignal.ACCOUNT_RECORD) },
+            } + projects.map { CachedPlacement(it.id, null, null, LineageSignal.ACCOUNT_RECORD) } + listOf("bc-meta-1", "bc-meta-2").map { CachedPlacement(it, null, null, LineageSignal.ACCOUNT_RECORD) },
             sources = chats.filter { it.id !in held && it.source != null && (it.source == AgentSource.CLOUD_META_AGENT || it.source == AgentSource.AS_SIDE_CHAT_FROM_CLOUD) }.associate { it.id to it.source!! },
             hintRefused = emptySet(),
-            roots = emptyList(),
+            roots = listOf("bc-meta-1", "bc-meta-2").map { KnownRoot(it, byId.getValue(it).name, signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = 1L) },
         )
-        cache.write(rows, lineage = lineage)
+        cache.write(poisoned, lineage = lineage)
         prefs.setPinnedIds(setOf("bc-codex", "bc-market"))
     }
 
@@ -362,8 +386,20 @@ class AccountSimulationTest {
         assertWithMessage("$label: nothing of a Project among the primary rows").that(leaked.map { it.agent.id }).isEmpty()
         assertWithMessage("$label: the pinned Remote Control chat and the pinned chat are listed")
             .that(sections.firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows?.map { it.agent.id }.orEmpty()).containsExactly("bc-codex", "bc-market")
-        val loadedOwn = agents.state.value.agents.filter { byId[it.id]?.projectScoped == false }
+        val loadedOwn = agents.state.value.agents.filter { byId[it.id]?.own == true }
         assertWithMessage("$label: no chat of the account's own is read as a Project's").that(loadedOwn.filter { it.isProjectScoped }.map { it.id }).isEmpty()
+        // A root takes the record's word alone: the registry names the Projects and nothing else — not a chat
+        // started as a meta agent, not one that spawned subagents, not an archived chat of the account's own.
+        assertWithMessage("$label: the registry holds the Projects and nothing else").that(agents.knownRoots.value.map { it.id }).containsNoneOf("bc-meta-1", "bc-meta-2", "bc-meta-3", "bc-spawner-1", "bc-spawner-2")
+        assertThat(agents.knownRoots.value.all { it.isEvidenced }).isTrue()
+        agents.agent("bc-meta-1")?.let { assertWithMessage("$label: a meta agent chat is a chat of the account's own").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
+        agents.agent("bc-spawner-1")?.let { assertWithMessage("$label: a chat with subagents is a chat of the account's own").that(it.scope).isEqualTo(AgentScope.PRIMARY) }
+        // Its subagents hang off it, under its own row, and never among the primary rows or the Projects.
+        val spawner = primary.firstOrNull { it.agent.id == "bc-spawner-1" }
+        if (spawner != null && agents.agent("bc-spawner-1-sub1") != null) {
+            assertWithMessage("$label: a chat's subagents sit under it").that(spawner.children.map { it.agent.id }).contains("bc-spawner-1-sub1")
+        }
+        assertThat(primary.map { it.agent.id }).containsNoneOf("bc-spawner-1-sub1", "bc-spawner-1-sub2", "bc-spawner-2-sub1")
     }
 
     @Test
@@ -382,6 +418,8 @@ class AccountSimulationTest {
         val fromDisk = sections(agents, projects).firstOrNull { it.key == AgentListOrganizer.PROJECTS_KEY }?.rows.orEmpty().map { it.agent.id }
         assertWithMessage("the roots 0.3.4 held on disk render before any network").that(fromDisk).containsAtLeast("bc-shipyard", "bc-revenue", "bc-mobile")
         assertThat(agents.state.value.agents.none { byId[it.id]?.isProject == true && it.isProjectChild }).isTrue()
+        // 0.3.6's false Projects come back from the disk as they were left; the account's word takes them out below.
+        assertThat(agents.knownRoots.value.map { it.id }).containsAtLeast("bc-meta-1", "bc-meta-2")
 
         agents.refresh()
         // The account round is cued by the completed fetch and retried past the two failures; the discovery pass
@@ -487,35 +525,88 @@ class AccountSimulationTest {
     }
 
     @Test
-    fun `a coordinator's row is a root by its record whatever its source, and a child's by its parent`() {
+    fun `a coordinator's row is a root by its record alone, a child's by its parent, never by its source`() {
         val root = Agent(
             id = "bc-x", name = "X", lifecycle = AgentLifecycle.IDLE, runStatus = RunStatus.FINISHED, envType = EnvType.CLOUD, envName = null, url = "",
             createdAtMillis = 1, updatedAtMillis = 1, latestRunId = null, repoUrl = null, startingRef = null,
             source = AgentSource.CLOUD_META_AGENT, isProject = true,
         )
         assertThat(root.scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        assertThat(root.copy(isProject = false).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // A source says how a chat was started, never what it is: a meta agent without the flag is a chat of its own.
+        assertThat(root.copy(isProject = false).scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(root.copy(isProject = false, source = null).scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(root.copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)).scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(root.copy(isProject = false, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        // 0.3.4's reading of a meta agent as a child of nobody is re-read as the root it is.
+        // 0.3.4's reading of a meta agent as a child of nobody is re-read by the record's flag.
         assertThat(root.copy(knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.HIDDEN_SOURCE).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // A kept root scope stands on root evidence alone: a transcript's or a children list's makes no Project.
+        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.COORDINATOR_CREATED).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.CHILDREN_LIST).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(root.copy(isProject = false, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(AgentScope.of(isProject = true, parent = null, source = AgentSource.AS_SUBAGENT_FROM_CLOUD)).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(AgentScope.of(isProject = false, parent = null, source = AgentSource.CLOUD_META_AGENT)).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(AgentScope.of(isProject = false, parent = null, source = AgentSource.CLOUD_META_AGENT)).isEqualTo(AgentScope.PRIMARY)
         assertThat(AgentScope.of(isProject = false, parent = null, source = AgentSource.AS_SUBAGENT_FROM_CLOUD)).isEqualTo(AgentScope.PROJECT_CHILD)
     }
 
+    /**
+     * The live notification's count is every running agent — the Projects' coordinators, workers and side chats
+     * included — from the status scan reconciled with the rows, while the cards for the Projects' chats stay off:
+     * the same in Extended mode and, from the registry and rows kept, with it off.
+     */
     @Test
-    fun `nothing counts as running or notifies for a Project's chats, by the indicator too`() = runBlocking<Unit> {
-        val agents = agents()
-        val projects = projectsOf(agents)
+    fun `the live count is every running agent while the Projects' chats keep their cards off, in both modes`() = runBlocking<Unit> {
+        var agents = agents()
+        var projects = projectsOf(agents)
         pinsOf(agents, projects)
         agents.refresh()
         awaitUntil("the discovery pass") { projects.lastRootScan.value?.status == RootScanRecord.Status.Done }
         awaitUntil("the memberships") { projects.memberCounts.first().keys.containsAll(expectedRoots - "bc-retro") }
-        val rows = agents.state.value.agents.map { AgentListOrganizer.toRow(it, LocalAgentState(), 1_800_000_100_000L) }
-        val counted = rows.filter { it.indicator == AgentIndicator.Running && !it.agent.isProjectScopedByEvidence }.map { it.agent.id }
-        assertThat(counted.filter { byId[it]?.projectScoped == true }).isEmpty()
-        assertThat(counted).isNotEmpty()
+        awaitUntil("the roots' rows") { expectedRoots.all { agents.agent(it) != null } }
+        assertLiveRule("Extended mode", agents)
+
+        extended = false
+        awaitUntil("the registry on disk") { cache.readLineage()?.roots?.size == expectedRoots.size }
+        agents.reset()
+        agents = agents()
+        projects = projectsOf(agents)
+        pinsOf(agents, projects)
+        agents.restoreFromCache()
+        agents.refresh()
+        projects.discoverRoots()
+        awaitUntil("the roots' rows in default mode") { expectedRoots.all { agents.agent(it) != null } }
+        assertLiveRule("default mode", agents)
+    }
+
+    private fun assertLiveRule(label: String, agents: AgentRepository) {
+        val prefs = ProjectNotificationPrefs.DEFAULT
+        val rows = agents.state.value.agents
+        val scan = agents.runningScan.value
+        assertWithMessage("$label: the status scan has run").that(scan.hasScanned).isTrue()
+        val live = LiveRunning.ids(rows, scan, prefs)
+        val serverRunningAll = chats.filter { it.running }.map { it.id }.toSet()
+        val serverRunning = chats.filter { it.running && !it.archived }.map { it.id }.toSet()
+        // Every agent the server calls running is in the live set — the Projects' and the account's own alike, and
+        // nothing the server does not; the set is the scan's, not the loaded pages': the pages hold twenty rows,
+        // the account runs many more.
+        assertWithMessage("$label: the live count is the server's running set").that(live).containsAtLeastElementsIn(serverRunning)
+        assertWithMessage("$label: nothing counts that the server does not call running").that(live - serverRunningAll).isEmpty()
+        assertThat(live.size).isGreaterThan(rows.count { it.isRunning && it.id in live } / 2)
+        val projectRunning = serverRunning.filter { byId.getValue(it).projectScoped }
+        assertThat(projectRunning).isNotEmpty()
+        assertWithMessage("$label: the Projects' running agents are counted").that(live).containsAtLeastElementsIn(projectRunning)
+        // Their cards stay off, the account's own chats' on; the switches turn each half on.
+        val loaded = rows.filter { it.id in live }
+        val projectRows = loaded.filter { byId.getValue(it.id).projectScoped }
+        assertThat(projectRows).isNotEmpty()
+        assertWithMessage("$label: no card for a Project's chat").that(projectRows.filter { prefs.announces(it) }.map { it.id }).isEmpty()
+        assertWithMessage("$label: a card for the account's own chats").that(loaded.filter { byId.getValue(it.id).own }.all { prefs.announces(it) }).isTrue()
+        val coordinators = ProjectNotificationPrefs(notifyProjectCoordinators = true)
+        assertThat(projectRows.filter { coordinators.announces(it) }.map { it.id }).containsExactlyElementsIn(projectRows.filter { it.isProjectRoot }.map { it.id })
+        val members = ProjectNotificationPrefs(notifyProjectMembers = true)
+        assertThat(projectRows.filter { members.announces(it) }.map { it.id }).containsExactlyElementsIn(projectRows.filter { it.isProjectChild }.map { it.id })
+        // With the count switch off, the live set is the account's own running chats alone.
+        val ownOnly = LiveRunning.ids(rows, scan, ProjectNotificationPrefs(countProjectAgentsInLive = false))
+        assertThat(ownOnly.filter { byId[it]?.projectScoped == true }).isEmpty()
+        assertThat(ownOnly).containsAtLeastElementsIn(loaded.filter { byId.getValue(it.id).own }.map { it.id })
     }
 }

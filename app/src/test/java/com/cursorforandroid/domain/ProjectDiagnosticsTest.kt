@@ -58,7 +58,7 @@ class ProjectDiagnosticsTest {
         // The pins, the running set and what placed each row are in it too.
         assertThat(report).contains("pinned (id · resolution · scope · env):")
         assertThat(report).contains("…-plain shown PRIMARY CLOUD")
-        assertThat(report).contains("running: list=1 counted=0 excludedByEvidence=1 scan=never")
+        assertThat(report).contains("running: list=1 counted=1 excludedByEvidence=0 scan=never")
         // Nothing the user wrote or named: no chat names, prompts, summaries, repositories, full ids or URLs.
         for (forbidden in listOf("Cursor for Android\n", "New chat creation issue", "Model picker stability", "Pricing copy", "Station intelligence", "Cesium", "secret", "bennett", "github.com", "bc-11111111-root", "https://x.y/z", "quoted")) {
             assertThat(report).doesNotContain(forbidden)

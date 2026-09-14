@@ -16,6 +16,9 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.AgentParent
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunStatus
@@ -273,8 +276,16 @@ class FinishWatchdogTest {
         api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
         api.addRunningAgent("bc-w", "Stripe webhook handler", "run-w")
         agents.refresh()
-        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), LineageSignal.COORDINATOR_CREATED)
+        // The account's word: bc-p is a Project, bc-w its worker. Their cards are off, so nothing is worth a read.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true), ComposerSnapshot("bc-w", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
+        assertThat(announced).isEmpty()
+        // A coordinator's transcript alone makes no Project of a chat: the chat that named the worker is a chat of
+        // the account's own, still running, and worth watching; the worker it nested is not.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p"), ComposerSnapshot("bc-w")))
+        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), LineageSignal.COORDINATOR_CREATED)
+        assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Watching(1))
         assertThat(announced).isEmpty()
     }
 }
