@@ -57,6 +57,7 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
@@ -138,6 +139,7 @@ fun ConversationScreen(
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
+    val goal by viewModel.goal.collectAsStateWithLifecycle()
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
     val controls by viewModel.controls.collectAsStateWithLifecycle()
@@ -200,9 +202,10 @@ fun ConversationScreen(
         onStopOrDispose { viewModel.pause() }
     }
 
-    // The items as the transcript shows them: every cached call re-read by this build, and in a coordinator's chat
-    // the brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]).
-    val items = remember(conversation.items, coordinatorMode) { CoordinatorTranscript.present(conversation.items, coordinatorMode) }
+    // The items as the transcript shows them: every cached call re-read by this build, in a coordinator's chat the
+    // brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]), and the
+    // agent's goal calls lifted out of their stretches of work into rows of their own (see [GoalTranscript.lift]).
+    val items = remember(conversation.items, coordinatorMode) { GoalTranscript.lift(CoordinatorTranscript.present(conversation.items, coordinatorMode)) }
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     val showWorking = conversation.showsWorkingRow()
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
@@ -441,6 +444,11 @@ fun ConversationScreen(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
+            // trays in above the composer. Each strip keeps the same width and the same gap to the next.
+            goal?.let { current ->
+                GoalStrip(goal = current, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp))
+            }
             // What is waiting to go out sits right above the box it came from, oldest first, one line each.
             if (queue.isNotEmpty()) {
                 QueuedFollowUps(

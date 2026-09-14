@@ -18,6 +18,9 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
+import com.cursorforandroid.domain.Goal
+import com.cursorforandroid.domain.GoalStatus
+import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelVariant
@@ -145,6 +148,15 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val controls: StateFlow<ConversationControls> = graph.steering.state(agentId)
 
     /**
+     * The goal on the chat, for the strip above the composer: the account's word (Extended mode, once read) when it
+     * names an open goal, else what the chat's own transcript says — the goal the agent set and where its calls and
+     * Cursor's continuations have taken it, including one completed in the newest turn (see [GoalTranscript.derive]).
+     * Null when there is no goal to show.
+     */
+    val goal: StateFlow<Goal?> = combine(conversation, controls) { c, ctrl -> goalOf(c, ctrl) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), goalOf(conversation.value, controls.value))
+
+    /**
      * What `/` offers the follow-up composer: the agent's skills and the `.cursor/commands` its machine reported, over
      * the built-ins — and, in Extended mode, `/ask` and `/debug`, which only the account's follow-up can carry. The
      * saved (or built-in) list is there at once; the account service's answer replaces it.
@@ -186,6 +198,18 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** The agent's own catalog; the repository and branch, when the row has them, help the server before its machine has reported. */
     private fun commandScope(agent: Agent?): SlashScope = SlashScope.Agent(agentId, agent?.repoUrl, agent?.startingRef)
+
+    /**
+     * The account's open goal stands over the transcript's reading; when the account says the goal is over (or has
+     * none), the transcript still gets to show a goal completed in the newest turn, and nothing otherwise.
+     */
+    private fun goalOf(conversation: ConversationState, controls: ConversationControls): Goal? {
+        val derived = GoalTranscript.derive(conversation.items)
+        if (!controls.goalKnown) return derived
+        val account = controls.goal
+        if (account != null && account.status.isOpen) return account
+        return derived?.takeIf { it.status == GoalStatus.COMPLETE }
+    }
 
     override fun onCleared() {
         graph.conversations.detach(agentId)

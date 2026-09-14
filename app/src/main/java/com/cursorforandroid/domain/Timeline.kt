@@ -432,6 +432,10 @@ enum class NoticeTone { Neutral, Success, Warning, Error }
  * transcript carries as a `user_message` full of the `<system_notification>` markup written for the model. It is
  * not something the user said, so it is shown as one compact row ("Subagent completed · Contacts and clipping") that
  * opens onto the part worth reading, rather than as a prompt bubble of markup. See [SystemNotifications].
+ *
+ * The same row stands for a goal event the agent's own tool calls report — "Goal set · Ship the release…", "Goal
+ * completed" — which `GoalTranscript.lift` makes of a `CreateGoal` / `UpdateGoal` call on the way to the screen;
+ * those rows exist at presentation time only and are never stored.
  */
 @Serializable
 @SerialName("system_notification")
@@ -547,8 +551,12 @@ object ToolNames {
         "recordscreen" to ToolLabels("Recording screen", "Recorded screen", "Record screen"),
         "computer_use" to ToolLabels("Using computer", "Used computer", "Use computer"),
         "computeruse" to ToolLabels("Using computer", "Used computer", "Use computer"),
+        // The goal tools' verbs, the desktop's (`createGoalToolCall` / `updateGoalToolCall` in its label table), under the
+        // desktop's table names and the SDK's camel case (`createGoal`, `CreateGoal`) as [kindOf] lowercases them.
         "create_goal" to ToolLabels("Creating goal", "Created goal", "Create goal"),
+        "creategoal" to ToolLabels("Creating goal", "Created goal", "Create goal"),
         "update_goal" to ToolLabels("Updating goal", "Updated goal", "Update goal"),
+        "updategoal" to ToolLabels("Updating goal", "Updated goal", "Update goal"),
         "await" to ToolLabels("Waiting", "Waited", "Wait"),
         "reflect" to ToolLabels("Reflecting", "Reflected", "Reflect"),
         "fetch_pull_request" to ToolLabels("Fetching PR", "Fetched PR", "Fetch PR"),
@@ -597,6 +605,21 @@ object ToolNames {
 
     /** The key [coordinatorTool] answers for the coordinator's message to the user, whichever of its two tools sent it. */
     const val USER_MESSAGE_TOOL = "send_to_user"
+
+    /**
+     * Which of the goal tools [name] is, under every spelling the clients give them: the SDK's public vocabulary on
+     * the documented stream (`createGoal` / `updateGoal`, the `agent.v1.ToolCall` oneof's `create_goal_tool_call` /
+     * `update_goal_tool_call` minus `ToolCall`), the desktop's model-facing table (`create_goal` / `update_goal`),
+     * and the names Cursor's own prompts use for them (`CreateGoal` / `UpdateGoal`). Null for any other tool.
+     */
+    fun goalTool(name: String): ToolPayload.GoalChange.Action? {
+        val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call").replace("_", "")
+        return when (n) {
+            "creategoal", "setgoal" -> ToolPayload.GoalChange.Action.Set
+            "updategoal" -> ToolPayload.GoalChange.Action.Update
+            else -> null
+        }
+    }
 
     /** The verbs of a kind; for [ToolKind.Other] the tool's own, or its name read as words ("Switched mode"). */
     fun labels(kind: ToolKind, name: String): ToolLabels = when (kind) {

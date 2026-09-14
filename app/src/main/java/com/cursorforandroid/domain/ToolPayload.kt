@@ -167,6 +167,31 @@ sealed interface ToolPayload {
     @Serializable
     @SerialName("coordinator_message")
     data class CoordinatorMessage(val message: String, val missing: Boolean = false) : ToolPayload
+
+    /**
+     * The agent filing or moving the chat's goal (`agent.v1.CreateGoalToolCall` / `UpdateGoalToolCall`; see [Goal]).
+     * [Action.Set] is `CreateGoal`, whose `CreateGoalArgs {objective}` carry the objective verbatim and whose success
+     * is empty; [Action.Update] is `UpdateGoal`, whose `UpdateGoalArgs {status}` name the status the goal moves to
+     * (paused, active again, complete, cleared) and whose success repeats it. Either result's error case is
+     * `GoalError {error}`, kept in [error] so the row can say why the goal was refused.
+     *
+     * [missing] marks a `CreateGoal` whose objective this copy of the turn does not have: the stream left the
+     * arguments out for size, or the turn was kept by a build that did not read the tool (see `GoalTranscript`).
+     */
+    @Serializable
+    @SerialName("goal")
+    data class GoalChange(
+        val action: Action,
+        val objective: String? = null,
+        val status: GoalStatus? = null,
+        val error: String? = null,
+        val missing: Boolean = false,
+    ) : ToolPayload {
+        enum class Action { Set, Update }
+
+        /** The status the goal is in once this call has succeeded: active for a goal just set, else what the update asked. */
+        val resultingStatus: GoalStatus? get() = if (action == Action.Set) GoalStatus.ACTIVE else status
+    }
 }
 
 /**

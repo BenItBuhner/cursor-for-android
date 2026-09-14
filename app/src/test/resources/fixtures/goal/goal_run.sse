@@ -1,0 +1,44 @@
+event: status
+id: evt-001
+data: {"runId":"run-goal-001","status":"RUNNING"}
+
+event: thinking
+id: evt-002
+data: {"text":"A goal for the release; set it, then start on the merge train."}
+
+event: tool_call
+id: evt-003
+data: {"callId":"goal-c1","name":"createGoal","status":"running","args":{"objective":"Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."}}
+
+event: tool_call
+id: evt-004
+data: {"callId":"goal-c1","name":"createGoal","status":"completed","args":{"objective":"Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."},"result":{"success":{}}}
+
+event: tool_call
+id: evt-005
+data: {"callId":"goal-r1","name":"read","status":"running","args":{"path":"CHANGELOG.md"}}
+
+event: tool_call
+id: evt-006
+data: {"callId":"goal-r1","name":"read","status":"completed","args":{"path":"CHANGELOG.md"},"result":{"status":"success","value":{"content":"# Changelog\n","totalLines":1}}}
+
+event: tool_call
+id: evt-007
+data: {"callId":"goal-s1","name":"shell","status":"running","args":{"command":"gh pr list --state open"}}
+
+event: tool_call
+id: evt-008
+data: {"callId":"goal-s1","name":"shell","status":"completed","args":{"command":"gh pr list --state open"},"result":{"status":"success","value":{"exitCode":0,"stdout":"#124 Panel declutter\n#126 Version bump\n","stderr":""}}}
+
+event: assistant
+id: evt-009
+data: {"text":"Goal set. Two PRs are open; merging #124 first."}
+
+event: result
+id: evt-010
+data: {"runId":"run-goal-001","status":"FINISHED","text":"Goal set. Two PRs are open; merging #124 first.","durationMs":42000}
+
+event: done
+id: evt-011
+data: {}
+

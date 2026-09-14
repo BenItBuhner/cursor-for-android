@@ -1,0 +1,20 @@
+event: status
+id: evt-001
+data: {"runId":"run-goal-009","status":"RUNNING"}
+
+event: tool_call
+id: evt-002
+data: {"callId":"goal-c9","name":"create_goal","status":"running","args":{"objective":"Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."}}
+
+event: tool_call
+id: evt-003
+data: {"callId":"goal-c9","name":"create_goal","status":"completed","args":{"objective":"Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."},"result":{"error":{"error":"A goal is already active on this conversation"}}}
+
+event: result
+id: evt-004
+data: {"runId":"run-goal-009","status":"FINISHED","durationMs":3000}
+
+event: done
+id: evt-005
+data: {}
+

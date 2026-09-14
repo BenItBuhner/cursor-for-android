@@ -102,11 +102,12 @@ object TranscriptDiagnostics {
 
     /** One tool call, its content left out: `SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[text] · linked=0 · truncated=-`. */
     fun describe(call: ToolCall): String {
-        val read = CoordinatorTranscript.reinterpret(call)
+        val read = GoalTranscript.reinterpret(CoordinatorTranscript.reinterpret(call))
         val kind = if (read.kind != call.kind) "${call.kind.name}→${read.kind.name}" else call.kind.name
         val payload = when (val p = read.payload) {
             null -> "-"
             is ToolPayload.CoordinatorMessage -> "coordinator_message" + (if (p.missing) "(missing)" else "(${p.message.length} chars)")
+            is ToolPayload.GoalChange -> "goal(${p.action.name.lowercase()}" + (p.status?.let { ",$it" } ?: "") + (if (p.missing) ",missing" else "") + (if (p.error != null) ",error" else "") + ")"
             is ToolPayload.WorkerAction -> "worker_action(${p.kind.name.lowercase()},workers=${p.workers.size},reported=${p.reported})"
             is ToolPayload.FileDiff -> "diff"
             is ToolPayload.FileContent -> "file(${p.kind.name.lowercase()})"

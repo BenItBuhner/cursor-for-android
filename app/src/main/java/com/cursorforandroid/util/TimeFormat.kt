@@ -64,6 +64,22 @@ object TimeFormat {
         }
     }
 
+    /**
+     * "1h 12m 5s", "3m 5s", "45s" — a count that ticks, seconds always shown: the goal strip's active time, formatted
+     * as Cursor's own goal tray formats it (hours and minutes only while they are above zero).
+     */
+    fun elapsed(durationMs: Long): String {
+        val totalSeconds = (durationMs.coerceAtLeast(0) / 1000)
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return when {
+            hours > 0 -> "${hours}h ${minutes}m ${seconds}s"
+            minutes > 0 -> "${minutes}m ${seconds}s"
+            else -> "${seconds}s"
+        }
+    }
+
     /** "0:07", "12:30", "1:05:09" — the length badge on a video poster. */
     fun clock(durationMs: Long): String {
         val totalSeconds = (durationMs.coerceAtLeast(0) + 500) / 1000

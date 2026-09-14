@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.domain.DiffStats
+import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
@@ -8,6 +9,7 @@ import com.cursorforandroid.domain.ToolPayloadLimits
 import com.cursorforandroid.domain.WorkerStatus
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -48,6 +50,7 @@ object ToolPayloads {
     fun from(name: String, args: JsonElement?, result: JsonElement?, images: GeneratedImageSink? = null, callId: String = ""): ToolPayload? {
         val kind = ToolNames.kindOf(name)
         val arguments = args as? JsonObject
+        ToolNames.goalTool(name)?.let { action -> return goal(action, arguments, result) }
         val value = result.resultValue()
         return when (kind) {
             ToolKind.Edit -> diff(arguments, value)
@@ -59,6 +62,30 @@ object ToolPayloads {
             ToolKind.Coordinator -> coordinator(name, arguments, value)
             ToolKind.Other -> if (isRecording(name)) recording(value) else null
             else -> null
+        }
+    }
+
+    /**
+     * The goal tools, by the shapes of `agent.v1.CreateGoalToolCall` and `UpdateGoalToolCall`: `CreateGoalArgs
+     * {objective}` → `CreateGoalResult {success {} | error {error}}`; `UpdateGoalArgs {status: GoalStatus}` →
+     * `UpdateGoalResult {success {status} | error {error}}`. The status is an enum, written by name
+     * (`GOAL_STATUS_COMPLETE`) in proto3 JSON and by number by an encoder set to; the result's `error` case is the
+     * proto oneof's, `{"error": {"error": "…"}}`. A `CreateGoal` without an objective in hand — the stream left the
+     * arguments out, or a bare call named only — is still a goal being set, marked as missing its text.
+     */
+    private fun goal(action: ToolPayload.GoalChange.Action, args: JsonObject?, result: JsonElement?): ToolPayload.GoalChange {
+        val error = result.errorText()
+        val value = result.resultValue()
+        return when (action) {
+            ToolPayload.GoalChange.Action.Set -> {
+                val objective = args.string(listOf("objective", "goal", "text", "description"))?.trim()?.takeIf { it.isNotEmpty() }
+                ToolPayload.GoalChange(action, objective = objective?.let { ToolPayloadLimits.clip(it, OBJECTIVE_CHARS).first }, error = error, missing = objective == null)
+            }
+            ToolPayload.GoalChange.Action.Update -> {
+                val status = GoalStatus.parse(args?.get("status") ?: args?.get("goalStatus") ?: args?.get("goal_status"))
+                    ?: GoalStatus.parse(value?.get("status"))
+                ToolPayload.GoalChange(action, status = status, error = error)
+            }
         }
     }
 
@@ -334,6 +361,32 @@ object ToolPayloads {
         return obj
     }
 
+    /**
+     * The words of a result's error case, when it is one: a proto `result` oneof's `{"error": {"error": "…"}}` (or the
+     * error message as a bare string, or under `message`), a `{result: {case: "error", value}}` kept as an object, or
+     * the SDK's `{status: "error", error}`. Null for a success, or a result that says nothing.
+     */
+    private fun JsonElement?.errorText(): String? {
+        val obj = this as? JsonObject ?: return null
+        fun words(error: JsonElement?): String? = when (error) {
+            is JsonPrimitive -> error.contentOrNull?.trim()?.takeIf { it.isNotEmpty() && error.booleanOrNull == null }
+            is JsonObject -> error.string(listOf("error", "message", "detail", "reason"))
+            else -> null
+        }
+        val error = obj["error"]
+        val reported = when (error) {
+            null, is JsonNull -> false
+            is JsonPrimitive -> error.booleanOrNull != false && !error.contentOrNull.isNullOrBlank()
+            else -> true
+        }
+        if (reported) return words(error) ?: GOAL_FAILED
+        (obj["result"] as? JsonObject)?.let { result ->
+            if ((result["case"] as? JsonPrimitive)?.contentOrNull.equals("error", ignoreCase = true)) return words(result["value"]) ?: GOAL_FAILED
+        }
+        if ((obj["status"] as? JsonPrimitive)?.contentOrNull.equals("error", ignoreCase = true)) return words(obj["message"]) ?: GOAL_FAILED
+        return null
+    }
+
     private fun JsonObject?.string(keys: List<String>): String? {
         if (this == null) return null
         for (key in keys) {
@@ -387,4 +440,8 @@ object ToolPayloads {
     private val DATA_URI = Regex("""^data:([^;,]*)(?:;[^,]*)?,(.*)$""", RegexOption.DOT_MATCHES_ALL)
     /** A coordinator's prompt to a worker, or a transcript excerpt, is kept to a card's worth; the worker's own chat has the whole. */
     private const val PROMPT_CHARS = 4_000
+    /** A goal's objective is shown whole on the strip and in its row; a paragraph or two at most in practice. */
+    private const val OBJECTIVE_CHARS = 8_000
+    /** The desktop's words for a goal result without an error message of its own. */
+    private const val GOAL_FAILED = "Goal operation failed"
 }
