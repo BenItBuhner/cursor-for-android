@@ -584,8 +584,10 @@ class AgentRepository(
                         place(word.id, parent, word.signal)
                     }
                     lineage?.roots?.forEach { noteRoot(it) }
-                    rows.filter { it.isProjectRoot && it.parent == null }.forEach { row ->
-                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, row.scopeSignal?.takeIf { it.isPositiveEvidence } ?: LineageSignal.ACCOUNT_RECORD, row.updatedAtMillis))
+                    // A row kept as a root on the record's own flag, or on positive evidence, seeds the registry; one
+                    // a coordinator's transcript merely mentioned does not — a hint is no word on what the chat is.
+                    rows.filter { it.isProjectRoot && it.parent == null && (it.isProject || it.scopeSignal?.isPositiveEvidence == true) }.forEach { row ->
+                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, if (row.isProject) LineageSignal.ACCOUNT_RECORD else row.scopeSignal!!, row.updatedAtMillis))
                     }
                     lineage?.hintRefused?.let { hintRefused += it }
                     if (accountSession) lineage?.sources?.forEach { (id, source) -> if (source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
