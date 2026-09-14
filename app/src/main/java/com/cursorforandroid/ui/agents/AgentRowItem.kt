@@ -211,9 +211,12 @@ private fun ChildrenToggle(row: AgentRow, expanded: Boolean, onToggle: () -> Uni
             RunningGlyph(color = colors.iconTertiary, size = 12.dp)
             Spacer(Modifier.width(4.dp))
         }
-        Text(row.descendants().size.toString(), style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
-        Spacer(Modifier.width(2.dp))
-        Icon(if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+        Text(row.shownCount.toString(), style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
+        // Nothing loaded to open onto: the count stands alone until the Project's chats have been fetched.
+        if (row.children.isNotEmpty()) {
+            Spacer(Modifier.width(2.dp))
+            Icon(if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+        }
     }
 }
 

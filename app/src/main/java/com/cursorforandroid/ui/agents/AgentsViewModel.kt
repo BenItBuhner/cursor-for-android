@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
 import com.cursorforandroid.domain.GroupBy
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.SourceFilter
@@ -81,6 +82,10 @@ private class DeviceState(
     val local: LocalAgentState,
     val actionError: String?,
     val unavailableProjects: Set<String>,
+    /** The root registry (see [KnownRoot]): every Project the account has, whether or not its row is loaded. */
+    val knownRoots: List<KnownRoot> = emptyList(),
+    /** The account's member count per Project, for the rows' counts. */
+    val memberCounts: Map<String, Int> = emptyMap(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -102,8 +107,8 @@ class AgentsViewModel(
         local.copy(pullRequests = states)
     }
 
-    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents) { local, failed, unavailable ->
-        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys)
+    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, graph.projects.memberCounts) { local, failed, unavailable, roots, counts ->
+        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts)
     }
 
     /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
@@ -142,7 +147,7 @@ class AgentsViewModel(
         clock,
     ) { list, prefs, device, q, now ->
         val local = device.local
-        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects)
+        val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
         val recentRows = if (q.isBlank()) AgentListOrganizer.recentRows(sections) else AgentListOrganizer.recentRows(list.agents, prefs, local, nowMillis = now)
         val rows = list.agents.map { AgentListOrganizer.toRow(it, local, now) }

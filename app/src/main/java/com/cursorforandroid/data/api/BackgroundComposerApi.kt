@@ -69,6 +69,26 @@ interface ComposerRecordApi {
     suspend fun record(id: String): ComposerSnapshot?
 }
 
+/**
+ * What a pass over the whole account list found for the root registry: every record that is a Project's, every
+ * record that hangs off another chat (a worker's names its manager, a side chat's or subagent's its parent), how
+ * many pages that took and whether the pass reached the end of the list.
+ */
+data class RootScan(
+    val roots: List<ComposerSnapshot>,
+    val children: List<ComposerSnapshot>,
+    val pagesRead: Int,
+    val complete: Boolean,
+) {
+    /** The coordinators the workers' records name, whether or not their own record was among the pages. */
+    val managers: Set<String> get() = children.mapNotNullTo(LinkedHashSet()) { it.parent?.takeIf { p -> p.kind == AgentParentKind.PROJECT_WORKER }?.id }
+}
+
+/** The root discovery pass over the account list (see [RootScan]). */
+interface RootScanApi {
+    suspend fun scanRoots(maxPages: Int): RootScan
+}
+
 interface PinsApi {
     /** The newest page of the account's list, with the pins. */
     suspend fun list(): AccountList
@@ -111,7 +131,32 @@ fun interface PullRequestStatusApi {
 class BackgroundComposerApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
-) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi, ComposerRecordApi {
+) : PinsApi, PullRequestStatusApi, ComposerLifecycleApi, ComposerRecordApi, RootScanApi {
+
+    /**
+     * Reads the account list page after page — up to [maxPages] of [LIST_WINDOW] — for the root registry: the
+     * Projects' own records and every record that hangs off another chat. Independent of how far the sidebar has
+     * paged; what the Projects group is drawn from, so a Project whose row no page holds is listed all the same.
+     */
+    override suspend fun scanRoots(maxPages: Int): RootScan {
+        val roots = ArrayList<ComposerSnapshot>()
+        val children = ArrayList<ComposerSnapshot>()
+        var cursor: ListCursor? = null
+        var pages = 0
+        var complete = false
+        do {
+            val response = page(cursor)
+            pages++
+            for (composer in response.composers) {
+                val snap = snapshot(composer) ?: continue
+                if (snap.isProject && snap.parent == null) roots += snap
+                if (snap.parent != null) children += snap
+            }
+            cursor = if (response.hasMore && response.composers.isNotEmpty()) response.cursor() else null
+            if (cursor == null) complete = true
+        } while (cursor != null && pages < maxPages)
+        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete)
+    }
 
     override suspend fun list(): AccountList = accountList(page(null), first = true)
 

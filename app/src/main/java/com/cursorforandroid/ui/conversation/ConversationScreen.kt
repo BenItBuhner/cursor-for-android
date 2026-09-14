@@ -54,6 +54,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
@@ -142,13 +143,18 @@ fun ConversationScreen(
     val agentsById = remember(agentList.agents) { agentList.agents.associateBy { it.id } }
     // The transcript's rows answer the question they show and stop the step they show through the account
     // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
-    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent) {
+    // A Project's coordinator speaks to the user through its SendMessage tool; its plain replies are its working
+    // notes. The chat is read as a coordinator's when the account calls it a Project, or its own transcript carries
+    // the coordinator's tools (see [TranscriptControls.coordinatorMode]).
+    val coordinatorMode = agent?.looksLikeProject == true || remember(conversation.items) { CoordinatorLineage.isCoordinator(conversation.items) }
+    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
         TranscriptControls(
             state = controls,
             onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
             onCancelToolCall = if (capabilities.steering && !isDemo) ({ callId -> viewModel.cancelToolCall(callId) }) else null,
             onOpenAgent = onOpenAgent,
             agentById = { id -> agentsById[id] },
+            coordinatorMode = coordinatorMode,
         )
     }
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)

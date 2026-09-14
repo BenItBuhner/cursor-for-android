@@ -146,11 +146,50 @@ internal fun Color.faded(alpha: Float): Color = if (alpha >= 1f) this else copy(
  */
 @Composable
 private fun AssistantMessageView(item: AssistantMessage, modifier: Modifier) {
+    if (LocalTranscriptControls.current.coordinatorMode) {
+        BackgroundMessage(item, modifier)
+        return
+    }
     MessageActions(
         text = item.markdown,
         modifier = modifier.fillMaxWidth().bleed(horizontal = 6.dp, vertical = 4.dp).clip(CursorTheme.shapes.lg),
     ) {
         MarkdownText(item.markdown, Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), streaming = item.isStreaming)
+    }
+}
+
+/**
+ * A coordinator's plain reply. In a Project's chat what the coordinator says to the user goes through its
+ * SendMessage tool (see [CoordinatorMessageView]); the text it writes between tool calls is its working notes —
+ * "Bennett has both tracks and the board reflects them" — which Cursor's own client folds away. So it is one
+ * "Background" row here, closed, opening per message onto the text in full, and "Working" while it still streams.
+ */
+@Composable
+private fun BackgroundMessage(item: AssistantMessage, modifier: Modifier) {
+    var toggled by rememberSaveable("${item.id}-background") { mutableStateOf<Boolean?>(null) }
+    val text = item.markdown.trim()
+    val expandable = text.isNotEmpty()
+    val expanded = expandable && (toggled ?: false)
+    Column(modifier.fillMaxWidth().testTag("coordinator-background")) {
+        DisclosureRow(
+            action = if (item.isStreaming) "Working" else "Background",
+            details = null,
+            expanded = expanded,
+            onToggle = { toggled = !expanded },
+            busy = item.isStreaming,
+            expandable = expandable,
+        )
+        AnimatedVisibility(visible = expanded) {
+            MessageActions(text = item.markdown, modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)) {
+                MarkdownText(
+                    item.markdown,
+                    Modifier.fillMaxWidth().testTag("coordinator-background-text"),
+                    style = CursorTheme.typography.base,
+                    color = CursorTheme.colors.textTertiary,
+                    streaming = item.isStreaming,
+                )
+            }
+        }
     }
 }
 

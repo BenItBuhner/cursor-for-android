@@ -32,7 +32,16 @@ object ProjectDiagnostics {
         /** Chats whose record contradicted a coordinator's transcript about them; the hint is refused for them. */
         val hintRefused: Set<String> = emptySet(),
         val envTypes: Map<String, String> = emptyMap(),
+        /** The root registry (see [KnownRoot]): every Project known, loaded or not. */
+        val knownRoots: List<KnownRoot> = emptyList(),
+        /** Registry roots the list does not hold and could not fetch. */
+        val unresolvedRoots: Set<String> = emptySet(),
+        /** The last root discovery pass: roots found, pages read, whether it reached the end, when; null before one. */
+        val rootScan: RootScanSummary? = null,
+        val memberCounts: Map<String, Int> = emptyMap(),
     )
+
+    data class RootScanSummary(val rootsFound: Int, val pagesRead: Int, val complete: Boolean, val atIso: String?, val notice: String?)
 
     fun render(input: Input): String = buildString {
         appendLine("Cursor for Android ${input.appVersion} · Project diagnostics · ${input.nowIso}")
@@ -76,6 +85,19 @@ object ProjectDiagnostics {
             }
         }
         if (input.hintRefused.isNotEmpty()) appendLine("hintRefused=${input.hintRefused.sorted().joinToString(",") { tail(it) }}")
+
+        appendLine()
+        val rootScan = input.rootScan
+        appendLine("root registry: known=${input.knownRoots.size} withRow=${input.knownRoots.count { r -> rows.any { it.id == r.id } }} standIns=${input.knownRoots.count { r -> rows.none { it.id == r.id } }} unresolved=${input.unresolvedRoots.size}" +
+            (rootScan?.let { " scan=roots:${it.rootsFound} pages:${it.pagesRead} complete:${it.complete} at:${it.atIso ?: "-"}" + (it.notice?.let { n -> " notice=\"${redactNotice(n)}\"" } ?: "") } ?: " scan=never"))
+        appendLine("registry (id · signal · row · archived · members · seen):")
+        input.knownRoots.sortedBy { it.id }.forEach { root ->
+            val row = rows.firstOrNull { it.id == root.id }
+            appendLine(
+                "  ${tail(root.id)} ${root.signal.name} ${if (row != null) "row" else if (root.id in input.unresolvedRoots) "UNRESOLVED" else "stand-in"} " +
+                    "${if (root.archived) "archived" else "-"} ${input.memberCounts[root.id] ?: "-"} ${if (root.lastSeenMillis > 0) java.time.Instant.ofEpochMilli(root.lastSeenMillis) else "-"}",
+            )
+        }
 
         appendLine()
         appendLine("roots (id · signal · children by kind · last membership pass):")

@@ -3,6 +3,7 @@ package com.cursorforandroid.data.local
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.AgentParentKind
@@ -102,6 +103,8 @@ data class CachedLineage(
     val placements: List<CachedPlacement> = emptyList(),
     val sources: Map<String, AgentSource> = emptyMap(),
     val hintRefused: Set<String> = emptySet(),
+    /** The root registry (see [KnownRoot]): every Project the account was known to have, whether or not a row is on disk. */
+    val roots: List<KnownRoot> = emptyList(),
 )
 
 /** One chat's placement: under [parentId] in the capacity of [kind], or (null) at the head of a Project; by [signal]'s word. */

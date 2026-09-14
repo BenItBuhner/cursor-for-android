@@ -12,6 +12,7 @@ import com.cursorforandroid.data.api.AgentFilesApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessConversationApi
@@ -280,6 +281,7 @@ class AppGraph(
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> = lazyProjectApi.value.workersForManager(managerId)
         override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
         override suspend fun record(id: String): ComposerSnapshot? = lazyAccountAgents.value.record(id)
+        override suspend fun scanRoots(maxPages: Int): RootScan = lazyAccountAgents.value.scanRoots(maxPages)
         override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
         override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
         override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)
@@ -388,7 +390,9 @@ class AppGraph(
                 pullRequests.seed(list.pullRequests)
                 // Each Project's memberships follow the list read, the way the Agents Window polls them; off the
                 // round, so the pins do not wait on a Project with many workers.
-                projects.scheduleLineageSync(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id })
+                // The root registry is filled from the whole account list (a few times an hour), the memberships
+                // read after; the Projects group is drawn from the registry, not from the pages the sidebar holds.
+                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id })
             },
             capabilities = capabilities,
         )
@@ -674,6 +678,10 @@ class AppGraph(
                 unresolvedPinned = agents.unresolvedPinned(),
                 runningScan = agents.runningScan.value.takeIf { it.hasScanned },
                 hintRefused = agents.hintRefusedIds(),
+                knownRoots = agents.knownRoots.value,
+                unresolvedRoots = agents.unresolvedRoots(),
+                rootScan = if (lazyProjects.isInitialized()) projects.lastRootScan.value?.let { ProjectDiagnostics.RootScanSummary(it.rootsFound, it.pagesRead, it.complete, it.atMillis.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.notice) } else null,
+                memberCounts = if (lazyProjects.isInitialized()) projects.memberCounts.first() else emptyMap(),
             ),
         )
     }

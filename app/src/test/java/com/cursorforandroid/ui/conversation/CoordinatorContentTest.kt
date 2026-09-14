@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.conversation
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.NoticeTone
@@ -134,6 +136,65 @@ class CoordinatorContentTest {
         compose.onNodeWithText("Rebase onto main.").assertIsDisplayed()
         compose.onNodeWithText("Open agent").performClick()
         assertThat(opened).containsExactly("bc-w9", "bc-w1").inOrder()
+    }
+
+    /** The coordinator's turn of the reference screenshot: the update it sent, and the note it wrote after. */
+    private val sentUpdate = ToolCall(
+        "c2", "SendMessage", ToolKind.Coordinator, "completed", "The keyboard worker merged #113",
+        payload = ToolPayload.CoordinatorMessage("The keyboard worker merged #113 with four root causes fixed; **v0.3.4** is being cut from it, and the board is updated."),
+    )
+    private val note = AssistantMessage("a2", "The missing-Projects regression is routed as urgent to the Projects worker; Bennett has both tracks, and the board reflects them.")
+
+    @Test
+    fun `in a coordinator's chat the SendMessage update is the message and the plain reply folds under Background`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalTranscriptControls provides TranscriptControls(coordinatorMode = true)) {
+                    Column {
+                        TimelineItemView(ActivityGroup("g", listOf(sentUpdate)))
+                        TimelineItemView(note)
+                    }
+                }
+            }
+        }
+        // The update, in full, with its markdown — and no bare "Send message" row.
+        compose.onNodeWithTag("coordinator-message", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("and the board is updated.", substring = true).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Send message", substring = true).fetchSemanticsNodes()).isEmpty()
+        // The note is a closed "Background" row: its text is not on screen until the row is opened.
+        compose.onNodeWithTag("coordinator-background").assertIsDisplayed()
+        compose.onNodeWithText("Background").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Bennett has both tracks", substring = true).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("Background").performClick()
+        compose.onNodeWithText("Bennett has both tracks", substring = true).assertIsDisplayed()
+        // And closes again.
+        compose.onNodeWithText("Background").performClick()
+        assertThat(compose.onAllNodesWithText("Bennett has both tracks", substring = true).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a coordinator's reply still streaming reads Working, and one with nothing in it has nothing to open`() {
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalTranscriptControls provides TranscriptControls(coordinatorMode = true)) {
+                    Column {
+                        TimelineItemView(AssistantMessage("s1", "Checking the board", isStreaming = true))
+                        TimelineItemView(AssistantMessage("s2", "   "))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("Working").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Checking the board", substring = true).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodesWithText("Background").fetchSemanticsNodes()).hasSize(1)
+    }
+
+    @Test
+    fun `in an agent's chat the reply is the message, as it was`() {
+        show(note)
+        compose.onNodeWithText("Bennett has both tracks", substring = true).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Background").fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodes(hasTestTag("coordinator-background")).fetchSemanticsNodes()).isEmpty()
     }
 
     @Test

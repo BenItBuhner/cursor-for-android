@@ -80,6 +80,8 @@ internal object DemoData {
 
     /** The coordinator speaking to the user (`send_to_user`). */
     private fun sendToUser(message: String) = Step.Call("send_to_user", """{"message": ${json(message)}}""", """{"success": {}}""")
+    /** The same tool under the name today's stream gives it. */
+    private fun sendMessage(message: String) = Step.Call("SendMessage", """{"message": ${json(message)}}""", """{"success": {}}""")
 
     private fun json(text: String): String = buildString {
         append('"')
@@ -489,7 +491,9 @@ internal object DemoData {
         // A Cursor Project: the coordinator chat, which plans and delegates rather than writing code, and the chats it
         // runs — two workers it created and a side chat branched off it (see [composers]). Its trace is a
         // coordinator's: workers created, a status check, a message to a worker, and its own words to the user
-        // through `send_to_user`; its current turn was started by a worker's completion notice.
+        // through `SendMessage` (`send_to_user` on the older stream — both spellings are kept here); its plain
+        // replies are its working notes, folded under "Background" in its chat. Its current turn was started by a
+        // worker's completion notice.
         Seed(
             id = PROJECT_ID, name = "Cesium billing launch", repo = REPO_CESIUM, ageMillis = HOUR + 5 * MIN,
             runStatus = "FINISHED", durationMs = 4 * MIN,
@@ -502,7 +506,7 @@ internal object DemoData {
                 thought("The aggregation landed, so the invoice amounts have a source. Check where the webhook handler stands before pointing it at the merged tables."),
                 agentStatus(Triple("bc-demo-0019", "Usage events aggregation", "FINISHED"), Triple("bc-demo-0020", "Stripe webhook handler", "RUNNING")),
                 sendToAgent("bc-demo-0020", "Rebase onto the merged aggregation", "PR #215 is merged: rebase onto `main` and read the invoice amounts from `usageDaily` rather than summing `usage_events` yourself."),
-                sendToUser("PR #215 (usage aggregation) is **merged**. The Stripe webhook handler (#218) is open and waiting on one decision: prorate a mid-cycle upgrade, or bill it from the next cycle?"),
+                sendMessage("PR #215 (usage aggregation) is **merged**. The Stripe webhook handler (#218) is open and waiting on one decision: prorate a mid-cycle upgrade, or bill it from the next cycle?"),
                 reply,
             ),
             earlier = listOf(

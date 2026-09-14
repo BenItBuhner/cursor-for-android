@@ -31,9 +31,17 @@ data class AgentRow(
      * has been fetched and takes its place.
      */
     val isPlaceholder: Boolean = false,
+    /**
+     * How many chats the account says a Project holds (its membership and children answers), when the list does
+     * not hold them all: the count the Project's row shows is the larger of this and the loaded subtree.
+     */
+    val memberCount: Int? = null,
 ) {
     /** This row's children, their children and so on, depth first — what a collapsed parent stands for. */
     fun descendants(): List<AgentRow> = children.flatMap { listOf(it) + it.descendants() }
+
+    /** What the Project's row counts: the chats loaded under it, or the account's own count when that is more. */
+    val shownCount: Int get() = maxOf(descendants().size, memberCount ?: 0)
 
     /** A turn is going somewhere in the subtree: the working glyph on the collapsed parent's count. */
     val hasRunningDescendant: Boolean get() = children.any { it.indicator == AgentIndicator.Running || it.hasRunningDescendant }
@@ -220,13 +228,31 @@ object AgentListOrganizer {
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
         unavailableProjects: Set<String> = emptySet(),
+        /**
+         * Every Project root the registry knows (see [KnownRoot]): a root the list holds no row for is listed all the
+         * same, as a stand-in carrying the registry's name and look, so the Projects group is the account's Projects
+         * and not the ones the loaded pages happen to hold.
+         */
+        knownRoots: Collection<KnownRoot> = emptyList(),
+        /** The account's member count per Project, from its membership answers, for the rows' counts. */
+        memberCounts: Map<String, Int> = emptyMap(),
     ): List<AgentSection> {
-        val rows = sort(agents.map { toRow(it, local, nowMillis) }, prefs.sortOrder)
+        val known = agents.mapTo(HashSet(agents.size)) { it.id }
+        val standIns = knownRoots.filter { it.id !in known && it.id.isNotBlank() }.map { rootStandIn(it, nowMillis) }
+        val rows = sort((agents + standIns).map { toRow(it, local, nowMillis) }, prefs.sortOrder)
         val (nested, standalone) = rows.partition { it.agent.isProjectChild && !it.isPinned }
         val primary = standalone.filter { isListed(it, prefs) }
         val children = nested.filter { passesArchive(it, prefs) }
-        val known = agents.mapTo(HashSet(agents.size)) { it.id }
-        val tree = nest(primary, children) + placeholders(children, known, nowMillis, unavailableProjects)
+        val held = known + standIns.map { it.id }
+        val standInIds = standIns.mapTo(HashSet()) { it.id }
+        val tree = nest(primary, children).map { row ->
+            val count = memberCounts[row.agent.id]
+            when {
+                row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, memberCount = count)
+                count != null && row.agent.isProjectRoot -> row.copy(memberCount = count)
+                else -> row
+            }
+        } + placeholders(children, held, nowMillis, unavailableProjects)
         val sorted = tree.mapNotNull { it.matching(query) }
 
         // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
@@ -360,6 +386,30 @@ object AgentListOrganizer {
         )
         return AgentRow(agent = agent, indicator = AgentIndicator.Read, isPinned = false, isUnread = false, launchedFromThisDevice = false, children = workers, isPlaceholder = true)
     }
+
+    /**
+     * The row of a Project the registry knows but the list holds no row for (see [organize]): named and drawn as its
+     * record last showed it, "Project (loading)" until a record has been seen, archived when the record said so, and
+     * as recent as the registry last saw it. It opens the Project's view like any Project's row, by its id.
+     */
+    fun rootStandIn(root: KnownRoot, nowMillis: Long = AppClock.now()): Agent = Agent(
+        id = root.id,
+        name = root.name?.trim()?.takeIf { it.isNotEmpty() } ?: PLACEHOLDER_NAME,
+        lifecycle = if (root.archived) AgentLifecycle.ARCHIVED else AgentLifecycle.UNKNOWN,
+        runStatus = null,
+        envType = EnvType.UNKNOWN,
+        envName = null,
+        url = "https://cursor.com/agents/${root.id}",
+        createdAtMillis = root.lastSeenMillis.takeIf { it > 0 } ?: nowMillis,
+        updatedAtMillis = root.lastSeenMillis.takeIf { it > 0 } ?: nowMillis,
+        latestRunId = null,
+        repoUrl = null,
+        startingRef = null,
+        isProject = true,
+        projectAppearance = root.appearance,
+        knownScope = AgentScope.PROJECT_ROOT,
+        scopeSignal = root.signal,
+    )
 
     /**
      * The ids of the parents that [agents] name but do not hold — Projects and chats beyond the listing window whose

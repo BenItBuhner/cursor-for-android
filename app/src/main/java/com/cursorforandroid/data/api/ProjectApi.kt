@@ -28,6 +28,9 @@ interface ProjectLineageApi {
     /** A root's own account record, when the source has one to give (see `ComposerRecordApi`); null when not. */
     suspend fun record(id: String): ComposerSnapshot? = null
 
+    /** The root discovery pass over the whole account list (see `RootScanApi`); null when the source has no list to scan. */
+    suspend fun scanRoots(maxPages: Int): RootScan? = null
+
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 

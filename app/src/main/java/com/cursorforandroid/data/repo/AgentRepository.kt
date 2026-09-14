@@ -29,6 +29,7 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
@@ -221,6 +222,20 @@ class AgentRepository(
     val runningScan: StateFlow<RunningScan> = _runningScan.asStateFlow()
 
     /**
+     * The root registry (see [KnownRoot]): every Project root any source has named, by id, with what its record last
+     * said of it. Fed by the account's records ([applyAccountSnapshots]), the roots memberships and transcripts name
+     * ([applyLineage]), and kept on disk with the list; the Projects group is drawn from it, so a Project beyond the
+     * loaded pages is listed all the same, and its row fetched by id ([materializeRoots]).
+     */
+    private val rootRecords = ConcurrentHashMap<String, KnownRoot>()
+    private val _knownRoots = MutableStateFlow<List<KnownRoot>>(emptyList())
+    val knownRoots: StateFlow<List<KnownRoot>> = _knownRoots.asStateFlow()
+
+    /** Roots the list does not hold and could not fetch, by id, with when to try again. */
+    private val rootUnresolved = ConcurrentHashMap<String, Long>()
+    private val rootMutex = Mutex()
+
+    /**
      * Pinned chats the list does not hold and could not fetch, by id, with when they were last tried: asked again
      * after [PINNED_RETRY_MS]. What the diagnostics report as unresolved pins.
      */
@@ -346,9 +361,69 @@ class AgentRepository(
         placements.clear()
         hintRefused.clear()
         rememberedSources.clear()
+        rootRecords.clear()
+        _knownRoots.value = emptyList()
+        rootUnresolved.clear()
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
     }
+
+    /**
+     * Records a root in the registry, merging what was known (see [KnownRoot.merged]); true when the registry
+     * changed. A word from a coordinator's transcript alone is a mention, not a root: only evidence names one.
+     */
+    private fun noteRoot(root: KnownRoot): Boolean {
+        if (root.id.isBlank() || !root.signal.isPositiveEvidence) return false
+        val current = rootRecords[root.id]
+        val next = current?.merged(root) ?: root
+        if (next == current) return false
+        rootRecords[root.id] = next
+        publishRoots()
+        return true
+    }
+
+    private fun forgetRoot(id: String) {
+        if (rootRecords.remove(id) != null) publishRoots()
+    }
+
+    private fun publishRoots() {
+        _knownRoots.value = rootRecords.values.sortedByDescending { it.lastSeenMillis }
+        registryChanges.update { it + 1 }
+    }
+
+    /**
+     * Fetches by id every root the registry knows and the list does not hold, so its row heads its tree rather than
+     * a stand-in: a few per pass, each tried again after a while when it failed. A root the server says is gone
+     * (404) leaves the registry: that is the record's own word, the one thing that drops a root.
+     */
+    suspend fun materializeRoots(startedIn: Int = token()) {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
+        rootMutex.withLock {
+            val held = _state.value.agents.mapTo(HashSet()) { it.id }
+            val now = AppClock.now()
+            val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(MAX_MATERIALIZED_ROOTS)
+            for (id in due) {
+                if (generation.get() != startedIn) return
+                val fetched = loadDetail(id)
+                when {
+                    fetched.isSuccess -> rootUnresolved.remove(id)
+                    (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404 -> {
+                        rootUnresolved.remove(id)
+                        synchronized(publishLock) {
+                            if (generation.get() == startedIn) {
+                                placements.remove(id)
+                                forgetRoot(id)
+                            }
+                        }
+                    }
+                    else -> rootUnresolved[id] = now + PINNED_RETRY_MS
+                }
+            }
+        }
+    }
+
+    /** The roots the registry knows and the list does not hold and could not fetch, for the diagnostics. */
+    fun unresolvedRoots(): Set<String> = rootUnresolved.keys.toSet()
 
     /**
      * The account the list belongs to right now. Captured when an operation starts and handed to every publication
@@ -395,7 +470,13 @@ class AgentRepository(
 
     private fun Agent.placed(): Agent {
         // A source the account gave the chat before its row arrived is the row's from here on.
-        val row = if (source == null) rememberedSources[id]?.let { copy(source = it) } ?: this else this
+        var row = if (source == null) rememberedSources[id]?.let { copy(source = it) } ?: this else this
+        // The registry's word on a root — that it is one, its look — dresses a row the public API gave bare.
+        rootRecords[id]?.let { root ->
+            if (row.parent == null && (!row.isProject || (row.projectAppearance == null && root.appearance != null))) {
+                row = row.copy(isProject = true, projectAppearance = row.projectAppearance ?: root.appearance)
+            }
+        }
         return row.placedBy(placements[id])
     }
 
@@ -439,6 +520,7 @@ class AgentRepository(
         if (current != null && current.parent == parent && current.signal == signal) return false
         placements[id] = Placement(parent, signal)
         registryChanges.update { it + 1 }
+        if (parent == null) noteRoot(KnownRoot(id, archived = rootRecords[id]?.archived ?: false, signal = signal, lastSeenMillis = AppClock.now()))
         return true
     }
 
@@ -500,6 +582,10 @@ class AgentRepository(
                     lineage?.placements?.forEach { word ->
                         val parent = word.parentId?.let { AgentParent(it, word.kind ?: AgentParentKind.PROJECT_WORKER) }
                         place(word.id, parent, word.signal)
+                    }
+                    lineage?.roots?.forEach { noteRoot(it) }
+                    rows.filter { it.isProjectRoot && it.parent == null }.forEach { row ->
+                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, row.scopeSignal?.takeIf { it.isPositiveEvidence } ?: LineageSignal.ACCOUNT_RECORD, row.updatedAtMillis))
                     }
                     lineage?.hintRefused?.let { hintRefused += it }
                     if (accountSession) lineage?.sources?.forEach { (id, source) -> if (source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
@@ -684,6 +770,7 @@ class AgentRepository(
             if (landed) {
                 materializeRunning(startedIn)
                 resolvePinned(startedIn)
+                materializeRoots(startedIn)
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -947,7 +1034,7 @@ class AgentRepository(
             val held = s.agents.mapTo(HashSet()) { it.id }
             val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent?.id, p.parent?.kind, p.signal) }
             val sources = rememberedSources.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).associate { (id, source) -> id to source }
-            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, sources, hintRefused.take(MAX_PERSISTED_PLACEMENTS).toSet()))
+            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, sources, hintRefused.take(MAX_PERSISTED_PLACEMENTS).toSet(), rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS)))
         }
         cache.write(agents, token, lineage)
     }
@@ -1211,6 +1298,21 @@ class AgentRepository(
             // list and the public list are windowed differently, and a worker's record read now places the row a
             // later page brings — otherwise it would sit among the primary rows until the account named it again.
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
+            val now = AppClock.now()
+            composers.forEach { snap ->
+                // Every Project the account's records call one goes to the root registry, with its name and look —
+                // the Projects group is drawn from the registry, whether or not the pages hold the row.
+                if (snap.isProject && snap.parent == null) {
+                    noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now))
+                } else if (rootRecords[snap.id]?.signal == LineageSignal.ACCOUNT_RECORD && !snap.isProject) {
+                    // The record's own word: what it called a Project it no longer does.
+                    forgetRoot(snap.id)
+                }
+                // A worker's record naming its manager names a root too.
+                snap.parent?.takeIf { it.kind == AgentParentKind.PROJECT_WORKER }?.let { manager ->
+                    if (placements[manager.id]?.parent == null) noteRoot(KnownRoot(manager.id, archived = rootRecords[manager.id]?.archived ?: false, signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = now))
+                }
+            }
             composers.filter { it.id !in held }.forEach { snap ->
                 when {
                     snap.parent != null -> place(snap.id, snap.parent, LineageSignal.ACCOUNT_RECORD)
@@ -1397,6 +1499,8 @@ class AgentRepository(
         const val PINNED_GONE_RETRY_MS = 30 * 60_000L
         /** Registry words about chats the rows do not carry, kept on disk at most. */
         private const val MAX_PERSISTED_PLACEMENTS = 2_000
+        /** Roots the registry knows and no page holds, fetched by id per pass. */
+        private const val MAX_MATERIALIZED_ROOTS = 8
         /**
          * The most a refresh re-reads: 500 agents, the newest first. The list pages past that only as the reader
          * scrolls to its end ([loadMore]), and the rows so loaded stay as they were between refreshes.
