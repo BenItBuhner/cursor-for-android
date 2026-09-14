@@ -89,10 +89,10 @@ data class RecordFields(
     /** The desktop's `isProject`: the `project_metadata` message present at all. */
     val isProject: Boolean get() = projectMetadata != null
 
-    /** One line, the fields named as the proto names them. */
-    fun describe(): String =
-        "project_metadata=${projectMetadata ?: "absent"} manager_agent_id=${managerAgentId ?: "-"} cloud_subagent_parent=${subagentParentId ?: "-"} " +
-            "side_chat_parent=${sideChatParentId ?: "-"} started_as_new_project=$startedAsNewProject source=${source ?: "-"}"
+    /** One line, the fields named as the proto names them; [idOf] renders the ids (the diagnostics shorten them to tails). */
+    fun describe(idOf: (String) -> String = { it }): String =
+        "project_metadata=${projectMetadata ?: "absent"} manager_agent_id=${managerAgentId?.let(idOf) ?: "-"} cloud_subagent_parent=${subagentParentId?.let(idOf) ?: "-"} " +
+            "side_chat_parent=${sideChatParentId?.let(idOf) ?: "-"} started_as_new_project=$startedAsNewProject source=${source ?: "-"}"
 }
 
 /**

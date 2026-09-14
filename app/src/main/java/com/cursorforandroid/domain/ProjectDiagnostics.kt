@@ -139,7 +139,7 @@ object ProjectDiagnostics {
                 "  ${tail(root.id)} ${root.signal.name} [${root.evidence}] ${if (row != null) "row" else if (root.id in input.unresolvedRoots) "UNRESOLVED" else "stand-in"} " +
                     "${if (root.archived) "archived" else "-"} ${input.memberCounts[root.id] ?: "-"} ${if (root.lastSeenMillis > 0) java.time.Instant.ofEpochMilli(root.lastSeenMillis) else "-"}",
             )
-            appendLine("    record: ${root.record?.describe() ?: "not read this session"}")
+            appendLine("    record: ${root.record?.describe(::tail) ?: "not read this session"}")
         }
 
         appendLine()
@@ -184,7 +184,7 @@ object ProjectDiagnostics {
                 ).joinToString(" "),
             )
             appendLine("    rule: ${AgentsWindowList.place(row, loaded, input.pinnedIds, archivedIds).rule}")
-            appendLine("    record: ${row.record?.describe() ?: "not read" + (if (row.id in input.unresolvedRecords) " (asked; the account gave none)" else if (input.accountSession) " (fetch by id pending)" else " (default mode: the public API alone)")}")
+            appendLine("    record: ${row.record?.describe(::tail) ?: "not read" + (if (row.id in input.unresolvedRecords) " (asked; the account gave none)" else if (input.accountSession) " (fetch by id pending)" else " (default mode: the public API alone)")}")
         }
     }
 

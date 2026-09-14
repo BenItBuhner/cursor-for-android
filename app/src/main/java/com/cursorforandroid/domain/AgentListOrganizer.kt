@@ -243,13 +243,14 @@ object AgentListOrganizer {
         val known = agents.mapTo(HashSet(agents.size)) { it.id }
         val standIns = knownRoots.filter { it.id !in known && it.id.isNotBlank() }.map { rootStandIn(it, nowMillis) }
         val rows = sort((agents + standIns).map { toRow(it, local, nowMillis) }, prefs.sortOrder)
-        // PJr / mQa: children and top level, by the parent link alone.
-        val (children, topLevel) = rows.partition { AgentsWindowList.isChild(it.agent) }
+        // PJr / mQa: children and top level, by the parent link alone (ZOl: a link closing a loop is no link).
+        val links = AgentsWindowList.parentLinks(rows.map { it.agent })
+        val (children, topLevel) = rows.partition { it.agent.id in links }
         // Nlc on the top level; a child goes with its parent, put away only when archived.
         val listed = topLevel.filter { isListed(it, prefs) }
         val shownChildren = children.filter { passesArchive(it, prefs) }
         val standInIds = standIns.mapTo(HashSet()) { it.id }
-        val tree = nest(listed, shownChildren).map { row ->
+        val tree = nest(listed, shownChildren, links).map { row ->
             val count = memberCounts[row.agent.id]
             when {
                 row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, isStandIn = true, memberCount = count)
@@ -313,9 +314,9 @@ object AgentListOrganizer {
      * top-level rows (the desktop draws no such row either), as is one that names itself or sits on a cycle of
      * parent links. A pinned child is nested like any other (`VuC` pins top-level headers only).
      */
-    fun nest(primary: List<AgentRow>, nested: List<AgentRow>): List<AgentRow> {
+    fun nest(primary: List<AgentRow>, nested: List<AgentRow>, links: Map<String, String> = AgentsWindowList.parentLinks((primary + nested).map { it.agent })): List<AgentRow> {
         if (nested.isEmpty()) return primary
-        val childrenOf = nested.filter { it.agent.parent != null && it.agent.parent.id != it.agent.id }.groupBy { it.agent.parent!!.id }
+        val childrenOf = nested.filter { it.agent.id in links }.groupBy { links.getValue(it.agent.id) }
         val placed = HashSet<String>()
         fun build(row: AgentRow): AgentRow {
             placed += row.agent.id
@@ -327,8 +328,9 @@ object AgentListOrganizer {
 
     /** [nest] over rows that are all top level or children of each other, for a list built without the filters. */
     fun nest(rows: List<AgentRow>): List<AgentRow> {
-        val (children, topLevel) = rows.partition { AgentsWindowList.isChild(it.agent) }
-        return nest(topLevel, children)
+        val links = AgentsWindowList.parentLinks(rows.map { it.agent })
+        val (children, topLevel) = rows.partition { it.agent.id in links }
+        return nest(topLevel, children, links)
     }
 
     /**

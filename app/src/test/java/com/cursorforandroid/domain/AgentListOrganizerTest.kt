@@ -264,7 +264,8 @@ class AgentListOrganizerTest {
     /** Every Project is in the Projects group with its whole tree, and the chats listed on their own are exactly [chats]. */
     private fun assertProjectsKept(prefs: ListPreferences, vararg chats: String) {
         val sections = AgentListOrganizer.organize(projectsAndChats, prefs, projectsAndChatsLocal, nowMillis = now, zone = zone)
-        assertWithMessage("Projects under $prefs").that(sections.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("p-merged", "p-open", "p-none").inOrder()
+        // rUm: the same last activity, so the ids order them.
+        assertWithMessage("Projects under $prefs").that(sections.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("p-merged", "p-none", "p-open").inOrder()
         val projects = sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows.associateBy { it.agent.id }
         // The counts are the Projects' membership, whatever the filter says about the workers' own pull requests.
         assertWithMessage("p-merged's tree under $prefs").that(projects.getValue("p-merged").children.map { it.agent.id }).containsExactly("w-merged", "w-open").inOrder()
@@ -361,13 +362,14 @@ class AgentListOrganizerTest {
         assertThat(defaults.flatMap { it.rows }.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).containsExactly("live", "live-worker", "plain")
         // With Archived checked, the archived Project is back with its worker, and so is the live Project's archived worker.
         val archivedToo = AgentListOrganizer.organize(agents, ListPreferences(statuses = StatusFilter.entries.toSet()), local, nowMillis = now, zone = zone)
-        assertThat(archivedToo.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("live", "gone").inOrder()
+        // rUm orders rows of the same last activity by id.
+        assertThat(archivedToo.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("gone", "live").inOrder()
         val rows = archivedToo.first().rows.associateBy { it.agent.id }
-        assertThat(rows.getValue("live").children.map { it.agent.id }).containsExactly("live-worker", "live-archived-worker").inOrder()
+        assertThat(rows.getValue("live").children.map { it.agent.id }).containsExactly("live-archived-worker", "live-worker").inOrder()
         assertThat(rows.getValue("gone").children.map { it.agent.id }).containsExactly("gone-worker")
         // Archived alone lists the archived chats — and every live Project too, since nothing else decides about one.
         val onlyArchived = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Archived)), local, nowMillis = now, zone = zone)
-        assertThat(onlyArchived.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("live", "gone").inOrder()
+        assertThat(onlyArchived.ids(AgentListOrganizer.PROJECTS_KEY)).containsExactly("gone", "live").inOrder()
         assertThat(onlyArchived.filterNot { it.key == AgentListOrganizer.PROJECTS_KEY }.flatMap { it.rows }).isEmpty()
         // The rule itself, row by row.
         val liveRow = AgentListOrganizer.toRow(agents.first { it.id == "live" }, local, now)
@@ -393,20 +395,23 @@ class AgentListOrganizerTest {
 
         assertThat(AgentListOrganizer.flatten(sections.single().rows, emptySet()).map { it.row.agent.id to it.depth }).containsExactly("project" to 0)
         assertThat(AgentListOrganizer.flatten(sections.single().rows, setOf("project")).map { it.row.agent.id to it.depth })
-            .containsExactly("project" to 0, "worker" to 1, "quiet" to 1).inOrder()
+            .containsExactly("project" to 0, "quiet" to 1, "worker" to 1).inOrder()
         assertThat(AgentListOrganizer.flatten(sections.single().rows, setOf("project", "quiet")).map { it.row.agent.id to it.depth })
-            .containsExactly("project" to 0, "worker" to 1, "quiet" to 1, "deep" to 2).inOrder()
+            .containsExactly("project" to 0, "quiet" to 1, "deep" to 2, "worker" to 1).inOrder()
         // Expanding a hidden parent shows nothing until its own parent is open.
         assertThat(AgentListOrganizer.flatten(sections.single().rows, setOf("quiet")).map { it.row.agent.id }).containsExactly("project")
     }
 
     @Test
     fun `parent links that loop, or point at the chat itself, never lose a chat`() {
+        // ZOl: the links are applied in the list's order, and the one that would close the loop is no link — so b,
+        // whose link back to a is refused, stands at the top level with a under it; a link to itself is no link.
         val loop = listOf(agent("a", parent = "b"), agent("b", parent = "a"), agent("self", parent = "self"))
         val rows = AgentListOrganizer.nest(loop.map { AgentListOrganizer.toRow(it, LocalAgentState(), now) })
         assertThat(rows.flatMap { listOf(it) + it.descendants() }.map { it.agent.id }).containsExactly("self", "a", "b")
-        assertThat(rows.map { it.agent.id }).containsExactly("self", "a")
-        assertThat(rows.first { it.agent.id == "a" }.children.map { it.agent.id }).containsExactly("b")
+        assertThat(rows.map { it.agent.id }).containsExactly("b", "self")
+        assertThat(rows.first { it.agent.id == "b" }.children.map { it.agent.id }).containsExactly("a")
+        assertThat(AgentsWindowList.parentLinks(loop)).containsExactly("a", "b")
     }
 
     @Test

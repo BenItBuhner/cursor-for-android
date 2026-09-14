@@ -54,6 +54,33 @@ object AgentsWindowList {
     /** `mQa`: the top-level headers — everything that is not a child. */
     fun topLevel(agents: List<Agent>): List<Agent> = agents.filterNot(::isChild)
 
+    /**
+     * `ZOl`: the parent links of [agents], applied in the list's order, child id to parent id. A link to the chat
+     * itself, or one that would close a cycle of links, is no link — the desktop refuses it when it builds the
+     * topology, so no chat is lost to a loop: the row whose link is refused stands at the top level with the loop's
+     * other rows under it.
+     */
+    fun parentLinks(agents: List<Agent>): Map<String, String> {
+        val links = HashMap<String, String>()
+        for (agent in agents) {
+            val parentId = subagentParentId(agent) ?: continue
+            if (agent.id in links) continue
+            var cursor: String? = parentId
+            val seen = HashSet<String>()
+            var closesCycle = false
+            while (cursor != null && cursor !in seen) {
+                if (cursor == agent.id) {
+                    closesCycle = true
+                    break
+                }
+                seen += cursor
+                cursor = links[cursor]
+            }
+            if (!closesCycle) links[agent.id] = parentId
+        }
+        return links
+    }
+
     /** `kf`: a top-level header the record flags as a Project. */
     fun isProjectRoot(agent: Agent): Boolean = !isChild(agent) && agent.isProject
 
@@ -143,16 +170,16 @@ object AgentsWindowList {
             }
         }
         return when (agent.scopeSignal) {
-            LineageSignal.ACCOUNT_RECORD -> when (parent.kind) {
-                AgentParentKind.SUBAGENT -> "cloudSubagentParent.parentAgentId"
-                AgentParentKind.SIDE_CHAT -> "sideChatInfo.parentBcId"
-                AgentParentKind.PROJECT_WORKER -> "managerAgentId"
-            }
             LineageSignal.MEMBERSHIP -> "ListWorkersForManager (the desktop's seeded managerAgentId)"
             LineageSignal.CHILDREN_LIST -> "ListBackgroundComposerChildren"
             LineageSignal.ACTION -> "an action here (the desktop's _stampListedCloudAgentManager)"
             LineageSignal.COORDINATOR_CREATED -> "create_agent in the coordinator's transcript (default mode)"
-            else -> "the row's parent link"
+            // The record's own field, named by the kind it gave the link.
+            else -> when (parent.kind) {
+                AgentParentKind.SUBAGENT -> "cloudSubagentParent.parentAgentId"
+                AgentParentKind.SIDE_CHAT -> "sideChatInfo.parentBcId"
+                AgentParentKind.PROJECT_WORKER -> "managerAgentId"
+            }
         }
     }
 

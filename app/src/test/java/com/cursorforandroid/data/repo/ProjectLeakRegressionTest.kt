@@ -123,9 +123,10 @@ class ProjectLeakRegressionTest {
     @Test
     fun `a record without lineage never puts a placed worker back among the primary rows`() = runBlocking<Unit> {
         val agents = seed()
-        // The memberships placed every worker, the adopted one included.
+        // The memberships placed every worker, the adopted one included; bc-p, not flagged yet, is a top-level row
+        // with the three nested under it (the desktop's row-with-children), the side chat and the plain chat beside it.
         agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-w2" to AgentParentKind.PROJECT_WORKER, "bc-a" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
-        assertThat(primaryIds(agents)).containsExactly("bc-s", "bc-x")
+        assertThat(primaryIds(agents)).containsExactly("bc-p", "bc-s", "bc-x")
 
         // The next list round: the window holds the root's record, the created workers' records with their manager,
         // and the adopted chat's record — which never carried one. In 0.2.0 this read made bc-a a primary row again.
@@ -216,7 +217,8 @@ class ProjectLeakRegressionTest {
         agents.refresh()
         assertThat(agents.agent("bc-w1")?.isProjectChild).isTrue()
         assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.MEMBERSHIP)
-        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        // bc-p is no Project by its record: a top-level row with the worker nested under it.
+        assertThat(primaryIds(agents)).containsExactly("bc-p", "bc-x")
         // A row deleted from the list and listed again keeps its place: the registry remembers, not just the row.
         agents.upsert(agents.agent("bc-w1")!!.copy(parent = null, scopeSignal = null))
         assertThat(agents.agent("bc-w1")?.isProjectChild).isTrue()
@@ -237,7 +239,9 @@ class ProjectLeakRegressionTest {
         assertThat(lineage.calls).containsExactly("workers:bc-p", "children:bc-p").inOrder()
         assertThat(primaryIds(agents)).containsExactly("bc-x")
         assertThat(agents.agent("bc-a")?.scopeSignal).isEqualTo(LineageSignal.MEMBERSHIP)
-        assertThat(agents.agent("bc-s")?.scopeSignal).isEqualTo(LineageSignal.CHILDREN_LIST)
+        // The children answer carries the side chat's own record, which names its parent: the record's word.
+        assertThat(agents.agent("bc-s")?.scopeSignal).isEqualTo(LineageSignal.ACCOUNT_RECORD)
+        assertThat(agents.agent("bc-s")?.record?.sideChatParentId).isEqualTo("bc-p")
     }
 
     @Test

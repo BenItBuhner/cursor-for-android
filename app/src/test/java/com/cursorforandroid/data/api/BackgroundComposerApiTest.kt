@@ -166,14 +166,17 @@ class BackgroundComposerApiTest {
         assertThat(half.isProject).isTrue()
         assertThat(BackgroundComposerApi.snapshot(composer())!!.isProject).isFalse()
         assertThat(BackgroundComposerApi.snapshot(composer())!!.record).isEqualTo(RecordFields())
-        // A worker is never a Project itself, whatever metadata it carries (the desktop's `subagentParentId`).
+        // A worker carries the desktop's `isProject` when its record has the metadata, but is never a root: `kf`
+        // needs no `subagentParentId`, so its scope is a child's, and the parent link decides where it is drawn.
         val worker = BackgroundComposerApi.snapshot(composer(project = appearance, manager = "bc-m"))!!
-        assertThat(worker.isProject).isFalse()
+        assertThat(worker.isProject).isTrue()
+        assertThat(worker.scope).isEqualTo(com.cursorforandroid.domain.AgentScope.PROJECT_CHILD)
         assertThat(worker.parent).isEqualTo(AgentParent("bc-m", AgentParentKind.PROJECT_WORKER))
         assertThat(worker.record).isEqualTo(RecordFields(projectMetadata = appearance, managerAgentId = "bc-m"))
         assertThat(worker.record?.desktopSubagentParentId).isEqualTo("bc-m")
-        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, sideChat = "bc-s"))!!.isProject).isFalse()
-        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, subagentParent = "bc-p"))!!.isProject).isFalse()
+        assertThat(worker.record?.desktopParent).isEqualTo(AgentParent("bc-m", AgentParentKind.PROJECT_WORKER))
+        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, sideChat = "bc-s"))!!.scope).isEqualTo(com.cursorforandroid.domain.AgentScope.PROJECT_CHILD)
+        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, subagentParent = "bc-p"))!!.scope).isEqualTo(com.cursorforandroid.domain.AgentScope.PROJECT_CHILD)
         // The parent is the first of: the agent that spawned it, the chat it branched off, the coordinator it works for.
         assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s", subagentParent = "bc-p"))!!.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SUBAGENT))
         assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s"))!!.parent).isEqualTo(AgentParent("bc-s", AgentParentKind.SIDE_CHAT))
