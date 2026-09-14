@@ -184,7 +184,8 @@ class ProjectApiTest {
         assertThat(body["parentBcId"]?.jsonPrimitive?.content).isEqualTo("bc-m")
         assertThat(body["name"]?.jsonPrimitive?.content).isEqualTo("Pricing")
         assertThat(body["creationSource"]?.jsonPrimitive?.content).isEqualTo("BACKGROUND_COMPOSER_SOURCE_API")
-        assertThat(body["creationId"]?.jsonPrimitive?.content).startsWith("sc-")
+        // A bare UUID, as the Agents Window mints it: the account hashes it into the side chat's id.
+        assertThat(body["creationId"]?.jsonPrimitive?.content).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
     }
 
     @Test

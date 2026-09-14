@@ -194,8 +194,14 @@ class ProjectApi(
         return response.projectMetadata?.appearance?.takeIf { it.icon.isNotBlank() && it.colorId.isNotBlank() }?.let { ProjectAppearance(it.icon, it.colorId) }
     }
 
+    /**
+     * The Agents Window's own request: `parent_bc_id`, the optional `name` (left out when blank; the account names
+     * the chat "New Side Chat"), `creation_source` — a `BackgroundComposerSource`, the desktop's `GLASS`, this app's
+     * `API` — and `creation_id`, a fresh UUID the account hashes into the new chat's `bc_id` (`side-chat:<parent>:<id>`),
+     * so a retry with the same id creates nothing twice. The record that comes back names its parent in `sideChatInfo`.
+     */
     override suspend fun startSideChat(parentId: String, name: String?): ComposerSnapshot {
-        val request = StartSideChatDto(parentId, name?.takeIf { it.isNotBlank() }, SOURCE, "sc-${UUID.randomUUID()}")
+        val request = StartSideChatDto(parentId, name?.trim()?.takeIf { it.isNotEmpty() }, SOURCE, UUID.randomUUID().toString())
         val response = call("StartSideChatBackgroundComposer", request, StartSideChatDto.serializer(), ComposerResponseDto.serializer())
         return response.composer?.let { BackgroundComposerApi.snapshot(it) } ?: throw ConnectRpcException(200, null, "Cursor started no side chat.")
     }

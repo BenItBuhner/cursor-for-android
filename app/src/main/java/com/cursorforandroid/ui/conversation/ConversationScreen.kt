@@ -52,9 +52,11 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
@@ -79,6 +81,8 @@ import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.panel.ConversationPanel
+import com.cursorforandroid.ui.panel.DesktopDialog
+import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
@@ -239,6 +243,28 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onOpenProject = onOpenProject)
+    // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
+    // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
+    val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
+    (panel.desktop as? DesktopState.Open)?.let { open ->
+        DesktopDialog(
+            session = open.session,
+            agentName = agent?.name,
+            onViewOnlyChange = panelActions::setDesktopViewOnly,
+            onReconnect = { panelActions.openDesktop(open.session.viewOnly) },
+            onClose = panelActions::closeDesktop,
+        )
+    }
+    LaunchedEffect(panel.desktop) {
+        when (val desktop = panel.desktop) {
+            DesktopState.Opening -> viewModel.showMessage("Finding the agent's desktop…")
+            is DesktopState.Failed -> {
+                viewModel.showMessage(desktop.failure.message)
+                panelActions.closeDesktop()
+            }
+            else -> Unit
+        }
+    }
 
     SidePanel(
         state = panelState,
@@ -279,6 +305,13 @@ fun ConversationScreen(
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
+                        MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
+                        // The agent's VM desktop (Extended mode): view it, or take control of it to try what it is
+                        // building. A Remote Control chat's machine has no desktop to reach from here.
+                        if (canOpenDesktop) {
+                            MenuItem("View desktop", CursorIcons.Eye) { menuOpen = false; panelActions.openDesktop(viewOnly = true) }
+                            MenuItem("Take control of desktop", CursorIcons.Desktop) { menuOpen = false; panelActions.openDesktop(viewOnly = false) }
+                        }
                         if (isActive) MenuItem("Stop", CursorIcons.Stop) { menuOpen = false; viewModel.cancelRun() }
                         if (agent?.isArchived != true) {
                             if (isSnoozed) {
@@ -427,6 +460,9 @@ fun ConversationScreen(
                     onRemove = { viewModel.queueDelete(it.id) },
                     onUpdate = { item, text -> viewModel.queueUpdate(item.id, text) },
                     onEditing = { item, editing -> viewModel.queueMarkEditing(item.id, editing) },
+                    // A queued message can be delivered into the turn under way as a steer while there is one to steer.
+                    onSteerNow = if (capabilities.steering && isActive) ({ viewModel.queueSteerNow(it.id) }) else null,
+                    onMove = { item, up -> viewModel.queueMove(item.id, up) },
                     modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                 )
             }

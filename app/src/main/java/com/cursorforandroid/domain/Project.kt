@@ -98,14 +98,6 @@ data class ProjectLineage(
         }
 }
 
-/**
- * Whether a side chat can be started for a cloud chat from this account. Cursor's help page says side chats are
- * "not currently available for Cloud Agents, but support for this is coming soon" while the RPC and the source
- * already ship, so the answer is learned from the first attempt: [UNKNOWN] until one is made, [AVAILABLE] once one
- * has gone through, [COMING_TO_CURSOR] once Cursor has refused one as not offered yet — a named state, not an error.
- */
-enum class SideChatAvailability { UNKNOWN, AVAILABLE, COMING_TO_CURSOR }
-
 /** What `InjectBackgroundComposerContext` did with a steer: delivered at the next tool call, held for the next turn, or refused. */
 enum class SteerOutcome {
     QUEUED,

@@ -9,7 +9,6 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -17,8 +16,6 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.Capabilities
-import com.cursorforandroid.domain.DesktopFailure
-import com.cursorforandroid.domain.DesktopSession
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -30,8 +27,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The Extended-mode halves of Files, Changes, Pull request and Remote: what each shows with the mode on, the named
- * state each degrades to with it off, and which read each asks for.
+ * The Extended-mode halves of Files, Changes and Pull request: what each shows with the mode on, what is left of
+ * each with it off, and which read each asks for.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -52,10 +49,6 @@ class VmSectionsTest {
         override fun browseWorkspace(path: String) { asked += "browse:$path"; state = state.copy(workspace = state.workspace.copy(path = path)) }
         override fun browseWorkspaceUp() { asked += "up"; state = state.copy(workspace = state.workspace.copy(path = state.workspace.path.substringBeforeLast('/', ""))) }
         override fun openWorkspaceFile(path: String) { asked += "open:$path" }
-        override fun loadMachine(force: Boolean) { asked += if (force) "machine!" else "machine" }
-        override fun openDesktop(viewOnly: Boolean) { asked += if (viewOnly) "desktop:view" else "desktop:control" }
-        override fun setDesktopViewOnly(viewOnly: Boolean) { asked += "viewonly:$viewOnly" }
-        override fun closeDesktop() { asked += "desktop:close" }
         override fun createPullRequest() { asked += "create-pr" }
         override fun openUrl(url: String) { asked += "url:$url" }
     }
@@ -135,14 +128,17 @@ class VmSectionsTest {
         compose.waitForIdle()
         assertThat(shown("Retry")).isFalse()
 
+        // Off: the tab is not offered, and the section falls back to the first tab it still has.
         state = state.copy(capabilities = Capabilities.DOCUMENTED, workspace = WorkspaceBrowserState())
         compose.waitForIdle()
-        assertThat(shown("Needs Extended mode")).isTrue()
-        assertThat(shown("ListWorkspaceFiles")).isTrue()
+        assertThat(compose.onAllNodesWithTag("files-tab-Workspace").fetchSemanticsNodes()).isEmpty()
+        assertThat(shown("ListWorkspaceFiles")).isFalse()
+        assertThat(compose.onAllNodesWithTag("touched-file").fetchSemanticsNodes()).isNotEmpty()
 
+        // The demo has no VM: the tab is not offered there either.
         state = state.copy(capabilities = Capabilities.EXTENDED, isDemo = true)
         compose.waitForIdle()
-        assertThat(shown("The demo has no workspace to browse")).isTrue()
+        assertThat(compose.onAllNodesWithTag("files-tab-Workspace").fetchSemanticsNodes()).isEmpty()
     }
 
     @Test
@@ -191,11 +187,12 @@ class VmSectionsTest {
         assertThat(shown("From the pull request · 3 files")).isTrue()
         assertThat(compose.onAllNodesWithTag("branch-diff-file").fetchSemanticsNodes()).isEmpty()
 
-        // Extended off, no pull request: the stream's edits, and the named note about what the mode would add.
+        // Extended off, no pull request: the stream's edits, with no note about what the mode would add.
         state = PanelFixtures.extended().copy(capabilities = Capabilities.DOCUMENTED, diff = RemoteLoad.Unsupported("Needs Extended mode"))
         compose.waitForIdle()
         assertThat(shown("From this conversation · 3 files")).isTrue()
-        assertThat(shown("GetBackgroundComposerDiffDetails")).isTrue()
+        assertThat(shown("GetBackgroundComposerDiffDetails")).isFalse()
+        assertThat(shown("Needs Extended mode")).isFalse()
     }
 
     @Test
@@ -238,103 +235,25 @@ class VmSectionsTest {
         click("Pull request opened")
         assertThat(asked).contains("url:https://github.com/bennett/cursor-for-android/pull/98")
 
-        // Off: the named state; a chat without a branch: nothing to open one from.
+        // Off, with no pull request: nothing to offer, so no section. A chat without a branch: nothing to open one from.
         state = state.copy(capabilities = Capabilities.DOCUMENTED, pullRequestCreation = RemoteLoad.Idle)
         compose.waitForIdle()
-        assertThat(shown("MakePRBackgroundComposer")).isTrue()
+        assertThat(compose.onAllNodesWithTag("section-PullRequest").fetchSemanticsNodes()).isEmpty()
+        assertThat(shown("MakePRBackgroundComposer")).isFalse()
         state = state.copy(capabilities = Capabilities.EXTENDED, agent = state.agent!!.copy(branches = emptyList()))
         compose.waitForIdle()
-        assertThat(shown("no branch yet")).isTrue()
+        assertThat(compose.onAllNodesWithTag("section-PullRequest").fetchSemanticsNodes()).isEmpty()
     }
 
     // ---- Remote -----------------------------------------------------------------------------------------------------
 
     @Test
-    fun `a Remote Control chat names its machine, its state from the fleet endpoint, and the floors, in either mode`() {
-        state = PanelFixtures.remoteControl()
+    fun `the agent's desktop is not a panel section, and the changes hint counts the branch's files`() {
+        // Remote left the panel: the desktop is opened from the chat's header menu, a machine's state is an Overview fact.
+        assertThat(PanelRegistry.default().sections.map { it.title }).containsNoneOf("Remote", "Share", "Queue and steering", "Images and media")
         show()
-        open(PanelSectionId.Remote)
-        compose.waitForIdle()
-        assertThat(asked).contains("machine")
-        assertThat(shown("Remote Control · studio-mac")).isTrue()
-        scrollTo("machine-status")
-        compose.onNodeWithTag("machine-status").assertIsDisplayed()
-        assertThat(shown("Connected · working on this chat")).isTrue()
-        assertThat(shown("Online")).isTrue()
-        assertThat(shown("Cursor 3.9.8 or later")).isTrue()
-        // The desktop half: off, the named state; on, the relay this build does not carry.
-        assertThat(shown("GetMachine")).isTrue()
-        state = state.copy(capabilities = Capabilities.EXTENDED)
-        compose.waitForIdle()
-        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("desktop-relay"))
-        compose.onNodeWithTag("desktop-relay").assertIsDisplayed()
-        clickTag("machine-refresh")
-        assertThat(asked).contains("machine!")
-
-        state = state.copy(machine = RemoteLoad.Loaded(state.machine.valueOrNull!!.copy(connected = false, isInUse = false, activeAgentId = null)))
-        compose.waitForIdle()
-        assertThat(shown("Not connected")).isTrue()
-        assertThat(shown("Offline")).isTrue()
-
-        state = state.copy(machine = RemoteLoad.Failed("Fleet endpoints need a pool service account."))
-        compose.waitForIdle()
-        assertThat(shown("pool service account")).isTrue()
-    }
-
-    @Test
-    fun `a cloud chat offers to view or take control of its desktop, and names every way that can fail`() {
-        show()
-        open(PanelSectionId.Remote)
-        assertThat(shown("Cloud VM")).isTrue()
-        clickTag("desktop-view")
-        assertThat(asked).contains("desktop:view")
-        clickTag("desktop-control")
-        assertThat(asked).contains("desktop:control")
-
-        state = state.copy(desktop = DesktopState.Opening)
-        compose.waitForIdle()
-        assertThat(shown("Finding the desktop…")).isTrue()
-
-        state = state.copy(desktop = DesktopState.Failed(DesktopFailure.Unreachable("The agent's desktop isn't reachable: a finished chat's VM is hibernated.")))
-        compose.waitForIdle()
-        compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("desktop-failed"))
-        assertThat(shown("hibernated")).isTrue()
-        click("Retry")
-        assertThat(asked.count { it == "desktop:view" }).isEqualTo(2)
-
-        state = state.copy(desktop = DesktopState.Open(DesktopSession("bc-demo", "wss://t-p-6080.c.cursorvm.com/websockify?network_token=x", viewOnly = false, port = 6080)))
-        compose.waitForIdle()
-        compose.onNodeWithTag("desktop-screen").assertIsDisplayed()
-        assertThat(shown("In control")).isTrue()
-        compose.onNodeWithTag("desktop-control-toggle").performClick()
-        assertThat(asked).contains("viewonly:true")
-        compose.onNodeWithContentDescription("Close the desktop").performClick()
-        assertThat(asked).contains("desktop:close")
-    }
-
-    @Test
-    fun `with the mode off the desktop half is the named state, and the demo has none`() {
-        state = state.copy(capabilities = Capabilities.DOCUMENTED)
-        show()
-        open(PanelSectionId.Remote)
-        assertThat(shown("Needs Extended mode")).isTrue()
-        assertThat(shown("GetMachine")).isTrue()
+        assertThat(shown("Remote")).isFalse()
         assertThat(compose.onAllNodesWithTag("desktop-view").fetchSemanticsNodes()).isEmpty()
-
-        state = state.copy(capabilities = Capabilities.EXTENDED, isDemo = true)
-        compose.waitForIdle()
-        assertThat(shown("The demo has no desktop to show")).isTrue()
-    }
-
-    @Test
-    fun `the section hints follow the mode and the machine`() {
-        val remote = PanelRegistry.default()[PanelSectionId.Remote]!!
-        assertThat(remote.hint(PanelFixtures.loaded())).isEqualTo("Extended mode")
-        assertThat(remote.hint(PanelFixtures.extended())).isEqualTo("Desktop")
-        assertThat(remote.hint(PanelFixtures.remoteControl())).isEqualTo("Remote Control · online")
-        assertThat(remote.hint(PanelFixtures.remoteControl().copy(machine = RemoteLoad.Idle))).isEqualTo("Remote Control")
-        assertThat(remote.hint(PanelFixtures.extended().copy(desktop = DesktopState.Open(DesktopSession("bc-demo", "wss://x"))))).isEqualTo("Desktop open")
-        assertThat(remote.availability(Capabilities.DOCUMENTED, PanelFixtures.loaded())).isEqualTo(SectionAvailability.Available)
         val changes = PanelRegistry.default()[PanelSectionId.Changes]!!
         assertThat(changes.hint(PanelFixtures.extended())).isEqualTo("4 files")
     }

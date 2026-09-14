@@ -33,26 +33,25 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.Artifact
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ChangedFile
 import com.cursorforandroid.domain.ChangedFileStatus
 import com.cursorforandroid.domain.CheckConclusion
 import com.cursorforandroid.domain.CheckRun
 import com.cursorforandroid.domain.EnvType
-import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestView
 import com.cursorforandroid.domain.RepoEntry
 import com.cursorforandroid.domain.ReviewVerdict
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.ScmHost
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ImageBlock
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.Pill
@@ -85,6 +84,11 @@ internal fun statusLabel(state: PanelState): String {
     }
 }
 
+/**
+ * The chat's facts, kept short: status, repository, branch (or the base it started from), model, where it runs when
+ * that is not Cursor's cloud — a Remote Control chat's machine with its state from the fleet endpoint — when it
+ * started and how long it worked on one line, and what changed. In Extended mode the run's controls sit under them.
+ */
 @Composable
 internal fun OverviewSection(state: PanelState, actions: PanelActions) {
     val agent = state.agent
@@ -94,13 +98,27 @@ internal fun OverviewSection(state: PanelState, actions: PanelActions) {
             return@Column
         }
         FactRow("Status", statusLabel(state))
+        // A side chat's way back to the conversation it branched from, whatever kind of chat that is.
+        agent.parent?.takeIf { it.kind == AgentParentKind.SIDE_CHAT }?.let { parent ->
+            FactRow("Side chat of", state.parentAgent?.name ?: "another chat", onClick = { actions.openAgent(parent.id) }, modifier = Modifier.testTag("parent-fact"))
+        }
         agent.repoSlug?.let { slug -> FactRow("Repository", slug, onClick = agent.repoUrl?.let { url -> { actions.openUrl(url) } }) }
-        agent.branchName?.let { FactRow("Branch", it, onClick = { actions.copyText(it, "Branch name copied") }) }
-        agent.startingRef?.takeIf { it != agent.branchName }?.let { FactRow("Base", it) }
+        val branch = agent.branchName
+        if (branch != null) {
+            FactRow("Branch", branch, onClick = { actions.copyText(branch, "Branch name copied") })
+        } else {
+            agent.startingRef?.let { FactRow("Base", it) }
+        }
         agent.modelName?.let { FactRow("Model", it) }
-        FactRow("Environment", environmentLabel(agent))
-        TimeFormat.duration(agent.durationMs)?.let { FactRow("Worked", it) }
-        agent.createdAtMillis.takeIf { it > 0 }?.let { FactRow("Started", TimeFormat.date(it)) }
+        if (agent.envType != EnvType.CLOUD) {
+            FactRow("Environment", environmentLabel(agent))
+            if (agent.envType == EnvType.MACHINE) MachineFact(state, actions)
+        }
+        val timing = listOfNotNull(
+            agent.createdAtMillis.takeIf { it > 0 }?.let { TimeFormat.date(it) },
+            TimeFormat.duration(agent.durationMs)?.let { "worked $it" },
+        )
+        if (timing.isNotEmpty()) FactRow("Started", timing.joinToString(" · "))
         val changes = state.content.changes
         if (changes.isNotEmpty()) {
             val stats = listOfNotNull(
@@ -110,8 +128,7 @@ internal fun OverviewSection(state: PanelState, actions: PanelActions) {
             )
             FactRow("Changed", stats.joinToString(" "))
         }
-        agent.source?.let { FactRow("Started from", it.name.lowercase().replace('_', ' ').replaceFirstChar { c -> c.uppercase() }) }
-        // Extended mode: the run's controls sit under its facts, the same row the Queue section wears.
+        // Extended mode: the run's controls sit under its facts.
         if (state.capabilities.steering && !state.isDemo) RunControlsRow(state, actions, Modifier.padding(top = 2.dp))
     }
 }
@@ -119,8 +136,52 @@ internal fun OverviewSection(state: PanelState, actions: PanelActions) {
 private fun environmentLabel(agent: Agent): String = when (agent.envType) {
     EnvType.CLOUD -> "Cloud"
     EnvType.POOL -> listOfNotNull("Team pool", agent.envName).joinToString(" · ")
-    EnvType.MACHINE -> listOfNotNull("Remote Control", agent.envName).joinToString(" · ")
+    EnvType.MACHINE -> listOfNotNull("Remote Control", agent.envName?.substringBefore('#')?.trim()?.takeIf { it.isNotEmpty() }).joinToString(" · ")
     EnvType.UNKNOWN -> agent.envName ?: "Unknown"
+}
+
+/**
+ * A Remote Control chat's machine — one of the user's own, running the agent's tools through the worker Cursor
+ * manages there — and whether the documented fleet endpoint lists it right now. A tap asks again. Nothing here
+ * needs Extended mode.
+ */
+@Composable
+private fun MachineFact(state: PanelState, actions: PanelActions) {
+    val value = when (val machine = state.machine) {
+        RemoteLoad.Idle, RemoteLoad.Loading -> "Checking the machine…"
+        is RemoteLoad.Failed -> "Couldn't read the machine: ${machine.message}"
+        is RemoteLoad.Unsupported -> machine.reason
+        is RemoteLoad.Loaded -> machine.value.label(state.agentId)
+    }
+    FactRow("Machine", value, onClick = { actions.loadMachine(force = true) }, modifier = Modifier.testTag("machine-fact"))
+}
+
+/**
+ * Pause or resume the turn (`PauseBackgroundComposer` / `ResumeBackgroundComposer`), stop it (the documented cancel)
+ * and wake the machine (`WakeBackgroundComposer`); each says when it is on its way.
+ */
+@Composable
+internal fun RunControlsRow(state: PanelState, actions: PanelActions, modifier: Modifier = Modifier) {
+    val controls = state.controls
+    val running = state.isRunning
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).testTag("run-controls"),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (controls.isPaused == true) {
+            ControlButton("Resume", CursorIcons.Play, busy = controls.isBusy("resume"), onClick = actions::resumeRun)
+        } else {
+            ControlButton("Pause", CursorIcons.Pause, busy = controls.isBusy("pause"), enabled = running, onClick = actions::pauseRun)
+        }
+        if (running) ControlButton("Stop", CursorIcons.Stop, onClick = actions::stopRun)
+        ControlButton("Wake", CursorIcons.Lightning, busy = controls.isBusy("wake"), enabled = !running, onClick = actions::wake)
+    }
+}
+
+@Composable
+private fun ControlButton(label: String, icon: ImageVector, onClick: () -> Unit, enabled: Boolean = true, busy: Boolean = false) {
+    CursorButton(if (busy) "$label…" else label, onClick, icon = icon, enabled = enabled && !busy, height = 28.dp, modifier = Modifier.testTag("control-$label"))
 }
 
 // -- Pending question -----------------------------------------------------------------------------------------------
@@ -128,32 +189,25 @@ private fun environmentLabel(agent: Agent): String = when (agent.envType) {
 /**
  * The question the run is paused on: answerable from here with the `interactions` capability (the chips are choices,
  * a line takes an answer of one's own, and the send goes to `SubmitInteractionResponseBackgroundComposer`), read-only
- * with a link to cursor.com otherwise.
+ * with a link to cursor.com otherwise — the card itself says where to answer.
  */
 @Composable
 internal fun PendingQuestionSection(state: PanelState, actions: PanelActions) {
-    val question = state.content.pendingQuestion
+    val question = state.content.pendingQuestion ?: return
     val callId = state.content.pendingQuestionCallId
     val canAnswer = state.capabilities.interactions && !state.isDemo && callId != null
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        if (question != null) {
-            QuestionCard(
-                question,
-                pending = true,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                onOpenInBrowser = { actions.openUrl(CursorEndpoints.webUrl(state.agentId)) },
-                onAnswer = if (canAnswer) ({ answers -> actions.answerQuestion(callId!!, answers) }) else null,
-                answered = callId != null && callId in state.controls.answeredCallIds,
-                answering = callId != null && state.controls.isBusy("answer:$callId"),
-            )
-        }
-        if (!state.capabilities.interactions) {
-            RequiresExtendedRow(SectionAvailability.RequiresExtended(ANSWER_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
-        }
+        QuestionCard(
+            question,
+            pending = true,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            onOpenInBrowser = { actions.openUrl(CursorEndpoints.webUrl(state.agentId)) },
+            onAnswer = if (canAnswer) ({ answers -> actions.answerQuestion(callId!!, answers) }) else null,
+            answered = callId != null && callId in state.controls.answeredCallIds,
+            answering = callId != null && state.controls.isBusy("answer:$callId"),
+        )
     }
 }
-
-internal const val ANSWER_REASON = "Answering the agent's question from here goes through SubmitInteractionResponseBackgroundComposer, an undocumented endpoint"
 
 // -- Changes --------------------------------------------------------------------------------------------------------
 
@@ -190,7 +244,7 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
                     pr is RemoteLoad.Failed -> PanelNote("The pull request's own files could not be read: ${pr.message}")
                     pr is RemoteLoad.Unsupported -> PanelNote(pr.reason)
                 }
-                BranchDiffNote(state, actions)
+                BranchDiffNote(state)
             }
             state.hasPullRequest -> when (pr) {
                 RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow("Reading the pull request's files…")
@@ -203,19 +257,18 @@ internal fun ChangesSection(state: PanelState, actions: PanelActions) {
             branch is RemoteLoad.Loaded -> EmptyRow("No changes yet", "The branch matches its base; edits arrive here as the agent commits them.")
             else -> {
                 EmptyRow("No changes yet", "Edits arrive here as the agent makes them; a pull request's files once it opens one.")
-                BranchDiffNote(state, actions)
+                BranchDiffNote(state)
             }
         }
     }
 }
 
-/** Under the stream's own changes: what the account's diff would add, and why it is not here. */
+/** Under the stream's own changes: the account's diff of the branch on its way, or why it could not be read. */
 @Composable
-private fun BranchDiffNote(state: PanelState, actions: PanelActions) {
+private fun BranchDiffNote(state: PanelState) {
     when (val branch = state.diff) {
         RemoteLoad.Loading -> LoadingRow("Reading the branch's diff…")
         is RemoteLoad.Failed -> PanelNote("The branch's own diff could not be read: ${branch.message}")
-        is RemoteLoad.Unsupported -> if (!state.capabilities.diffDetails && !state.isDemo) RequiresExtendedRow(SectionAvailability.RequiresExtended(DIFF_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
         else -> Unit
     }
 }
@@ -380,20 +433,15 @@ private fun PullRequestBody(view: PullRequestView, actions: PanelActions) {
     }
 }
 
-internal const val CREATE_PR_REASON = "Opening the pull request from here goes through MakePRBackgroundComposer, an undocumented endpoint"
-
 /**
  * Opening the pull request from the phone (Extended): Cursor pushes the branch and writes the title and body the
- * agent would have. A chat with no branch has nothing to open one from; the demo has no host.
+ * agent would have. The section is only there without a pull request when this is on offer (see
+ * [DefaultPanelSections.canCreatePullRequest]); a chat with no branch has nothing to open one from.
  */
 @Composable
 private fun CreatePullRequestRow(state: PanelState, actions: PanelActions) {
     val agent = state.agent ?: return
-    if (state.isDemo) return
-    if (!state.capabilities.scmPullRequests) {
-        RequiresExtendedRow(SectionAvailability.RequiresExtended(CREATE_PR_REASON, ready = true), extendedOn = state.capabilities.anyExtended)
-        return
-    }
+    if (!state.capabilities.scmPullRequests || state.isDemo) return
     if (!agent.hasBranch || agent.repoUrl == null) {
         PanelNote("The chat has no branch yet, so there is nothing to open a pull request from.")
         return
@@ -460,12 +508,29 @@ private fun CheckRow(check: CheckRun, onOpen: (() -> Unit)?) {
 
 internal enum class FilesTab(val label: String) { Touched("Touched"), Repository("Repository"), Workspace("Workspace") }
 
+/**
+ * The tabs the Files section has something for: the files the agent touched, the repository the app can browse
+ * (a GitHub-hosted one, outside the demo), and — in Extended mode — the agent's live workspace. The section is left
+ * out when there are none (see [DefaultPanelSections.files]).
+ */
+internal fun filesTabs(capabilities: Capabilities, state: PanelState): List<FilesTab> = listOfNotNull(
+    FilesTab.Touched.takeIf { state.content.touched.isNotEmpty() },
+    FilesTab.Repository.takeIf { state.browser.canBrowse && !state.isDemo },
+    FilesTab.Workspace.takeIf { capabilities.workspaceFiles && !state.isDemo },
+)
+
 @Composable
 internal fun FilesSection(state: PanelState, actions: PanelActions) {
-    var tab by rememberSaveable { mutableStateOf(FilesTab.Touched) }
+    val tabs = filesTabs(state.capabilities, state)
+    if (tabs.isEmpty()) return
+    var chosen by rememberSaveable { mutableStateOf<FilesTab?>(null) }
+    // The tab the reader picked, while the section still has it; the first one otherwise.
+    val tab = chosen?.takeIf { it in tabs } ?: tabs.first()
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilesTab.entries.forEach { t -> TabChip(t.label, selected = tab == t, onClick = { tab = t }) }
+        if (tabs.size > 1) {
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                tabs.forEach { t -> TabChip(t.label, selected = tab == t, onClick = { chosen = t }) }
+            }
         }
         when (tab) {
             FilesTab.Touched -> TouchedFiles(state, actions)
@@ -524,25 +589,20 @@ private fun RepositoryBrowser(state: PanelState, actions: PanelActions) {
     val agent = state.agent
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val repoUrl = agent?.repoUrl
-    if (repoUrl == null) {
-        EmptyRow("No repository", "This chat runs without one.")
+    val host = browser.host
+    if (agent?.repoUrl == null || host == null) {
+        EmptyRow("No repository to browse", "This chat runs without one this app can read.")
         return
     }
     if (state.isDemo) {
         EmptyRow("The demo has no repository to browse")
         return
     }
-    val host = browser.host
-    if (host == null) {
-        RequiresExtendedRow(SectionAvailability.RequiresExtended("Browsing a repository on ${ScmHost.of(repoUrl).label} goes through Cursor's undocumented SCM endpoints"), extendedOn = state.capabilities.anyExtended)
-        return
-    }
     LaunchedEffect(browser.repoUrl, browser.ref) { if (browser.listing is RemoteLoad.Idle) actions.browse("") }
     // Breadcrumb: the repository's name, then each directory on the way down; the current one is not a link.
     val segments = browser.path.split('/').filter { it.isNotEmpty() }
     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(agent?.repoShortName ?: "repository", style = type.small, color = if (segments.isEmpty()) colors.textSecondary else colors.link, modifier = Modifier.pressable({ actions.browse("") }, CursorTheme.shapes.sm, enabled = segments.isNotEmpty()).padding(2.dp))
+        Text(agent.repoShortName ?: "repository", style = type.small, color = if (segments.isEmpty()) colors.textSecondary else colors.link, modifier = Modifier.pressable({ actions.browse("") }, CursorTheme.shapes.sm, enabled = segments.isNotEmpty()).padding(2.dp))
         segments.forEachIndexed { index, segment ->
             Text(" / ", style = type.small, color = colors.textQuaternary)
             val last = index == segments.lastIndex
@@ -586,7 +646,7 @@ internal fun iconForExtension(extension: String): ImageVector = when (extension)
     else -> CursorIcons.File
 }
 
-// -- Images and media -----------------------------------------------------------------------------------------------
+// -- Artifacts ------------------------------------------------------------------------------------------------------
 
 /** Everything visual the chat produced or was given, merged by path so an artifact that is also a recording shows once. */
 internal fun mediaTiles(state: PanelState): List<MediaTile> {
@@ -613,6 +673,10 @@ internal fun mediaTiles(state: PanelState): List<MediaTile> {
     return tiles
 }
 
+/** The artifacts that are not pictures or recordings — notes, logs, anything else the agent published — listed under the gallery. */
+internal fun artifactFiles(state: PanelState): List<Artifact> =
+    state.artifacts.valueOrNull.orEmpty().filter { it.kind != Artifact.Kind.Image && it.kind != Artifact.Kind.Video }
+
 /** How tall a gallery tile may be: a portrait screenshot is shrunk to it rather than taking the panel over. */
 private val MediaTileHeight = 180.dp
 
@@ -624,72 +688,70 @@ internal sealed interface MediaTile {
     data class Video(override val src: String, override val caption: String, override val kind: String) : MediaTile
 }
 
+/**
+ * What the chat produced or was given to look at: a gallery of the generated images, recordings, published
+ * screenshots and attached prompt images, then the artifacts that are not pictures as a list with size and age,
+ * each opening in the browser through a presigned link. Cursor's own term for the lot is "artifacts".
+ */
 @OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-internal fun MediaSection(state: PanelState, actions: PanelActions) {
+internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
     val tiles = remember(state.content.media, state.artifacts, state.promptImages) { mediaTiles(state) }
+    val files = remember(state.artifacts) { artifactFiles(state) }
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        if (tiles.isEmpty()) {
-            if (state.artifacts is RemoteLoad.Loading) LoadingRow("Looking for artifacts…") else EmptyRow("No images or recordings yet", "Generated images, screen recordings, published screenshots and the images attached to prompts gather here.")
-            return@Column
-        }
-        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-            val tileWidth = (maxWidth - 8.dp) / 2
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.testTag("media-grid")) {
-                tiles.forEach { tile ->
-                    Column(Modifier.width(tileWidth)) {
-                        when (tile) {
-                            is MediaTile.Image -> ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
-                            is MediaTile.Video -> VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+        if (tiles.isNotEmpty()) {
+            BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                val tileWidth = (maxWidth - 8.dp) / 2
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.testTag("media-grid")) {
+                    tiles.forEach { tile ->
+                        Column(Modifier.width(tileWidth)) {
+                            when (tile) {
+                                is MediaTile.Image -> ImageBlock(tile.src, alt = tile.caption, heightCap = MediaTileHeight)
+                                is MediaTile.Video -> VideoBlock(tile.src, poster = null, heightCap = MediaTileHeight)
+                            }
+                            Text(tile.caption, style = type.small, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                            Text(tile.kind, style = type.tiny, color = colors.textQuaternary, maxLines = 1)
                         }
-                        Text(tile.caption, style = type.small, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
-                        Text(tile.kind, style = type.tiny, color = colors.textQuaternary, maxLines = 1)
                     }
                 }
             }
         }
-        if (state.artifacts is RemoteLoad.Loading) LoadingRow("Looking for more in the artifacts…")
-    }
-}
-
-// -- Artifacts ------------------------------------------------------------------------------------------------------
-
-@Composable
-internal fun ArtifactsSection(state: PanelState, actions: PanelActions) {
-    val colors = CursorTheme.colors
-    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         when (val artifacts = state.artifacts) {
-            RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow("Listing artifacts…")
+            RemoteLoad.Idle, RemoteLoad.Loading -> LoadingRow(if (tiles.isEmpty()) "Listing artifacts…" else "Looking for more in the artifacts…")
             is RemoteLoad.Failed -> FailedRow(artifacts.message, onRetry = { actions.loadArtifacts(force = true) })
             is RemoteLoad.Unsupported -> UnsupportedRow(artifacts.reason, artifacts.url, actions::openUrl)
             is RemoteLoad.Loaded -> {
-                if (artifacts.value.isEmpty()) {
-                    EmptyRow("Nothing published yet", "Files the agent saves under /opt/cursor/artifacts appear here.")
-                } else {
-                    artifacts.value.forEach { artifact ->
-                        PanelRow(
-                            title = artifact.name,
-                            icon = when (artifact.kind) {
-                                Artifact.Kind.Image -> CursorIcons.Image
-                                Artifact.Kind.Video -> CursorIcons.Video
-                                Artifact.Kind.Markdown, Artifact.Kind.Text -> CursorIcons.Book
-                                Artifact.Kind.Other -> CursorIcons.File
-                            },
-                            subtitle = listOfNotNull(artifact.path.removePrefix("artifacts/").takeIf { it != artifact.name }, formatBytes(artifact.sizeBytes), artifact.updatedAtMillis?.let(TimeFormat::relativeShort)).joinToString(" · "),
-                            trailing = { Icon(CursorIcons.ExternalLink, null, tint = colors.iconQuaternary, modifier = Modifier.size(13.dp)) },
-                            onClick = { actions.openArtifact(artifact) },
-                            modifier = Modifier.testTag("artifact"),
-                        )
-                    }
+                if (files.isNotEmpty()) {
+                    if (tiles.isNotEmpty()) PanelCaption("Files")
+                    files.forEach { artifact -> ArtifactRow(artifact, onOpen = { actions.openArtifact(artifact) }) }
                 }
+                if (tiles.isEmpty() && files.isEmpty()) EmptyRow("Nothing published yet", "Files the agent saves under /opt/cursor/artifacts appear here.")
                 Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     CursorButton("Refresh", { actions.loadArtifacts(force = true) }, icon = CursorIcons.Refresh, height = 28.dp)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ArtifactRow(artifact: Artifact, onOpen: () -> Unit) {
+    val colors = CursorTheme.colors
+    PanelRow(
+        title = artifact.name,
+        icon = when (artifact.kind) {
+            Artifact.Kind.Image -> CursorIcons.Image
+            Artifact.Kind.Video -> CursorIcons.Video
+            Artifact.Kind.Markdown, Artifact.Kind.Text -> CursorIcons.Book
+            Artifact.Kind.Other -> CursorIcons.File
+        },
+        subtitle = listOfNotNull(artifact.path.removePrefix("artifacts/").takeIf { it != artifact.name }, formatBytes(artifact.sizeBytes), artifact.updatedAtMillis?.let(TimeFormat::relativeShort)).joinToString(" · "),
+        trailing = { Icon(CursorIcons.ExternalLink, null, tint = colors.iconQuaternary, modifier = Modifier.size(13.dp)) },
+        onClick = onOpen,
+        modifier = Modifier.testTag("artifact"),
+    )
 }
 
 // -- Usage ----------------------------------------------------------------------------------------------------------
@@ -728,27 +790,7 @@ private fun UsageBody(usage: AgentUsage) {
     }
 }
 
-// -- Share ----------------------------------------------------------------------------------------------------------
-
-@Composable
-internal fun ShareSection(state: PanelState, actions: PanelActions) {
-    val url = state.agent?.url?.takeIf { it.isNotBlank() } ?: CursorEndpoints.webUrl(state.agentId)
-    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-        PanelRow("Copy link", icon = CursorIcons.Copy, subtitle = url, onClick = { actions.copyText(url, "Link copied") }, modifier = Modifier.testTag("share-copy"))
-        PanelRow("Open on cursor.com", icon = CursorIcons.ExternalLink, onClick = { actions.openUrl(url) })
-        PanelRow("Share…", icon = CursorIcons.Link, subtitle = "Through Android's share sheet", onClick = { actions.shareText(url) })
-        state.prUrl?.let { pr -> PanelRow("Copy pull request link", icon = CursorIcons.GitPullRequest, subtitle = pr, onClick = { actions.copyText(pr, "Pull request link copied") }) }
-        HairlineDivider(Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-        RequiresExtendedRow(SectionAvailability.RequiresExtended("A public share link (CreateAgentShare) that opens without a Cursor account"), extendedOn = state.capabilities.anyExtended)
-    }
-}
-
-// -- Placeholders ---------------------------------------------------------------------------------------------------
-
-@Composable
-internal fun PlaceholderSection(reason: String, state: PanelState) {
-    RequiresExtendedRow(SectionAvailability.RequiresExtended(reason), extendedOn = state.capabilities.anyExtended, modifier = Modifier.padding(bottom = 4.dp))
-}
+// -- Hints ----------------------------------------------------------------------------------------------------------
 
 /** The hint beside "Pull request" while the section is closed. */
 internal fun pullRequestHint(state: PanelState): String? {
@@ -765,5 +807,3 @@ internal fun pullRequestHint(state: PanelState): String? {
         },
     ).joinToString(" · ")
 }
-
-internal fun pullRequestStateOrNull(state: PanelState): PullRequestState? = state.pullRequest.valueOrNull?.details?.state
