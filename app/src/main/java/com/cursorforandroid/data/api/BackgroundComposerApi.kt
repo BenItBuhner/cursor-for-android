@@ -11,6 +11,7 @@ import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RunStatus
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
@@ -27,9 +28,19 @@ data class ComposerSnapshot(
     val id: String,
     val name: String? = null,
     val archived: Boolean? = null,
-    /** The record carries `projectMetadata` and no manager: a Project's own chat. */
+    /**
+     * A Project's root, decided the way the Agents Window decides it (Cursor 3.20.21 `workbench.glass.main.js`,
+     * `CloudAgentRepository`): `isProject` is the record's `project_metadata` message being present at all —
+     * `isProject: t.projectMetadata !== void 0 ? true : previous?.isProject` — and a root is `isProject` with no
+     * `subagentParentId`, which the desktop takes as `cloudSubagentParent.parentAgentId || sideChatInfo.parentBcId ||
+     * managerAgentId` (`_isProjectRoot`). `startedAsNewProject` is carried by the desktop as its own field and never
+     * read for `isProject`; the appearance is read apart (`wQp`: icon and colour both non-empty, else the previous
+     * look) and is no part of the flag. [record] carries the raw values of exactly those fields, for the diagnostics.
+     */
     val isProject: Boolean = false,
     val projectAppearance: ProjectAppearance? = null,
+    /** The raw values of the fields the desktop's predicate reads, as the record carried them (see [RecordFields]). */
+    val record: RecordFields? = null,
     /** The chat this one hangs off, and how; null for a chat of its own. */
     val parent: AgentParent? = null,
     /** Where the chat was started, when the record said (see [AgentSource]). */
@@ -47,6 +58,32 @@ data class ComposerSnapshot(
 
     /** True when the record says a turn is going: the account's word on the running set. */
     val isRunning: Boolean get() = status?.isActive == true
+}
+
+/**
+ * The fields of an `aiserver.v1.BackgroundComposer` record that the desktop's Project predicate reads, raw: the
+ * `project_metadata` message as JSON (null when absent — the one thing `isProject` turns on; `{}` when present and
+ * empty), `manager_agent_id`, `cloud_subagent_parent.parent_agent_id`, `side_chat_info.parent_bc_id` (the three the
+ * desktop folds into `subagentParentId`), `started_as_new_project` (carried, not read) and `source`. Kept with the
+ * registry's entry and printed in the diagnostics export, so a Project the app draws that the desktop would not —
+ * or the other way round — shows its record's own values.
+ */
+@kotlinx.serialization.Serializable
+data class RecordFields(
+    val projectMetadata: String? = null,
+    val managerAgentId: String? = null,
+    val subagentParentId: String? = null,
+    val sideChatParentId: String? = null,
+    val startedAsNewProject: Boolean = false,
+    val source: String? = null,
+) {
+    /** The desktop's `subagentParentId`: the first of the subagent parent, the side-chat parent, the manager. */
+    val desktopSubagentParentId: String? get() = subagentParentId ?: sideChatParentId ?: managerAgentId
+
+    /** One line, the fields named as the proto names them. */
+    fun describe(): String =
+        "project_metadata=${projectMetadata ?: "absent"} manager_agent_id=${managerAgentId ?: "-"} cloud_subagent_parent=${subagentParentId ?: "-"} " +
+            "side_chat_parent=${sideChatParentId ?: "-"} started_as_new_project=$startedAsNewProject source=${source ?: "-"}"
 }
 
 /**
@@ -390,8 +427,11 @@ class BackgroundComposerApi(
         val source: JsonPrimitive? = null,
         /** `aiserver.v1.BackgroundComposerStatus`, encoded the same way; present when `include_status` was asked. */
         val status: JsonPrimitive? = null,
-        /** `aiserver.v1.ProjectMetadata`: present (if only as `{}`) on a Project's chat, absent on every other. */
-        val projectMetadata: ProjectMetadataDto? = null,
+        /**
+         * `aiserver.v1.ProjectMetadata`, kept raw: its presence is the desktop's `isProject`, and its `appearance`
+         * (icon and colour, both non-empty) the look; printed as it came in the diagnostics.
+         */
+        val projectMetadata: JsonObject? = null,
         /** The Project coordinator this chat works for, on a worker it created or adopted. */
         val managerAgentId: String? = null,
         /** `aiserver.v1.SideChatInfo`: the chat this one branched off as a side chat. */
@@ -400,14 +440,11 @@ class BackgroundComposerApi(
         val cloudSubagentParent: CloudSubagentParentDto? = null,
         /** The agent asked a question and waits on the answer. */
         val hasPendingInteraction: Boolean? = null,
-        /** Created through the "New Project" flow: a Project's chat even when its `projectMetadata` is missing. */
+        /** Created through the "New Project" flow; carried for the diagnostics, it is no Project flag on its own. */
         val startedAsNewProject: Boolean? = null,
         /** `int64`, a string in proto3's JSON; what the older service pages by (see `cursor`). */
         val lastMessageActivityAtMs: JsonPrimitive? = null,
     )
-
-    @Serializable
-    internal data class ProjectMetadataDto(val appearance: ProjectAppearanceDto? = null)
 
     @Serializable
     internal data class ProjectAppearanceDto(val icon: String = "", val colorId: String = "")
@@ -479,16 +516,31 @@ class BackgroundComposerApi(
             val parent = composer.cloudSubagentParent?.parentAgentId.link()?.let { AgentParent(it, AgentParentKind.SUBAGENT) }
                 ?: composer.sideChatInfo?.parentBcId.link()?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
                 ?: manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
-            val isProject = (composer.projectMetadata != null || composer.startedAsNewProject == true) && manager == null
-            val appearance = composer.projectMetadata?.appearance
-                ?.takeIf { isProject && it.icon.isNotBlank() && it.colorId.isNotBlank() }
-                ?.let { ProjectAppearance(it.icon.trim(), it.colorId.trim()) }
+            // The desktop's predicate, exactly: `isProject` is `project_metadata` present at all; a root is that with
+            // no subagent parent, side-chat parent or manager. The look is read apart (`wQp`): icon and colour both
+            // non-empty, else none.
+            val metadata = composer.projectMetadata
+            val appearance = (metadata?.get("appearance") as? JsonObject)?.let { a ->
+                val icon = (a["icon"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                val colorId = (a["colorId"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                if (icon.isNotEmpty() && colorId.isNotEmpty()) ProjectAppearance(icon, colorId) else null
+            }
+            val isProject = metadata != null && parent == null
+            val record = RecordFields(
+                projectMetadata = metadata?.toString(),
+                managerAgentId = manager,
+                subagentParentId = composer.cloudSubagentParent?.parentAgentId.link(),
+                sideChatParentId = composer.sideChatInfo?.parentBcId.link(),
+                startedAsNewProject = composer.startedAsNewProject == true,
+                source = composer.source?.contentOrNull,
+            )
             return ComposerSnapshot(
                 id = id,
                 name = composer.name,
                 archived = composer.isArchived,
                 isProject = isProject,
-                projectAppearance = appearance,
+                projectAppearance = appearance?.takeIf { isProject },
+                record = record,
                 parent = parent,
                 source = AgentSource.parse(composer.source?.contentOrNull),
                 hasPendingInteraction = composer.hasPendingInteraction == true,

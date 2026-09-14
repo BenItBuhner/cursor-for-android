@@ -321,7 +321,10 @@ class ProjectApi(
     private data class UpdateAppearanceDto(val bcId: String, val appearance: BackgroundComposerApi.ProjectAppearanceDto)
 
     @Serializable
-    private data class UpdateAppearanceResponseDto(val projectMetadata: BackgroundComposerApi.ProjectMetadataDto? = null)
+    private data class UpdateAppearanceResponseDto(val projectMetadata: ProjectMetadataDto? = null)
+
+    @Serializable
+    private data class ProjectMetadataDto(val appearance: BackgroundComposerApi.ProjectAppearanceDto? = null)
 
     @Serializable
     private data class StartSideChatDto(val parentBcId: String, val name: String? = null, val creationSource: String, val creationId: String)

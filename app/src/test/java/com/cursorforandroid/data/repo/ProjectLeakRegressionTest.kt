@@ -289,6 +289,9 @@ class ProjectLeakRegressionTest {
         // and every publication after it reaches the collector in order. A collector racing the record on another
         // thread could see that earlier list, or miss the one that brings the coordinator.
         val watching = launch(start = CoroutineStart.UNDISPATCHED) { agents.state.drop(1).collect { published += it.agents } }
+        // The worker's record makes bc-p a candidate; the account's membership answer is what makes it a root, and
+        // the watcher asks for it before the row is fetched.
+        lineage.workers = mapOf("bc-p" to listOf(WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED)))
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
         // The coordinator is fetched by id on the repository's own scope; wait until the collector has seen it land.
