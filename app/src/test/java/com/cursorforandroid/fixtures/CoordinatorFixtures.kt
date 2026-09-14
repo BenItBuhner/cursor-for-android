@@ -1,11 +1,16 @@
 package com.cursorforandroid.fixtures
 
+import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.SseParser
+import com.cursorforandroid.data.repo.TimelineBuilder
+import com.cursorforandroid.domain.TimelineItem
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okio.Buffer
 
 /**
  * The coordinator wire shapes under `src/test/resources/fixtures/coordinator/`, none of them written by hand:
@@ -47,4 +52,20 @@ object CoordinatorFixtures {
     fun injectedTurn(name: String): String = injectedTurns().getValue(name)
 
     fun array(obj: JsonObject, key: String): JsonArray = obj.getValue(key).jsonArray
+
+    /**
+     * The run of an SSE fixture (`coordinator_run.sse`, or `agent_run.sse` — the first turn of a real worker, its
+     * kinds and tool names as they occurred) replayed through the same accumulator the stream's events go through.
+     */
+    fun replay(name: String, runId: String, skipCallIds: Set<String> = emptySet()): List<TimelineItem> {
+        val source = Buffer().writeUtf8(text(name))
+        val live = TimelineBuilder.LiveRun(runId, timed = false)
+        while (true) {
+            val frame = SseParser.readFrame(source) ?: break
+            val event = (SseParser.parse(frame) as? SseParser.Parsed.Delivered)?.event ?: continue
+            if (event is RunStreamEvent.ToolCall && event.call.callId in skipCallIds) continue
+            live.apply(event)
+        }
+        return live.snapshot()
+    }
 }

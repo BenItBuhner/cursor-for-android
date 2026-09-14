@@ -1,14 +1,18 @@
 package com.cursorforandroid.ui.projects
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.repo.ContextState
 import com.cursorforandroid.data.repo.ProjectRepository
@@ -36,11 +40,14 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** The Project view's body: what it lists, what it offers in Extended mode, and the named states it shows otherwise. */
+/**
+ * The panel's Project section body — the Project's one surface: what it lists, every action it offers in Extended
+ * mode and where each goes, and the named states it shows otherwise.
+ */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
-class ProjectScreenTest {
+class ProjectSectionTest {
 
     @get:Rule
     val compose = createComposeRule()
@@ -73,23 +80,28 @@ class ProjectScreenTest {
         ProjectWorker(agent("bc-w1", "Stripe webhook handler", workerParent, running = true, branch = "cursor/stripe"), WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED)),
         ProjectWorker(agent("bc-w2", "Usage events aggregation", workerParent, pending = true), WorkerMembership("bc-w2", "bc-p", WorkerSpawnKind.ADOPTED)),
     )
-    private val sideChat = agent("bc-s", "Pricing page copy", AgentParent("bc-p", AgentParentKind.SIDE_CHAT))
+    private val subagent = agent("bc-sub", "Migration checker", AgentParent("bc-p", AgentParentKind.SUBAGENT))
 
-    private fun state(actionsAvailable: Boolean, context: ContextState = ContextState.Idle, sideChats: List<Agent> = listOf(sideChat), notice: String? = null) = ProjectViewState(
+    private fun state(actionsAvailable: Boolean, context: ContextState = ContextState.Idle, subagents: List<Agent> = emptyList(), notice: String? = null) = ProjectViewState(
         projectId = "bc-p",
         root = root,
         workers = workers,
-        sideChats = sideChats,
+        subagents = subagents,
         hasSynced = true,
         lineageNotice = notice,
         context = context,
         actionsAvailable = actionsAvailable,
     )
 
-    private fun show(state: ProjectViewState, actions: ProjectActions = actions()) {
+    private var current by mutableStateOf(ProjectViewState(projectId = "bc-p"))
+    private var busy by mutableStateOf(false)
+
+    private fun show(state: ProjectViewState, isBusy: Boolean = false, actions: ProjectActions = actions()) {
+        current = state
+        busy = isBusy
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                ProjectBody(state = state, local = LocalAgentState(), busy = false, actions = actions, nowMillis = now)
+                ProjectSectionBody(state = current, local = LocalAgentState(), busy = busy, actions = actions, nowMillis = now)
             }
         }
     }
@@ -110,43 +122,47 @@ class ProjectScreenTest {
         onLoadContext = { tapped += "context:$it" },
         onContextUp = { tapped += "context-up" },
         onOpenContextFile = { tapped += "file:${it.relativePath}" },
+        onRefresh = { tapped += "refresh" },
     )
 
-    private fun scrollTo(text: String) {
-        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText(text, substring = true))
-    }
+    private fun shown(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     @Test
-    fun `in Extended mode the view lists the coordinator, the primaries with their status, the side chats and every action`() {
-        show(state(actionsAvailable = true))
+    fun `in Extended mode the section sums the Project up and offers every action, each reaching its hand`() {
+        show(state(actionsAvailable = true, subagents = listOf(subagent)))
 
-        // The hero and the coordinator's row both name the Project.
-        assertThat(compose.onAllNodes(hasText("Cesium billing launch")).fetchSemanticsNodes()).hasSize(2)
-        compose.onNodeWithText("Plans the work and delegates it", substring = true).assertIsDisplayed()
+        // The summary: how many primaries, when the Project last moved, who is working and who is waiting.
+        compose.onNodeWithText("2 primaries \u00B7 updated 10m").assertIsDisplayed()
         compose.onNodeWithText("1 working").assertIsDisplayed()
         compose.onNodeWithText("1 needs input").assertIsDisplayed()
+        compose.onNodeWithTag("project-appearance").performClick()
+        assertThat(tapped).contains("appearance")
+
         compose.onNodeWithText("Primaries \u00B7 2").assertIsDisplayed()
         compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
         compose.onNodeWithText("Created \u00B7 cursor/stripe \u00B7 10m").assertIsDisplayed()
         compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
         compose.onNodeWithText("Needs input").assertIsDisplayed()
         compose.onNodeWithText("Adopted \u00B7 app \u00B7 10m").assertIsDisplayed()
-        scrollTo("New primary")
-        compose.onNodeWithText("New primary").assertIsDisplayed()
-        compose.onNodeWithText("Adopt a chat").assertIsDisplayed()
-        // The coordinator's side chats are listed as part of its tree; starting one is the chat panel's business.
-        scrollTo("Side chats \u00B7 1")
-        compose.onNodeWithText("Pricing page copy").assertIsDisplayed()
-        compose.onNodeWithText("New side chat").assertDoesNotExist()
-        scrollTo("Show shared context")
-        compose.onNodeWithText("Show shared context").performClick()
+        compose.onNodeWithTag("project-new-primary").performClick()
+        compose.onNodeWithTag("project-adopt").performClick()
+        assertThat(tapped).containsAtLeast("new-worker", "adopt").inOrder()
+
+        compose.onNodeWithText("Subagents \u00B7 1").assertIsDisplayed()
+        compose.onNodeWithText("Migration checker").performClick()
+        assertThat(tapped).contains("open:bc-sub")
+
+        compose.onNodeWithTag("project-context-open").performClick()
         assertThat(tapped).contains("context:")
+        compose.onNodeWithTag("project-refresh").performClick()
+        assertThat(tapped).contains("refresh")
 
         // The primary's menu: steer and pause for a running one, stop, move and release.
         compose.onNodeWithContentDescription("Actions for Stripe webhook handler").performClick()
         compose.onNodeWithText("Steer\u2026").assertExists()
         compose.onNodeWithText("Pause").assertExists()
         compose.onNodeWithText("Stop").assertExists()
+        compose.onNodeWithText("Move under another Project\u2026").assertExists()
         compose.onNodeWithText("Release from the Project").performClick()
         assertThat(tapped).contains("release:bc-w1")
         compose.onNodeWithContentDescription("Actions for Usage events aggregation").performClick()
@@ -154,9 +170,11 @@ class ProjectScreenTest {
         compose.onNodeWithText("Resume").performClick()
         assertThat(tapped).contains("resume:bc-w2")
 
-        // Rows open their chats.
+        // Rows open their chats; the coordinator's own side chats are not here — they are the panel's Side chats section.
         compose.onNodeWithText("Stripe webhook handler").performClick()
         assertThat(tapped).contains("open:bc-w1")
+        assertThat(shown("Side chat")).isFalse()
+        assertThat(compose.onAllNodesWithTag("project-primary").fetchSemanticsNodes()).hasSize(2)
     }
 
     @Test
@@ -166,43 +184,44 @@ class ProjectScreenTest {
         compose.onNodeWithText("Stripe webhook handler").assertIsDisplayed()
         compose.onNodeWithText("New primary").assertDoesNotExist()
         compose.onNodeWithText("Adopt a chat").assertDoesNotExist()
-        compose.onNodeWithText("New side chat").assertDoesNotExist()
+        assertThat(compose.onAllNodesWithTag("project-appearance").fetchSemanticsNodes()).isEmpty()
         compose.onAllNodes(hasText(ProjectRepository.NEEDS_EXTENDED_MODE)).onFirst().assertExists()
         compose.onNodeWithContentDescription("Actions for Stripe webhook handler").performClick()
         compose.onNodeWithText("Open and message").assertExists()
         compose.onNodeWithText("Stop").assertExists()
         compose.onNodeWithText("Steer\u2026").assertDoesNotExist()
         compose.onNodeWithText("Release from the Project").assertDoesNotExist()
+        // Refreshing needs no account.
+        compose.onNodeWithTag("project-refresh").assertExists()
     }
 
     @Test
-    fun `a Project without side chats has no side chats block, and the context shows its files`() {
+    fun `the shared context opens folder by folder and a file, and an empty store is a named state`() {
         val context = ContextState.Loaded(ProjectContext("st-1", listOf(ContextEntry("docs", isDirectory = true), ContextEntry("notes.md", isDirectory = false, sizeBytes = 2048L)), relativePath = ""))
-        show(state(actionsAvailable = true, context = context, sideChats = emptyList()))
+        show(state(actionsAvailable = true, context = context))
 
-        compose.onNodeWithText("Side chats", substring = true).assertDoesNotExist()
-        compose.onNodeWithText("No side chats.").assertDoesNotExist()
-        scrollTo("notes.md")
         compose.onNodeWithText("2.0 KB").assertIsDisplayed()
         compose.onNodeWithText("docs").performClick()
         compose.onNodeWithText("notes.md").performClick()
         assertThat(tapped).containsAtLeast("context:docs", "file:notes.md")
+
+        current = state(actionsAvailable = true, context = ContextState.Loaded(ProjectContext("st-1", emptyList(), relativePath = "docs")))
+        compose.waitForIdle()
+        compose.onNodeWithText("This folder is empty.").assertIsDisplayed()
+        compose.onNodeWithText("docs").performClick()
+        assertThat(tapped).contains("context-up")
     }
 
     @Test
-    fun `a Project still loading, with no primaries, says so`() {
-        show(ProjectViewState(projectId = "bc-p", root = null, hasSynced = false))
+    fun `while an action is under way the hands are held, and a Project still syncing says so`() {
+        show(state(actionsAvailable = true), isBusy = true)
+        compose.onNodeWithContentDescription("Actions for Stripe webhook handler").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Edit icon and colour").assertIsNotEnabled()
 
-        compose.onNodeWithText("Loading the Project\u2026").assertIsDisplayed()
+        busy = false
+        current = ProjectViewState(projectId = "bc-p", root = root, hasSynced = false)
+        compose.waitForIdle()
         compose.onNodeWithText("Loading\u2026").assertIsDisplayed()
-    }
-
-    @Test
-    fun `a Project whose coordinator the server refused says so instead of loading for ever`() {
-        show(ProjectViewState(projectId = "bc-p", root = null, rootUnavailable = "Not found (404).", hasSynced = true))
-
-        compose.onNodeWithText("Loading the Project\u2026").assertDoesNotExist()
-        compose.onNodeWithText(rootUnavailableNotice("Not found (404)."), substring = true).assertIsDisplayed()
-        compose.onNodeWithText("Not found (404).", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("0 primaries \u00B7 updated 10m").assertIsDisplayed()
     }
 }

@@ -56,6 +56,8 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
@@ -119,9 +121,8 @@ fun ConversationScreen(
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
     onOpenSidebar: (() -> Unit)? = null,
-    /** Where the panel's Project section sends the reader: another chat, or a Project's view. */
+    /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
-    onOpenProject: ((String) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
     val colors = CursorTheme.colors
@@ -204,7 +205,12 @@ fun ConversationScreen(
     // the brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]).
     val items = remember(conversation.items, coordinatorMode) { CoordinatorTranscript.present(conversation.items, coordinatorMode) }
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val showWorking = conversation.showsWorkingRow()
+    // The rows the list draws: the messages as themselves, and everything the agent did between two of them behind
+    // one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still writes.
+    val rows = remember(items, coordinatorMode, isActive) { TranscriptRows.of(items, coordinatorMode, runActive = isActive) }
+    // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
+    // for a connection being re-established, which only it can say.
+    val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
     val lightbox = rememberLightboxState(agentId)
     val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
@@ -219,8 +225,8 @@ fun ConversationScreen(
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) following = atBottom }
     }
-    val newestKey = items.lastOrNull()?.id
-    LaunchedEffect(items.size, newestKey, showWorking) {
+    val newestKey = rows.lastOrNull()?.key
+    LaunchedEffect(rows.size, newestKey, showWorking) {
         if (following) listState.requestScrollToItem(0)
     }
     // The chat opens on its newest turns; the ones before them are paged in when the reader nears the top. In a
@@ -242,7 +248,7 @@ fun ConversationScreen(
     val panelViewModel: PanelViewModel = viewModel(key = "panel-$agentId", factory = PanelViewModel.Factory(graph, agentId))
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
-    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent, onOpenProject = onOpenProject)
+    val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
     // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
     val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
@@ -365,8 +371,8 @@ fun ConversationScreen(
                     }
                     // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
                     // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(items.asReversed(), key = { it.id }, contentType = { it::class }) { item ->
-                        TimelineItemView(item, paneWidth)
+                    items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
+                        TranscriptRowView(row, paneWidth)
                     }
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
