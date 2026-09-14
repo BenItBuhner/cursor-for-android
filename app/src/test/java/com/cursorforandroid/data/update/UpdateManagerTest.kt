@@ -634,16 +634,49 @@ class UpdateManagerTest {
     }
 
     @Test
-    fun `the foreground check runs at most every six hours`() = runBlocking {
+    fun `the foreground check runs at most once an hour`() = runBlocking {
+        assertThat(UpdateManager.FOREGROUND_CHECK_INTERVAL_MS).isEqualTo(60 * 60 * 1000L)
         val manager = manager()
         manager.onAppStarted()
         assertThat(listRequests).hasSize(1)
         assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java) // Wi-Fi, so it downloaded too
-        now += 5 * 60 * 60 * 1000
+
+        // Opened again and again within the hour: the list is not asked for once more.
+        for (minutes in listOf(1L, 20L, 38L)) {
+            now += minutes * 60 * 1000
+            manager.onAppStarted()
+            assertThat(listRequests).hasSize(1)
+        }
+        // The hour is up: the next foreground pass checks, and the throttle starts over from that check.
+        now += 60 * 1000
+        manager.onAppStarted()
+        assertThat(listRequests).hasSize(2)
+        now += 59 * 60 * 1000
+        manager.onAppStarted()
+        assertThat(listRequests).hasSize(2)
+        now += 60 * 1000
+        manager.onAppStarted()
+        assertThat(listRequests).hasSize(3)
+    }
+
+    @Test
+    fun `the foreground check is throttled from the last check of any kind, and a manual check is never throttled`() = runBlocking {
+        // On screen throughout, so the scheduled pass stops at the download rather than committing an install, which
+        // would block every check for a reason that has nothing to do with the throttle.
+        platform.visible = true
+        val manager = manager()
+        // The periodic job checked ten minutes ago: coming forward does not check again.
+        manager.runScheduled()
+        assertThat(listRequests).hasSize(1)
+        assertThat(manager.state.value).isInstanceOf(UpdateState.Downloaded::class.java)
+        now += 10 * 60 * 1000
         manager.onAppStarted()
         assertThat(listRequests).hasSize(1)
-        now += 2 * 60 * 60 * 1000
-        manager.onAppStarted()
+
+        // The button in Settings is the user asking; it goes to GitHub whatever the hour says.
+        manager.checkNow()
+        withTimeout(5_000) { while (listRequests.size < 2) delay(10) }
+        manager.awaitState { !it.isBusy }
         assertThat(listRequests).hasSize(2)
     }
 
@@ -655,7 +688,7 @@ class UpdateManagerTest {
         assertThat(manager.state.value).isInstanceOf(UpdateState.Available::class.java)
         assertThat(downloadRequests).isEmpty()
 
-        // Ten minutes later, on Wi-Fi: the check is still throttled, the download is not.
+        // Ten minutes later, on Wi-Fi: the check is still throttled (an hour), the download is not.
         now += 10 * 60 * 1000
         platform.metered = false
         manager.onAppStarted()
