@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentEnvDto
@@ -362,6 +363,7 @@ class AgentRepository(
         placements.clear()
         hintRefused.clear()
         rememberedSources.clear()
+        managerCandidates.clear()
         rootRecords.clear()
         _knownRoots.value = emptyList()
         rootUnresolved.clear()
@@ -385,13 +387,17 @@ class AgentRepository(
 
     /**
      * Re-validates a registry root against the evidence it carries after one source withdrew its word: [flagged]
-     * false when the record no longer calls it a Project, [managerOf] zero when a membership answer named nobody and
-     * no worker's record still names it. A root left with no evidence leaves the registry, its root placement with
-     * it, and its row is one of the account's own again.
+     * false when the record no longer carries the populated flag, [membershipWorkers] zero when a membership answer
+     * named nobody. A root left with no evidence leaves the registry, its root placement with it, and its row is one
+     * of the account's own again.
      */
-    private fun revalidateRoot(id: String, flagged: Boolean? = null, managerOf: Int? = null) {
+    private fun revalidateRoot(id: String, flagged: Boolean? = null, membershipWorkers: Int? = null, namedBy: Int? = null) {
         val current = rootRecords[id] ?: return
-        val next = current.copy(flagged = flagged ?: current.flagged, managerOf = managerOf ?: current.managerOf)
+        val next = current.copy(
+            flagged = flagged ?: current.flagged,
+            membershipWorkers = membershipWorkers ?: current.membershipWorkers,
+            namedBy = namedBy ?: current.namedBy,
+        )
         if (next.isEvidenced) {
             if (next != current) {
                 rootRecords[id] = next
@@ -414,8 +420,22 @@ class AgentRepository(
         if (seen.isEmpty()) return
         synchronized(publishLock) {
             if (generation.get() != startedIn) return
-            val stale = rootRecords.values.filter { it.id in seen && it.id !in roots && it.id !in managers && it.signal != LineageSignal.ACTION }.map { it.id }
-            if (stale.isEmpty()) return
+            // The pass carried the record: it is the record's word on the flag. What stands on a membership answer
+            // or an action is that source's to withdraw.
+            val stale = ArrayList<String>()
+            rootRecords.values.filter { it.id in seen && it.id !in roots }.forEach { root ->
+                val next = root.copy(flagged = false)
+                if (next.isEvidenced) {
+                    if (next != root) rootRecords[root.id] = next
+                } else {
+                    stale += root.id
+                }
+            }
+            managers.forEach { id -> managerCandidates.putIfAbsent(id, 1) }
+            if (stale.isEmpty()) {
+                publishRoots()
+                return
+            }
             stale.forEach { id ->
                 rootRecords.remove(id)
                 placements[id]?.takeIf { it.parent == null }?.let { placements.remove(id) }
@@ -434,10 +454,20 @@ class AgentRepository(
         }
     }
 
-    /** How many rows or placements name [id] as their manager on the account's word (a record, a membership, an action). */
+    /**
+     * Chats a worker's record names as its manager, with how many do: candidates for the membership read
+     * (`ListWorkersForManager` is what admits a manager to the registry), not roots. Kept in memory; the next account
+     * round names them again.
+     */
+    private val managerCandidates = ConcurrentHashMap<String, Int>()
+
+    /** The chats workers' records name as manager, for the membership pass to confirm or not. */
+    fun managerCandidates(): Set<String> = managerCandidates.keys.toSet()
+
+    /** How many rows or placements name [id] as their manager on their record's word. */
     private fun workersNaming(id: String): Int {
-        val rows = _state.value.agents.count { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER && it.scopeSignal?.isRootEvidence == true }
-        val placed = placements.count { (_, p) -> p.parent?.id == id && p.parent.kind == AgentParentKind.PROJECT_WORKER && p.signal.isRootEvidence }
+        val rows = _state.value.agents.count { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER && it.scopeSignal == LineageSignal.ACCOUNT_RECORD }
+        val placed = placements.count { (_, p) -> p.parent?.id == id && p.parent.kind == AgentParentKind.PROJECT_WORKER && p.signal == LineageSignal.ACCOUNT_RECORD }
         return maxOf(rows, placed)
     }
 
@@ -609,7 +639,7 @@ class AgentRepository(
      * word replaces anything; a coordinator's transcript, the one hint, fills in only what nothing authoritative has
      * placed. True when the registry changed.
      */
-    private fun place(id: String, parent: AgentParent?, signal: LineageSignal): Boolean {
+    private fun place(id: String, parent: AgentParent?, signal: LineageSignal, membershipCount: Int = 0): Boolean {
         if (id.isBlank() || parent?.id == id) return false
         // A root placement stands on root evidence alone: a transcript, a children list or a source never makes a
         // Project of a chat (see [LineageSignal.isRootEvidence]).
@@ -622,17 +652,20 @@ class AgentRepository(
         // A Project that is itself somebody's child is shown where its parent is: a root's word does not lift it out.
         if (parent == null && current?.parent != null && current.signal.isAuthoritative) return false
         if (current != null && current.parent == parent && current.signal == signal) return false
+        if (parent == null) {
+            // A root placement is the registry's: without evidence for the entry there is no placement either — a
+            // row kept as a root by an older build on a bare flag or a hint is not placed as one again.
+            val known = rootRecords[id]
+            val note = KnownRoot(
+                id, archived = known?.archived ?: false, signal = signal, lastSeenMillis = AppClock.now(),
+                flagged = known?.flagged ?: false, record = known?.record,
+                membershipWorkers = if (signal == LineageSignal.MEMBERSHIP) maxOf(1, membershipCount) else known?.membershipWorkers ?: 0,
+                namedBy = known?.namedBy ?: managerCandidates[id] ?: 0,
+            )
+            if (!noteRoot(note) && rootRecords[id] == null) return false
+        }
         placements[id] = Placement(parent, signal)
         registryChanges.update { it + 1 }
-        if (parent == null) {
-            noteRoot(
-                KnownRoot(
-                    id, archived = rootRecords[id]?.archived ?: false, signal = signal, lastSeenMillis = AppClock.now(),
-                    flagged = rootRecords[id]?.flagged ?: false,
-                    managerOf = if (signal == LineageSignal.MEMBERSHIP) maxOf(1, workersNaming(id)) else rootRecords[id]?.managerOf ?: 0,
-                ),
-            )
-        }
         return true
     }
 
@@ -677,7 +710,10 @@ class AgentRepository(
             // account session, so no list read) they are not this install's to show, whichever earlier launch or
             // build learned them.
             val accountSession = capabilities().accountSession
-            val rows = if (accountSession) entry.value else entry.value.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
+            // A row's Project flag from the disk is not trusted: an older build set it on `startedAsNewProject`. The
+            // registry's strict entries dress the roots they know; the account's next round re-reads the flag.
+            val kept = entry.value.map { if (it.isProject) it.copy(isProject = false) else it }
+            val rows = if (accountSession) kept else kept.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
             // The words kept with the list about chats no row carries (see [persist]); the sources only while the account's word may be kept.
             val lineage = cache.readLineage()
             val landed = publish(backend, startedIn) { s ->
@@ -695,17 +731,16 @@ class AgentRepository(
                         val parent = word.parentId?.let { AgentParent(it, word.kind ?: AgentParentKind.PROJECT_WORKER) }
                         place(word.id, parent, word.signal)
                     }
-                    // Entries an older build admitted on a transcript, a children list or a source do not come back.
-                    lineage?.roots?.filter { it.signal.isRootEvidence }?.forEach { root ->
-                        // A 0.3.6 entry carries no evidence fields: its signal says what named it.
-                        val evidenced = if (root.isEvidenced) root else root.copy(flagged = root.signal == LineageSignal.ACCOUNT_RECORD, managerOf = if (root.signal == LineageSignal.MEMBERSHIP) 1 else 0)
-                        noteRoot(evidenced)
-                    }
+                    // Only entries with strict evidence come back: a flag with its icon, a membership count, an action.
+                    // What an older build admitted on a bare flag (`projectMetadata: {}`), a worker's record, a
+                    // transcript, a children list or a source is re-learned from the account, not from the disk.
+                    lineage?.roots?.filter { it.signal.isRootEvidence && it.isEvidencedStrictly }?.forEach { noteRoot(it) }
                     // A row kept as a root on the record's own flag, or on positive evidence, seeds the registry; one
                     // a coordinator's transcript merely mentioned does not — a hint is no word on what the chat is.
-                    rows.filter { it.isProjectRoot && it.parent == null && (it.isProject || it.scopeSignal?.isRootEvidence == true) }.forEach { row ->
-                        val signal = if (row.isProject) LineageSignal.ACCOUNT_RECORD else row.scopeSignal!!
-                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, signal, row.updatedAtMillis, flagged = row.isProject, managerOf = if (signal == LineageSignal.MEMBERSHIP) 1 else 0))
+                    // A row kept as a root on an action stands; one kept on the flag or a membership is re-read from
+                    // the registry's entry (above), whose evidence is the record's raw fields or the answer's count.
+                    rows.filter { it.isProjectRoot && it.parent == null && it.scopeSignal == LineageSignal.ACTION }.forEach { row ->
+                        noteRoot(KnownRoot(row.id, row.name, row.projectAppearance, row.isArchived, LineageSignal.ACTION, row.updatedAtMillis))
                     }
                     lineage?.hintRefused?.let { hintRefused += it }
                     if (accountSession) lineage?.sources?.forEach { (id, source) -> if (source in AgentScope.CHILD_SOURCES) rememberedSources[id] = source }
@@ -1442,20 +1477,22 @@ class AgentRepository(
                 // Every Project the account's records call one goes to the root registry, with its name and look —
                 // the Projects group is drawn from the registry, whether or not the pages hold the row.
                 if (snap.scope == AgentScope.PROJECT_ROOT) {
-                    noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true))
+                    // The desktop's flag, with the record's raw fields kept as the entry's evidence.
+                    noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
                 } else if (rootRecords[snap.id]?.flagged == true) {
-                    // The record's own word: what it called a Project it no longer does. Still a root while a
-                    // worker names it; one of the account's own otherwise.
+                    // The record's own word: the flag it carried it no longer does. Still a root while a membership
+                    // answer or an action holds it; one of the account's own otherwise.
                     revalidateRoot(snap.id, flagged = false)
                 }
             }
-            // A worker's record naming its manager names a root too: the record's word on the manager.
+            // A worker's record naming its manager makes the manager a candidate for the membership read — the
+            // account's `ListWorkersForManager` is what admits it — and nothing more: an ordinary chat's cloud
+            // subagents name it as parent, never as manager, and a manager with no membership is no Project.
             composers.mapNotNull { snap -> snap.parent?.takeIf { it.kind == AgentParentKind.PROJECT_WORKER }?.id }
                 .groupingBy { it }.eachCount()
                 .forEach { (manager, count) ->
-                    if (placements[manager]?.parent == null) {
-                        noteRoot(KnownRoot(manager, archived = rootRecords[manager]?.archived ?: false, signal = LineageSignal.MEMBERSHIP, lastSeenMillis = now, flagged = rootRecords[manager]?.flagged ?: false, managerOf = count))
-                    }
+                    managerCandidates.merge(manager, count) { a, b -> maxOf(a, b) }
+                    rootRecords[manager]?.let { known -> if (known.namedBy != count) rootRecords[manager] = known.copy(namedBy = maxOf(known.namedBy, count)) }
                 }
             composers.filter { it.id !in held }.forEach { snap ->
                 when {
@@ -1471,8 +1508,11 @@ class AgentRepository(
         if (withdrawnFrom.isNotEmpty()) {
             synchronized(publishLock) {
                 if (generation.get() == startedIn) {
-                    withdrawnFrom.forEach { manager -> revalidateRoot(manager, managerOf = workersNaming(manager)) }
-                    // A root the recount let go is undressed by the classification pass.
+                    withdrawnFrom.forEach { manager ->
+                        val naming = workersNaming(manager)
+                        if (naming == 0) managerCandidates.remove(manager) else managerCandidates[manager] = naming
+                        revalidateRoot(manager, namedBy = naming)
+                    }
                     publish(null, startedIn) { it }
                 }
             }
@@ -1589,10 +1629,15 @@ class AgentRepository(
             // children list (an ordinary chat's subagents and side chats), a coordinator's transcript or an empty
             // membership answer makes no Project of the chat — and a membership answer with nobody in it is the
             // account withdrawing what a worker's record once said, if nothing else still says it.
-            val namesWorker = members.values.any { it == AgentParentKind.PROJECT_WORKER }
+            val workers = members.values.count { it == AgentParentKind.PROJECT_WORKER }
             when {
-                signal == LineageSignal.ACTION || (signal.isRootEvidence && namesWorker) -> place(rootId, null, signal)
-                signal == LineageSignal.MEMBERSHIP && AgentParentKind.PROJECT_WORKER in retract -> revalidateRoot(rootId, managerOf = workersNaming(rootId))
+                // A worker created under it or adopted into it here, or a membership answer naming a worker.
+                (signal == LineageSignal.ACTION || signal == LineageSignal.MEMBERSHIP) && workers > 0 -> {
+                    place(rootId, null, signal, membershipCount = workers)
+                    if (signal == LineageSignal.MEMBERSHIP) revalidateRoot(rootId, membershipWorkers = workers)
+                }
+                // A complete membership answer naming nobody withdraws what a membership held.
+                signal == LineageSignal.MEMBERSHIP && AgentParentKind.PROJECT_WORKER in retract -> revalidateRoot(rootId, membershipWorkers = 0)
             }
             publish(null, startedIn) { s ->
                 if (retract.isEmpty()) return@publish s

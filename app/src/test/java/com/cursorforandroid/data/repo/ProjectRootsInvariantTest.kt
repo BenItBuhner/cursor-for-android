@@ -7,6 +7,7 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -209,29 +210,35 @@ class ProjectRootsInvariantTest {
         // The account list's next window names none of them: nothing changes.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-0"), ComposerSnapshot("bc-plain-1")))
         assertThat(agents.knownRoots.value).hasSize(7)
-        // A record that no longer calls the chat a Project withdraws the flag — the root stands while a worker's
-        // record still names it as manager (that is evidence of its own); an archived one stays, archived.
+        // A membership answer naming a worker holds bc-root-2 beside its flag; the record withdrawing the flag then
+        // leaves it standing on the membership — a worker's record naming it is no evidence of its own, only a
+        // candidate — and an archived one stays, archived.
+        agents.applyLineage("bc-root-2", mapOf("bc-root-2-w1" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-2"), ComposerSnapshot("bc-root-3", isProject = true, archived = true)))
         assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.flagged).isFalse()
-        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.managerOf).isAtLeast(1)
+        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.evidence).startsWith("membership 1")
         assertThat(agents.knownRoots.value.first { it.id == "bc-root-3" }.archived).isTrue()
-        // The worker's record withdraws the manager too, and the membership answer names nobody: no evidence is
-        // left, and the root leaves — its row a chat of the account's own.
-        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-2-w1")))
+        // The membership answer then names nobody: no evidence is left, and the root leaves — its row a chat of the
+        // account's own, whatever worker records still say (they make a candidate, not a root).
         agents.applyLineage("bc-root-2", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-root-2")
         assertThat(agents.agent("bc-root-2")?.scope).isEqualTo(AgentScope.PRIMARY)
         // A membership answer with nobody in it does not take out a root whose record still flags it.
         agents.applyLineage("bc-root-3", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         assertThat(agents.knownRoots.value.map { it.id }).contains("bc-root-3")
+        // A record with `startedAsNewProject` and no `project_metadata` (the desktop never reads the former), and a
+        // worker's record naming a manager, admit nothing: the latter a candidate only, until the membership answers.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-3", record = RecordFields(startedAsNewProject = true)), ComposerSnapshot("bc-plain-4-w", parent = AgentParent("bc-plain-4", AgentParentKind.PROJECT_WORKER))))
+        assertThat(agents.knownRoots.value.map { it.id }).containsNoneOf("bc-plain-3", "bc-plain-4")
+        assertThat(agents.managerCandidates()).contains("bc-plain-4")
         // A Project deleted on the server: the public API answers 404 for it. Nothing but the registry knows it
-        // (a worker's record named it as manager; its own row never loaded): the fetch by id is what lets it go —
+        // (a membership answer named its worker; its own row never loaded): the fetch by id is what lets it go —
         // and the Projects it stands beside are all still there.
         api.agents.remove("bc-root-7")
         agents.upsert(agents.agent("bc-root-7")!!.copy(name = "gone"))
         val fresh = AgentRepository(session, prefs, AttachmentStore(context), AgentListCache(JsonDiskCache(folder.newFolder("fresh"), dispatcher = Dispatchers.Unconfined)), scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 1)
         fresh.refresh()
-        fresh.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-7-w2", parent = AgentParent("bc-root-7", AgentParentKind.PROJECT_WORKER))))
+        fresh.applyLineage("bc-root-7", mapOf("bc-root-7-w2" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
         assertThat(fresh.knownRoots.value.map { it.id }).containsExactly("bc-root-7")
         fresh.materializeRoots()
         assertThat(fresh.knownRoots.value).isEmpty()

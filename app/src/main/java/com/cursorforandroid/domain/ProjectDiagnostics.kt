@@ -45,6 +45,8 @@ object ProjectDiagnostics {
         val rootFailures: Map<String, String> = emptyMap(),
         /** Settings › Notifications, the Project half: what the live count includes, whose finishes are cards. */
         val notificationPrefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
+        /** Chats workers' records name as manager, awaiting the membership read that would admit them. */
+        val managerCandidates: Set<String> = emptySet(),
     )
 
     data class RootScanSummary(
@@ -127,13 +129,16 @@ object ProjectDiagnostics {
             } ?: "never"),
         )
         input.rootFailures.entries.sortedBy { it.key }.forEach { (id, why) -> appendLine("  fetch by id failed ${tail(id)}: ${redactNotice(why)}") }
-        appendLine("registry (id · signal · evidence · row · archived · members · seen):")
+        appendLine("root rule (Cursor 3.20.21 workbench.glass.main.js, CloudAgentRepository/_isProjectRoot): record flag = project_metadata present and no cloud_subagent_parent / side_chat_info.parent_bc_id / manager_agent_id; membership = ListWorkersForManager naming a worker; action = a worker created or adopted here; nothing else admits a root")
+        appendLine("manager candidates (named by a worker's record, membership not yet confirming): ${input.managerCandidates.filter { id -> input.knownRoots.none { it.id == id } }.sorted().joinToString(" ") { tail(it) }.ifEmpty { "-" }}")
+        appendLine("registry (id · signal · evidence · row · archived · members · seen), each with the record's raw fields:")
         input.knownRoots.sortedBy { it.id }.forEach { root ->
             val row = rows.firstOrNull { it.id == root.id }
             appendLine(
                 "  ${tail(root.id)} ${root.signal.name} [${root.evidence}] ${if (row != null) "row" else if (root.id in input.unresolvedRoots) "UNRESOLVED" else "stand-in"} " +
                     "${if (root.archived) "archived" else "-"} ${input.memberCounts[root.id] ?: "-"} ${if (root.lastSeenMillis > 0) java.time.Instant.ofEpochMilli(root.lastSeenMillis) else "-"}",
             )
+            appendLine("    record: ${root.record?.describe() ?: "not read this session"}")
         }
 
         appendLine()

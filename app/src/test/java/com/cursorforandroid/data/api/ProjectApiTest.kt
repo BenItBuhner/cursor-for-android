@@ -87,7 +87,7 @@ class ProjectApiTest {
 
         val children = api.children("bc-p")
 
-        assertThat(children).containsExactly(
+        assertThat(children.map { it.copy(record = null) }).containsExactly(
             ComposerSnapshot("bc-s", name = "Pricing copy", parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
             ComposerSnapshot("bc-t", name = "Backfill", parent = AgentParent("bc-p", AgentParentKind.SUBAGENT)),
         ).inOrder()
@@ -119,7 +119,7 @@ class ProjectApiTest {
 
         val created = api.createWorker("bc-m", WorkerLaunch(prompt = "Handle the webhooks", name = "Webhooks", repoUrl = "https://github.com/acme/app", baseBranch = "main", modelId = "claude-4", autoCreatePr = true, workerId = "bc-new"))
 
-        assertThat(created).isEqualTo(ComposerSnapshot("bc-new", name = "Webhooks", parent = AgentParent("bc-m", AgentParentKind.PROJECT_WORKER)))
+        assertThat(created.copy(record = null)).isEqualTo(ComposerSnapshot("bc-new", name = "Webhooks", parent = AgentParent("bc-m", AgentParentKind.PROJECT_WORKER)))
         server.takeRequest()
         val request = server.takeRequest()
         assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/CreateProjectWorker")

@@ -271,10 +271,9 @@ class ListInvariantsPropertyTest {
                         agents.reconcileRunning()
                         agents.resolvePinned()
                         placed += window.filter { truth.children[it] == Evidence.RECORD }
-                        // The records' flags, and the managers the workers' records name: both are root evidence.
+                        // The records' flags are root evidence; a worker's record naming its manager makes a candidate, no more.
                         flagged += window.filter { it in truth.roots }
                         evidenceRoots += window.filter { it in truth.roots }
-                        evidenceRoots += window.filter { truth.children[it] == Evidence.RECORD && !it.startsWith("bc-side-") }.map { rootOf(it) }
                         check("account", afterRefresh = false)
                     }
                     4 -> if (extended) {
@@ -287,7 +286,7 @@ class ListInvariantsPropertyTest {
                         // A membership that names a worker is root evidence; one that names nobody is not — and takes
                         // the root out unless its record's flag or a worker's record still holds it.
                         if (named.isNotEmpty()) evidenceRoots += root
-                        else if (root !in flagged && placed.none { rootOf(it) == root && truth.children[it] == Evidence.RECORD && !it.startsWith("bc-side-") }) evidenceRoots -= root
+                        else if (root !in flagged) evidenceRoots -= root
                         check("membership", afterRefresh = false)
                     }
                     5 -> {

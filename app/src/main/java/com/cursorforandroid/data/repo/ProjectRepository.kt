@@ -224,6 +224,8 @@ class ProjectRepository(
         scope.launch {
             discoverRoots()
             syncLineage(rootIds)
+            // The roots the memberships admitted have their rows fetched like the ones the pass named.
+            agents.materializeRoots(budget = ROOT_FETCH_BUDGET)
         }
     }
 
@@ -338,12 +340,16 @@ class ProjectRepository(
         if (session.isDemo || !capabilities().projects) return
         syncMutex.withLock {
             val token = agents.token()
-            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id }
+            // The roots the list and the registry know, and the chats workers' records name as manager: the
+            // membership answer is what admits a candidate, so every candidate is asked.
+            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id } + agents.managerCandidates()
             val roots = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
             for (rootId in roots.take(maxRootsPerSync)) {
                 if (!readLineage(rootId, token)) return
             }
         }
+        // A candidate the memberships admitted has its row fetched like any root the registry names.
+        agents.materializeRoots()
     }
 
     /** One root's memberships, folded onto the rows and kept for its view; false when the list has been reset meanwhile. */
@@ -427,11 +433,11 @@ class ProjectRepository(
                     _unavailableParents.update { it - id }
                     continue
                 }
-                // Placed before its row lands, so the row is published as a root and never as a chat of its own
-                // for the moment between the fetch and the placement — on the account's word alone: workers whose
-                // records or memberships name it, not ones a coordinator's transcript merely mentioned.
-                val workers = agents.state.value.agents.filter { it.parent?.id == id && it.parent.kind == AgentParentKind.PROJECT_WORKER && it.scopeSignal?.isRootEvidence == true }.map { it.id }
-                if (workers.isNotEmpty()) agents.applyLineage(id, workers.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, startedIn = token)
+                // The parent's row is fetched so its chats can sit under it; whether it is a Project is the
+                // registry's to say (the record's flag, a membership answer, an action), never this fetch's. A
+                // parent the workers' records name as manager is asked of the account first, so its row lands as
+                // the root the membership makes it — or as the chat of its own it is.
+                if (id in agents.managerCandidates()) runCatching { syncLineage(listOf(id)) }
                 val failure = agents.loadDetail(id).exceptionOrNull()
                 if (failure != null) {
                     if (failure is CancellationException) throw failure
@@ -563,8 +569,9 @@ class ProjectRepository(
 
     /** Sets the Project's icon and colour (`UpdateProjectAppearance`); the row shows the account's answer. */
     suspend fun updateAppearance(projectId: String, appearance: ProjectAppearance): Result<Unit> = action(needs = { it.projects }) { api ->
+        // The look is the row's; whether the chat is a Project stays the record's word (the next round reads it).
         val recorded = api.updateAppearance(projectId, appearance) ?: appearance
-        agents.patch(projectId) { it.copy(projectAppearance = recorded, isProject = true) }
+        agents.patch(projectId) { it.copy(projectAppearance = recorded) }
     }
 
     /**

@@ -283,6 +283,9 @@ class ProjectLeakRegressionTest {
         // root in the publication that brings it, never landing as a chat of its own first.
         val published = java.util.concurrent.CopyOnWriteArrayList<List<Agent>>()
         val watching = launch(Dispatchers.Default) { agents.state.collect { published += it.agents } }
+        // The worker's record makes bc-p a candidate; the account's membership answer is what makes it a root, and
+        // the watcher asks for it before the row is fetched.
+        lineage.workers = mapOf("bc-p" to listOf(WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED)))
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
         withTimeout(5_000) { while (agents.agent("bc-p") == null) delay(10) }

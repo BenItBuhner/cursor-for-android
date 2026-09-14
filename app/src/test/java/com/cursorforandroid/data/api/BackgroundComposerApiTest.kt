@@ -64,13 +64,17 @@ class BackgroundComposerApiTest {
         val list = api.list()
 
         assertThat(list.pinned).isEqualTo(PinnedIds(setOf("bc-1", "bc-9"), loaded = true))
-        assertThat(list.composers).containsAtLeast(
+        // The record's raw fields ride along on every snapshot (asserted apart); the rest is compared whole.
+        assertThat(list.composers.map { it.copy(record = null) }).containsAtLeast(
             ComposerSnapshot("bc-1", name = "x", archived = false, source = AgentSource.WEBSITE),
             ComposerSnapshot("bc-7", name = "no pr", archived = true),
             ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")),
             ComposerSnapshot("bc-10", name = "Webhook worker", parent = AgentParent("bc-8", AgentParentKind.PROJECT_WORKER), source = AgentSource.WEBSITE),
             ComposerSnapshot("bc-11", name = "Pricing side chat", parent = AgentParent("bc-8", AgentParentKind.SIDE_CHAT)),
         )
+        assertThat(list.composers.first { it.id == "bc-8" }.record).isEqualTo(RecordFields(projectMetadata = """{"appearance":{"icon":"rocket","colorId":"purple"}}"""))
+        assertThat(list.composers.first { it.id == "bc-10" }.record?.managerAgentId).isEqualTo("bc-8")
+        assertThat(list.composers.first { it.id == "bc-11" }.record?.sideChatParentId).isEqualTo("bc-8")
         // Where each belongs follows from its record alone.
         val scopes = list.composers.associate { it.id to it.scope }
         assertThat(scopes["bc-8"]).isEqualTo(AgentScope.PROJECT_ROOT)
@@ -123,29 +127,53 @@ class BackgroundComposerApiTest {
 
     @Test
     fun `a chat's place among Projects is derived the way the Agents Window derives it`() {
+        fun json(text: String) = kotlinx.serialization.json.Json.parseToJsonElement(text) as kotlinx.serialization.json.JsonObject
         fun composer(
             id: String = "bc-x",
-            project: BackgroundComposerApi.ProjectMetadataDto? = null,
+            project: String? = null,
             manager: String? = null,
             sideChat: String? = null,
             subagentParent: String? = null,
+            newProject: Boolean? = null,
         ) = BackgroundComposerApi.ComposerDto(
             bcId = id,
-            projectMetadata = project,
+            projectMetadata = project?.let(::json),
             managerAgentId = manager,
             sideChatInfo = sideChat?.let { BackgroundComposerApi.SideChatInfoDto(parentBcId = it) },
             cloudSubagentParent = subagentParent?.let { BackgroundComposerApi.CloudSubagentParentDto(parentAgentId = it, parentToolCallId = "call-1") },
+            startedAsNewProject = newProject,
         )
-        val appearance = BackgroundComposerApi.ProjectAppearanceDto(icon = "flag", colorId = "green")
+        val appearance = """{"appearance":{"icon":"flag","colorId":"green"}}"""
 
-        // `projectMetadata` makes a Project, empty or not; the appearance counts only whole.
-        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto()))).isEqualTo(ComposerSnapshot("bc-x", isProject = true))
-        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(appearance)))!!.projectAppearance).isEqualTo(ProjectAppearance("flag", "green"))
-        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(BackgroundComposerApi.ProjectAppearanceDto(icon = "flag"))))!!.projectAppearance).isNull()
+        // The desktop's predicate (Cursor 3.20.21 workbench.glass.main.js, CloudAgentRepository): `isProject` is
+        // `project_metadata` present at all — `{}` included — and a root is that with no subagent parent, side-chat
+        // parent or manager. `startedAsNewProject` is carried and never read for it (Bennett's pinned "Market
+        // Opportunities", 0.3.7, was promoted on it); the appearance is read apart and is no part of the flag.
+        val empty = BackgroundComposerApi.snapshot(composer(project = "{}"))!!
+        assertThat(empty.isProject).isTrue()
+        assertThat(empty.projectAppearance).isNull()
+        assertThat(empty.record).isEqualTo(RecordFields(projectMetadata = "{}"))
+        val newFlag = BackgroundComposerApi.snapshot(composer(newProject = true))!!
+        assertThat(newFlag.isProject).isFalse()
+        assertThat(newFlag.record).isEqualTo(RecordFields(startedAsNewProject = true))
+        val flagged = BackgroundComposerApi.snapshot(composer(project = appearance))!!
+        assertThat(flagged.isProject).isTrue()
+        assertThat(flagged.projectAppearance).isEqualTo(ProjectAppearance("flag", "green"))
+        assertThat(flagged.record?.projectMetadata).isEqualTo(appearance)
+        // Half an appearance is no appearance (the desktop's `wQp`); the flag stands all the same.
+        val half = BackgroundComposerApi.snapshot(composer(project = """{"appearance":{"icon":"flag"}}"""))!!
+        assertThat(half.projectAppearance).isNull()
+        assertThat(half.isProject).isTrue()
         assertThat(BackgroundComposerApi.snapshot(composer())!!.isProject).isFalse()
-        // A worker is never a Project itself, whatever metadata it carries.
-        assertThat(BackgroundComposerApi.snapshot(composer(project = BackgroundComposerApi.ProjectMetadataDto(appearance), manager = "bc-m")))
-            .isEqualTo(ComposerSnapshot("bc-x", parent = AgentParent("bc-m", AgentParentKind.PROJECT_WORKER)))
+        assertThat(BackgroundComposerApi.snapshot(composer())!!.record).isEqualTo(RecordFields())
+        // A worker is never a Project itself, whatever metadata it carries (the desktop's `subagentParentId`).
+        val worker = BackgroundComposerApi.snapshot(composer(project = appearance, manager = "bc-m"))!!
+        assertThat(worker.isProject).isFalse()
+        assertThat(worker.parent).isEqualTo(AgentParent("bc-m", AgentParentKind.PROJECT_WORKER))
+        assertThat(worker.record).isEqualTo(RecordFields(projectMetadata = appearance, managerAgentId = "bc-m"))
+        assertThat(worker.record?.desktopSubagentParentId).isEqualTo("bc-m")
+        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, sideChat = "bc-s"))!!.isProject).isFalse()
+        assertThat(BackgroundComposerApi.snapshot(composer(project = appearance, subagentParent = "bc-p"))!!.isProject).isFalse()
         // The parent is the first of: the agent that spawned it, the chat it branched off, the coordinator it works for.
         assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s", subagentParent = "bc-p"))!!.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SUBAGENT))
         assertThat(BackgroundComposerApi.snapshot(composer(manager = "bc-m", sideChat = "bc-s"))!!.parent).isEqualTo(AgentParent("bc-s", AgentParentKind.SIDE_CHAT))
@@ -163,7 +191,7 @@ class BackgroundComposerApiTest {
     @Test
     fun `the discovery pass pages by token or by activity, and keeps what it read when a page fails`() = runBlocking<Unit> {
         server.enqueue(session("s"))
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{},"lastMessageActivityAtMs":"1700000009000"},{"bcId":"bc-w1","managerAgentId":"bc-r1","lastMessageActivityAtMs":"1700000008000"}],"hasMore":true,"nextPageToken":"page-2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{"appearance":{"icon":"lightning","colorId":"default"}},"lastMessageActivityAtMs":"1700000009000"},{"bcId":"bc-w1","managerAgentId":"bc-r1","lastMessageActivityAtMs":"1700000008000"}],"hasMore":true,"nextPageToken":"page-2"}"""))
         // A meta-agent source makes no root; the flag does. bc-m is a record among the pages, and nothing else.
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r2","projectMetadata":{"appearance":{"icon":"rocket","colorId":"blue"}},"lastMessageActivityAtMs":"1700000007000"},{"bcId":"bc-m","source":"BACKGROUND_COMPOSER_SOURCE_CLOUD_META_AGENT","lastMessageActivityAtMs":"1700000006500"},{"bcId":"bc-x","lastMessageActivityAtMs":"1700000006000"}],"hasMore":true}"""))
         server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
@@ -187,17 +215,20 @@ class BackgroundComposerApiTest {
         assertThat(third["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000006000")
 
         // The pass again: to the end this time, a repeated page being the end whatever the flag says.
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}}],"hasMore":true,"nextPageToken":"p2"}"""))
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","startedAsNewProject":true}],"hasMore":true,"nextPageToken":"p3"}"""))
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","startedAsNewProject":true}],"hasMore":true,"nextPageToken":"p4"}"""))
+        // `projectMetadata: {}` is a root by the desktop's predicate; `startedAsNewProject` alone is not.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{"appearance":{"icon":"lightning","colorId":"default"}}},{"bcId":"bc-e","projectMetadata":{}}],"hasMore":true,"nextPageToken":"p2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","projectMetadata":{"appearance":{"icon":"flag","colorId":"green"}}},{"bcId":"bc-n","startedAsNewProject":true}],"hasMore":true,"nextPageToken":"p3"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","projectMetadata":{"appearance":{"icon":"flag","colorId":"green"}}}],"hasMore":true,"nextPageToken":"p4"}"""))
         val whole = api.scanRoots(maxPages = 10)
-        assertThat(whole.roots.map { it.id }).containsExactly("bc-r1", "bc-r3").inOrder()
+        // `project_metadata: {}` is the desktop's flag: bc-e is a root; `startedAsNewProject` alone is not: bc-n is none.
+        assertThat(whole.roots.map { it.id }).containsExactly("bc-r1", "bc-e", "bc-r3").inOrder()
+        assertThat(whole.seenIds).containsExactly("bc-r1", "bc-e", "bc-r3", "bc-n")
         assertThat(whole.complete).isTrue()
         assertThat(whole.failure).isNull()
         assertThat(whole.pagesRead).isEqualTo(3)
 
         // A pass that read as many pages as it may is not a failure: the next one reads again.
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{}}],"hasMore":true,"nextPageToken":"p2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{"appearance":{"icon":"lightning","colorId":"default"}}}],"hasMore":true,"nextPageToken":"p2"}"""))
         val capped = api.scanRoots(maxPages = 1)
         assertThat(capped.truncated).isTrue()
         assertThat(capped.complete).isFalse()
@@ -265,7 +296,7 @@ class BackgroundComposerApiTest {
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-8","name":"Billing launch","projectMetadata":{"appearance":{"icon":"rocket","colorId":"purple"}}}],"hasMore":false}"""))
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-other"}],"hasMore":false}"""))
 
-        assertThat(api.record("bc-8")).isEqualTo(ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
+        assertThat(api.record("bc-8")?.copy(record = null)).isEqualTo(ComposerSnapshot("bc-8", name = "Billing launch", isProject = true, projectAppearance = ProjectAppearance("rocket", "purple")))
         // An answer about another chat is no record of this one.
         assertThat(api.record("bc-9")).isNull()
         server.takeRequest() // the exchange

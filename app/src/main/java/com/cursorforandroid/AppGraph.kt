@@ -703,6 +703,7 @@ class AppGraph(
                 } else null,
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
+                managerCandidates = agents.managerCandidates(),
             ),
         )
     }
