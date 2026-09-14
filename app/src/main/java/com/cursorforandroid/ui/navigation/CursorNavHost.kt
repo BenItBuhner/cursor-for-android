@@ -34,6 +34,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
@@ -104,7 +106,21 @@ fun CursorNavHost(
     }
 
     val desired = stack.top
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(desired) {
+        // A screen change takes the keyboard with it, from the first frame of the transition. Compose does not hide
+        // the keyboard when the field holding it leaves the composition, so without this a chat's composer would
+        // carry the keyboard through the whole slide and leave it standing over the pane underneath, whose own
+        // composer has no focus, until something else asked it away: the keyboard hanging on after back, then
+        // dropping late. Released here, its hide animation plays alongside the pane's, and the composer rides the
+        // keyboard's edge down inside the departing pane. On a gesture this runs at the commit, when the stack pops,
+        // so a scrub that is cancelled costs the field nothing; the platform has already dismissed the keyboard
+        // before a gesture reaches this host in any case (Android 15+ hides it with its own predictive animation).
+        if (desired.id != scene.top.id) {
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+        }
         try {
             scene.moveTo(desired, stack)
         } catch (_: CancellationException) {
