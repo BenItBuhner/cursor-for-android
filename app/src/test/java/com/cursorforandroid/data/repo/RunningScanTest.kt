@@ -120,13 +120,14 @@ class RunningScanTest {
         assertThat(agents.agent("bc-7")?.isProjectScopedByEvidence).isTrue()
         assertThat(decision(agents)).isEqualTo(LiveDecision.Track(setOf("bc-2", "bc-11"), serviceActive = false))
 
-        // A coordinator's transcript alone naming bc-11 nests it, but does not take it off the count or the notifications.
+        // A coordinator's create_agent naming bc-11 is default mode's word; its record has been read and names no
+        // parent, so the record stands: bc-11 stays a chat of its own, on the count and the notifications.
         agents.applyLineage("bc-1", mapOf("bc-11" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agents.agent("bc-11")?.isProjectScoped).isTrue()
-        assertThat(agents.agent("bc-11")?.isProjectScopedByEvidence).isFalse()
+        assertThat(agents.agent("bc-11")?.isProjectScoped).isFalse()
         assertThat(decision(agents)).isEqualTo(LiveDecision.Track(setOf("bc-2", "bc-11"), serviceActive = false))
-        // The root's membership naming it is positive evidence.
+        // The root's membership naming it places it (the desktop's seeded managerAgentId).
         agents.applyLineage("bc-1", mapOf("bc-11" to AgentParentKind.PROJECT_WORKER), authoritative = true)
+        assertThat(agents.agent("bc-11")?.isProjectScopedByEvidence).isTrue()
         assertThat(decision(agents)).isEqualTo(LiveDecision.Track(setOf("bc-2"), serviceActive = false))
     }
 }

@@ -689,7 +689,7 @@ class AppGraph(
                 pinnedIds = prefs.localAgentState.first().pinnedIds,
                 unresolvedPinned = agents.unresolvedPinned(),
                 runningScan = agents.runningScan.value.takeIf { it.hasScanned },
-                hintRefused = agents.hintRefusedIds(),
+                unresolvedRecords = agents.unresolvedRecords(),
                 knownRoots = agents.knownRoots.value,
                 unresolvedRoots = agents.unresolvedRoots(),
                 rootScan = if (lazyProjects.isInitialized()) {
@@ -703,7 +703,7 @@ class AppGraph(
                 } else null,
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
-                managerCandidates = agents.managerCandidates(),
+                managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
             ),
         )
     }

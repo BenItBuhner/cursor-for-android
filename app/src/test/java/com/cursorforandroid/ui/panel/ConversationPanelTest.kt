@@ -157,9 +157,9 @@ class ConversationPanelTest {
         val worker = plain.copy(agent = PanelFixtures.agent.copy(parent = AgentParent("bc-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.MEMBERSHIP))
         assertThat(titles(worker)).contains("Project")
         assertThat(titles(plain, Capabilities.EXTENDED)).doesNotContain("Project")
-        // A chat a coordinator's transcript merely mentioned is not placed by evidence: no Project section for it.
-        val mentioned = plain.copy(agent = PanelFixtures.agent.copy(parent = AgentParent("bc-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.COORDINATOR_TRANSCRIPT))
-        assertThat(titles(mentioned)).doesNotContain("Project")
+        // A worker the coordinator's create_agent named (default mode's word for the record's managerAgentId) is placed like one.
+        val created = plain.copy(agent = PanelFixtures.agent.copy(parent = AgentParent("bc-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.COORDINATOR_CREATED))
+        assertThat(titles(created)).contains("Project")
         // A side chat is in a Project only when the chat it branched from is one; a side chat of an ordinary chat is not.
         val sideChat = plain.copy(agent = PanelFixtures.sideChats[0], agentId = "bc-side-1", parentAgent = PanelFixtures.agent)
         assertThat(titles(sideChat)).doesNotContain("Project")

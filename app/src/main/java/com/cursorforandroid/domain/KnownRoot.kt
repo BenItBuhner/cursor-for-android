@@ -4,21 +4,16 @@ import com.cursorforandroid.data.api.RecordFields
 import kotlinx.serialization.Serializable
 
 /**
- * A Cursor Project's coordinator as the root registry knows it, whether or not the list holds its row, with the
- * evidence it stands on. The registry admits a root on three words and no other (see [LineageSignal.isRootEvidence]):
- *
- *  - the record's Project flag as the desktop reads it ([flagged], the record's raw fields in [record]): the
- *    `project_metadata` message present on a record with no subagent parent, side-chat parent or manager (Cursor
- *    3.20.21 `workbench.glass.main.js`, `CloudAgentRepository` / `_isProjectRoot`); `startedAsNewProject` is no flag,
- *    and the appearance is no part of it;
- *  - `ListWorkersForManager` answering with at least one active worker ([membershipWorkers]);
- *  - an explicit action in this app that made it a Project's coordinator — a worker created under it or a chat
- *    adopted into it ([signal] = ACTION).
- *
- * A worker's record naming it as manager makes it a candidate for the membership read ([namedBy], information, not
- * evidence); a coordinator's transcript, a `create_agent` call, a children list (ordinary chats have subagents and
- * side chats too), a source, a pin, or the appearance editor put nothing in it. The registry is kept on disk with
- * the list; each entry is re-validated against the evidence it carries and leaves when the evidence goes.
+ * A Cursor Project's coordinator as the root registry knows it, whether or not the list holds its row. The registry
+ * admits a root on the one word the desktop reads (`kf`, Cursor 3.20.21 `workbench.glass.main.js`): the record's
+ * `project_metadata` message present on a chat with no parent link ([flagged], the record's raw fields in
+ * [record]); `startedAsNewProject` is no flag, the appearance no part of it, and a membership answer
+ * ([membershipWorkers]), a worker's record naming it as manager ([namedBy]), a coordinator's transcript, a
+ * `create_agent` call, a children list, a source, a pin or the appearance editor put nothing in it — they are kept
+ * on the entry as information for the export. The registry is what lets the Projects group list a Project beyond
+ * the loaded pages and fetch its row by id, the way the desktop's `_fetchProjectRootCloudAgents` does; it is kept
+ * on disk with the list, re-validated against each later record, and an entry leaves when its record no longer
+ * carries the flag or the server says the chat is gone.
  */
 @Serializable
 data class KnownRoot(
@@ -42,25 +37,24 @@ data class KnownRoot(
     val namedBy: Int = 0,
 ) {
     /**
-     * The evidence holds: the record flags it, a membership answer names a worker, or an action here made it one.
-     * [flagged] is only ever set from a record read by the desktop's predicate; an entry restored from an older
-     * build's disk is held to [record] as well (see `AgentRepository.restoreFromCache`).
+     * The evidence holds: the record flags it (the desktop's `isProject`). [flagged] is only ever set from a record
+     * read by the desktop's predicate; an entry restored from an older build's disk is held to [record] as well (see
+     * `AgentRepository.restoreFromCache`).
      */
-    val isEvidenced: Boolean get() = flagged || membershipWorkers > 0 || signal == LineageSignal.ACTION
+    val isEvidenced: Boolean get() = flagged && signal == LineageSignal.ACCOUNT_RECORD
 
-    /** The evidence an entry from the disk is held to: a flag with its record's fields, a membership count, or an action. */
-    val isEvidencedStrictly: Boolean get() = (flagged && record != null) || membershipWorkers > 0 || signal == LineageSignal.ACTION
+    /** The evidence an entry from the disk is held to: the flag with its record's fields. */
+    val isEvidencedStrictly: Boolean get() = isEvidenced && record != null
 
     /** The evidence in words, for the diagnostics: exactly what admitted the root, then what is known beside it. */
     val evidence: String
         get() {
             val held = buildList {
-                if (flagged) add("record flag project_metadata=${record?.projectMetadata ?: "?"}")
-                if (membershipWorkers > 0) add("membership $membershipWorkers")
-                if (signal == LineageSignal.ACTION) add("action here")
+                if (flagged) add("kf: record project_metadata=${record?.projectMetadata ?: "?"}, no subagentParentId")
             }
             val beside = buildList {
-                if (namedBy > 0) add("named by $namedBy worker record${if (namedBy == 1) "" else "s"} (not evidence)")
+                if (membershipWorkers > 0) add("ListWorkersForManager names $membershipWorkers (not evidence)")
+                if (namedBy > 0) add("named as manager by worker records (not evidence)")
             }
             return (held.ifEmpty { listOf("none") } + beside).joinToString(" + ")
         }
@@ -85,6 +79,7 @@ data class KnownRoot(
     )
 
     private companion object {
+        @Suppress("DEPRECATION")
         fun rank(signal: LineageSignal): Int = when (signal) {
             LineageSignal.ACCOUNT_RECORD -> 5
             LineageSignal.ACTION -> 4

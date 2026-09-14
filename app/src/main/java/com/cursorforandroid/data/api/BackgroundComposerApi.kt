@@ -53,8 +53,8 @@ data class ComposerSnapshot(
      */
     val status: RunStatus? = null,
 ) {
-    /** Where the chat belongs by this record's own lineage facts (see [AgentScope.of]). */
-    val scope: AgentScope get() = AgentScope.of(isProject, parent, source)
+    /** Where the chat belongs by this record's own facts, read the desktop's way (see [AgentScope.of]). */
+    val scope: AgentScope get() = AgentScope.of(isProject, parent)
 
     /** True when the record says a turn is going: the account's word on the running set. */
     val isRunning: Boolean get() = status?.isActive == true
@@ -80,10 +80,19 @@ data class RecordFields(
     /** The desktop's `subagentParentId`: the first of the subagent parent, the side-chat parent, the manager. */
     val desktopSubagentParentId: String? get() = subagentParentId ?: sideChatParentId ?: managerAgentId
 
-    /** One line, the fields named as the proto names them. */
-    fun describe(): String =
-        "project_metadata=${projectMetadata ?: "absent"} manager_agent_id=${managerAgentId ?: "-"} cloud_subagent_parent=${subagentParentId ?: "-"} " +
-            "side_chat_parent=${sideChatParentId ?: "-"} started_as_new_project=$startedAsNewProject source=${source ?: "-"}"
+    /** The desktop's `subagentParentId` with the kind the field it came from gives it; null for a chat of its own. */
+    val desktopParent: AgentParent?
+        get() = subagentParentId?.let { AgentParent(it, AgentParentKind.SUBAGENT) }
+            ?: sideChatParentId?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
+            ?: managerAgentId?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
+
+    /** The desktop's `isProject`: the `project_metadata` message present at all. */
+    val isProject: Boolean get() = projectMetadata != null
+
+    /** One line, the fields named as the proto names them; [idOf] renders the ids (the diagnostics shorten them to tails). */
+    fun describe(idOf: (String) -> String = { it }): String =
+        "project_metadata=${projectMetadata ?: "absent"} manager_agent_id=${managerAgentId?.let(idOf) ?: "-"} cloud_subagent_parent=${subagentParentId?.let(idOf) ?: "-"} " +
+            "side_chat_parent=${sideChatParentId?.let(idOf) ?: "-"} started_as_new_project=$startedAsNewProject source=${source ?: "-"}"
 }
 
 /**
@@ -516,8 +525,9 @@ class BackgroundComposerApi(
             val parent = composer.cloudSubagentParent?.parentAgentId.link()?.let { AgentParent(it, AgentParentKind.SUBAGENT) }
                 ?: composer.sideChatInfo?.parentBcId.link()?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
                 ?: manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
-            // The desktop's predicate, exactly: `isProject` is `project_metadata` present at all; a root is that with
-            // no subagent parent, side-chat parent or manager. The look is read apart (`wQp`): icon and colour both
+            // The desktop's predicate, exactly: `isProject` is `project_metadata` present at all (`isProject:
+            // t.projectMetadata !== void 0`); a root (`kf`) is that with no subagent parent, side-chat parent or
+            // manager, which [ComposerSnapshot.scope] decides. The look is read apart (`wQp`): icon and colour both
             // non-empty, else none.
             val metadata = composer.projectMetadata
             val appearance = (metadata?.get("appearance") as? JsonObject)?.let { a ->
@@ -525,7 +535,7 @@ class BackgroundComposerApi(
                 val colorId = (a["colorId"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
                 if (icon.isNotEmpty() && colorId.isNotEmpty()) ProjectAppearance(icon, colorId) else null
             }
-            val isProject = metadata != null && parent == null
+            val isProject = metadata != null
             val record = RecordFields(
                 projectMetadata = metadata?.toString(),
                 managerAgentId = manager,

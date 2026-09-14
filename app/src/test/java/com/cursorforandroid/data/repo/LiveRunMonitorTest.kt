@@ -110,6 +110,8 @@ class LiveRunMonitorTest {
         api.addRunningAgent("bc-w2", "Stripe webhook handler", "run-w2")
         api.addRunningAgent("bc-x", "Plain chat", "run-x")
         agents.refresh()
+        // The coordinator is a Project by its record's flag (kf); its workers by the membership answer.
+        agents.applyAccountSnapshots(listOf(com.cursorforandroid.data.api.ComposerSnapshot("bc-p", isProject = true)))
         agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-w2" to AgentParentKind.PROJECT_WORKER), authoritative = true)
         monitor.start()
         awaitUntil { monitor.state.value.hasReconciled && running().size == 4 }

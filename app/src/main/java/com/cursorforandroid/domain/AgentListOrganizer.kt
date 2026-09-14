@@ -1,10 +1,8 @@
 package com.cursorforandroid.domain
 
 import com.cursorforandroid.util.AppClock
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.temporal.ChronoUnit
 
 /** One row in the sidebar / agent list. */
 data class AgentRow(
@@ -136,25 +134,23 @@ object AgentListOrganizer {
     }
 
     /**
-     * Whether a row that stands on its own is listed under [prefs]. The Chats filters are about the account's chats
-     * — a chat's status, its pull request, where it was started, what it runs on — and a Project is none of those:
-     * it is a body of work with many chats and pull requests under it, and no chat-level filter can say anything
-     * about it as a whole. So a Project's row is listed whatever the filters say — its coordinator's merged pull
-     * request took the whole Project off the list once — with its tree and its count. The one word honoured is the
-     * archive ([passesArchive]): archiving is done to the Project itself, so an archived Project is put away as an
-     * archived chat is, and shown again with Archived checked. Every other row answers to [matchesFilters].
+     * Whether a top-level row is listed under [prefs] — the desktop's `Nlc`: a pinned row passes every filter (a pin
+     * is the user's word that the chat is shown, `o?.has(C.id)`); an archived row is listed only under the Archived
+     * filter; every chat of the account's own answers to [matchesFilters] in full. A Project's row (`kf`) answers
+     * the archive filter alone: the desktop exempts a Project from its pull-request filter (`g && !kf(C) &&
+     * !d.has($uC(C))`) because a Project has many pull requests under it and no one state of its own, and the
+     * Chats filters here are all of that kind — a chat's status, repository, source, environment — none of which
+     * says anything about a body of work with many chats under it. A child never comes here: it goes with its
+     * parent's row (see [organize]).
      */
     fun isListed(row: AgentRow, prefs: ListPreferences): Boolean = when {
-        // A pin is the user's word that the chat is shown: no filter, no page, no source, environment or scope
-        // guess takes it off the list. It is the one row the Chats filters do not answer for.
         row.isPinned -> true
         row.agent.isProjectRoot -> passesArchive(row, prefs)
         else -> matchesFilters(row, prefs)
     }
 
     /**
-     * The one filter every row answers to: an archived chat is listed only while Archived is checked. It is all
-     * the Status filter says about a Project, and about a chat nested under another (see [organize]).
+     * The one filter a child answers to (`Nlc` on its row): an archived chat is listed only while Archived is checked.
      */
     fun passesArchive(row: AgentRow, prefs: ListPreferences): Boolean = !row.agent.isArchived || StatusFilter.Archived in prefs.statuses
 
@@ -203,27 +199,30 @@ object AgentListOrganizer {
 
     fun recencyMillis(row: AgentRow): Long = row.snoozedAtMillis ?: row.agent.updatedAtMillis
 
+    /** The desktop's `rUm` for the default order: last activity descending, id ascending; the other orders are this app's. */
     fun sort(rows: List<AgentRow>, order: SortOrder): List<AgentRow> = when (order) {
-        SortOrder.Updated -> rows.sortedByDescending { recencyMillis(it) }
-        SortOrder.Created -> rows.sortedByDescending { it.agent.createdAtMillis }
-        SortOrder.Name -> rows.sortedBy { it.agent.name.lowercase() }
+        SortOrder.Updated -> rows.sortedWith(compareByDescending<AgentRow> { recencyMillis(it) }.thenBy { it.agent.id })
+        SortOrder.Created -> rows.sortedWith(compareByDescending<AgentRow> { it.agent.createdAtMillis }.thenBy { it.agent.id })
+        SortOrder.Name -> rows.sortedWith(compareBy<AgentRow> { it.agent.name.lowercase() }.thenBy { it.agent.id })
     }
 
     /**
-     * The sidebar's sections. Classify, then nest: every row is placed by its own [Agent.scope] — a Project's
-     * worker, side chat or subagent belongs inside its parent's tree and nowhere else, so it is never listed among
-     * the primary rows whatever has become of its parent (filtered out, archived, searched away, not loaded yet).
-     * A pinned child is the one exception, by the user's word. A child whose Project the list does not hold at all
-     * sits under a stand-in row for that Project (see [placeholder]) until the row has been fetched.
+     * The sidebar's sections, composed the way the desktop Agents Window composes its list (see [AgentsWindowList]):
      *
-     * The filters pick the chats that stand on their own — the account's chats, and a pinned child — and a
-     * Project's row stands whatever they say (see [isListed]). What hangs under a listed chat comes with it: the
-     * tree is the chat's own, and a Project's count is its membership rather than what a filter left of it; only an
-     * archived child is put away, as any archived chat is. The search finds a chat wherever it sits in the tree, and
-     * shows it under its parent — a match on the parent keeps its whole subtree.
-     *
-     * [unavailableProjects] are the Projects the list names but the server has refused to give (see
-     * `ProjectRepository.unavailableParents`): their stand-ins say so instead of "loading".
+     *  1. `mQa` / `PJr`: a row with a parent link is a child, whatever the parent is — a Project, a Multitask chat
+     *     that spawned it, a chat it branched from — and is drawn under the parent's row and nowhere else; only rows
+     *     without a parent link are top level. A child whose parent has no row is not drawn until the parent is
+     *     (the repository fetches it by id, as the desktop hydrates it); a child of a parent the server refused
+     *     stands under a stand-in that says so ([unavailableProjects]), so the chat stays reachable.
+     *  2. `Nlc`: the filters pick the top-level rows — a pin passes them all, a Project skips the git filter — and a
+     *     child goes with its parent, put away only when archived (as any archived chat is). The search finds a chat
+     *     wherever it sits in the tree, and shows it under its parent; a match on the parent keeps its subtree.
+     *  3. `kf`: the top-level rows the record flags are the Projects section, sorted by activity; the registry's roots
+     *     the list holds no row for stand in after them ([knownRoots]).
+     *  4. `VuC`: the pinned top-level non-Project rows are the Pinned section; a pinned Project stays in Projects, a
+     *     pinned child under its parent — or, when the parent's row is not drawn, in Pinned, since a pin is the
+     *     user's word that the chat is shown.
+     *  5. The rest are grouped by [prefs] — `f3v`'s time sections by default — and every section is in `rUm`'s order.
      */
     fun organize(
         agents: List<Agent>,
@@ -236,7 +235,7 @@ object AgentListOrganizer {
         /**
          * Every Project root the registry knows (see [KnownRoot]): a root the list holds no row for is listed all the
          * same, as a stand-in carrying the registry's name and look, so the Projects group is the account's Projects
-         * and not the ones the loaded pages happen to hold.
+         * and not the ones the loaded pages happen to hold (the desktop fetches such roots by id, `_fetchProjectRootCloudAgents`).
          */
         knownRoots: Collection<KnownRoot> = emptyList(),
         /** The account's member count per Project, from its membership answers, for the rows' counts. */
@@ -245,25 +244,32 @@ object AgentListOrganizer {
         val known = agents.mapTo(HashSet(agents.size)) { it.id }
         val standIns = knownRoots.filter { it.id !in known && it.id.isNotBlank() }.map { rootStandIn(it, nowMillis) }
         val rows = sort((agents + standIns).map { toRow(it, local, nowMillis) }, prefs.sortOrder)
-        val (nested, standalone) = rows.partition { it.agent.isProjectChild && !it.isPinned }
-        val primary = standalone.filter { isListed(it, prefs) }
-        val children = nested.filter { passesArchive(it, prefs) }
-        val held = known + standIns.map { it.id }
+        // PJr / mQa: children and top level, by the parent link alone (ZOl: a link closing a loop is no link).
+        val links = AgentsWindowList.parentLinks(rows.map { it.agent })
+        val (children, topLevel) = rows.partition { it.agent.id in links }
+        // Nlc on the top level; a child goes with its parent, put away only when archived.
+        val listed = topLevel.filter { isListed(it, prefs) }
+        val shownChildren = children.filter { passesArchive(it, prefs) }
         val standInIds = standIns.mapTo(HashSet()) { it.id }
-        val tree = nest(primary, children).map { row ->
+        val nested = nest(listed, shownChildren, links)
+        // A pinned child stays under its parent (VuC pins top-level headers only); when the parent's row is not
+        // drawn — not loaded, archived, filtered out — the pin is the user's word that the chat is shown, so it
+        // stands in Pinned rather than nowhere (the desktop never lets a pinned header's parent go unloaded).
+        val drawn = HashSet<String>().also { fun walk(row: AgentRow) { it += row.agent.id; row.children.forEach(::walk) }; nested.forEach(::walk) }
+        val pinnedOrphans = nest(shownChildren.filter { it.isPinned && it.agent.id !in drawn }, shownChildren.filter { it.agent.id !in drawn && !it.isPinned }, links)
+        val tree = (nested + pinnedOrphans).map { row ->
             val count = memberCounts[row.agent.id]
             when {
                 row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, isStandIn = true, memberCount = count)
                 count != null && row.agent.isProjectRoot -> row.copy(memberCount = count)
                 else -> row
             }
-        } + placeholders(children, held, nowMillis, unavailableProjects)
+        } + placeholders(shownChildren, known + standInIds, nowMillis, unavailableProjects)
         val sorted = tree.mapNotNull { it.matching(query) }
 
-        // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
-        // The loaded ones come in the list's order; the registry's stand-ins, whose last activity is not known,
-        // follow them by name.
+        // kf: Projects lead; the loaded ones in the list's order, the registry's stand-ins after them by name.
         val projects = sorted.filter { it.agent.isProjectRoot }.sortedWith(compareBy<AgentRow> { it.isStandIn }.thenBy { if (it.isStandIn) it.agent.name.lowercase() else "" })
+        // VuC: the pinned top-level rows that are not Projects.
         val pinned = sorted.filter { it.isPinned && !it.agent.isProjectRoot }
         val rest = sorted.filterNot { it.isPinned || it.agent.isProjectRoot }
         val sections = mutableListOf<AgentSection>()
@@ -308,43 +314,16 @@ object AgentListOrganizer {
         sections.flatMap { it.rows }.filterNot { it.isPlaceholder || it.agent.isProjectScopedByEvidence }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
 
     /**
-     * Nests each row under its parent chat when the parent is listed too (see [Agent.parent]), the way the Agents
-     * Window hangs a Project's workers, side chats and subagents under the chat they belong to. A row whose parent
-     * is not in [rows] — filtered out, archived, or beyond the listing window — stands on its own, as does a pinned
-     * row: a pin is the user's word that the chat belongs in the Pinned group, not under something. Returns the
-     * top-level rows in [rows]' order, each with its children in that order too (and theirs, and so on). A cycle
-     * in the parent links is never expected; should the account report one, its rows stand on their own rather
-     * than vanish.
-     *
-     * This is the tree of rows that are all listed on their own account; [organize] goes through [nest] with the
-     * project-scoped rows set apart, so that those never stand on their own.
+     * The desktop's tree: each of the [primary] (top-level) rows with the rows of [nested] that hang off it beneath
+     * it, and theirs, and so on, in the lists' order — `row-with-children` under any parent, a Project or not. A
+     * nested row is placed under its parent or not at all: one whose parent is neither top level nor placed — a
+     * chat whose parent is archived, filtered out or not loaded — is left out here rather than stranded among the
+     * top-level rows (the desktop draws no such row either), as is one that names itself or sits on a cycle of
+     * parent links. A pinned child is nested like any other (`VuC` pins top-level headers only).
      */
-    fun nest(rows: List<AgentRow>): List<AgentRow> {
-        val ids = rows.mapTo(HashSet()) { it.agent.id }
-        fun parentOf(row: AgentRow): String? = row.agent.parent?.id?.takeIf { !row.isPinned && it in ids && it != row.agent.id }
-        val childrenOf = rows.filter { parentOf(it) != null }.groupBy { parentOf(it)!! }
-        if (childrenOf.isEmpty()) return rows
-        val placed = HashSet<String>()
-        fun build(row: AgentRow): AgentRow {
-            placed += row.agent.id
-            val children = buildList { childrenOf[row.agent.id].orEmpty().forEach { if (it.agent.id !in placed) add(build(it)) } }
-            return if (children.isEmpty()) row else row.copy(children = children)
-        }
-        val top = buildList { rows.forEach { if (parentOf(it) == null) add(build(it)) } }
-        val stranded = buildList { rows.forEach { if (it.agent.id !in placed) add(build(it)) } }
-        return top + stranded
-    }
-
-    /**
-     * The tree of the [primary] rows, each with the rows of [nested] that hang off it beneath it (and theirs, and so
-     * on), in the lists' order. A nested row is placed under its parent or not at all: one whose parent is neither
-     * primary nor placed — a worker whose Project is archived, filtered out or not loaded — is left out here rather
-     * than stranded among the primary rows, which is what let workers leak into the chat list. A nested row that
-     * names itself, or sits on a cycle of parent links, is left out the same way.
-     */
-    fun nest(primary: List<AgentRow>, nested: List<AgentRow>): List<AgentRow> {
+    fun nest(primary: List<AgentRow>, nested: List<AgentRow>, links: Map<String, String> = AgentsWindowList.parentLinks((primary + nested).map { it.agent })): List<AgentRow> {
         if (nested.isEmpty()) return primary
-        val childrenOf = nested.filter { it.agent.parent != null && it.agent.parent.id != it.agent.id }.groupBy { it.agent.parent!!.id }
+        val childrenOf = nested.filter { it.agent.id in links }.groupBy { links.getValue(it.agent.id) }
         val placed = HashSet<String>()
         fun build(row: AgentRow): AgentRow {
             placed += row.agent.id
@@ -354,19 +333,27 @@ object AgentListOrganizer {
         return primary.map(::build)
     }
 
+    /** [nest] over rows that are all top level or children of each other, for a list built without the filters. */
+    fun nest(rows: List<AgentRow>): List<AgentRow> {
+        val links = AgentsWindowList.parentLinks(rows.map { it.agent })
+        val (children, topLevel) = rows.partition { it.agent.id in links }
+        return nest(topLevel, children, links)
+    }
+
     /**
-     * The Projects the list does not hold at all, each standing in for the workers that name it as their manager:
-     * a Project chat beyond the listing window, or not yet fetched, whose workers must not go into the primary rows
-     * meanwhile. Side chats and subagents of an unloaded chat wait unseen instead: their parent is not necessarily a
-     * Project. Rows already [placed] under a listed parent need no stand-in.
+     * Stand-ins for the parents the server refused to give ([unavailable]: a deleted chat, another account's) that
+     * rows of [nested] still name — so those rows stay reachable, under a row that says the parent is unavailable
+     * rather than vanishing for good. A parent merely not loaded yet gets no stand-in: its rows wait unseen until
+     * the repository's fetch by id lands its row, as they do in the desktop.
      */
     private fun placeholders(nested: List<AgentRow>, known: Set<String>, nowMillis: Long, unavailable: Set<String>): List<AgentRow> {
+        if (unavailable.isEmpty()) return emptyList()
         val orphans = nested.filter { row ->
             val parent = row.agent.parent ?: return@filter false
-            parent.kind == AgentParentKind.PROJECT_WORKER && parent.id != row.agent.id && parent.id !in known
+            parent.id != row.agent.id && parent.id !in known && parent.id in unavailable
         }
         if (orphans.isEmpty()) return emptyList()
-        return orphans.groupBy { it.agent.parent!!.id }.map { (projectId, workers) -> placeholder(projectId, workers, nowMillis, unavailable = projectId in unavailable) }
+        return orphans.groupBy { it.agent.parent!!.id }.map { (parentId, rows) -> placeholder(parentId, rows, nowMillis, unavailable = true) }
     }
 
     /**
@@ -389,9 +376,6 @@ object AgentListOrganizer {
             latestRunId = null,
             repoUrl = null,
             startingRef = null,
-            knownScope = AgentScope.PROJECT_ROOT,
-            // Named as manager by the workers under it: root evidence (see LineageSignal.isRootEvidence).
-            scopeSignal = LineageSignal.MEMBERSHIP,
         )
         return AgentRow(agent = agent, indicator = AgentIndicator.Read, isPinned = false, isUnread = false, launchedFromThisDevice = false, children = workers, isPlaceholder = true)
     }
@@ -416,7 +400,6 @@ object AgentListOrganizer {
         startingRef = null,
         isProject = true,
         projectAppearance = root.appearance,
-        knownScope = AgentScope.PROJECT_ROOT,
         scopeSignal = root.signal,
     )
 
@@ -457,11 +440,11 @@ object AgentListOrganizer {
     /** The section key of the Projects group: the Project chats, ahead of everything else. */
     const val PROJECTS_KEY = "projects"
 
-    /** What a [placeholder] row is called until the Project it stands for has been fetched. */
+    /** What a [placeholder] row is called while the parent it stands for is being fetched (the registry's stand-ins use it before a name is known). */
     const val PLACEHOLDER_NAME = "Project (loading)"
 
-    /** What a [placeholder] row is called once the server has refused the Project's row (a deleted Project, another account's). */
-    const val UNAVAILABLE_NAME = "Project (unavailable)"
+    /** What a [placeholder] row is called once the server has refused the parent's row (a deleted chat, another account's). */
+    const val UNAVAILABLE_NAME = "Parent chat (unavailable)"
 
     /** The section key of the Pinned group. */
     const val PINNED_KEY = "pinned"
@@ -475,28 +458,17 @@ object AgentListOrganizer {
         AgentIndicator.Snoozed -> "Snoozed"
     }
 
+    /** `pNg` / `f3v`: the rows in the desktop's time sections, in their order, empty ones left out. */
     fun groupByDate(rows: List<AgentRow>, nowMillis: Long, zone: ZoneId): List<AgentSection> {
-        val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
-        val buckets = linkedMapOf<String, MutableList<AgentRow>>()
-        rows.forEach { row ->
-            val label = dateBucket(Instant.ofEpochMilli(recencyMillis(row)).atZone(zone).toLocalDate(), today)
-            buckets.getOrPut(label) { mutableListOf() } += row
-        }
-        return DATE_BUCKET_ORDER.filter { it in buckets }.map { AgentSection("date:$it", it, buckets.getValue(it)) } +
-            buckets.keys.filterNot { it in DATE_BUCKET_ORDER }.map { AgentSection("date:$it", it, buckets.getValue(it)) }
+        val buckets = rows.groupBy { AgentsWindowList.timeBucket(recencyMillis(it), nowMillis, zone) }
+        return AgentsWindowList.TimeBucket.entries.mapNotNull { bucket -> buckets[bucket]?.let { AgentSection("date:${bucket.label}", bucket.label, it) } }
     }
 
-    private val DATE_BUCKET_ORDER = listOf("Today", "Yesterday", "This week", "Last week", "This month", "Older")
-
+    /** The desktop's time section for a row last active on [date], seen from [today] (see [AgentsWindowList.timeBucket]). */
     fun dateBucket(date: LocalDate, today: LocalDate): String {
-        val days = ChronoUnit.DAYS.between(date, today)
-        return when {
-            days <= 0 -> "Today"
-            days == 1L -> "Yesterday"
-            days < 7 -> "This week"
-            days < 14 -> "Last week"
-            date.year == today.year && date.month == today.month -> "This month"
-            else -> "Older"
-        }
+        val zone = ZoneId.of("UTC")
+        val at = date.atStartOfDay(zone).toInstant().toEpochMilli()
+        val now = today.atStartOfDay(zone).toInstant().toEpochMilli()
+        return AgentsWindowList.timeBucket(at, now, zone).label
     }
 }

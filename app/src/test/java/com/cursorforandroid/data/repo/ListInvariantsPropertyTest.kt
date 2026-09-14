@@ -58,12 +58,11 @@ import kotlin.random.Random
  * Extended mode turned off. After every step:
  *
  * 1. every pinned chat is on the list, whatever page it is on, whatever it runs on, however it was classified;
- * 2. no chat the account calls its own is hidden — it is a primary row, or nested under a coordinator on the
- *    transcript's word alone, never gone;
- * 3. no chat placed on positive evidence is a primary row;
- * 4. after a refresh, what the app counts as running is exactly what the server says is running, less the chats
- *    positive evidence places inside a Project;
- * 5. the notification decision never tracks a chat positive evidence places inside a Project.
+ * 2. no chat the account calls its own is hidden or nested — it is a primary row, always;
+ * 3. no chat placed by its record's parent link or a membership answer is a primary row;
+ * 4. after a refresh, what the app counts as running outside the Projects is exactly what the server says is
+ *    running, less the chats the records place inside a Project and the roots the records flag;
+ * 5. the notification decision counts every running agent, and no card is on by default for a Project's chat.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
@@ -199,10 +198,13 @@ class ListInvariantsPropertyTest {
             // and the roots the account has called Projects (which the running count leaves out).
             val placed = mutableSetOf<String>()
             val evidenceRoots = mutableSetOf<String>()
-            /** Roots whose record's flag an account window has shown. */
-            val flagged = mutableSetOf<String>()
+            /** Workers a coordinator's create_agent named: placed by it until their own record has been read. */
+            val created = mutableSetOf<String>()
+            /** Chats whose account record a window has shown: the record is the word for them from then on. */
+            val recordsRead = mutableSetOf<String>()
             val hinted = mutableSetOf<String>()
             val steps = mutableListOf<String>()
+            fun placedNow(): Set<String> = placed + (created - recordsRead)
 
             fun check(where: String, afterRefresh: Boolean) {
                 val local = LocalAgentState(pinnedIds = truth.pinned)
@@ -212,30 +214,32 @@ class ListInvariantsPropertyTest {
                 val top = sections.topLevel()
                 val everywhere = sections.allRows().map { it.agent.id }.toSet()
                 val context = "seed $seedValue, $where, after ${steps.joinToString(" > ")}"
-                // 1. Pinned chats are on the list, top level (a pinned child stands on its own), whatever else is true of them.
+                // 1. Pinned chats are on the list whatever else is true of them: a pinned chat of the account's own at
+                //    the top level; a pinned child under its parent's row (VuC pins top-level headers only), or in
+                //    Pinned while the parent's row is not drawn.
                 for (id in truth.pinned) {
-                    assertWithMessage("$context: pinned $id shown").that(top.map { it.agent.id }).contains(id)
+                    assertWithMessage("$context: pinned $id shown").that(everywhere).contains(id)
+                    if (id !in truth.children) assertWithMessage("$context: pinned $id at the top level").that(top.map { it.agent.id }).contains(id)
                 }
-                // 2. A chat of the account's own that the list holds is never gone from the sidebar.
+                // 2. A chat of the account's own that the list holds is never gone from the sidebar, and never nested:
+                //    nothing but the record's parent link, a membership, an action or a coordinator's create_agent
+                //    places a chat, and none of those names a chat of the account's own.
                 for (row in list.agents) {
                     if (row.id in truth.children || row.id in truth.roots) continue
                     assertWithMessage("$context: primary ${row.id} visible").that(everywhere).contains(row.id)
-                    // Nested only ever on a hint, and never a chat on the user's machine.
-                    if (row.isProjectScoped) {
-                        assertWithMessage("$context: primary ${row.id} nested only by a hint").that(row.isProjectScopedByEvidence).isFalse()
-                        assertWithMessage("$context: machine chat ${row.id} never nested").that(row.envType.name).isNotEqualTo("MACHINE")
-                    }
+                    assertWithMessage("$context: primary ${row.id} never nested").that(row.isProjectScoped).isFalse()
                 }
-                // 3. A chat placed on positive evidence is never a primary row (a pinned one stands in Pinned by the user's word).
-                assertWithMessage("$context: evidence children among the primary rows").that(top.map { it.agent.id }.filter { it in placed && it !in truth.pinned }).isEmpty()
-                for (id in placed) {
+                // 3. A chat placed on the record's word, a membership's or a coordinator's create_agent (until its record
+                //    is read) is never a primary row (a pinned one stands in Pinned only while its parent's row is not drawn).
+                assertWithMessage("$context: evidence children among the primary rows").that(top.map { it.agent.id }.filter { it in placedNow() && it !in truth.pinned }).isEmpty()
+                for (id in placedNow()) {
                     val row = list.agents.firstOrNull { it.id == id } ?: continue
                     assertWithMessage("$context: evidence child $id scoped by evidence").that(row.isProjectScopedByEvidence).isTrue()
                 }
                 // 4. After a refresh the running rows outside the Projects are the server's running set less the chats
                 //    evidence places inside a Project; the live count is the server's running set whole.
                 if (afterRefresh) {
-                    val expected = truth.running.filter { it !in placed && it !in evidenceRoots }.toSet()
+                    val expected = truth.running.filter { it !in placedNow() && it !in evidenceRoots }.toSet()
                     val counted = list.agents.filter { it.isRunning && !it.isProjectScopedByEvidence }.map { it.id }.toSet()
                     assertWithMessage("$context: running rows outside the Projects").that(counted).isEqualTo(expected)
                     assertWithMessage("$context: scan").that(agents.runningScan.value.ids).isEqualTo(truth.running)
@@ -249,9 +253,9 @@ class ListInvariantsPropertyTest {
                 }
                 val ownOnly = liveDecision(session.state.value, list, enabled = true, serviceActive = false, scan = agents.runningScan.value, projectPrefs = ProjectNotificationPrefs(countProjectAgentsInLive = false))
                 if (ownOnly is LiveDecision.Track) {
-                    assertWithMessage("$context: tracked with the switch off").that(ownOnly.runningIds.intersect(placed)).isEmpty()
+                    assertWithMessage("$context: tracked with the switch off").that(ownOnly.runningIds.intersect(placedNow())).isEmpty()
                 }
-                for (id in placed + evidenceRoots) {
+                for (id in placedNow() + evidenceRoots) {
                     val row = list.agents.firstOrNull { it.id == id } ?: continue
                     if (row.isProjectScopedByEvidence) assertWithMessage("$context: card for $id").that(ProjectNotificationPrefs.DEFAULT.announces(row)).isFalse()
                 }
@@ -271,8 +275,8 @@ class ListInvariantsPropertyTest {
                         agents.reconcileRunning()
                         agents.resolvePinned()
                         placed += window.filter { truth.children[it] == Evidence.RECORD }
-                        // The records' flags are root evidence; a worker's record naming its manager makes a candidate, no more.
-                        flagged += window.filter { it in truth.roots }
+                        recordsRead += window
+                        // The records' flags are the one root evidence (kf): the roots the window showed are Projects from here on.
                         evidenceRoots += window.filter { it in truth.roots }
                         check("account", afterRefresh = false)
                     }
@@ -283,27 +287,28 @@ class ListInvariantsPropertyTest {
                         val named = members.filterValues { it == Evidence.MEMBERSHIP }.keys
                         agents.applyLineage(root, named.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
                         placed += named
-                        // A membership that names a worker is root evidence; one that names nobody is not — and takes
-                        // the root out unless its record's flag or a worker's record still holds it.
-                        if (named.isNotEmpty()) evidenceRoots += root
-                        else if (root !in flagged) evidenceRoots -= root
+                        // A complete membership answer is the account's word on the root's workers: a create_agent
+                        // stamp for a chat it does not name goes (the record's own link, if any, stays). It makes no
+                        // Project of the root (kf reads the root's own record alone).
+                        created.removeAll { rootOf(it) == root && it !in named }
                         check("membership", afterRefresh = false)
                     }
                     5 -> {
-                        // A coordinator's transcript names its workers — and, as a coordinator may, chats that are not
-                        // its workers: a plain chat it messaged and the chat on the user's machine.
+                        // A coordinator's transcript shows create_agent bring its workers into being: default mode's
+                        // word for the managerAgentId their records carry. What the coordinator merely messaged (a
+                        // plain chat, the chat on the user's machine) is named by nothing and stays its own.
                         val root = truth.roots.first()
                         val workers = truth.children.filterKeys { rootOf(it) == root }.keys
-                        val strays = listOf(truth.machine, "bc-plain-0")
-                        steps += "hint"
-                        agents.applyLineage(root, (workers + strays).associateWith { AgentParentKind.PROJECT_WORKER }, authoritative = false)
-                        hinted += strays
-                        check("hint", afterRefresh = false)
+                        steps += "created"
+                        agents.applyLineage(root, workers.associateWith { AgentParentKind.PROJECT_WORKER }, authoritative = false)
+                        hinted += workers
+                        created += workers
+                        check("created", afterRefresh = false)
                     }
                     6 -> {
                         // The disk holds the rows as last persisted; a restart starts from them (and the registry from what they carry).
                         steps += "restart"
-                        fun List<com.cursorforandroid.domain.Agent>.lineage() = map { Triple(it.id, it.parent, it.knownScope to it.scopeSignal) }.toSet()
+                        fun List<com.cursorforandroid.domain.Agent>.lineage() = map { Triple(it.id, it.parent, it.isProject to it.scopeSignal) }.toSet()
                         val persisted = agents.state.value.agents.lineage()
                         withTimeout(5_000) { while (cache.read()?.value?.lineage() != persisted) delay(5) }
                         // The process is gone with its repository: nothing of the old instance writes the disk again.
@@ -329,11 +334,16 @@ class ListInvariantsPropertyTest {
                     }
                 }
             }
-            // The hinted strays are chats of the account's own: once the record has spoken they are primary rows again.
+            // Once every record has spoken, the workers the transcript named are placed by their records or their
+            // memberships, never by the transcript alone; and the chats of the account's own are primary rows.
             if (extended && hinted.isNotEmpty()) {
                 agents.applyAccountSnapshots(snapshots(truth, truth.all))
                 for (id in hinted) {
-                    assertWithMessage("seed $seedValue: hinted stray $id reverted by its record").that(agents.agent(id)?.isProjectScoped ?: false).isFalse()
+                    val row = agents.agent(id) ?: continue
+                    if (row.isProjectScoped) assertWithMessage("seed $seedValue: $id placed by the record or a membership, not the transcript").that(row.scopeSignal).isNotEqualTo(LineageSignal.COORDINATOR_CREATED)
+                }
+                for (id in listOf(truth.machine, "bc-plain-0")) {
+                    assertWithMessage("seed $seedValue: $id is a chat of the account's own").that(agents.agent(id)?.isProjectScoped ?: false).isFalse()
                 }
             }
             agents.reset()

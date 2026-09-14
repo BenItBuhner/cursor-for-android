@@ -257,6 +257,8 @@ class FinishWatchdogTest {
         api.addRunningAgent("bc-s", "Pricing copy", "run-s")
         api.addRunningAgent("bc-x", "Plain chat", "run-x")
         agents.refresh()
+        // The coordinator by its record's flag, its worker and side chat by the membership and children answers.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true)))
         agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-s" to AgentParentKind.SIDE_CHAT), authoritative = true)
         // Everything finished on the server while nothing followed it.
         finish("run-p", "FINISHED", "Two PRs up.", 240_000, "2026-04-13T18:34:00.000Z")
@@ -280,12 +282,13 @@ class FinishWatchdogTest {
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true), ComposerSnapshot("bc-w", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced).isEmpty()
-        // A coordinator's transcript alone makes no Project of a chat: the chat that named the worker is a chat of
-        // the account's own, still running, and worth watching; the worker it nested is not.
+        // The records then say neither is a Project's: bc-p a chat of the account's own, bc-w its own too — a
+        // coordinator's create_agent yields to a record that has been read — and both are worth watching.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p"), ComposerSnapshot("bc-w")))
         agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), LineageSignal.COORDINATOR_CREATED)
         assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Watching(1))
+        assertThat(agents.agent("bc-w")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Watching(2))
         assertThat(announced).isEmpty()
     }
 }
