@@ -43,7 +43,7 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("mode=extended")
         assertThat(report).contains("chat=…874668 row=not in list")
         assertThat(report).contains("classification: COORDINATOR listProject=false recordProjectMode=false content=true evidence=sendToAgent,SendMessage,sendMessage")
-        assertThat(report).contains("presented: items=5 folded=0 staleMessages=1")
+        assertThat(report).contains("presented: items=5 folded=0 staleMessages=1 rows=7 stretches=2 messages=3")
         assertThat(report).contains("  user chars=59 attachments=0")
         assertThat(report).contains("  notification kind=Subagent title=\"Subagent completed\" tone=Success summaryChars=33 bodyChars=23 agent=…74f671")
         assertThat(report).contains("  assistant chars=34")

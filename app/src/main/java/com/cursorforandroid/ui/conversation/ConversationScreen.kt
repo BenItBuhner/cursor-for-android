@@ -56,6 +56,8 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
@@ -204,7 +206,12 @@ fun ConversationScreen(
     // the brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]).
     val items = remember(conversation.items, coordinatorMode) { CoordinatorTranscript.present(conversation.items, coordinatorMode) }
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val showWorking = conversation.showsWorkingRow()
+    // The rows the list draws: the messages as themselves, and everything the agent did between two of them behind
+    // one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still writes.
+    val rows = remember(items, coordinatorMode, isActive) { TranscriptRows.of(items, coordinatorMode, runActive = isActive) }
+    // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
+    // for a connection being re-established, which only it can say.
+    val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
     val lightbox = rememberLightboxState(agentId)
     val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
@@ -219,8 +226,8 @@ fun ConversationScreen(
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) following = atBottom }
     }
-    val newestKey = items.lastOrNull()?.id
-    LaunchedEffect(items.size, newestKey, showWorking) {
+    val newestKey = rows.lastOrNull()?.key
+    LaunchedEffect(rows.size, newestKey, showWorking) {
         if (following) listState.requestScrollToItem(0)
     }
     // The chat opens on its newest turns; the ones before them are paged in when the reader nears the top. In a
@@ -365,8 +372,8 @@ fun ConversationScreen(
                     }
                     // Without a content type the lazy layout offers a scrolled-off user bubble's slot to an activity
                     // group, whose subtree shares nothing with it: the reuse always fails and costs more than it saves.
-                    items(items.asReversed(), key = { it.id }, contentType = { it::class }) { item ->
-                        TimelineItemView(item, paneWidth)
+                    items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
+                        TranscriptRowView(row, paneWidth)
                     }
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
