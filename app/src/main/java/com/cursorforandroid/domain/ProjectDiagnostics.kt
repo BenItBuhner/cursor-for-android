@@ -39,9 +39,31 @@ object ProjectDiagnostics {
         /** The last root discovery pass: roots found, pages read, whether it reached the end, when; null before one. */
         val rootScan: RootScanSummary? = null,
         val memberCounts: Map<String, Int> = emptyMap(),
+        /** The account round (the pin repository's): whether it was ever started this process, and how its last round went. */
+        val accountRound: AccountRoundSummary? = null,
+        /** What the last fetch by id of each unresolved root answered. */
+        val rootFailures: Map<String, String> = emptyMap(),
     )
 
-    data class RootScanSummary(val rootsFound: Int, val pagesRead: Int, val complete: Boolean, val atIso: String?, val notice: String?)
+    data class RootScanSummary(
+        val status: String,
+        val rootsFound: Int,
+        val pagesRead: Int,
+        val records: Int,
+        val complete: Boolean,
+        val atIso: String?,
+        val notice: String?,
+        val attempts: Int,
+    )
+
+    data class AccountRoundSummary(
+        /** The pin repository was built this process: the account's list has been asked for at least once. */
+        val started: Boolean,
+        val active: Boolean,
+        val syncing: Boolean,
+        val lastSyncedIso: String?,
+        val error: String?,
+    )
 
     fun render(input: Input): String = buildString {
         appendLine("Cursor for Android ${input.appVersion} · Project diagnostics · ${input.nowIso}")
@@ -87,9 +109,22 @@ object ProjectDiagnostics {
         if (input.hintRefused.isNotEmpty()) appendLine("hintRefused=${input.hintRefused.sorted().joinToString(",") { tail(it) }}")
 
         appendLine()
+        val round = input.accountRound
+        appendLine(
+            "account round: " + when {
+                round == null -> "not started this process (the pin repository was never built)"
+                else -> "started active=${round.active} syncing=${round.syncing} lastSynced=${round.lastSyncedIso ?: "never"}" + (round.error?.let { " error=\"${redactNotice(it)}\"" } ?: "")
+            },
+        )
         val rootScan = input.rootScan
-        appendLine("root registry: known=${input.knownRoots.size} withRow=${input.knownRoots.count { r -> rows.any { it.id == r.id } }} standIns=${input.knownRoots.count { r -> rows.none { it.id == r.id } }} unresolved=${input.unresolvedRoots.size}" +
-            (rootScan?.let { " scan=roots:${it.rootsFound} pages:${it.pagesRead} complete:${it.complete} at:${it.atIso ?: "-"}" + (it.notice?.let { n -> " notice=\"${redactNotice(n)}\"" } ?: "") } ?: " scan=never"))
+        appendLine("root registry: known=${input.knownRoots.size} withRow=${input.knownRoots.count { r -> rows.any { it.id == r.id } }} standIns=${input.knownRoots.count { r -> rows.none { it.id == r.id } }} unresolved=${input.unresolvedRoots.size}")
+        appendLine(
+            "root scan: " + (rootScan?.let {
+                "${it.status.lowercase()} roots:${it.rootsFound} pages:${it.pagesRead} records:${it.records} complete:${it.complete} attempts:${it.attempts} at:${it.atIso ?: "-"}" +
+                    (it.notice?.let { n -> " notice=\"${redactNotice(n)}\"" } ?: "")
+            } ?: "never"),
+        )
+        input.rootFailures.entries.sortedBy { it.key }.forEach { (id, why) -> appendLine("  fetch by id failed ${tail(id)}: ${redactNotice(why)}") }
         appendLine("registry (id · signal · row · archived · members · seen):")
         input.knownRoots.sortedBy { it.id }.forEach { root ->
             val row = rows.firstOrNull { it.id == root.id }

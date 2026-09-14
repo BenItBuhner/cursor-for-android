@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import kotlinx.coroutines.CancellationException
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
@@ -79,6 +80,12 @@ data class RootScan(
     val children: List<ComposerSnapshot>,
     val pagesRead: Int,
     val complete: Boolean,
+    /** Records the pages carried, for the diagnostics. */
+    val records: Int = 0,
+    /** What stopped the pass short of the end, when something did: the page that failed and why. */
+    val failure: String? = null,
+    /** The pass read as many pages as it was allowed and the list went on: nothing failed, and the next pass reads again. */
+    val truncated: Boolean = false,
 ) {
     /** The coordinators the workers' records name, whether or not their own record was among the pages. */
     val managers: Set<String> get() = children.mapNotNullTo(LinkedHashSet()) { it.parent?.takeIf { p -> p.kind == AgentParentKind.PROJECT_WORKER }?.id }
@@ -141,21 +148,44 @@ class BackgroundComposerApi(
     override suspend fun scanRoots(maxPages: Int): RootScan {
         val roots = ArrayList<ComposerSnapshot>()
         val children = ArrayList<ComposerSnapshot>()
+        val seen = HashSet<String>()
         var cursor: ListCursor? = null
         var pages = 0
         var complete = false
+        var records = 0
+        var failure: String? = null
         do {
-            val response = page(cursor)
+            // Each page stands on its own: a page that fails leaves the ones before it read and the pass to be
+            // finished later, rather than throwing away what the account already said.
+            val response = try {
+                page(cursor)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                failure = "page ${pages + 1}: ${t.message ?: t.javaClass.simpleName}"
+                break
+            }
             pages++
+            var added = 0
             for (composer in response.composers) {
                 val snap = snapshot(composer) ?: continue
-                if (snap.isProject && snap.parent == null) roots += snap
+                records++
+                if (!seen.add(snap.id)) continue
+                added++
+                if (snap.scope == AgentScope.PROJECT_ROOT) roots += snap
                 if (snap.parent != null) children += snap
             }
-            cursor = if (response.hasMore && response.composers.isNotEmpty()) response.cursor() else null
-            if (cursor == null) complete = true
+            when {
+                !response.hasMore -> { cursor = null; complete = true }
+                // A page that brought nothing new is the list read to its end whatever the flag said.
+                added == 0 -> { cursor = null; complete = true }
+                else -> {
+                    cursor = response.cursor()
+                    if (cursor == null) failure = "page $pages: the service has more but named no page cursor"
+                }
+            }
         } while (cursor != null && pages < maxPages)
-        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete)
+        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null)
     }
 
     override suspend fun list(): AccountList = accountList(page(null), first = true)
@@ -201,7 +231,9 @@ class BackgroundComposerApi(
             includeHiddenSources = HIDDEN_SOURCES.map { it.wireName },
             includeWorkers = true,
             includeSubagents = true,
-            usePageTokens = if (cursor is ListCursor.Token) true else null,
+            // Tokens are asked for from the first page: the service names the next page's token only when asked,
+            // and a first page read without asking left every later page unreachable (the list read one page).
+            usePageTokens = true,
             pageToken = (cursor as? ListCursor.Token)?.token,
             lastMessageActivityAtMsOffset = (cursor as? ListCursor.Offset)?.offset,
         ),
@@ -233,10 +265,16 @@ class BackgroundComposerApi(
         return response.composers.firstOrNull { it.bcId.trim() == id }?.let { snapshot(it) }
     }
 
-    /** Where the next page starts, as the service said: a page token, or the activity offset; null when it gave neither. */
+    /**
+     * Where the next page starts: the page token the service named; failing that, the activity offset the older
+     * service pages by — the oldest `lastMessageActivityAtMs` of this page, which is what the desktop's
+     * `last_message_activity_at_ms_offset` carries; null when the page gave nothing to continue from.
+     */
     private fun ListBackgroundComposersResponseDto.cursor(): ListCursor? {
         nextPageToken?.trim()?.takeIf { it.isNotEmpty() }?.let { return ListCursor.Token(it) }
-        val offset = nextPageOffset?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() } ?: return null
+        val offset = nextPageOffset?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }
+            ?: composers.mapNotNull { c -> c.lastMessageActivityAtMs?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() } }.minOrNull()
+            ?: return null
         return if (offset > 0) ListCursor.Offset(offset) else null
     }
 
@@ -360,6 +398,10 @@ class BackgroundComposerApi(
         val cloudSubagentParent: CloudSubagentParentDto? = null,
         /** The agent asked a question and waits on the answer. */
         val hasPendingInteraction: Boolean? = null,
+        /** Created through the "New Project" flow: a Project's chat even when its `projectMetadata` is missing. */
+        val startedAsNewProject: Boolean? = null,
+        /** `int64`, a string in proto3's JSON; what the older service pages by (see `cursor`). */
+        val lastMessageActivityAtMs: JsonPrimitive? = null,
     )
 
     @Serializable
@@ -435,7 +477,7 @@ class BackgroundComposerApi(
             val parent = composer.cloudSubagentParent?.parentAgentId.link()?.let { AgentParent(it, AgentParentKind.SUBAGENT) }
                 ?: composer.sideChatInfo?.parentBcId.link()?.let { AgentParent(it, AgentParentKind.SIDE_CHAT) }
                 ?: manager?.let { AgentParent(it, AgentParentKind.PROJECT_WORKER) }
-            val isProject = composer.projectMetadata != null && manager == null
+            val isProject = (composer.projectMetadata != null || composer.startedAsNewProject == true) && manager == null
             val appearance = composer.projectMetadata?.appearance
                 ?.takeIf { isProject && it.icon.isNotBlank() && it.colorId.isNotBlank() }
                 ?.let { ProjectAppearance(it.icon.trim(), it.colorId.trim()) }
