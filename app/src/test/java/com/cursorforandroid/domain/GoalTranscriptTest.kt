@@ -163,6 +163,17 @@ class GoalTranscriptTest {
         assertThat(goal.lastChange).isEqualTo(Goal.Change.Updated)
         assertThat(goal.accruingSinceMillis).isEqualTo(t0)
         assertThat(goal.label).isEqualTo(Goal.LABEL_UPDATED)
+        // The "updated" leads for the turn that changed it; the next turn finds the goal simply active.
+        val later = GoalTranscript.derive(
+            listOf(
+                prompt("m1", t0), work("g1", set("c1")),
+                prompt("m2", t0 + 10 * minute), work("g2", set("c2", "Something else")),
+                prompt("m3", t0 + 20 * minute, "carry on"), work("g3", read("r3")),
+            ),
+        )!!
+        assertThat(later.objective).isEqualTo("Something else")
+        assertThat(later.label).isEqualTo(Goal.LABEL_ACTIVE)
+        assertThat(later.accruingSinceMillis).isEqualTo(t0)
     }
 
     @Test

@@ -70,17 +70,14 @@ object GoalTranscript {
             when (item) {
                 is UserMessage -> {
                     turnStart = item.timestampMillis
-                    // A new prompt after the goal ended: the strip has said its piece.
-                    if (goal != null && !goal.status.isOpen) goal = null
+                    goal = nextTurn(goal)
                 }
                 is SystemNotification -> {
                     turnStart = item.timestampMillis ?: turnStart
                     goal = if (item.kind == SystemNotification.Kind.Goal && item.title == SystemNotifications.GOAL_CONTINUED) {
                         continued(goal, item, turnStart)
-                    } else if (goal != null && !goal.status.isOpen) {
-                        null
                     } else {
-                        goal
+                        nextTurn(goal)
                     }
                 }
                 is ActivityGroup -> for (call in item.calls) {
@@ -91,6 +88,17 @@ object GoalTranscript {
             }
         }
         return goal
+    }
+
+    /**
+     * [goal] as a new turn finds it: a goal that ended has had its turn on the strip and goes; an open goal stays,
+     * the "updated" it led with settling back to the status once the turn that changed it is over.
+     */
+    private fun nextTurn(goal: Goal?): Goal? = when {
+        goal == null -> null
+        !goal.status.isOpen -> null
+        goal.lastChange == Goal.Change.Updated -> goal.copy(lastChange = Goal.Change.Set)
+        else -> goal
     }
 
     /**
