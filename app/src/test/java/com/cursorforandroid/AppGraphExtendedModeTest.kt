@@ -79,6 +79,8 @@ class AppGraphExtendedModeTest {
         graph.prefs.setPinnedIds(setOf("bc-1"))
         graph.prefs.setPendingPinChange("bc-2", pinned = true)
         graph.prefs.setPinsMigrated(true)
+        // The option under the Extended mode toggle, switched off by the user: a choice, not the account's leftovers.
+        graph.prefs.setPinSyncEnabled(false)
         val before = graph.builtParts()
 
         assertThat(graph.extendedMode.disable()).isTrue()
@@ -92,6 +94,10 @@ class AppGraphExtendedModeTest {
         assertThat(graph.prefs.pinsMigrated.first()).isFalse()
         assertThat(graph.extendedMode.capabilities().anyExtended).isFalse()
         assertThat(graph.builtParts()).isEqualTo(before)
+        // The option is off the screen with the mode; its preference waits for the mode to come back, as it was left.
+        assertThat(graph.prefs.pinSyncEnabled.first()).isFalse()
+        graph.extendedMode.enable()
+        assertThat(graph.prefs.pinSyncEnabled.first()).isFalse()
     }
 
     @Test
