@@ -6,7 +6,11 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import java.util.UUID
 
-/** The four destinations of the app. `route` is the string form the stack is saved as. */
+/**
+ * The three destinations of the app. `route` is the string form the stack is saved as. A Cursor Project has no
+ * screen of its own: its row opens its coordinator's chat, and the Project's primaries, context and actions are
+ * the Project section of that chat's right-side panel.
+ */
 sealed interface Screen {
     val route: String
 
@@ -22,17 +26,15 @@ sealed interface Screen {
         override val route: String get() = "agent/$id"
     }
 
-    /** A Cursor Project's view: its coordinator, primaries, side chats and shared context. */
-    data class Project(val id: String) : Screen {
-        override val route: String get() = "project/$id"
-    }
-
     companion object {
+        /** The route of the Project view builds before 0.3.11 saved; it restores as the coordinator's chat. */
+        private const val LEGACY_PROJECT_PREFIX = "project/"
+
         fun fromRoute(route: String): Screen? = when {
             route == Home.route -> Home
             route == Settings.route -> Settings
             route.startsWith("agent/") -> route.removePrefix("agent/").takeIf { it.isNotBlank() }?.let(::Agent)
-            route.startsWith("project/") -> route.removePrefix("project/").takeIf { it.isNotBlank() }?.let(::Project)
+            route.startsWith(LEGACY_PROJECT_PREFIX) -> route.removePrefix(LEGACY_PROJECT_PREFIX).takeIf { it.isNotBlank() }?.let(::Agent)
             else -> null
         }
     }
@@ -86,10 +88,11 @@ class NavStack private constructor(initial: List<NavEntry>) {
     }
 
     /**
-     * Opens a chat: over anything that is not a chat, or in place of the chat on top, so chats never pile up when one
-     * is opened from another; nothing happens when it is already on top. Decided from the stack as it is *now*, not
-     * from what a caller saw when it was composed — a callback created while a chat was on top may well be invoked
-     * after that chat has been popped.
+     * Opens a chat — a Project's coordinator included: over anything that is not a chat, or in place of the chat on
+     * top, so chats never pile up when one is opened from another (a primary from its coordinator's panel, the
+     * coordinator from a primary's); nothing happens when it is already on top. Decided from the stack as it is
+     * *now*, not from what a caller saw when it was composed — a callback created while a chat was on top may well
+     * be invoked after that chat has been popped.
      */
     fun openAgent(id: String) {
         val current = top.screen
@@ -97,19 +100,6 @@ class NavStack private constructor(initial: List<NavEntry>) {
             current is Screen.Agent && current.id == id -> Unit
             current is Screen.Agent -> replaceTop(Screen.Agent(id))
             else -> push(Screen.Agent(id))
-        }
-    }
-
-    /**
-     * Opens a Project's view: in place of a Project view on top (one Project from another), over anything else — a
-     * chat included, so a primary opened from the Project goes back to it. Nothing happens when it is already on top.
-     */
-    fun openProject(id: String) {
-        val current = top.screen
-        when {
-            current is Screen.Project && current.id == id -> Unit
-            current is Screen.Project -> replaceTop(Screen.Project(id))
-            else -> push(Screen.Project(id))
         }
     }
 

@@ -122,23 +122,25 @@ object DefaultPanelSections {
     )
 
     /**
-     * The Project section is the Projects work's [ProjectPanelSection], for a chat that is part of one: a
-     * coordinator's primaries and actions, or a primary's, side chat's or subagent's way back to its Project. It
-     * owns its view model, so it needs the graph the panel lives in ([LocalPanelGraph]) and the host's navigation.
-     * Any other chat has no Project, and no Project section — a side chat of an ordinary chat included: its way
-     * back is the Overview's "Side chat of" row.
+     * The Project section is a Cursor Project's one surface in the app ([ProjectPanelSection]): in its
+     * coordinator's chat, the primaries with their live status and menus, New primary, Adopt a chat, the icon and
+     * colour editor, the subagents and the shared context; in a primary's, side chat's or subagent's chat, the way
+     * back to the coordinator's chat. It owns its view model, so it needs the graph the panel lives in
+     * ([LocalPanelGraph]) and the host's navigation. Any other chat has no Project, and no Project section — a side
+     * chat of an ordinary chat included: its way back is the Overview's "Side chat of" row.
      */
     val project = PanelSection(
         id = PanelSectionId.Project,
         icon = CursorIcons.Lightning,
         visible = { _, state -> isProjectScoped(state) },
         hint = { state -> state.agent?.let { if (it.looksLikeProject) "Coordinator" else it.parent?.let { "In a Project" } } },
+        expandedByDefault = true,
         content = { state, actions ->
             val graph = LocalPanelGraph.current
             if (graph == null) {
                 EmptyRow("The Project section needs the app to render", "Nothing to show outside a running chat.")
             } else {
-                ProjectPanelSection(graph, state.agentId, onOpenAgent = actions::openAgent, onOpenProject = actions::openProject)
+                ProjectPanelSection(graph, state.agentId, onOpenAgent = actions::openAgent, onNotify = actions::notify)
             }
         },
     )
