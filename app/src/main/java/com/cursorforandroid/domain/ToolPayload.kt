@@ -142,6 +142,11 @@ sealed interface ToolPayload {
         /** The result's one-line message ("Created agent…", "Delivered as queued"). */
         val note: String? = null,
         val truncated: Boolean = false,
+        /**
+         * [workers] came from the tool's result — the worker `create_agent` made, the workers `get_agent_status`
+         * listed as the coordinator's — rather than from its arguments: the coordinator's own word that they are its.
+         */
+        val reported: Boolean = false,
     ) : ToolPayload {
         enum class Kind { Created, Messaged, Status, Stopped, ReadTranscript }
 

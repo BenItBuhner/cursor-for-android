@@ -47,7 +47,23 @@ data class WorkerMembership(
     val spawnKind: WorkerSpawnKind = WorkerSpawnKind.UNKNOWN,
     val toolCallId: String? = null,
     val status: String? = null,
-)
+) {
+    /**
+     * Whether the membership stands. The account keeps a row for a worker that was released or removed, with a
+     * status saying so; such a row is positive evidence the chat is *not* the Project's any more, and must not place
+     * it. A status this build does not know, or none, is a standing membership.
+     */
+    val isActive: Boolean
+        get() {
+            val word = status?.trim()?.uppercase()?.substringAfterLast('_')?.takeIf { it.isNotEmpty() } ?: return true
+            val whole = status.trim().uppercase()
+            return !(ENDED_WORDS.any { whole.contains(it) } || word in ENDED_WORDS)
+        }
+
+    private companion object {
+        val ENDED_WORDS = setOf("RELEASED", "REMOVED", "CLEARED", "DELETED", "INACTIVE", "ENDED", "DETACHED", "REVOKED", "ORPHANED")
+    }
+}
 
 /**
  * What the account says hangs off one chat: its workers (a Project's primaries, with how each was spawned, from

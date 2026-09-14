@@ -100,7 +100,7 @@ class RunMonitor(
                 .filter { !it.isFromCache }
                 // A Project's coordinator and the agents spawned inside it are not followed here: nothing about them
                 // is announced (see [publishFinished]), so nothing about them is worth a stream.
-                .map { st -> st.agents.filter { it.isRunning && !it.isProjectScoped }.sortedByDescending { it.updatedAtMillis } }
+                .map { st -> st.agents.filter { it.isRunning && !it.isProjectScopedByEvidence }.sortedByDescending { it.updatedAtMillis } }
                 .distinctUntilChanged()
                 .collect { reconcile(s, it) }
         }
@@ -225,7 +225,7 @@ class RunMonitor(
      * chat classified as the Project's while its run was being followed is dropped all the same.
      */
     private fun publishFinished(run: TrackedRun) {
-        if (agents.agent(run.agentId)?.isProjectScoped == true) return
+        if (agents.agent(run.agentId)?.isProjectScopedByEvidence == true) return
         if (!finishedEmitted.add(run.runId)) return
         _finished.tryEmit(run)
     }

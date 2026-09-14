@@ -133,8 +133,10 @@ class AgentsViewModelTest {
 
         vm.toggleStatus(StatusFilter.Running)
         val noRunning = vm.uiState.first { StatusFilter.Running !in it.prefs.statuses }
-        assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running }).isTrue()
-        assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3)
+        // The filter takes the running chats off both surfaces — a pinned one excepted, which the user's word keeps.
+        assertThat(noRunning.recentRows.none { it.indicator == AgentIndicator.Running && !it.isPinned }).isTrue()
+        val pinnedRunning = loaded.recentRows.count { it.indicator == AgentIndicator.Running && it.isPinned }
+        assertThat(noRunning.recentRows).hasSize(loaded.recentRows.size - 3 + pinnedRunning)
         assertThat(noRunning.recentRows.map { it.agent.id }.toSet()).isEqualTo(noRunning.sections.flatMap { it.rows }.filterNot { it.agent.isProjectScoped }.map { it.agent.id }.toSet())
 
         vm.toggleStatus(StatusFilter.Running)

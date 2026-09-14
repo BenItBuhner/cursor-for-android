@@ -239,14 +239,16 @@ class ProjectRepository(
         }
         // Each read's word is applied with its own signal, and releases only the kind of member it covered in full.
         if (lineage.workersRead) {
-            agents.applyLineage(rootId, lineage.workers.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
+            // A membership the account marks released or removed is not one: it says the chat is its own again.
+            val standing = lineage.workers.filter { it.isActive }
+            agents.applyLineage(rootId, standing.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
         }
         if (lineage.childrenRead) {
             agents.applyLineage(rootId, lineage.children, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
         }
         flow.update {
             it.copy(
-                memberships = if (lineage.workersRead) lineage.workers.associateBy { m -> m.workerId } else it.memberships,
+                memberships = if (lineage.workersRead) lineage.workers.filter { m -> m.isActive }.associateBy { m -> m.workerId } else it.memberships,
                 isSyncing = false,
                 hasSynced = true,
                 lastSyncedAtMillis = now(),

@@ -183,17 +183,31 @@ enum class LineageSignal {
     HIDDEN_SOURCE,
     COORDINATOR_TRANSCRIPT,
     ACTION,
+    /**
+     * A coordinator's own transcript showing the worker come into being — `create_agent` answering with its id, or
+     * `get_agent_status` listing it among the coordinator's workers. Stronger than a mention ([COORDINATOR_TRANSCRIPT]:
+     * a chat merely messaged or read), which any chat could be the object of; the one positive evidence default mode has.
+     */
+    COORDINATOR_CREATED,
     ;
 
-    /** Words of the account service itself, which replace anything a weaker signal said; a transcript is a hint. */
-    val isAuthoritative: Boolean get() = this != COORDINATOR_TRANSCRIPT
+    /** Words of the account service itself, which replace anything a transcript said; both transcript signals yield to them. */
+    val isAuthoritative: Boolean get() = this != COORDINATOR_TRANSCRIPT && this != COORDINATOR_CREATED
+
+    /**
+     * Positive evidence of lineage: the chat's own record naming its manager or parent, a root's membership or
+     * children answer, an action taken here, a coordinator's transcript showing it created the chat. A mention in a
+     * coordinator's transcript is a hint — it places a chat only until the chat's own record has said otherwise, and
+     * it never takes a chat off the running count or the notifications.
+     */
+    val isPositiveEvidence: Boolean get() = this != COORDINATOR_TRANSCRIPT
 
     /**
      * Whether a complete membership answer that no longer names the chat releases it. A membership's, a children
      * list's or a transcript's word is; the chat's own record naming its parent is not (the record is the chat's,
      * the membership the Project's), nor is an action taken here a moment ago, which the account may not list yet.
      */
-    val isRetractable: Boolean get() = this == MEMBERSHIP || this == CHILDREN_LIST || this == COORDINATOR_TRANSCRIPT
+    val isRetractable: Boolean get() = this == MEMBERSHIP || this == CHILDREN_LIST || this == COORDINATOR_TRANSCRIPT || this == COORDINATOR_CREATED
 }
 
 /** The list row. Serializable so the last known list can be restored from disk before the network answers. */
@@ -289,6 +303,14 @@ data class Agent(
      * notification is posted for it, and no primary surface beyond the sidebar's tree (recents, the widget) lists it.
      */
     val isProjectScoped: Boolean get() = scope != AgentScope.PRIMARY
+    /**
+     * [isProjectScoped] on positive evidence alone (see [LineageSignal.isPositiveEvidence]): the record's own
+     * lineage fields, a membership or children answer, an action taken here, or the row's own facts. A chat placed
+     * by nothing but a coordinator's transcript is still nested under the coordinator, but it is counted among the
+     * running agents and notifies like any chat of the account's until the account itself says whose it is.
+     */
+    val isProjectScopedByEvidence: Boolean
+        get() = isProjectScoped && (scopeSignal?.isPositiveEvidence != false || isProject || (source != null && source in AgentScope.CHILD_SOURCES))
     /** Drawn as a Project — with its icon and colour — whether the account said so or its own transcript did. */
     val looksLikeProject: Boolean get() = isProject || isProjectRoot
     /**

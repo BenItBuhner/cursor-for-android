@@ -22,6 +22,23 @@ object CoordinatorLineage {
     fun workerIds(items: List<TimelineItem>): Set<String> =
         calls(items).filter { isCoordinatorTool(it.name) }.flatMapTo(LinkedHashSet()) { it.linkedAgentIds }
 
+    /**
+     * The ids the coordinator's own tools returned as its workers: the one `create_agent` made, and the ones
+     * `get_agent_status` listed (see [ToolPayload.WorkerAction.reported]). Positive evidence, where a mere mention —
+     * a chat messaged, stopped or read — is a hint (see `LineageSignal`).
+     */
+    fun createdWorkerIds(items: List<TimelineItem>): Set<String> =
+        calls(items).filter { isCoordinatorTool(it.name) }.flatMapTo(LinkedHashSet()) { call ->
+            val action = call.payload as? ToolPayload.WorkerAction
+            when {
+                action != null && action.reported && (action.kind == ToolPayload.WorkerAction.Kind.Created || action.kind == ToolPayload.WorkerAction.Kind.Status) ->
+                    action.workers.mapNotNull { it.agentId }
+                // A trace kept before the payloads: a `create_agent` call names only the worker it made.
+                action == null && call.name.trim().lowercase().removeSuffix("_tool_call") == "create_agent" -> call.linkedAgentIds
+                else -> emptyList()
+            }
+        }
+
     private fun calls(items: List<TimelineItem>): Sequence<ToolCall> =
         items.asSequence().filterIsInstance<ActivityGroup>().flatMap { it.calls.asSequence() }
 }

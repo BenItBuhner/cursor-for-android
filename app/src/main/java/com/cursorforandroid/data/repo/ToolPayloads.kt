@@ -86,6 +86,7 @@ object ToolPayloads {
                 text = args.string(listOf("prompt"))?.let { ToolPayloadLimits.clip(it, PROMPT_CHARS).first },
                 title = args.string(listOf("name")),
                 note = note,
+                reported = resultAgent != null,
             )
             "send_to_agent" -> ToolPayload.WorkerAction(
                 kind = ToolPayload.WorkerAction.Kind.Messaged,
@@ -109,7 +110,7 @@ object ToolPayloads {
                 }.orEmpty()
                 val asked = (args?.get("agent_ids") as? JsonArray ?: args?.get("agentIds") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
                 val workers = reported.ifEmpty { asked.map { WorkerStatus(agentId = it) } }
-                ToolPayload.WorkerAction(kind = ToolPayload.WorkerAction.Kind.Status, workers = workers, note = note)
+                ToolPayload.WorkerAction(kind = ToolPayload.WorkerAction.Kind.Status, workers = workers, note = note, reported = reported.isNotEmpty())
             }
             "stop_agent" -> ToolPayload.WorkerAction(
                 kind = ToolPayload.WorkerAction.Kind.Stopped,

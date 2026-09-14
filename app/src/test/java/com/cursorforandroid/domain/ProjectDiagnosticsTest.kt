@@ -48,13 +48,17 @@ class ProjectDiagnosticsTest {
         // The root's line: its signal, its children by kind, and what its last membership pass answered — the notice redacted.
         assertThat(report).contains("…1-root signal=ACCOUNT_RECORD project_worker=2 side_chat=0 subagent=0 sync=workers:ok(2) children:failed notice=\"Cursor refused the Project's memberships (bc-…: \"…\" <url>).\"")
         assertThat(report).contains("…9-gone (not loaded) sync=never")
-        // One line per row, in the report's columns.
-        assertThat(report).contains("…reated CHILD ACCOUNT_RECORD …1-root PROJECT_WORKER - ACTIVE RUNNING running")
-        assertThat(report).contains("…dopted CHILD MEMBERSHIP …1-root PROJECT_WORKER - ACTIVE FINISHED -")
-        assertThat(report).contains("…4-side CHILD row.source - - AS_SIDE_CHAT_FROM_CLOUD ACTIVE FINISHED -")
-        assertThat(report).contains("…orphan CHILD COORDINATOR_TRANSCRIPT …9-gone PROJECT_WORKER - ACTIVE FINISHED -")
-        assertThat(report).contains("…-plain PRIMARY none - - - ARCHIVED FINISHED archived,pinned")
-        assertThat(report).contains("…1-root ROOT ACCOUNT_RECORD - - - ACTIVE FINISHED project")
+        // One line per row, in the report's columns: the evidence names the signal and the root it points at.
+        assertThat(report).contains("…reated CHILD record(…1-root):row …1-root PROJECT_WORKER - CLOUD ACTIVE RUNNING running")
+        assertThat(report).contains("…dopted CHILD membership(…1-root) …1-root PROJECT_WORKER - CLOUD ACTIVE FINISHED -")
+        assertThat(report).contains("…4-side CHILD record.source - - AS_SIDE_CHAT_FROM_CLOUD CLOUD ACTIVE FINISHED -")
+        assertThat(report).contains("…orphan CHILD hint(…9-gone):row …9-gone PROJECT_WORKER - CLOUD ACTIVE FINISHED hintOnly")
+        assertThat(report).contains("…-plain PRIMARY none - - - CLOUD ARCHIVED FINISHED archived,pinned")
+        assertThat(report).contains("…1-root ROOT record(root):row - - - CLOUD ACTIVE FINISHED project")
+        // The pins, the running set and what placed each row are in it too.
+        assertThat(report).contains("pinned (id · resolution · scope · env):")
+        assertThat(report).contains("…-plain shown PRIMARY CLOUD")
+        assertThat(report).contains("running: list=1 counted=0 excludedByEvidence=1 scan=never")
         // Nothing the user wrote or named: no chat names, prompts, summaries, repositories, full ids or URLs.
         for (forbidden in listOf("Cursor for Android\n", "New chat creation issue", "Model picker stability", "Pricing copy", "Station intelligence", "Cesium", "secret", "bennett", "github.com", "bc-11111111-root", "https://x.y/z", "quoted")) {
             assertThat(report).doesNotContain(forbidden)

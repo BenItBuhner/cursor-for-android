@@ -131,8 +131,13 @@ object AgentListOrganizer {
      * archive ([passesArchive]): archiving is done to the Project itself, so an archived Project is put away as an
      * archived chat is, and shown again with Archived checked. Every other row answers to [matchesFilters].
      */
-    fun isListed(row: AgentRow, prefs: ListPreferences): Boolean =
-        if (row.agent.isProjectRoot) passesArchive(row, prefs) else matchesFilters(row, prefs)
+    fun isListed(row: AgentRow, prefs: ListPreferences): Boolean = when {
+        // A pin is the user's word that the chat is shown: no filter, no page, no source, environment or scope
+        // guess takes it off the list. It is the one row the Chats filters do not answer for.
+        row.isPinned -> true
+        row.agent.isProjectRoot -> passesArchive(row, prefs)
+        else -> matchesFilters(row, prefs)
+    }
 
     /**
      * The one filter every row answers to: an archived chat is listed only while Archived is checked. It is all
@@ -267,7 +272,7 @@ object AgentListOrganizer {
      * not: they belong to the Project's own surface, and the recents, like the widget, are a primary surface.
      */
     fun recentRows(sections: List<AgentSection>): List<AgentRow> =
-        sections.flatMap { it.rows }.filterNot { it.isPlaceholder || it.agent.isProjectScoped }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
+        sections.flatMap { it.rows }.filterNot { it.isPlaceholder || it.agent.isProjectScopedByEvidence }.distinctBy { it.agent.id }.sortedByDescending { recencyMillis(it) }
 
     /**
      * Nests each row under its parent chat when the parent is listed too (see [Agent.parent]), the way the Agents
