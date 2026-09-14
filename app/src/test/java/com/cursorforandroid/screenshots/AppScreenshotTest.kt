@@ -450,7 +450,7 @@ class AppScreenshotTest {
             watching.cancel()
         }
         // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasTestTag("worker-action"))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("worker-card"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
         // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —

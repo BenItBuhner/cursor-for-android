@@ -182,7 +182,7 @@ internal fun ReplyMessage(
  * "Background" row here, closed, opening per message onto the text in full, and "Working" while it still streams.
  */
 @Composable
-private fun BackgroundMessage(item: AssistantMessage, modifier: Modifier) {
+internal fun BackgroundMessage(item: AssistantMessage, modifier: Modifier = Modifier) {
     var toggled by rememberSaveable("${item.id}-background") { mutableStateOf<Boolean?>(null) }
     val text = item.markdown.trim()
     val expandable = text.isNotEmpty()
@@ -411,7 +411,7 @@ fun SummaryLine(label: String, value: String, modifier: Modifier = Modifier) {
  * counts of edits ("+12 -3") are set apart in the git colours. The whole row is the toggle.
  */
 @Composable
-private fun DisclosureRow(
+internal fun DisclosureRow(
     action: String,
     details: String?,
     expanded: Boolean,
@@ -556,7 +556,7 @@ private fun StepList(steps: List<ActivityStep>, modifier: Modifier = Modifier) {
 
 /** A thought as Cursor shows one: the prose at half strength (`.markdown-normalized { opacity: .5 }`). */
 @Composable
-private fun ThoughtText(text: String, modifier: Modifier = Modifier) {
+internal fun ThoughtText(text: String, modifier: Modifier = Modifier) {
     Text(text.trim(), style = CursorTheme.typography.base, color = CursorTheme.colors.textTertiary, modifier = modifier)
 }
 
@@ -568,7 +568,7 @@ private fun ThoughtText(text: String, modifier: Modifier = Modifier) {
  * output, the MCP input and result, the full path or query.
  */
 @Composable
-private fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
+internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     // A Project coordinator's call is a card or a row of its own (see CoordinatorContent.kt), never a bare line.
     if (CoordinatorStep(call, modifier)) return
     val colors = CursorTheme.colors
@@ -707,7 +707,7 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 }
 
 @Composable
-private fun RunFooterView(item: RunFooter, modifier: Modifier) {
+internal fun RunFooterView(item: RunFooter, modifier: Modifier = Modifier) {
     val ending = when (item.status) {
         RunStatus.ERROR -> "Failed"
         RunStatus.CANCELLED -> "Cancelled"

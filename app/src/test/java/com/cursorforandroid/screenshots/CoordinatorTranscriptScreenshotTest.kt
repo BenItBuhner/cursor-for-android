@@ -29,9 +29,11 @@ import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.fixtures.CoordinatorFixtures
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
-import com.cursorforandroid.ui.conversation.TimelineItemView
+import com.cursorforandroid.ui.conversation.TranscriptRowView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -51,8 +53,8 @@ import java.io.File
  * A Project coordinator's chat rendered from the wire shapes as they really arrive (see [CoordinatorFixtures]): the
  * turn Cursor injected when a subagent finished — its instruction to the model hidden, the coordinator's brief remark
  * folded under the row — then the turn of the reference frame replayed from the documented stream's frames: the
- * coordinator's notes under "Background", its message to a worker as a row, and its `SendMessage` updates as the
- * messages — plain replies, read off `args.text.content`, with nothing to set them apart from an agent's. The chat is read as a coordinator's from this content alone; no list row
+ * coordinator's `SendMessage` updates as the messages — plain replies, read off `args.text.content` — and everything
+ * between two of them (its notes, its thought, its message to a worker, its edit) behind one summary line each. The chat is read as a coordinator's from this content alone; no list row
  * says so. Written to `screenshots/` beside the walkthrough and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -113,6 +115,12 @@ class CoordinatorTranscriptScreenshotTest {
         assertThat(shown.filterIsInstance<SystemNotification>().single().narration).startsWith("Noted;")
         assertThat(shown.filterIsInstance<ActivityGroup>().flatMap { it.calls }.count { it.payload is ToolPayload.CoordinatorMessage }).isEqualTo(3)
 
+        // The rows the list draws: each update a reply of its own, everything between two of them one summary line.
+        val rows = TranscriptRows.of(shown, coordinatorMode = true)
+        assertThat(rows.filterIsInstance<TranscriptRow.Message>()).hasSize(3)
+        assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }.map { it.summary.text })
+            .containsExactly("1 agent · 1 thought · 1 note", "1 edit · 1 note").inOrder()
+
         val controls = TranscriptControls(onOpenAgent = {}, agentById = { workers[it] }, coordinatorMode = true)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
@@ -121,7 +129,7 @@ class CoordinatorTranscriptScreenshotTest {
                         Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        shown.forEach { TimelineItemView(it) }
+                        rows.forEach { TranscriptRowView(it) }
                     }
                 }
             }

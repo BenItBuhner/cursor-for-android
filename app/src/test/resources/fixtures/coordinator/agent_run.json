@@ -1,0 +1,8 @@
+{
+ "_source": "first turn of the 'Land merge train and prep release' worker (bc-24e35e9f), kinds and tool names as they occurred, prose replaced",
+ "prompt": "Land the merge train and prep the release: merge #113 and cut v0.3.4 with the release notes.",
+ "toolCalls": 126,
+ "thoughts": 73,
+ "replies": 37,
+ "durationMs": 1707625
+}
