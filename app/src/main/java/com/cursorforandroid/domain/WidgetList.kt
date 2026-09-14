@@ -49,12 +49,12 @@ object WidgetList {
         // The sidebar's "Pinned" group, in the sidebar's order — less a Project's own chats, which the widget never lists.
         WidgetMode.Pinned -> AgentListOrganizer.organize(agents, prefs, local, nowMillis = nowMillis, zone = zone)
             .firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty()
-            .filterNot { it.agent.isProjectScoped }
+            .filterNot { it.agent.isProjectScopedByEvidence }
         // Agents at work, whatever the Status filter says (a "Running" list with Running filtered out would only
         // ever be empty); the Repo / Git / Source filters still apply. Nothing of a Project — its coordinator, its
         // workers, side chats and subagents — belongs to a primary list like this one.
         WidgetMode.Running -> agents
-            .filter { !it.isProjectScoped }
+            .filter { !it.isProjectScopedByEvidence }
             .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
             .sortedByDescending { it.agent.updatedAtMillis }

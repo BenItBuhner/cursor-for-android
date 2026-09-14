@@ -38,8 +38,11 @@ import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.EnvironmentFilter
+import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.SourceFilter
+import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -250,18 +253,31 @@ class AppScreenshotTest {
         capture("26_environment_filter")
         Espresso.pressBack()
         waitForText("Grouping")
-        // The Source filter at work: only the chats started from Slack, the CLI and Grok Bot are left in the sidebar.
+        // The Source filter at work: only the chats started from Slack, the CLI and Grok Bot are left among the
+        // sidebar's own chats — the pinned ones stay whatever the filter says, the Editor-started machine chat among them.
         runBlocking { graph.prefs.updateListPreferences { it.copy(sources = setOf(SourceFilter.Slack, SourceFilter.Cli, SourceFilter.GrokBot)) } }
         waitForText("CLI +2")
         Espresso.pressBack() // dismiss the sheet
         compose.waitUntil(20_000) {
-            compose.onAllNodesWithText("Codex-Poly-Bot Scaling").fetchSemanticsNodes().isEmpty() &&
-                compose.onAllNodesWithText("Zen browser flawless parity").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("House environment overhaul").fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodesWithText("Zen browser flawless parity").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithText("Codex-Poly-Bot Scaling").fetchSemanticsNodes().isNotEmpty()
         }
         compose.waitForIdle()
         capture("27_sidebar_source_filtered")
-        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = SourceFilter.entries.toSet()) } }
-        waitForText("Codex-Poly-Bot Scaling")
+        // The Status filter without Running and the Environment filter without the user's machines: the running chat
+        // of the account's own leaves the list; the pinned ones running — the one on the user's machine among them —
+        // do not. A pin is shown regardless of paging, source, environment or state.
+        runBlocking { graph.prefs.updateListPreferences { it.copy(sources = SourceFilter.entries.toSet(), statuses = ListPreferences().statuses - StatusFilter.Running, environments = setOf(EnvironmentFilter.Cloud, EnvironmentFilter.Pool)) } }
+        compose.waitUntil(20_000) {
+            compose.onAllNodesWithText("Hyper-realistic human limbs").fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodesWithText("House environment overhaul").fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithText("Codex-Poly-Bot Scaling").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.waitForIdle()
+        capture("60_sidebar_pinned_and_running")
+        runBlocking { graph.prefs.updateListPreferences { it.copy(statuses = ListPreferences().statuses, environments = EnvironmentFilter.entries.toSet()) } }
+        waitForText("Hyper-realistic human limbs")
         Espresso.pressBack() // close the drawer
         compose.waitForIdle()
 

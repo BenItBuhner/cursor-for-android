@@ -16,6 +16,7 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.parseIsoMillis
 import com.cursorforandroid.domain.AgentParentKind
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.LivePhase
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TrackedRun
@@ -272,7 +273,7 @@ class FinishWatchdogTest {
         api.addRunningAgent("bc-p", "Cesium billing launch", "run-p")
         api.addRunningAgent("bc-w", "Stripe webhook handler", "run-w")
         agents.refresh()
-        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        agents.applyLineage("bc-p", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER), LineageSignal.COORDINATOR_CREATED)
         assertThat(watchdog().check()).isEqualTo(FinishWatchdog.Outcome.Done)
         assertThat(announced).isEmpty()
     }

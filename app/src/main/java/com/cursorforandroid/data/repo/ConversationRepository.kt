@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.ModelParam
@@ -725,20 +726,27 @@ class ConversationRepository(
             state.update { it.copy(items = items, hasOlder = older).transform() }
             coordinatorLineage(items)
         }
-        if (workers != null) agents.applyLineage(agentId, workers.associateWith { AgentParentKind.PROJECT_WORKER }, authoritative = false)
+        if (workers != null) {
+            // What the coordinator's tools returned as its own workers is positive evidence; what they merely
+            // addressed is a hint, which the chat's own record can take back.
+            val (created, mentioned) = workers
+            agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
+            agents.applyLineage(agentId, (mentioned - created).associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_TRANSCRIPT)
+        }
     }
 
     /**
-     * The workers the chat's transcript names through the coordinator's tools (see [CoordinatorLineage]) when that
-     * has changed since it was last reported, else null. A transcript with the tools but no ids yet still reports
-     * (an empty set): the chat is a coordinator, and that alone places it.
+     * The workers the chat's transcript names through the coordinator's tools (see [CoordinatorLineage]) — the ones
+     * its tools returned as its own, and every one they addressed — when that has changed since it was last reported,
+     * else null. A transcript with the tools but no ids yet still reports (empty sets): the chat is a coordinator,
+     * and that alone places it.
      */
-    private fun Entry.coordinatorLineage(items: List<TimelineItem>): Set<String>? {
+    private fun Entry.coordinatorLineage(items: List<TimelineItem>): Pair<Set<String>, Set<String>>? {
         if (!CoordinatorLineage.isCoordinator(items)) return null
         val workers = CoordinatorLineage.workerIds(items)
         if (workers == reportedWorkers) return null
         reportedWorkers = workers
-        return workers
+        return CoordinatorLineage.createdWorkerIds(items) to workers
     }
 
     /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */

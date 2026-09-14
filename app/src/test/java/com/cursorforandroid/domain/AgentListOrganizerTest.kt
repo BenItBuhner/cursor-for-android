@@ -104,12 +104,13 @@ class AgentListOrganizerTest {
         assertThat(sections.ids("date:Today")).containsExactly("plain")
         // The recent surface is for the account's own chats: no Project, no worker — not even a pinned one.
         assertThat(AgentListOrganizer.recentRows(sections).map { it.agent.id }).containsExactly("plain")
-        // A filter never drops a Project: it is listed with its whole tree, pinned children aside, while the chats
-        // that stand on their own — the pinned worker, the plain chat — answer to the filter as ever.
+        // A filter never drops a Project: it is listed with its whole tree, pinned children aside; nor a pinned chat,
+        // which is shown by the user's word whatever the filters say; the plain chat answers to the filter as ever.
         val running = AgentListOrganizer.organize(agents.map { if (it.id == "worker-new") it.copy(runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE) else it }, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
-        assertThat(running.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY)
-        assertThat(running.single().rows.map { it.agent.id }).containsExactly("project", "bc-gone").inOrder()
-        assertThat(running.single().rows.first().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
+        assertThat(running.map { it.key }).containsExactly(AgentListOrganizer.PROJECTS_KEY, AgentListOrganizer.PINNED_KEY).inOrder()
+        assertThat(running.first().rows.map { it.agent.id }).containsExactly("project", "bc-gone").inOrder()
+        assertThat(running.first().rows.first().descendants().map { it.agent.id }).containsExactly("worker-new", "worker-old", "grandchild", "side").inOrder()
+        assertThat(running.last().rows.map { it.agent.id }).containsExactly("pinned-worker")
         // A filter that drops a chat of the account's own hides its children with it; they never stand on their own.
         val plainTree = listOf(agent("plain", updatedAgo = hour), agent("sub", parent = "plain", parentKind = AgentParentKind.SUBAGENT, runStatus = RunStatus.RUNNING, lifecycle = AgentLifecycle.ACTIVE))
         assertThat(AgentListOrganizer.organize(plainTree, ListPreferences(statuses = setOf(StatusFilter.Running)), LocalAgentState(), nowMillis = now, zone = zone)).isEmpty()
@@ -443,9 +444,9 @@ class AgentListOrganizerTest {
         // Grouping and sort order arrange the sidebar only; the recents stay newest first.
         val byName = ListPreferences(groupBy = GroupBy.Repo, sortOrder = SortOrder.Name)
         assertThat(AgentListOrganizer.recentRows(AgentListOrganizer.organize(agents, byName, local, nowMillis = now, zone = zone))).isEqualTo(recent)
-        // A filter narrows both surfaces alike.
+        // A filter narrows both surfaces alike — a pinned chat excepted, which stays on both by the user's word.
         val onlyRunning = AgentListOrganizer.organize(agents, ListPreferences(statuses = setOf(StatusFilter.Running)), local, nowMillis = now, zone = zone)
-        assertThat(AgentListOrganizer.recentRows(onlyRunning)).isEmpty()
+        assertThat(AgentListOrganizer.recentRows(onlyRunning).map { it.agent.id }).containsExactly("pinned")
     }
 
     @Test

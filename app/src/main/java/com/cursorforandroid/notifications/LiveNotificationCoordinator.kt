@@ -104,7 +104,7 @@ internal fun liveDecision(
 ): LiveDecision {
     // A Project's coordinator and everything spawned inside a Project never notify: the Project's view is where
     // they are followed. Only the account's own chats are worth a foreground service.
-    val running = list.agents.filter { it.isRunning && !it.isProjectScoped && it.id !in quietIds }.map { it.id }.toSet()
+    val running = list.agents.filter { it.isRunning && !it.isProjectScopedByEvidence && it.id !in quietIds }.map { it.id }.toSet()
     return when {
         session is SessionState.SignedOut -> LiveDecision.SignedOut
         // A list restored from disk may still say "running" about runs that finished hours ago; the service only

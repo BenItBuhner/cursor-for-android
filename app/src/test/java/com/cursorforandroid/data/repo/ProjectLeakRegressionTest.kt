@@ -266,16 +266,17 @@ class ProjectLeakRegressionTest {
         projects.watchList()
 
         agents.refresh()
-        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-w1", "bc-x")
+        // One page of two; the second worker, running beyond it, is fetched by the running scan all the same.
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-w1", "bc-x", "bc-w2")
         assertThat(agents.state.value.hasMore).isTrue()
         // The account's first page says whose the worker is; the coordinator is beyond the public list's first page.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
-        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
         assertThat(AgentListOrganizer.missingParentIds(agents.state.value.agents)).containsExactly("bc-p")
         // Fetched by id so it can head its tree, and marked a coordinator by the worker that names it.
         withTimeout(5_000) { while (agents.agent("bc-p") == null) delay(10) }
         assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
-        assertThat(primaryIds(agents)).containsExactly("bc-x")
+        assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
 
         // The reader pages on: the coordinator's own row lands with the second worker's, and the account's next page
         // says whose the second worker is.
@@ -294,6 +295,87 @@ class ProjectLeakRegressionTest {
         assertThat(agents.agent("bc-w1")!!.parent?.id).isEqualTo("bc-p")
         assertThat(agents.agent("bc-w2")!!.parent?.id).isEqualTo("bc-p")
         assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
+    }
+
+    @Test
+    fun `a released membership places nothing, and takes a placed worker back among the account's chats`() = runBlocking<Unit> {
+        val agents = seed()
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true)))
+        // The account keeps a row for a worker it released, marked so: that row is evidence the chat is its own.
+        lineage.workers = mapOf(
+            "bc-p" to listOf(
+                WorkerMembership("bc-w1", "bc-p", WorkerSpawnKind.CREATED, status = "MANAGER_WORKER_MEMBERSHIP_STATUS_ACTIVE"),
+                WorkerMembership("bc-a", "bc-p", WorkerSpawnKind.ADOPTED, status = "MANAGER_WORKER_MEMBERSHIP_STATUS_RELEASED"),
+                WorkerMembership("bc-w2", "bc-p", WorkerSpawnKind.CREATED, status = "removed"),
+            ),
+        )
+        val projects = projects(agents)
+        projects.syncLineage(listOf("bc-p"))
+        assertThat(agents.agent("bc-w1")?.isProjectChild).isTrue()
+        assertThat(agents.agent("bc-a")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.agent("bc-w2")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(WorkerMembership("x", "y", status = null).isActive).isTrue()
+        assertThat(WorkerMembership("x", "y", status = "MANAGER_WORKER_MEMBERSHIP_STATUS_UNSPECIFIED").isActive).isTrue()
+        // A worker placed earlier whose membership the account now marks released is released here too.
+        agents.applyLineage("bc-p", mapOf("bc-a" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
+        assertThat(agents.agent("bc-a")?.isProjectChild).isTrue()
+        projects.syncLineage(listOf("bc-p"))
+        assertThat(agents.agent("bc-a")?.scope).isEqualTo(AgentScope.PRIMARY)
+    }
+
+    @Test
+    fun `a coordinator's transcript never places a chat on the user's machine, and its record puts back a chat it did place`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-p", "Cursor for Android", "run-p")
+        api.addRunningAgent("bc-x", "Cesium", "run-x")
+        val at = "2026-04-13T18:30:00.000Z"
+        api.agents["bc-m"] = com.cursorforandroid.data.api.dto.AgentDto(id = "bc-m", name = "Codex-Poly-Bot Scaling", status = "ACTIVE", env = com.cursorforandroid.data.api.dto.AgentEnvDto(type = "machine", name = "poly"), createdAt = at, updatedAt = at, latestRunId = "run-m")
+        api.runs["run-m"] = com.cursorforandroid.data.api.dto.RunDto(id = "run-m", agentId = "bc-m", status = "RUNNING", createdAt = at, updatedAt = at)
+        val agents = agents()
+        agents.refresh()
+        // The coordinator messaged both: the transcript names them as if they were its workers.
+        agents.applyLineage("bc-p", mapOf("bc-m" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agents.agent("bc-m")?.isProjectScoped).isFalse()
+        assertThat(agents.agent("bc-x")?.isProjectScoped).isTrue()
+        assertThat(agents.agent("bc-x")?.isProjectScopedByEvidence).isFalse()
+        assertThat(primaryIds(agents)).containsExactly("bc-m")
+        // The account's record of bc-x names nothing: the hint is withdrawn and refused; positive evidence still places.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x"), ComposerSnapshot("bc-m")))
+        assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-x")
+        agents.applyLineage("bc-p", mapOf("bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
+        assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.hintRefusedIds()).containsExactly("bc-x")
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
+        assertThat(agents.agent("bc-x")?.isProjectScopedByEvidence).isTrue()
+        // Even the account's membership does not make the machine chat a worker on a hint; its own membership would.
+        agents.applyLineage("bc-p", mapOf("bc-m" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
+        assertThat(agents.agent("bc-m")?.isProjectChild).isTrue()
+    }
+
+    @Test
+    fun `the account's word about a chat no page holds yet places the row the page brings later`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-p", "Cursor for Android", "run-p")
+        api.addRunningAgent("bc-w1", "New chat creation issue", "run-w1", createdAt = "2026-04-12T18:30:00.000Z")
+        api.addRunningAgent("bc-s", "Pricing copy", "run-s", createdAt = "2026-04-11T18:30:00.000Z")
+        api.pageSize = 1
+        val agents = AgentRepository(session, prefs, AttachmentStore(context), cache = null, scope = scope, persistDelayMs = 10, capabilities = capabilities, runningScanPages = 1)
+        agents.refresh()
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-p")
+        // The account list's window is wider than the page: it names the worker and the side chat the page has not brought.
+        agents.applyAccountSnapshots(
+            listOf(
+                ComposerSnapshot("bc-p", isProject = true),
+                ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)),
+                ComposerSnapshot("bc-s", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
+            ),
+        )
+        agents.loadMore()
+        agents.loadMore()
+        assertThat(agents.agent("bc-w1")?.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
+        assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.ACCOUNT_RECORD)
+        assertThat(agents.agent("bc-s")?.source).isEqualTo(AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
+        assertThat(agents.agent("bc-s")?.isProjectChild).isTrue()
+        assertThat(primaryIds(agents)).isEmpty()
     }
 
     @Test

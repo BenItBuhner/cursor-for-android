@@ -7,6 +7,7 @@ import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
+import com.cursorforandroid.domain.RunStatus
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -34,9 +35,17 @@ data class ComposerSnapshot(
     val source: AgentSource? = null,
     /** The agent is waiting on an answer to a question it asked (`hasPendingInteraction`). */
     val hasPendingInteraction: Boolean = false,
+    /**
+     * The chat's execution status as the account's list reports it (`aiserver.v1.BackgroundComposerStatus`, read
+     * with `include_status`): running, creating, finished, error or expired; null when the list did not say.
+     */
+    val status: RunStatus? = null,
 ) {
     /** Where the chat belongs by this record's own lineage facts (see [AgentScope.of]). */
     val scope: AgentScope get() = AgentScope.of(isProject, parent, source)
+
+    /** True when the record says a turn is going: the account's word on the running set. */
+    val isRunning: Boolean get() = status?.isActive == true
 }
 
 /**
@@ -294,6 +303,8 @@ class BackgroundComposerApi(
         val prStatus: JsonPrimitive? = null,
         /** `aiserver.v1.BackgroundComposerSource`, encoded the same way; absent for the zero value (`UNSPECIFIED`). */
         val source: JsonPrimitive? = null,
+        /** `aiserver.v1.BackgroundComposerStatus`, encoded the same way; present when `include_status` was asked. */
+        val status: JsonPrimitive? = null,
         /** `aiserver.v1.ProjectMetadata`: present (if only as `{}`) on a Project's chat, absent on every other. */
         val projectMetadata: ProjectMetadataDto? = null,
         /** The Project coordinator this chat works for, on a worker it created or adopted. */
@@ -392,7 +403,18 @@ class BackgroundComposerApi(
                 parent = parent,
                 source = AgentSource.parse(composer.source?.contentOrNull),
                 hasPendingInteraction = composer.hasPendingInteraction == true,
+                status = composerStatus(composer.status),
             )
+        }
+
+        /** `aiserver.v1.BackgroundComposerStatus` by name or number: RUNNING 1, FINISHED 2, ERROR 3, CREATING 4, EXPIRED 5. */
+        fun composerStatus(raw: JsonPrimitive?): RunStatus? = when (raw?.contentOrNull?.uppercase()?.removePrefix("BACKGROUND_COMPOSER_STATUS_")) {
+            "RUNNING", "1" -> RunStatus.RUNNING
+            "FINISHED", "2" -> RunStatus.FINISHED
+            "ERROR", "3" -> RunStatus.ERROR
+            "CREATING", "4" -> RunStatus.CREATING
+            "EXPIRED", "5" -> RunStatus.EXPIRED
+            else -> null
         }
 
         /**
