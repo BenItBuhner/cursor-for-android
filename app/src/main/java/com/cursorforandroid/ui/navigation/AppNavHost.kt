@@ -51,6 +51,7 @@ import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.projects.ProjectScreen
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.settings.SettingsScreen
+import com.cursorforandroid.ui.settings.UpdateCopy
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -243,7 +244,7 @@ internal fun AppShell(
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
-        is UpdateState.Available -> if (s.signatureMismatch) null else "Update available · ${s.release.versionName}"
+        is UpdateState.Available -> if (s.signatureMismatch) null else UpdateCopy.available(s.release)
         is UpdateState.Downloaded -> "Update ready to install · ${s.release.versionName}"
         is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
         else -> null

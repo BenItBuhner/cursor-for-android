@@ -111,7 +111,7 @@ fun Sidebar(
     onQueryChange: (String) -> Unit,
     callbacks: SidebarCallbacks,
     modifier: Modifier = Modifier,
-    /** "Update available · 0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
+    /** "Update available: v0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
     updateHint: String? = null,
     /** Extended mode is on: the account footer says so, quietly, for as long as it is. */
     extendedMode: Boolean = false,

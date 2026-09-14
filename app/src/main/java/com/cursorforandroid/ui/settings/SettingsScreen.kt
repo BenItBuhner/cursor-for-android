@@ -44,6 +44,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.SignInMethod
@@ -409,9 +410,9 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit) {
     ToggleRow(
         title = "Automatic updates",
         subtitle = if (Build.VERSION.SDK_INT >= UpdateManager.SILENT_SELF_UPDATE_SDK) {
-            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and installs them while the app isn't in use."
+            "Checks GitHub when you open the app (at most hourly) and every 12 hours in the background, downloads new releases over Wi-Fi and installs them while the app isn't in use."
         } else {
-            "Checks GitHub every 12 hours, downloads new releases over Wi-Fi and lets you know when one is ready to install."
+            "Checks GitHub when you open the app (at most hourly) and every 12 hours in the background, downloads new releases over Wi-Fi and lets you know when one is ready to install."
         },
         checked = autoUpdate,
         onCheckedChange = { scope.launch { updates.setAutoUpdate(it) } },
@@ -438,13 +439,19 @@ private fun updateStatusLine(state: UpdateState): String = when (state) {
     UpdateState.Checking -> "Checking GitHub for a newer release…"
     is UpdateState.UpToDate -> "Up to date · ${checkedLabel(state.checkedAtMs)}"
     is UpdateState.Available ->
-        if (state.signatureMismatch) "${state.release.versionName} needs a manual reinstall" else "${state.release.versionName} is available"
+        if (state.signatureMismatch) "${state.release.versionName} needs a manual reinstall" else UpdateCopy.available(state.release)
     is UpdateState.Downloading -> state.fraction?.let { "Downloading ${state.release.versionName}… ${(it * 100).toInt()}%" }
         ?: "Downloading ${state.release.versionName}… ${"%.1f".format(Locale.US, state.bytesRead / 1_048_576.0)} MB"
     is UpdateState.Downloaded -> "${state.release.versionName} is ready · the app closes while it installs"
     is UpdateState.Installing -> if (state.awaitingConfirmation) "Waiting for you to confirm the installation" else "Installing ${state.release.versionName}…"
     is UpdateState.Failed -> state.message
     is UpdateState.Installed -> "Updated to ${state.versionName}"
+}
+
+/** The updater's words that more than one surface shows: the Settings status line and the sidebar's hint row say the same thing. */
+object UpdateCopy {
+    /** "Update available: v0.3.9" — the version with the tag's `v`, so it reads as the release it names. */
+    fun available(release: AppRelease): String = "Update available: v${release.versionName}"
 }
 
 /** "checked just now", "checked 4m ago", "checked Sep 4". */
