@@ -36,6 +36,11 @@ data class AgentRow(
      * not hold them all: the count the Project's row shows is the larger of this and the loaded subtree.
      */
     val memberCount: Int? = null,
+    /**
+     * A Project the root registry names and the list holds no row for yet (see [KnownRoot]): drawn from the
+     * registry's name and look, listed after the loaded Projects, replaced by the row once it has been fetched.
+     */
+    val isStandIn: Boolean = false,
 ) {
     /** This row's children, their children and so on, depth first — what a collapsed parent stands for. */
     fun descendants(): List<AgentRow> = children.flatMap { listOf(it) + it.descendants() }
@@ -248,7 +253,7 @@ object AgentListOrganizer {
         val tree = nest(primary, children).map { row ->
             val count = memberCounts[row.agent.id]
             when {
-                row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, memberCount = count)
+                row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, isStandIn = true, memberCount = count)
                 count != null && row.agent.isProjectRoot -> row.copy(memberCount = count)
                 else -> row
             }
@@ -256,7 +261,9 @@ object AgentListOrganizer {
         val sorted = tree.mapNotNull { it.matching(query) }
 
         // Projects lead, as they do in the official apps' navigation; a pinned Project is listed there, not twice.
-        val projects = sorted.filter { it.agent.isProjectRoot }
+        // The loaded ones come in the list's order; the registry's stand-ins, whose last activity is not known,
+        // follow them by name.
+        val projects = sorted.filter { it.agent.isProjectRoot }.sortedWith(compareBy<AgentRow> { it.isStandIn }.thenBy { if (it.isStandIn) it.agent.name.lowercase() else "" })
         val pinned = sorted.filter { it.isPinned && !it.agent.isProjectRoot }
         val rest = sorted.filterNot { it.isPinned || it.agent.isProjectRoot }
         val sections = mutableListOf<AgentSection>()

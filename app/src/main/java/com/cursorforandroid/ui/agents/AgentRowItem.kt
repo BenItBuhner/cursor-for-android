@@ -121,7 +121,7 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu && !placeholder) ({ menuOpen = true }) else null,
+                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -151,7 +151,8 @@ fun AgentRowItem(
             )
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
-                if (prefs.showRuntime && !placeholder) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                // A stand-in's last activity is not known until its row is fetched; the slot waits for it.
+                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
