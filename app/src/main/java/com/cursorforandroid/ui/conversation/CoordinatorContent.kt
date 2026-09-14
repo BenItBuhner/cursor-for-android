@@ -311,7 +311,10 @@ internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.Coordin
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val accent = colors.blue
-    MessageActions(text = payload.message, modifier = modifier.fillMaxWidth().clip(CursorTheme.shapes.lg)) {
+    // A message whose body this copy lacks (the stream left it out, or an earlier build did): the row says so in
+    // the coordinator's voice rather than standing bare, until the turn is asked for again.
+    val body = payload.message.trim().ifEmpty { if (payload.missing) MISSING_MESSAGE else "" }
+    MessageActions(text = payload.message, enabled = payload.message.isNotBlank(), modifier = modifier.fillMaxWidth().clip(CursorTheme.shapes.lg)) {
         // The rule is drawn, not laid out: the message's blocks measure by subcomposition, which an intrinsic
         // height cannot read, so a bar sized to the column's height is painted behind it instead.
         val bar = accent.copy(alpha = 0.7f)
@@ -335,7 +338,14 @@ internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.Coordin
                     ShimmerText("sending", style = type.small, color = colors.textQuaternary, active = true, maxLines = 1)
                 }
             }
-            MarkdownText(payload.message, style = type.message, color = colors.textPrimary)
+            if (payload.missing && payload.message.isBlank()) {
+                Text(body, style = type.base, color = colors.textTertiary, modifier = Modifier.testTag("coordinator-message-missing"))
+            } else {
+                MarkdownText(body, style = type.message, color = colors.textPrimary)
+            }
         }
     }
 }
+
+/** What a coordinator's message row says when the body did not reach this device. */
+internal const val MISSING_MESSAGE = "This message's text didn't reach this device. It reloads with the turn when the run's log or the account's record is read again."

@@ -228,6 +228,46 @@ class CoordinatorContentTest {
     }
 
     @Test
+    fun `a coordinator's message whose body did not reach the device says so, in the coordinator's voice`() {
+        val missing = ToolCall("k6", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
+        show(ActivityGroup("g", listOf(missing)))
+        compose.onNodeWithTag("coordinator-message", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("Coordinator").assertIsDisplayed()
+        compose.onNodeWithTag("coordinator-message-missing", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Sent message", substring = true).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a remark folded under an injected turn's row opens with the row, under the report`() {
+        show(
+            SystemNotification(
+                id = "n2", kind = SystemNotification.Kind.Subagent, title = "Subagent completed", summary = "Land merge train and prep release",
+                body = "The merge train landed: #113 merged, v0.3.4 tagged.", tone = NoticeTone.Success, raw = "<system_notification>…</system_notification>",
+                narration = "Noted; the release worker is done and nothing else needs doing.",
+            ),
+        )
+        compose.onNodeWithText("Subagent completed").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Noted; the release worker is done and nothing else needs doing.").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("Subagent completed").performClick()
+        compose.onNodeWithText("The merge train landed: #113 merged, v0.3.4 tagged.").assertIsDisplayed()
+        compose.onNodeWithTag("notification-narration", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("Noted; the release worker is done and nothing else needs doing.").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a notice with only a remark folded under it opens onto the remark alone`() {
+        show(
+            SystemNotification(
+                id = "n3", kind = SystemNotification.Kind.Other, title = "GitHub notification", summary = "#59 · synchronize · cursor[bot]",
+                body = null, tone = NoticeTone.Neutral, raw = "<system_notification source=\"github\">…</system_notification>", narration = "Acknowledged.",
+            ),
+        )
+        compose.onNodeWithText("GitHub notification").performClick()
+        compose.onNodeWithText("Acknowledged.").assertIsDisplayed()
+    }
+
+    @Test
     fun `a worker's completion notice is a compact row whose button opens the worker's chat`() {
         show(
             SystemNotification(

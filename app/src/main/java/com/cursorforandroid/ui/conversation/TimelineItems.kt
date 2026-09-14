@@ -206,7 +206,10 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     // A one-line notification is said in full by the row unless the row had to cut it short.
     var summaryCut by remember(item.summary) { mutableStateOf(false) }
-    val body = item.body?.takeIf { it != item.summary || summaryCut }
+    val report = item.body?.takeIf { it != item.summary || summaryCut }
+    // The agent's brief remark on the notice, folded under the row in a coordinator's chat (see CoordinatorTranscript).
+    val narration = item.narration?.trim()?.takeIf { it.isNotEmpty() }
+    val body = report ?: narration
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
     val icon = when (item.kind) {
         SystemNotification.Kind.Goal -> CursorIcons.Target
@@ -276,7 +279,14 @@ private fun SystemNotificationView(item: SystemNotification, modifier: Modifier)
         if (body != null) {
             AnimatedVisibility(visible = expanded) {
                 CursorCard(Modifier.fillMaxWidth().padding(top = 6.dp), fill = colors.fillFaint, border = Color.Transparent) {
-                    MarkdownText(body, Modifier.padding(horizontal = 12.dp, vertical = 10.dp), style = CursorTheme.typography.base, color = colors.textSecondary)
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        report?.let { MarkdownText(it, style = CursorTheme.typography.base, color = colors.textSecondary) }
+                        // The remark reads as the coordinator's notes read elsewhere in its chat: dimmer than a report.
+                        if (narration != null) {
+                            if (report != null) HairlineDivider()
+                            MarkdownText(narration, Modifier.testTag("notification-narration"), style = CursorTheme.typography.base, color = colors.textTertiary)
+                        }
+                    }
                 }
             }
         }

@@ -54,7 +54,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.CoordinatorLineage
+import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.ui.agents.MenuItem
@@ -144,9 +144,12 @@ fun ConversationScreen(
     // The transcript's rows answer the question they show and stop the step they show through the account
     // (Extended mode); with the surfaces off the hands are null and the rows stay read-only.
     // A Project's coordinator speaks to the user through its SendMessage tool; its plain replies are its working
-    // notes. The chat is read as a coordinator's when the account calls it a Project, or its own transcript carries
-    // the coordinator's tools (see [TranscriptControls.coordinatorMode]).
-    val coordinatorMode = agent?.looksLikeProject == true || remember(conversation.items) { CoordinatorLineage.isCoordinator(conversation.items) }
+    // notes. The chat is read as a coordinator's on any of three words, whichever comes first: the account calls it a
+    // Project, the account's record says its prompts were sent in Project mode, or — needing no account at all —
+    // its own transcript carries the coordinator's tools, under any name and however an earlier build filed them
+    // (see [CoordinatorTranscript]). The list's word arrives late or not at all on a large account; the content is
+    // in hand from the first frame.
+    val coordinatorMode = agent?.looksLikeProject == true || conversation.isProjectConversation || remember(conversation.items) { CoordinatorTranscript.hasCoordinatorContent(conversation.items) }
     val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
         TranscriptControls(
             state = controls,
@@ -193,7 +196,9 @@ fun ConversationScreen(
         onStopOrDispose { viewModel.pause() }
     }
 
-    val items = conversation.items
+    // The items as the transcript shows them: every cached call re-read by this build, and in a coordinator's chat
+    // the brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]).
+    val items = remember(conversation.items, coordinatorMode) { CoordinatorTranscript.present(conversation.items, coordinatorMode) }
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
     val showWorking = conversation.showsWorkingRow()
     // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
