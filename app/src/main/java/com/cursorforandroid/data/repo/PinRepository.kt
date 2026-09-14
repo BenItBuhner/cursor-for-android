@@ -116,13 +116,27 @@ class PinRepository(
     @Volatile private var halted = false
     private val settingWatcher = AtomicReference<Job?>(null)
 
+    /** The retry chain of the last round (see [syncWithRetry]); one at a time. */
+    private val retryJob = AtomicReference<Job?>(null)
+
+    private class Primed(val list: AccountList, val atMillis: Long)
+    @Volatile private var primed: Primed? = null
+
+    // Every property the collectors below touch is declared above this block: Kotlin runs initialisers in
+    // declaration order, and a repository built once a fetch has completed (Extended mode turned on, the sidebar's
+    // end reached) has its collector emit at once, on the IO scope, while the constructor is still running — a
+    // property declared after the block was null to it (v0.3.6 crashed here).
     init {
         scope.launch {
             // Every completed list fetch (not the disk copy) is the cue: the account's pins are read alongside its
             // agents. Nothing here reads the preferences before that: constructing the graph must stay side-effect free.
             agents.refreshCompleted.filter { it > 0L }.collect {
-                watchSetting()
-                syncWithRetry()
+                // A failure of the round is the round's to report; nothing thrown here may end the collector, or the
+                // account would not be read again for the life of the process.
+                runCatching {
+                    watchSetting()
+                    syncWithRetry()
+                }.onFailure { if (it is CancellationException) throw it }
             }
         }
         scope.launch { session.backend.drop(1).collect { reset() } }
@@ -146,8 +160,6 @@ class PinRepository(
         }
         retryJob.set(job)
     }
-
-    private val retryJob = AtomicReference<Job?>(null)
 
     /** Turning the setting on syncs right away, and forgives an earlier permanent failure. Started once, lazily. */
     private fun watchSetting() {
@@ -299,9 +311,6 @@ class PinRepository(
             Result.failure(t)
         }
     }
-
-    private class Primed(val list: AccountList, val atMillis: Long)
-    @Volatile private var primed: Primed? = null
 
     /**
      * The account's list, read and applied: its names, looks, lineage fields and statuses onto the rows and into the
