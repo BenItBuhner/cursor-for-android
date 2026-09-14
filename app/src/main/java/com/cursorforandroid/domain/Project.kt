@@ -37,9 +37,12 @@ enum class WorkerSpawnKind(val number: Int) {
 }
 
 /**
- * One worker's place in a Project, as `ListWorkersForManager` reports it: the worker, the coordinator it belongs
- * to, how it came to ([spawnKind]), the coordinator's tool call that made it when there was one, and the
- * membership's status as the account spells it.
+ * One worker's place in a Project, as `ListWorkersForManager` reports it (`aiserver.v1.WorkerManagerMembership`):
+ * the worker, the coordinator it belongs to, how it came to ([spawnKind]), the coordinator's tool call that made it
+ * when there was one, and the worker's execution status ([status] is the record's `BackgroundComposerStatus` —
+ * running, finished, error, creating, expired — the one the desktop seeds the worker's header status from; it says
+ * nothing about the membership itself). A membership listed is a membership that stands: a released or removed
+ * worker is simply absent from the answer.
  */
 data class WorkerMembership(
     val workerId: String,
@@ -48,21 +51,9 @@ data class WorkerMembership(
     val toolCallId: String? = null,
     val status: String? = null,
 ) {
-    /**
-     * Whether the membership stands. The account keeps a row for a worker that was released or removed, with a
-     * status saying so; such a row is positive evidence the chat is *not* the Project's any more, and must not place
-     * it. A status this build does not know, or none, is a standing membership.
-     */
-    val isActive: Boolean
-        get() {
-            val word = status?.trim()?.uppercase()?.substringAfterLast('_')?.takeIf { it.isNotEmpty() } ?: return true
-            val whole = status.trim().uppercase()
-            return !(ENDED_WORDS.any { whole.contains(it) } || word in ENDED_WORDS)
-        }
-
-    private companion object {
-        val ENDED_WORDS = setOf("RELEASED", "REMOVED", "CLEARED", "DELETED", "INACTIVE", "ENDED", "DETACHED", "REVOKED", "ORPHANED")
-    }
+    /** The worker's execution status as the answer carried it (`BACKGROUND_COMPOSER_STATUS_RUNNING`, `RUNNING`), when this build can read it. */
+    val runStatus: RunStatus?
+        get() = status?.trim()?.takeIf { it.isNotEmpty() }?.uppercase()?.removePrefix("BACKGROUND_COMPOSER_STATUS_")?.let { RunStatus.parse(it) }?.takeIf { it != RunStatus.UNKNOWN }
 }
 
 /**
@@ -80,6 +71,8 @@ data class ProjectLineage(
     val childrenRead: Boolean = true,
     /** What the read that failed said, when one did. */
     val failure: Throwable? = null,
+    /** The children's own records as the answer carried them: each names its parent, and is applied as the record it is. */
+    val childRecords: List<com.cursorforandroid.data.api.ComposerSnapshot> = emptyList(),
 ) {
     /** Every chat the root owns, by id, and in what capacity; a worker the children list also names is a worker. */
     val members: Map<String, AgentParentKind>

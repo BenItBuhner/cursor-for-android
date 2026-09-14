@@ -206,11 +206,12 @@ class ProjectRepositoryTest {
         lineage.failing = null
         projects.syncLineage(listOf("bc-p", "bc-q"))
         assertThat(agents.agent("bc-w")?.parent).isEqualTo(AgentParent("bc-q", AgentParentKind.PROJECT_WORKER))
-        assertThat(agents.agent("bc-q")?.scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // The membership places the worker under bc-q; it makes no Project of bc-q, whose record carries no flag.
+        assertThat(agents.agent("bc-q")?.scope).isEqualTo(AgentScope.PRIMARY)
     }
 
     @Test
-    fun `a parent the list names but lacks is fetched by id in either mode, and a manager of workers is a Project`() = runBlocking<Unit> {
+    fun `a parent the list names but lacks is fetched by id in either mode, and is a Project only by its own record`() = runBlocking<Unit> {
         // The Project sits beyond the listing window: only its worker made it into the list.
         api.addIdleAgent("bc-w", "Webhook worker", "run-w")
         val agents = agents()
@@ -225,8 +226,11 @@ class ProjectRepositoryTest {
 
         assertThat(lineage.calls).isEmpty()
         assertThat(agents.agent("bc-far")?.name).isEqualTo("Far Project")
-        assertThat(agents.agent("bc-far")?.scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // Fetched to head the tree, with the worker under it; a Project only once its record's flag says so (kf).
+        assertThat(agents.agent("bc-far")?.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agents.agent("bc-w")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-far", isProject = true)))
+        assertThat(agents.agent("bc-far")?.scope).isEqualTo(AgentScope.PROJECT_ROOT)
     }
 
     // ---- the coordinator's actions ------------------------------------------------------------------------------------
@@ -365,6 +369,10 @@ class ProjectRepositoryTest {
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
         lineage.children = mapOf("bc-x" to listOf(ComposerSnapshot("bc-s1", parent = AgentParent("bc-x", AgentParentKind.SIDE_CHAT))))
         assertThat(projects.refreshChildren("bc-x")).isEqualTo(VmRead.Loaded(1))
+        // bc-s2's own record named the parent: an answer that no longer lists it takes nothing back from the record
+        // (the desktop keeps a header's subagentParentId until the record changes); its record saying otherwise does.
+        assertThat(agents.agent("bc-s2")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-s2")))
         assertThat(agents.agent("bc-s2")?.parent).isNull()
         assertThat(agents.agent("bc-s2")?.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agents.agent("bc-s1")?.parent).isEqualTo(AgentParent("bc-x", AgentParentKind.SIDE_CHAT))

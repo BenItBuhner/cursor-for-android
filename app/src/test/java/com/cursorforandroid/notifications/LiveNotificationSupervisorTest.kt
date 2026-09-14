@@ -354,11 +354,11 @@ class LiveNotificationSupervisorTest {
         val running = agent("bc-x", RunStatus.RUNNING)
         // Classified by the account (Extended mode lists the scope with the row) or by a membership kept with the
         // row: the decision reads the scope, not how it was learned.
-        val root = agent("bc-p", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP)
+        val root = agent("bc-p", RunStatus.RUNNING).copy(isProject = true, scopeSignal = LineageSignal.ACCOUNT_RECORD)
         val rootByFlag = agent("bc-p2", RunStatus.RUNNING).copy(isProject = true)
         val worker = agent("bc-w", RunStatus.RUNNING).copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
-        val sideChat = agent("bc-s", RunStatus.RUNNING).copy(source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
-        val subagent = agent("bc-sub", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_CHILD)
+        val sideChat = agent("bc-s", RunStatus.RUNNING).copy(parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
+        val subagent = agent("bc-sub", RunStatus.RUNNING).copy(parent = AgentParent("bc-p2", AgentParentKind.SUBAGENT), scopeSignal = LineageSignal.MEMBERSHIP)
         fun list(vararg agents: Agent) = AgentListState(agents = agents.toList(), hasLoaded = true, isFromCache = false)
 
         // Every running agent counts by default: the coordinators, the worker, the side chat, the subagent.

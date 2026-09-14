@@ -758,7 +758,7 @@ class AgentRepositoryTest {
         assertThat(agent("bc-w").scopeSignal).isEqualTo(LineageSignal.MEMBERSHIP)
         repo.refresh()
         assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-w" }?.knownScope == AgentScope.PROJECT_CHILD }
+        awaitUntil { cache.read()?.value?.firstOrNull { it.id == "bc-w" }?.scope == AgentScope.PROJECT_CHILD }
 
         // A Project that is itself somebody's child stays where its parent is, whoever names it as a root.
         repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-c", isProject = true, parent = AgentParent("bc-up", AgentParentKind.SUBAGENT))))

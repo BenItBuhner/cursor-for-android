@@ -210,35 +210,35 @@ class ProjectRootsInvariantTest {
         // The account list's next window names none of them: nothing changes.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-0"), ComposerSnapshot("bc-plain-1")))
         assertThat(agents.knownRoots.value).hasSize(7)
-        // A membership answer naming a worker holds bc-root-2 beside its flag; the record withdrawing the flag then
-        // leaves it standing on the membership — a worker's record naming it is no evidence of its own, only a
-        // candidate — and an archived one stays, archived.
+        // The record withdrawing the flag takes the root out at once, whatever a membership answer names: the
+        // desktop's kf reads the record's project_metadata alone, so bc-root-2 is a chat of the account's own with
+        // its workers nested under its row (the Agents Window's row-with-children); an archived one stays, archived.
         agents.applyLineage("bc-root-2", mapOf("bc-root-2-w1" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-2"), ComposerSnapshot("bc-root-3", isProject = true, archived = true)))
-        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.flagged).isFalse()
-        assertThat(agents.knownRoots.value.first { it.id == "bc-root-2" }.evidence).startsWith("membership 1")
-        assertThat(agents.knownRoots.value.first { it.id == "bc-root-3" }.archived).isTrue()
-        // The membership answer then names nobody: no evidence is left, and the root leaves — its row a chat of the
-        // account's own, whatever worker records still say (they make a candidate, not a root).
-        agents.applyLineage("bc-root-2", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-root-2")
         assertThat(agents.agent("bc-root-2")?.scope).isEqualTo(AgentScope.PRIMARY)
+        // Its worker's stamp stands for the row the pages have not brought yet.
+        assertThat(agents.placementOf("bc-root-2-w1")?.first?.id).isEqualTo("bc-root-2")
+        assertThat(agents.knownRoots.value.first { it.id == "bc-root-3" }.archived).isTrue()
+        // A membership answer naming nobody changes nothing about the registry either way.
+        agents.applyLineage("bc-root-2", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
+        assertThat(agents.knownRoots.value.map { it.id }).doesNotContain("bc-root-2")
         // A membership answer with nobody in it does not take out a root whose record still flags it.
         agents.applyLineage("bc-root-3", emptyMap(), LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
         assertThat(agents.knownRoots.value.map { it.id }).contains("bc-root-3")
         // A record with `startedAsNewProject` and no `project_metadata` (the desktop never reads the former), and a
-        // worker's record naming a manager, admit nothing: the latter a candidate only, until the membership answers.
+        // worker's record naming a manager, admit nothing: the desktop makes no Project of a manager (kf reads the
+        // manager's own record alone); the worker is nested under it as under any parent.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-plain-3", record = RecordFields(startedAsNewProject = true)), ComposerSnapshot("bc-plain-4-w", parent = AgentParent("bc-plain-4", AgentParentKind.PROJECT_WORKER))))
         assertThat(agents.knownRoots.value.map { it.id }).containsNoneOf("bc-plain-3", "bc-plain-4")
-        assertThat(agents.managerCandidates()).contains("bc-plain-4")
         // A Project deleted on the server: the public API answers 404 for it. Nothing but the registry knows it
-        // (a membership answer named its worker; its own row never loaded): the fetch by id is what lets it go —
+        // (the discovery pass read its record; its own row never loaded): the fetch by id is what lets it go —
         // and the Projects it stands beside are all still there.
         api.agents.remove("bc-root-7")
         agents.upsert(agents.agent("bc-root-7")!!.copy(name = "gone"))
         val fresh = AgentRepository(session, prefs, AttachmentStore(context), AgentListCache(JsonDiskCache(folder.newFolder("fresh"), dispatcher = Dispatchers.Unconfined)), scope, persistDelayMs = 1, capabilities = capabilities, runningScanPages = 1)
         fresh.refresh()
-        fresh.applyLineage("bc-root-7", mapOf("bc-root-7-w2" to AgentParentKind.PROJECT_WORKER), LineageSignal.MEMBERSHIP)
+        fresh.applyAccountSnapshots(listOf(ComposerSnapshot("bc-root-7", isProject = true, record = RecordFields(projectMetadata = "{}"))))
         assertThat(fresh.knownRoots.value.map { it.id }).containsExactly("bc-root-7")
         fresh.materializeRoots()
         assertThat(fresh.knownRoots.value).isEmpty()

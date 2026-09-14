@@ -12,7 +12,6 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
-import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.ContextEntry
@@ -337,9 +336,9 @@ class ProjectRepository(
         if (session.isDemo || !capabilities().projects) return
         syncMutex.withLock {
             val token = agents.token()
-            // The roots the list and the registry know, and the chats workers' records name as manager: the
-            // membership answer is what admits a candidate, so every candidate is asked.
-            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id } + agents.managerCandidates()
+            // The roots the list and the registry know: the Projects, by the record's flag. A manager without the
+            // flag is an ordinary chat with its workers' records naming it; nothing is asked about it here.
+            val known = agents.state.value.agents.filter { it.isProjectRoot }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id }
             val roots = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
             for (rootId in roots.take(maxRootsPerSync)) {
                 if (!readLineage(rootId, token)) return
@@ -369,21 +368,24 @@ class ProjectRepository(
         }
         // Each read's word is applied with its own signal, and releases only the kind of member it covered in full.
         if (lineage.workersRead) {
-            // A membership the account marks released or removed is not one: it says the chat is its own again.
-            val standing = lineage.workers.filter { it.isActive }
-            agents.applyLineage(rootId, standing.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
+            // Every membership the answer lists stands (a released worker is absent from it, not marked): the
+            // desktop's seeded `managerAgentId` for each worker, and the retraction of those no longer named.
+            agents.applyLineage(rootId, lineage.workers.associate { it.workerId to AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER), startedIn = token)
         }
         if (lineage.childrenRead) {
+            // The children's own records first — each names its parent the desktop's way — then the answer's word
+            // for what the records did not carry, and the release of the side chats and subagents it no longer names.
+            if (lineage.childRecords.isNotEmpty()) agents.applyAccountSnapshots(lineage.childRecords, token)
             agents.applyLineage(rootId, lineage.children, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
         }
         flow.update {
             it.copy(
-                memberships = if (lineage.workersRead) lineage.workers.filter { m -> m.isActive }.associateBy { m -> m.workerId } else it.memberships,
+                memberships = if (lineage.workersRead) lineage.workers.associateBy { m -> m.workerId } else it.memberships,
                 isSyncing = false,
                 hasSynced = true,
                 lastSyncedAtMillis = now(),
                 lineageNotice = notice,
-                lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.count { m -> m.isActive }, lineage.children.size),
+                lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.size, lineage.children.size),
             )
         }
         publishCounts()
@@ -430,11 +432,8 @@ class ProjectRepository(
                     _unavailableParents.update { it - id }
                     continue
                 }
-                // The parent's row is fetched so its chats can sit under it; whether it is a Project is the
-                // registry's to say (the record's flag, a membership answer, an action), never this fetch's. A
-                // parent the workers' records name as manager is asked of the account first, so its row lands as
-                // the root the membership makes it — or as the chat of its own it is.
-                if (id in agents.managerCandidates()) runCatching { syncLineage(listOf(id)) }
+                // The parent's row is fetched so its chats can sit under it (the desktop hydrates a missing parent
+                // the same way); whether it is a Project is its own record's to say, never this fetch's.
                 val failure = agents.loadDetail(id).exceptionOrNull()
                 if (failure != null) {
                     if (failure is CancellationException) throw failure
@@ -475,7 +474,6 @@ class ProjectRepository(
         id = membership.workerId,
         name = "Worker ${membership.workerId.takeLast(6)}",
         lifecycle = AgentLifecycle.UNKNOWN,
-        runStatus = null,
         envType = EnvType.UNKNOWN,
         envName = null,
         url = "https://cursor.com/agents/${membership.workerId}",
@@ -485,7 +483,8 @@ class ProjectRepository(
         repoUrl = null,
         startingRef = null,
         parent = AgentParent(membership.managerId, AgentParentKind.PROJECT_WORKER),
-        knownScope = AgentScope.PROJECT_CHILD,
+        scopeSignal = LineageSignal.MEMBERSHIP,
+        runStatus = membership.runStatus,
     )
 
     /**
@@ -594,6 +593,7 @@ class ProjectRepository(
         }
         if (agents.token() != token) return VmRead.Failed("The account changed while the side chats were being read.")
         val members = children.associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
+        if (children.isNotEmpty()) agents.applyAccountSnapshots(children, token)
         agents.applyLineage(parentId, members, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
         for (id in members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)) {
             if (agents.token() != token) break

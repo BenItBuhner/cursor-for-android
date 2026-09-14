@@ -18,11 +18,11 @@ class ProjectDiagnosticsTest {
     @Test
     fun `the report names every row by its id's tail, scope and signal, and carries no text of the account's`() {
         val rows = listOf(
-            agent("bc-11111111-root", "Cursor for Android") { it.copy(isProject = true, knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.ACCOUNT_RECORD) },
-            agent("bc-22222222-created", "New chat creation issue") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.ACCOUNT_RECORD, runStatus = RunStatus.RUNNING) },
-            agent("bc-33333333-adopted", "Model picker stability") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.MEMBERSHIP) },
+            agent("bc-11111111-root", "Cursor for Android") { it.copy(isProject = true, scopeSignal = LineageSignal.ACCOUNT_RECORD, record = com.cursorforandroid.data.api.RecordFields(projectMetadata = "{}")) },
+            agent("bc-22222222-created", "New chat creation issue") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.ACCOUNT_RECORD, runStatus = RunStatus.RUNNING, record = com.cursorforandroid.data.api.RecordFields(managerAgentId = "bc-11111111-root")) },
+            agent("bc-33333333-adopted", "Model picker stability") { it.copy(parent = AgentParent("bc-11111111-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.MEMBERSHIP) },
             agent("bc-44444444-side", "Pricing copy") { it.copy(source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD) },
-            agent("bc-55555555-orphan", "Station intelligence v3 rewrite") { it.copy(parent = AgentParent("bc-99999999-gone", AgentParentKind.PROJECT_WORKER), knownScope = AgentScope.PROJECT_CHILD, scopeSignal = LineageSignal.COORDINATOR_TRANSCRIPT) },
+            agent("bc-55555555-orphan", "Station intelligence v3 rewrite") { it.copy(parent = AgentParent("bc-99999999-gone", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.COORDINATOR_CREATED) },
             agent("bc-66666666-plain", "Cesium") { it.copy(lifecycle = AgentLifecycle.ARCHIVED) },
         )
         val report = ProjectDiagnostics.render(
@@ -43,18 +43,27 @@ class ProjectDiagnosticsTest {
 
         assertThat(report).startsWith("Cursor for Android 0.3.0 · Project diagnostics · 2026-09-13T04:50:00Z")
         assertThat(report).contains("mode=extended projects=true accountSession=true listFromCache=false lastRefreshed=2026-09-13T04:49:30Z")
-        assertThat(report).contains("rows=6 primary=1 roots=1 children=4 running=1 archived=1")
+        // A side chat whose record names no parent is a chat of the account's own (the desktop reads the parent link alone).
+        assertThat(report).contains("rows=6 primary=2 roots=1 children=3 running=1 archived=1")
         assertThat(report).contains("childrenWithoutLoadedParent=1 parents=…9-gone")
         // The root's line: its signal, its children by kind, and what its last membership pass answered — the notice redacted.
         assertThat(report).contains("…1-root signal=ACCOUNT_RECORD project_worker=2 side_chat=0 subagent=0 sync=workers:ok(2) children:failed notice=\"Cursor refused the Project's memberships (bc-…: \"…\" <url>).\"")
         assertThat(report).contains("…9-gone (not loaded) sync=never")
-        // One line per row, in the report's columns: the evidence names the signal and the root it points at.
-        assertThat(report).contains("…reated CHILD record(…1-root):row …1-root PROJECT_WORKER - CLOUD ACTIVE RUNNING running")
-        assertThat(report).contains("…dopted CHILD membership(…1-root) …1-root PROJECT_WORKER - CLOUD ACTIVE FINISHED -")
-        assertThat(report).contains("…4-side CHILD record.source - - AS_SIDE_CHAT_FROM_CLOUD CLOUD ACTIVE FINISHED -")
-        assertThat(report).contains("…orphan CHILD hint(…9-gone):row …9-gone PROJECT_WORKER - CLOUD ACTIVE FINISHED hintOnly")
+        // One line per row, in the report's columns, then the desktop rule that placed it and the record's raw fields.
+        assertThat(report).contains("…reated CHILD ACCOUNT_RECORD …1-root PROJECT_WORKER - CLOUD ACTIVE RUNNING running")
+        assertThat(report).contains("    rule: PJr child of …1-root via managerAgentId → nested under the parent's row")
+        assertThat(report).contains("    record: project_metadata=absent manager_agent_id=…1-root cloud_subagent_parent=- side_chat_parent=- started_as_new_project=false source=-")
+        assertThat(report).contains("…dopted CHILD MEMBERSHIP …1-root PROJECT_WORKER - CLOUD ACTIVE FINISHED stamp=MEMBERSHIP")
+        assertThat(report).contains("    rule: PJr child of …1-root via ListWorkersForManager (the desktop's seeded managerAgentId) → nested under the parent's row")
+        assertThat(report).contains("…4-side PRIMARY none - - AS_SIDE_CHAT_FROM_CLOUD CLOUD ACTIVE FINISHED -")
+        assertThat(report).contains("    rule: mQa top-level: no account record read yet: the public API's row alone → time section (f3v)")
+        assertThat(report).contains("…orphan CHILD COORDINATOR_CREATED …9-gone PROJECT_WORKER - CLOUD ACTIVE FINISHED -")
+        assertThat(report).contains("    rule: PJr child of …9-gone via create_agent in the coordinator's transcript (default mode) → parent row not loaded: not drawn until the parent is fetched by id (the desktop hydrates it)")
         assertThat(report).contains("…-plain PRIMARY none - - - CLOUD ARCHIVED FINISHED archived,pinned")
-        assertThat(report).contains("…1-root ROOT record(root):row - - - CLOUD ACTIVE FINISHED project")
+        assertThat(report).contains("    rule: mQa top-level: no account record read yet: the public API's row alone → Pinned (VuC)")
+        assertThat(report).contains("…1-root ROOT ACCOUNT_RECORD - - - CLOUD ACTIVE FINISHED project")
+        assertThat(report).contains("    rule: kf top-level Project: no subagentParentId, projectMetadata present → Projects")
+        assertThat(report).contains("desktop rules (Cursor 3.20.21 workbench.glass.main.js)")
         // The pins, the running set and what placed each row are in it too.
         assertThat(report).contains("pinned (id · resolution · scope · env):")
         assertThat(report).contains("…-plain shown PRIMARY CLOUD")
