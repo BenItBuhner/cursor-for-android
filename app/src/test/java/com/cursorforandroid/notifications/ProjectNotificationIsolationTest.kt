@@ -236,7 +236,7 @@ class ProjectNotificationIsolationTest {
             listOf(
                 ComposerSnapshot("bc-p", isProject = true),
                 ComposerSnapshot("bc-w", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)),
-                ComposerSnapshot("bc-s", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
+                ComposerSnapshot("bc-s", parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
                 ComposerSnapshot("bc-x"),
             ),
         )
@@ -251,7 +251,7 @@ class ProjectNotificationIsolationTest {
             listOf(
                 ComposerSnapshot("bc-p", isProject = true),
                 ComposerSnapshot("bc-w", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER)),
-                ComposerSnapshot("bc-s", source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
+                ComposerSnapshot("bc-s", parent = AgentParent("bc-p", AgentParentKind.SIDE_CHAT), source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD),
                 ComposerSnapshot("bc-x"),
             ),
         )

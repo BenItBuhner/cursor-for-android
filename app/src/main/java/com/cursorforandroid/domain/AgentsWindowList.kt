@@ -142,7 +142,7 @@ object AgentsWindowList {
                 else -> "nested under the parent's row"
             }
             val projectNote = if (agent.isProject) "; projectMetadata present but kf needs no subagentParentId: a child, not a Project" else ""
-            val pinNote = if (agent.id in pinned) "; pinned, but VuC pins only top-level headers: stays under the parent" else ""
+            val pinNote = if (agent.id in pinned) "; pinned, but VuC pins only top-level headers: stays under the parent (in Pinned only while the parent's row is not drawn)" else ""
             return Placement(Placement.Kind.CHILD, parentId, "PJr child of ${ProjectDiagnostics.tail(parentId)} via $via$projectNote$pinNote → $where")
         }
         if (agent.isProject) {

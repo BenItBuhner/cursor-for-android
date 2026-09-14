@@ -591,8 +591,9 @@ class AgentRepository(
         if (id.isBlank() || parent.id.isBlank() || parent.id == id || !signal.isPlacing) return false
         val current = placements[id]
         // A stamp made by an action here stands until a record has caught up with it; another source's word does
-        // not replace it meanwhile.
+        // not replace it meanwhile. Nor does a coordinator's transcript replace the account's own word.
         if (current != null && current.signal == LineageSignal.ACTION && signal != LineageSignal.ACTION && AppClock.now() - current.atMillis < ACTION_GRACE_MS) return false
+        if (current != null && current.signal.isAuthoritative && !signal.isAuthoritative) return false
         if (current != null && current.parent == parent && current.signal == signal) return false
         placements[id] = Placement(parent, signal)
         registryChanges.update { it + 1 }
@@ -669,8 +670,9 @@ class AgentRepository(
                         val parentId = word.parentId ?: return@forEach
                         if (word.signal.isPlacing) place(word.id, AgentParent(parentId, word.kind ?: AgentParentKind.PROJECT_WORKER), word.signal)
                     }
-                    // The account's records of chats the rows did not hold, for the pages that bring them.
-                    if (accountSession) lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
+                    // The account's records of chats the rows did not hold, for the pages that bring them: facts
+                    // already read, kept in either mode like the records the rows carry.
+                    lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
                     // Only entries whose record's flag was read with its fields come back: what an older build
                     // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
                     lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
@@ -1448,6 +1450,7 @@ class AgentRepository(
         if (generation.get() != startedIn) return false
         val now = AppClock.now()
         val held = _state.value.agents.mapTo(HashSet()) { it.id }
+        var kept = false
         composers.forEach { snap ->
             if (snap.scope == AgentScope.PROJECT_ROOT) {
                 noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
@@ -1464,8 +1467,15 @@ class AgentRepository(
                 if (caughtUp) placements.remove(snap.id)
             }
             recordUnresolved.remove(snap.id)
-            if (snap.id !in held) pendingRecords[snap.id] = snap.recordFields() else pendingRecords.remove(snap.id)
+            if (snap.id !in held) {
+                val fields = snap.recordFields()
+                if (pendingRecords.put(snap.id, fields) != fields) kept = true
+            } else {
+                pendingRecords.remove(snap.id)
+            }
         }
+        // A record kept for a row to come is the registry's to persist, whether or not a row changed.
+        if (kept) registryChanges.update { it + 1 }
         true
     }
 

@@ -220,7 +220,8 @@ object AgentListOrganizer {
      *  3. `kf`: the top-level rows the record flags are the Projects section, sorted by activity; the registry's roots
      *     the list holds no row for stand in after them ([knownRoots]).
      *  4. `VuC`: the pinned top-level non-Project rows are the Pinned section; a pinned Project stays in Projects, a
-     *     pinned child under its parent.
+     *     pinned child under its parent — or, when the parent's row is not drawn, in Pinned, since a pin is the
+     *     user's word that the chat is shown.
      *  5. The rest are grouped by [prefs] — `f3v`'s time sections by default — and every section is in `rUm`'s order.
      */
     fun organize(
@@ -250,7 +251,13 @@ object AgentListOrganizer {
         val listed = topLevel.filter { isListed(it, prefs) }
         val shownChildren = children.filter { passesArchive(it, prefs) }
         val standInIds = standIns.mapTo(HashSet()) { it.id }
-        val tree = nest(listed, shownChildren, links).map { row ->
+        val nested = nest(listed, shownChildren, links)
+        // A pinned child stays under its parent (VuC pins top-level headers only); when the parent's row is not
+        // drawn — not loaded, archived, filtered out — the pin is the user's word that the chat is shown, so it
+        // stands in Pinned rather than nowhere (the desktop never lets a pinned header's parent go unloaded).
+        val drawn = HashSet<String>().also { fun walk(row: AgentRow) { it += row.agent.id; row.children.forEach(::walk) }; nested.forEach(::walk) }
+        val pinnedOrphans = nest(shownChildren.filter { it.isPinned && it.agent.id !in drawn }, shownChildren.filter { it.agent.id !in drawn && !it.isPinned }, links)
+        val tree = (nested + pinnedOrphans).map { row ->
             val count = memberCounts[row.agent.id]
             when {
                 row.agent.id in standInIds -> row.copy(isPlaceholder = row.agent.name == PLACEHOLDER_NAME, isStandIn = true, memberCount = count)
