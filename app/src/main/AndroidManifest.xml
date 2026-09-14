@@ -109,6 +109,17 @@
             android:authorities="${applicationId}.SentryPerformanceProvider"
             tools:node="remove" />
 
+        <!-- Hands the Project diagnostics report to the share sheet as a file (see ProjectDiagnosticsRow). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Streams the active runs and owns the live notification while at least one agent is running. -->
         <service
             android:name=".notifications.LiveNotificationService"

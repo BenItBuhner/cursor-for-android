@@ -26,12 +26,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -268,6 +270,35 @@ class PinRepositoryTest {
         assertThat(pinnedIds()).contains("bc-demo-0001")
         assertThat(pinsApi.listCalls).isEqualTo(1)
         assertThat(pinsApi.pinCalls).isEmpty()
+    }
+
+    /**
+     * v0.3.6 crashed here: a repository built once a fetch had completed (Extended mode turned on, the sidebar's end
+     * reached) had its cue emit at once, on the IO scope, while the constructor was still initialising the properties
+     * declared after the `init` block — `retryJob` was null to the round. The scope here is unconfined, so the cue
+     * runs inside the constructor itself, and the handler catches what the scope would otherwise have thrown at the
+     * thread; a round that fails for a reason of its own must not end the cue's collector either.
+     */
+    @Test
+    fun `a repository built after a fetch has completed runs its round at once, without crashing the scope`() = runBlocking<Unit> {
+        agents.refresh()
+        assertThat(agents.refreshCompleted.value).isGreaterThan(0L)
+        val thrown = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val handled = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined + kotlinx.coroutines.CoroutineExceptionHandler { _, t -> thrown += t })
+        val handed = mutableListOf<AccountList>()
+        val late = PinRepository(session, prefs, agents, pinsApi, handled, now = { now }, onList = { list, _ -> handed += list })
+        withTimeout(5_000) { while (late.state.value.lastSyncedAtMillis == null) delay(10) }
+        assertThat(thrown).isEmpty()
+        assertThat(handed).hasSize(1)
+        // A round that fails is reported, not thrown: the next completed fetch cues the collector as before.
+        pinsApi.failing = IOException("offline")
+        agents.refresh()
+        withTimeout(5_000) { while (late.state.value.error == null) delay(10) }
+        assertThat(thrown).isEmpty()
+        pinsApi.failing = null
+        agents.refresh()
+        withTimeout(5_000) { while (handed.size < 2) delay(10) }
+        handled.cancel()
     }
 
     @Test

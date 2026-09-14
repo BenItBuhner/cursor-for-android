@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -31,6 +32,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -98,6 +100,9 @@ class PreferencesStore(
         val lastEnvName = stringPreferencesKey("last_env_name")
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
         val liveNotifications = booleanPreferencesKey("live_notifications")
+        val countProjectAgentsInLive = booleanPreferencesKey("live_count_project_agents")
+        val notifyProjectCoordinators = booleanPreferencesKey("notify_project_coordinators")
+        val notifyProjectMembers = booleanPreferencesKey("notify_project_members")
         val notificationPermissionAsked = booleanPreferencesKey("notification_permission_asked")
         val recentSkills = stringPreferencesKey("recent_skills")
         val autoUpdate = booleanPreferencesKey("auto_update")
@@ -289,6 +294,19 @@ class PreferencesStore(
     val notificationPermissionAsked: Flow<Boolean> = data.map { it[Keys.notificationPermissionAsked] ?: false }
 
     suspend fun setLiveNotifications(enabled: Boolean) = edit { it[Keys.liveNotifications] = enabled }
+
+    /** The Project half of Settings › Notifications (see [ProjectNotificationPrefs]): the live count and the cards. */
+    val projectNotifications: Flow<ProjectNotificationPrefs> = data.map {
+        ProjectNotificationPrefs(
+            countProjectAgentsInLive = it[Keys.countProjectAgentsInLive] ?: true,
+            notifyProjectCoordinators = it[Keys.notifyProjectCoordinators] ?: false,
+            notifyProjectMembers = it[Keys.notifyProjectMembers] ?: false,
+        )
+    }.distinctUntilChanged()
+
+    suspend fun setCountProjectAgentsInLive(enabled: Boolean) = edit { it[Keys.countProjectAgentsInLive] = enabled }
+    suspend fun setNotifyProjectCoordinators(enabled: Boolean) = edit { it[Keys.notifyProjectCoordinators] = enabled }
+    suspend fun setNotifyProjectMembers(enabled: Boolean) = edit { it[Keys.notifyProjectMembers] = enabled }
 
     suspend fun setNotificationPermissionAsked() = edit { it[Keys.notificationPermissionAsked] = true }
 

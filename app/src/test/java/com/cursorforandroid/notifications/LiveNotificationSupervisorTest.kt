@@ -8,6 +8,8 @@ import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.RunStatus
@@ -347,20 +349,25 @@ class LiveNotificationSupervisorTest {
     }
 
     @Test
-    fun `nothing of a Project starts the service - not its coordinator, not a worker, a side chat or a subagent - however it was classified`() {
+    fun `a Project's chats start the service and are counted like any running agent, and the switch takes them off the count`() {
         val signedIn = SessionState.SignedIn(user, isDemo = false)
         val running = agent("bc-x", RunStatus.RUNNING)
-        // Classified by the account (Extended mode lists the scope with the row), and by lineage alone (default
-        // mode, from the coordinator's transcript): the decision reads the scope, not how it was learned.
-        val root = agent("bc-p", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_ROOT)
+        // Classified by the account (Extended mode lists the scope with the row) or by a membership kept with the
+        // row: the decision reads the scope, not how it was learned.
+        val root = agent("bc-p", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP)
         val rootByFlag = agent("bc-p2", RunStatus.RUNNING).copy(isProject = true)
         val worker = agent("bc-w", RunStatus.RUNNING).copy(parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))
         val sideChat = agent("bc-s", RunStatus.RUNNING).copy(source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD)
         val subagent = agent("bc-sub", RunStatus.RUNNING).copy(knownScope = AgentScope.PROJECT_CHILD)
         fun list(vararg agents: Agent) = AgentListState(agents = agents.toList(), hasLoaded = true, isFromCache = false)
 
-        assertThat(liveDecision(signedIn, list(root, rootByFlag, worker, sideChat, subagent), enabled = true, serviceActive = false)).isEqualTo(LiveDecision.Idle)
-        assertThat(liveDecision(signedIn, list(root, worker, running), enabled = true, serviceActive = true))
+        // Every running agent counts by default: the coordinators, the worker, the side chat, the subagent.
+        assertThat(liveDecision(signedIn, list(root, rootByFlag, worker, sideChat, subagent), enabled = true, serviceActive = false))
+            .isEqualTo(LiveDecision.Track(setOf("bc-p", "bc-p2", "bc-w", "bc-s", "bc-sub"), serviceActive = false))
+        // With "Count Project agents in the live notification" off, only the account's own chats do.
+        val ownOnly = ProjectNotificationPrefs(countProjectAgentsInLive = false)
+        assertThat(liveDecision(signedIn, list(root, rootByFlag, worker, sideChat, subagent), enabled = true, serviceActive = false, projectPrefs = ownOnly)).isEqualTo(LiveDecision.Idle)
+        assertThat(liveDecision(signedIn, list(root, worker, running), enabled = true, serviceActive = true, projectPrefs = ownOnly))
             .isEqualTo(LiveDecision.Track(setOf("bc-x"), serviceActive = true))
     }
 }

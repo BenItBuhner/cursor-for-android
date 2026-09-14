@@ -717,11 +717,12 @@ class AgentRepositoryTest {
         repo.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x", parent = AgentParent("bc-other", AgentParentKind.SIDE_CHAT))))
         fun agent(id: String) = repo.state.value.agents.first { it.id == id }
 
-        // The coordinator's own transcript: a hint. It places the unplaced and leaves the account's word alone.
+        // The coordinator's own transcript: a hint. It places the unplaced and leaves the account's word alone —
+        // and makes no Project of the chat that named them: a root takes the record's word.
         repo.applyLineage("bc-c", mapOf("bc-w" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER, "bc-late" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agent("bc-c").scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        assertThat(agent("bc-c").scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agent("bc-c").isProject).isFalse()
-        assertThat(agent("bc-c").looksLikeProject).isTrue()
+        assertThat(agent("bc-c").looksLikeProject).isFalse()
         assertThat(agent("bc-w").parent).isEqualTo(AgentParent("bc-c", AgentParentKind.PROJECT_WORKER))
         assertThat(agent("bc-w").scope).isEqualTo(AgentScope.PROJECT_CHILD)
         assertThat(agent("bc-x").parent).isEqualTo(AgentParent("bc-other", AgentParentKind.SIDE_CHAT))

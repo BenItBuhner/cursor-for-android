@@ -390,6 +390,8 @@ object AgentListOrganizer {
             repoUrl = null,
             startingRef = null,
             knownScope = AgentScope.PROJECT_ROOT,
+            // Named as manager by the workers under it: root evidence (see LineageSignal.isRootEvidence).
+            scopeSignal = LineageSignal.MEMBERSHIP,
         )
         return AgentRow(agent = agent, indicator = AgentIndicator.Read, isPinned = false, isUnread = false, launchedFromThisDevice = false, children = workers, isPlaceholder = true)
     }

@@ -2,6 +2,8 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.LiveRunning
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.LiveActivityState
 import com.cursorforandroid.domain.LivePhase
@@ -25,6 +27,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
@@ -52,6 +57,8 @@ class RunMonitor(
     private val maxTracked: Int = MAX_TRACKED,
     private val nowProvider: () -> Long = AppClock::now,
     dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /** Settings › Notifications, the Project half: what the live count includes, whose finishes are cards. */
+    private val notificationPrefs: Flow<ProjectNotificationPrefs> = flowOf(ProjectNotificationPrefs.DEFAULT),
 ) {
     private val _state = MutableStateFlow(LiveActivityState())
     val state: StateFlow<LiveActivityState> = _state.asStateFlow()
@@ -95,12 +102,19 @@ class RunMonitor(
         val s = CoroutineScope(SupervisorJob() + serial)
         scope = s
         s.launch {
-            agents.state
+            combine(
                 // Rows restored from disk are not tracked until a fetch has confirmed they are still running.
-                .filter { !it.isFromCache }
-                // A Project's coordinator and the agents spawned inside it are not followed here: nothing about them
-                // is announced (see [publishFinished]), so nothing about them is worth a stream.
-                .map { st -> st.agents.filter { it.isRunning && !it.isProjectScopedByEvidence }.sortedByDescending { it.updatedAtMillis } }
+                agents.state.filter { !it.isFromCache },
+                agents.runningScan,
+                notificationPrefs,
+            ) { st, scan, prefs ->
+                // The running set is the status scan's, reconciled with the rows (see [LiveRunning]): the count is
+                // the account's running agents, the Projects' included unless the setting says not, and not a
+                // function of how far the sidebar has paged. The rows among them are the ones followed.
+                val ids = LiveRunning.ids(st.agents, scan, prefs)
+                val rows = st.agents.filter { it.id in ids }.sortedByDescending { it.updatedAtMillis }
+                Reconciled(rows, ids.size, prefs)
+            }
                 .distinctUntilChanged()
                 .collect { reconcile(s, it) }
         }
@@ -139,10 +153,17 @@ class RunMonitor(
         }
     }
 
-    private fun reconcile(scope: CoroutineScope, running: List<Agent>) {
+    /** One reconciled reading: the running rows to follow, the running set's size, and the settings it was read under. */
+    private data class Reconciled(val running: List<Agent>, val count: Int, val prefs: ProjectNotificationPrefs)
+
+    @Volatile private var prefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT
+
+    private fun reconcile(scope: CoroutineScope, reading: Reconciled) {
+        prefs = reading.prefs
+        val running = reading.running
         // The count covers every running agent, not just the [maxTracked] followed below, and is published before any
         // tracker is dropped so an intermediate state never reports fewer agents than it lists.
-        _state.update { st -> st.copy(runningCount = running.size) }
+        _state.update { st -> st.copy(runningCount = reading.count) }
         val wanted = running.filter { it.latestRunId != null }.take(maxTracked).associateBy { it.id }
         // Agents without a known run id come from a summary-only list: load the detail record to learn it. One request
         // per agent at a time; a failed one (offline, a launch the server has not finished creating) is asked for again
@@ -220,12 +241,14 @@ class RunMonitor(
     }
 
     /**
-     * Reports a finished run once. Nothing of a Project is reported — not its coordinator's turn, not a worker's, a
-     * side chat's or a subagent's — whatever the row said when the tracker started: the row is read again here, so a
-     * chat classified as the Project's while its run was being followed is dropped all the same.
+     * Reports a finished run once. A Project's coordinator's turn, or a worker's, a side chat's or a subagent's, is
+     * reported only when Settings › Notifications asks for it (off by default) — whatever the row said when the
+     * tracker started: the row is read again here, so a chat classified as the Project's while its run was being
+     * followed is dropped all the same.
      */
     private fun publishFinished(run: TrackedRun) {
-        if (agents.agent(run.agentId)?.isProjectScopedByEvidence == true) return
+        // A Project's coordinator's or member's finish is a card only when Settings › Notifications says so.
+        agents.agent(run.agentId)?.let { if (!prefs.announces(it)) return }
         if (!finishedEmitted.add(run.runId)) return
         _finished.tryEmit(run)
     }

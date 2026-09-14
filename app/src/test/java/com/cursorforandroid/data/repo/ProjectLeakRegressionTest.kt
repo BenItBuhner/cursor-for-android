@@ -181,7 +181,10 @@ class ProjectLeakRegressionTest {
     fun `a coordinator's transcript places what nothing authoritative has, and yields to what has`() = runBlocking<Unit> {
         val agents = seed()
         agents.applyLineage("bc-p", mapOf("bc-w1" to AgentParentKind.PROJECT_WORKER, "bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
-        assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // The transcript nests the chats it names; it makes no Project of the chat that names them (that takes
+        // the record's word), so bc-p stays a chat of the account's own with two chats under it.
+        assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(agents.knownRoots.value).isEmpty()
         assertThat(agents.agent("bc-w1")?.scopeSignal).isEqualTo(LineageSignal.COORDINATOR_TRANSCRIPT)
         assertThat(agents.agent("bc-x")?.isProjectChild).isTrue()
         // The account then says bc-x is a Project of its own under a different parent: its word stands over the hint.
@@ -351,11 +354,12 @@ class ProjectLeakRegressionTest {
         assertThat(agents.agent("bc-m")?.isProjectScoped).isFalse()
         assertThat(agents.agent("bc-x")?.isProjectScoped).isTrue()
         assertThat(agents.agent("bc-x")?.isProjectScopedByEvidence).isFalse()
-        assertThat(primaryIds(agents)).containsExactly("bc-m")
+        // bc-p is no Project on its transcript's word: a chat of the account's own with bc-x nested under it.
+        assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-p")
         // The account's record of bc-x names nothing: the hint is withdrawn and refused; positive evidence still places.
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-x"), ComposerSnapshot("bc-m")))
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
-        assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-x")
+        assertThat(primaryIds(agents)).containsExactly("bc-m", "bc-p", "bc-x")
         agents.applyLineage("bc-p", mapOf("bc-x" to AgentParentKind.PROJECT_WORKER), authoritative = false)
         assertThat(agents.agent("bc-x")?.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(agents.hintRefusedIds()).containsExactly("bc-x")
@@ -403,9 +407,12 @@ class ProjectLeakRegressionTest {
         // A kept child scope with no parent and no child's source behind it is an older reading; the record's own flag is the fact.
         assertThat(base.copy(isProject = true, knownScope = AgentScope.PROJECT_CHILD).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(base.copy(isProject = true, source = AgentSource.AS_SIDE_CHAT_FROM_CLOUD).scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        assertThat(base.copy(source = AgentSource.CLOUD_META_AGENT).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // A source says how a chat was started, never what it is: a meta agent's is no root source.
+        assertThat(base.copy(source = AgentSource.CLOUD_META_AGENT).scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(base.copy(isProject = true).scope).isEqualTo(AgentScope.PROJECT_ROOT)
-        assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PROJECT_ROOT)
+        // A kept root scope stands on root evidence alone: kept on none, the chat is one of the account's own.
+        assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT).scope).isEqualTo(AgentScope.PRIMARY)
+        assertThat(base.copy(knownScope = AgentScope.PROJECT_ROOT, scopeSignal = LineageSignal.MEMBERSHIP).scope).isEqualTo(AgentScope.PROJECT_ROOT)
         assertThat(base.scope).isEqualTo(AgentScope.PRIMARY)
         assertThat(base.copy(knownScope = AgentScope.PROJECT_CHILD).isProjectScoped).isTrue()
     }

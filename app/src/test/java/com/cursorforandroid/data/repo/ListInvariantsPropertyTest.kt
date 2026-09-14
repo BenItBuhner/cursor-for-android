@@ -22,6 +22,8 @@ import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.LineageSignal
+import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.LiveRunning
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.RunStatus
@@ -197,6 +199,8 @@ class ListInvariantsPropertyTest {
             // and the roots the account has called Projects (which the running count leaves out).
             val placed = mutableSetOf<String>()
             val evidenceRoots = mutableSetOf<String>()
+            /** Roots whose record's flag an account window has shown. */
+            val flagged = mutableSetOf<String>()
             val hinted = mutableSetOf<String>()
             val steps = mutableListOf<String>()
 
@@ -228,17 +232,28 @@ class ListInvariantsPropertyTest {
                     val row = list.agents.firstOrNull { it.id == id } ?: continue
                     assertWithMessage("$context: evidence child $id scoped by evidence").that(row.isProjectScopedByEvidence).isTrue()
                 }
-                // 4. After a refresh the running set is the server's, less the chats evidence places inside a Project.
+                // 4. After a refresh the running rows outside the Projects are the server's running set less the chats
+                //    evidence places inside a Project; the live count is the server's running set whole.
                 if (afterRefresh) {
                     val expected = truth.running.filter { it !in placed && it !in evidenceRoots }.toSet()
                     val counted = list.agents.filter { it.isRunning && !it.isProjectScopedByEvidence }.map { it.id }.toSet()
-                    assertWithMessage("$context: running set").that(counted).isEqualTo(expected)
+                    assertWithMessage("$context: running rows outside the Projects").that(counted).isEqualTo(expected)
                     assertWithMessage("$context: scan").that(agents.runningScan.value.ids).isEqualTo(truth.running)
+                    assertWithMessage("$context: live count").that(LiveRunning.ids(list.agents, agents.runningScan.value)).isEqualTo(truth.running.toSet())
                 }
-                // 5. The notification decision never tracks a chat evidence places inside a Project.
-                val decision = liveDecision(session.state.value, list, enabled = true, serviceActive = false)
+                // 5. The notification decision counts every running agent, and with the switch off none evidence places
+                //    inside a Project; a card for a chat inside a Project is never on by default.
+                val decision = liveDecision(session.state.value, list, enabled = true, serviceActive = false, scan = agents.runningScan.value)
                 if (decision is LiveDecision.Track) {
-                    assertWithMessage("$context: tracked").that(decision.runningIds.intersect(placed)).isEmpty()
+                    assertWithMessage("$context: tracked").that(decision.runningIds).containsAtLeastElementsIn(list.agents.filter { it.isRunning }.map { it.id })
+                }
+                val ownOnly = liveDecision(session.state.value, list, enabled = true, serviceActive = false, scan = agents.runningScan.value, projectPrefs = ProjectNotificationPrefs(countProjectAgentsInLive = false))
+                if (ownOnly is LiveDecision.Track) {
+                    assertWithMessage("$context: tracked with the switch off").that(ownOnly.runningIds.intersect(placed)).isEmpty()
+                }
+                for (id in placed + evidenceRoots) {
+                    val row = list.agents.firstOrNull { it.id == id } ?: continue
+                    if (row.isProjectScopedByEvidence) assertWithMessage("$context: card for $id").that(ProjectNotificationPrefs.DEFAULT.announces(row)).isFalse()
                 }
             }
 
@@ -256,16 +271,23 @@ class ListInvariantsPropertyTest {
                         agents.reconcileRunning()
                         agents.resolvePinned()
                         placed += window.filter { truth.children[it] == Evidence.RECORD }
+                        // The records' flags, and the managers the workers' records name: both are root evidence.
+                        flagged += window.filter { it in truth.roots }
                         evidenceRoots += window.filter { it in truth.roots }
+                        evidenceRoots += window.filter { truth.children[it] == Evidence.RECORD && !it.startsWith("bc-side-") }.map { rootOf(it) }
                         check("account", afterRefresh = false)
                     }
                     4 -> if (extended) {
                         val root = truth.roots.random(random)
                         val members = truth.children.filterKeys { rootOf(it) == root }
                         steps += "membership($root)"
-                        agents.applyLineage(root, members.filterValues { it == Evidence.MEMBERSHIP }.keys.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
-                        placed += members.filterValues { it == Evidence.MEMBERSHIP }.keys
-                        evidenceRoots += root
+                        val named = members.filterValues { it == Evidence.MEMBERSHIP }.keys
+                        agents.applyLineage(root, named.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.MEMBERSHIP, retract = setOf(AgentParentKind.PROJECT_WORKER))
+                        placed += named
+                        // A membership that names a worker is root evidence; one that names nobody is not — and takes
+                        // the root out unless its record's flag or a worker's record still holds it.
+                        if (named.isNotEmpty()) evidenceRoots += root
+                        else if (root !in flagged && placed.none { rootOf(it) == root && truth.children[it] == Evidence.RECORD && !it.startsWith("bc-side-") }) evidenceRoots -= root
                         check("membership", afterRefresh = false)
                     }
                     5 -> {

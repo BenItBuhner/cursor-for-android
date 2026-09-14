@@ -86,6 +86,8 @@ data class RootScan(
     val failure: String? = null,
     /** The pass read as many pages as it was allowed and the list went on: nothing failed, and the next pass reads again. */
     val truncated: Boolean = false,
+    /** Every record the pages carried, by id: what the registry is re-validated against (a record seen as neither a Project nor a manager). */
+    val seenIds: Set<String> = emptySet(),
 ) {
     /** The coordinators the workers' records name, whether or not their own record was among the pages. */
     val managers: Set<String> get() = children.mapNotNullTo(LinkedHashSet()) { it.parent?.takeIf { p -> p.kind == AgentParentKind.PROJECT_WORKER }?.id }
@@ -185,7 +187,7 @@ class BackgroundComposerApi(
                 }
             }
         } while (cursor != null && pages < maxPages)
-        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null)
+        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null, seenIds = seen)
     }
 
     override suspend fun list(): AccountList = accountList(page(null), first = true)

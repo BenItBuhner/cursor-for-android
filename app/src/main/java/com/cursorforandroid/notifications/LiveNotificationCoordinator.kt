@@ -18,6 +18,9 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.RunningScan
+import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.LiveRunning
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -69,6 +72,8 @@ object LiveNotificationCoordinator {
                         LiveNotificationService.active,
                         canShowLive = { LiveNotifications.canShowLive(activity) },
                         local = graph.prefs.localAgentState,
+                        scan = graph.agents.runningScan,
+                        projectPrefs = graph.prefs.projectNotifications,
                     ),
                 )
             }
@@ -101,10 +106,12 @@ internal fun liveDecision(
     serviceActive: Boolean,
     canShowLive: Boolean = true,
     quietIds: Set<String> = emptySet(),
+    scan: RunningScan = RunningScan(),
+    projectPrefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
 ): LiveDecision {
-    // A Project's coordinator and everything spawned inside a Project never notify: the Project's view is where
-    // they are followed. Only the account's own chats are worth a foreground service.
-    val running = list.agents.filter { it.isRunning && !it.isProjectScopedByEvidence && it.id !in quietIds }.map { it.id }.toSet()
+    // The running set is the status scan's reconciled with the rows (see [LiveRunning]): every running agent, a
+    // Project's coordinator and the agents inside it included unless Settings › Notifications says not.
+    val running = LiveRunning.ids(list.agents, scan, projectPrefs, quietIds)
     return when {
         session is SessionState.SignedOut -> LiveDecision.SignedOut
         // A list restored from disk may still say "running" about runs that finished hours ago; the service only
@@ -128,10 +135,18 @@ internal fun liveDecisions(
      */
     canShowLive: () -> Boolean = { true },
     local: Flow<LocalAgentState> = flowOf(LocalAgentState()),
+    scan: Flow<RunningScan> = flowOf(RunningScan()),
+    projectPrefs: Flow<ProjectNotificationPrefs> = flowOf(ProjectNotificationPrefs.DEFAULT),
 ): Flow<LiveDecision> =
-    combine(session, list, enabled, serviceActive, local) { s, l, e, a, state ->
-        liveDecision(s, l, e, a, canShowLive(), state.quietIds(AppClock.now()))
+    combine(
+        combine(session, list, enabled, serviceActive, local) { s, l, e, a, state -> Inputs(s, l, e, a, state) },
+        scan,
+        projectPrefs,
+    ) { inputs, sc, pp ->
+        liveDecision(inputs.session, inputs.list, inputs.enabled, inputs.serviceActive, canShowLive(), inputs.local.quietIds(AppClock.now()), sc, pp)
     }.distinctUntilChanged()
+
+private class Inputs(val session: SessionState, val list: AgentListState, val enabled: Boolean, val serviceActive: Boolean, val local: LocalAgentState)
 
 /**
  * Turns [LiveDecision]s into start and stop commands, and does not take a refused or lost service for an answer.
