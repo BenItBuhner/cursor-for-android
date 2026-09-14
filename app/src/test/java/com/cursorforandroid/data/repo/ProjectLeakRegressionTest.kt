@@ -25,10 +25,12 @@ import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -282,10 +284,15 @@ class ProjectLeakRegressionTest {
         // fetch lands, is the ordering: the worker is never a primary row, and the coordinator's row is placed as a
         // root in the publication that brings it, never landing as a chat of its own first.
         val published = java.util.concurrent.CopyOnWriteArrayList<List<Agent>>()
-        val watching = launch(Dispatchers.Default) { agents.state.collect { published += it.agents } }
+        // Started undispatched, so the subscription is made before anything else runs: the state flow's replay of the
+        // current list — the one before the record below, the worker still a chat of its own — is what is dropped,
+        // and every publication after it reaches the collector in order. A collector racing the record on another
+        // thread could see that earlier list, or miss the one that brings the coordinator.
+        val watching = launch(start = CoroutineStart.UNDISPATCHED) { agents.state.drop(1).collect { published += it.agents } }
         agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-w1", parent = AgentParent("bc-p", AgentParentKind.PROJECT_WORKER))))
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
-        withTimeout(5_000) { while (agents.agent("bc-p") == null) delay(10) }
+        // The coordinator is fetched by id on the repository's own scope; wait until the collector has seen it land.
+        withTimeout(5_000) { while (published.none { rows -> rows.any { it.id == "bc-p" } }) delay(10) }
         watching.cancel()
         assertThat(agents.agent("bc-p")!!.isProjectRoot).isTrue()
         assertThat(primaryIds(agents)).containsExactly("bc-x", "bc-w2")
