@@ -63,17 +63,18 @@ object ToolPayloads {
     }
 
     /**
-     * A coordinator's tools, by the shapes of `agent/v1/coordinator_tools` and `send_to_user` (field names in the
-     * proto's spelling and the SDK's): `CreateAgentArgs {prompt, name}` → `{agent_id, message}`; `SendToAgentArgs
+     * A coordinator's tools, by the shapes of `agent/v1/coordinator_tools` and the two message tools (field names in
+     * the proto's spelling and the SDK's): `CreateAgentArgs {prompt, name}` → `{agent_id, message}`; `SendToAgentArgs
      * {agent_id, message, delivery, title}` → `{worker_bc_id, delivered_as, message}`; `GetAgentStatusArgs {agent_ids}`
      * → `{workers[{bc_id, name, lifecycle, turn_in_flight, last_terminal_turn_status, pr_url, last_activity_at_ms}],
      * message}`; `StopAgentArgs {agent_id}` → `{worker_bc_id, message}`; `ReadAgentTranscriptArgs {agent_id, mode}` →
-     * `{transcript, truncated}`; `SendToUserArgs {message}`.
+     * `{transcript, truncated}`; `SendMessageArgs {text {content} | attachment {url, alt}}` and `SendToUserArgs
+     * {message}` (see [coordinatorMessage]).
      */
     private fun coordinator(name: String, args: JsonObject?, value: JsonObject?): ToolPayload? {
         val tool = ToolNames.coordinatorTool(name) ?: return null
-        if (tool == "send_to_user") {
-            val message = args.string(listOf("message", "text", "content", "body", "markdown")) ?: value?.deepString("message", "text") ?: return null
+        if (tool == ToolNames.USER_MESSAGE_TOOL) {
+            val message = coordinatorMessage(args) ?: value?.deepString("message", "text") ?: return null
             return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first)
         }
         val note = value?.deepString("message")
@@ -130,6 +131,50 @@ object ToolPayloads {
             }
             else -> null
         }
+    }
+
+    /**
+     * The text of a coordinator's message to the user, under every shape the clients write the two tools' arguments:
+     *
+     *  - `SendMessageArgs` (`agent.v1`, the `SendMessage` tool) is a oneof — `text {content}` or `attachment {url,
+     *    alt}` — so its proto3 JSON is `{"text": {"content": "…"}}`, which is what Cursor's TypeScript writes for it
+     *    whether through `toJson()` or `JSON.stringify` (the desktop's own `rawArgs`); the message is `text.content`,
+     *    two levels down, never a top-level string. An object spread instead of serialised keeps the oneof as
+     *    `{"message": {"case": "text", "value": {"content": "…"}}}`, read here too.
+     *  - `SendToUserArgs {message}` (the older `send_to_user`) is the flat `{"message": "…"}`.
+     *  - A hand-written stream or an older build's fixture may carry `text`, `content`, `body` or `markdown` flat.
+     *
+     * An attachment sent instead of text is rendered as the markdown for its link. Null when the arguments carry
+     * none of these — nothing was said, or the stream left the arguments out.
+     */
+    internal fun coordinatorMessage(args: JsonObject?): String? {
+        if (args == null) return null
+        args.string(MESSAGE_KEYS)?.let { return it }
+        // SendMessageArgs as proto3 JSON: the oneof case is the key, the text one level under it.
+        (args["text"] as? JsonObject)?.string(listOf("content", "text"))?.let { return it }
+        (args["attachment"] as? JsonObject)?.let { attachmentMarkdown(it) }?.let { return it }
+        // The oneof kept as {case, value}, or a wrapper object carrying the text under a familiar key.
+        (args["message"] as? JsonObject)?.let { message ->
+            message.string(listOf("content", "text"))?.let { return it }
+            (message["text"] as? JsonObject)?.string(listOf("content", "text"))?.let { return it }
+            val case = message.string(listOf("case"))
+            val value = message["value"] as? JsonObject
+            if (value != null) {
+                if (case == "attachment") attachmentMarkdown(value)?.let { return it }
+                value.string(listOf("content", "text", "message"))?.let { return it }
+                (value["text"] as? JsonObject)?.string(listOf("content"))?.let { return it }
+            }
+            (message["attachment"] as? JsonObject)?.let { attachmentMarkdown(it) }?.let { return it }
+        }
+        return null
+    }
+
+    /** `SendMessageAttachment {url, alt}` as the markdown that shows it: an image when the URL looks like one, a link otherwise. */
+    private fun attachmentMarkdown(attachment: JsonObject): String? {
+        val url = attachment.string(listOf("url", "uri", "href")) ?: return null
+        val alt = attachment.string(listOf("alt", "title", "name")) ?: "Attachment"
+        val image = IMAGE_URL.containsMatchIn(url.substringBefore('?'))
+        return if (image) "![$alt]($url)" else "[$alt]($url)"
     }
 
     private fun diff(args: JsonObject?, value: JsonObject?): ToolPayload? {
@@ -274,14 +319,18 @@ object ToolPayloads {
 
     /**
      * The typed part of a result. The SDK wraps a success in `{status, value}` and the public stream in `{success}`
-     * (the desktop, sometimes, in `{result}`); an error result has no value worth reading, and a result that is not
-     * an object says nothing.
+     * (the desktop, sometimes, in `{result}`; a proto `result` oneof kept as an object, in `{result: {case, value}}`);
+     * an error result has no value worth reading, and a result that is not an object says nothing.
      */
     private fun JsonElement?.resultValue(): JsonObject? {
         val obj = this as? JsonObject ?: return null
         if ((obj["status"] as? JsonPrimitive)?.contentOrNull?.equals("error", ignoreCase = true) == true) return null
         (obj["value"] as? JsonObject)?.let { return it }
         (obj["success"] as? JsonObject)?.let { return it }
+        (obj["result"] as? JsonObject)?.let { result ->
+            val case = (result["case"] as? JsonPrimitive)?.contentOrNull
+            if (case != null) return if (case.equals("error", ignoreCase = true)) null else (result["value"] as? JsonObject ?: result)
+        }
         return obj
     }
 
@@ -332,6 +381,9 @@ object ToolPayloads {
 
     private val PATH_KEYS = listOf("path", "target_file", "targetFile", "file_path", "filePath", "relative_workspace_path", "relativeWorkspacePath", "file", "notebook_path", "absolutePath")
     private val AGENT_ID_KEYS = listOf("agent_id", "agentId")
+    /** Where a message tool's text sits when it is a flat string: `SendToUserArgs.message`, and the spellings of hand-written streams. */
+    private val MESSAGE_KEYS = listOf("message", "text", "content", "body", "markdown")
+    private val IMAGE_URL = Regex("""\.(png|jpe?g|gif|webp|bmp|svg)$""", RegexOption.IGNORE_CASE)
     private val DATA_URI = Regex("""^data:([^;,]*)(?:;[^,]*)?,(.*)$""", RegexOption.DOT_MATCHES_ALL)
     /** A coordinator's prompt to a worker, or a transcript excerpt, is kept to a card's worth; the worker's own chat has the whole. */
     private const val PROMPT_CHARS = 4_000

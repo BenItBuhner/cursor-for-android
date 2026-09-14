@@ -14,6 +14,7 @@ import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.CachedConversation
+import com.cursorforandroid.data.local.CachedTrace
 import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
@@ -21,10 +22,14 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.ToolCall
+import com.cursorforandroid.domain.ToolKind
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -1335,5 +1340,95 @@ class ConversationRepositoryTest {
         } finally {
             entryThread.shutdownNow()
         }
+    }
+
+    /**
+     * A coordinator's trace as 0.3.4 wrote it: the `SendMessage` call filed under `Other` with nothing read off its
+     * arguments (the name was not known), the arguments dropped as every call's are. The message's body is not on
+     * the disk at all, so re-reading the file cannot bring it back; only the run's log (or the account's record) can.
+     */
+    private fun staleCoordinatorTrace(runId: String, createdAt: String) = CachedTrace(
+        runId,
+        java.time.Instant.parse(createdAt).toEpochMilli(),
+        listOf(
+            AssistantMessage("asst-$runId-0", "The release worker shipped v0.3.3."),
+            ActivityGroup("activity-$runId-1", listOf(ToolCall("$runId-send", "SendMessage", ToolKind.Other, "completed", ""))),
+            RunFooter("run-$runId-2", runId, RunStatus.FINISHED, 60_000, emptyList()),
+        ),
+    )
+
+    /** The same run as its retained log carries it: the `SendMessage` frame with its text under `text.content`. */
+    private suspend fun retainCoordinatorRun(runId: String, message: String) {
+        streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+        streamer.emit(runId, RunStreamEvent.Assistant("The release worker shipped v0.3.3."))
+        streamer.emit(
+            runId,
+            RunStreamEvent.ToolCall(
+                SseToolCallDto(
+                    callId = "$runId-send", name = "sendMessage", status = "completed",
+                    args = buildJsonObject { put("text", buildJsonObject { put("content", JsonPrimitive(message)) }) },
+                    result = buildJsonObject { put("success", buildJsonObject { put("timestamp", JsonPrimitive("1789341071043")) }) },
+                ),
+            ),
+        )
+        streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, null, 60_000, null))
+        streamer.emit(runId, RunStreamEvent.Done)
+    }
+
+    private fun ConversationState.sendMessagePayload(runId: String) =
+        items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.firstOrNull { it.callId == "$runId-send" }?.payload as? ToolPayload.CoordinatorMessage
+
+    @Test
+    fun `a trace saved by a build that did not read SendMessage is shown, replayed from the log and replaced on disk`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-coord", "Cursor for Android", Triple("run-1", "Start this Project.", "The release worker shipped v0.3.3."))
+        agents.refresh()
+        val createdAt = api.runs.getValue("run-1").createdAt
+        traces.put("bc-coord", listOf(staleCoordinatorTrace("run-1", createdAt)))
+        val message = "The keyboard worker merged #113; **v0.3.4** is being cut from it."
+        retainCoordinatorRun("run-1", message)
+
+        val conversations = repository()
+        conversations.attach("bc-coord")
+        // The disk copy is shown first, the call as it was filed; a screen re-reads it as a coordinator's on the way.
+        awaitUntil { conversations.state("bc-coord").value.items.any { it is ActivityGroup } }
+        // The stale run is asked for again although it has a trace, and the log's frame brings the message.
+        awaitUntil { conversations.state("bc-coord").value.sendMessagePayload("run-1")?.message == message }
+        assertThat(streamer.connections).containsExactly("run-1")
+        val call = conversations.state("bc-coord").value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.single { it.callId == "run-1-send" }
+        assertThat(call.kind).isEqualTo(ToolKind.Coordinator)
+        assertThat(call.argKeys).containsExactly("text")
+
+        // The file is the replayed trace now, and the next open reads it without another replay.
+        awaitUntil { (traces.read("bc-coord").getValue("run-1").items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.single().payload as? ToolPayload.CoordinatorMessage)?.message == message }
+        conversations.detach("bc-coord")
+        val next = repository()
+        next.attach("bc-coord")
+        awaitUntil { !next.state("bc-coord").value.isLoading && next.state("bc-coord").value.sendMessagePayload("run-1")?.message == message }
+        delay(150)
+        assertThat(streamer.connections).containsExactly("run-1")
+    }
+
+    @Test
+    fun `a stale trace whose log has expired stays shown, re-read as a coordinator's, and is not asked for again`() = runBlocking<Unit> {
+        api.addFinishedAgent("bc-coord", "Cursor for Android", Triple("run-1", "Start this Project.", "The release worker shipped v0.3.3."))
+        agents.refresh()
+        val createdAt = api.runs.getValue("run-1").createdAt
+        traces.put("bc-coord", listOf(staleCoordinatorTrace("run-1", createdAt)))
+        streamer.dropNextConnection("run-1", code = RunStreamEvent.Error.STREAM_EXPIRED, message = "The run stream has expired")
+
+        val conversations = repository()
+        conversations.attach("bc-coord")
+        awaitUntil { !conversations.state("bc-coord").value.isLoading && streamer.connections.contains("run-1") }
+        delay(200)
+        // What the disk had is still what is shown: the call, as stored, waits to be re-read by the screen.
+        val stored = conversations.state("bc-coord").value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.single()
+        assertThat(stored.name).isEqualTo("SendMessage")
+        assertThat(CoordinatorTranscript.reinterpret(stored).payload).isEqualTo(ToolPayload.CoordinatorMessage("", missing = true))
+        assertThat(CoordinatorTranscript.hasCoordinatorContent(conversations.state("bc-coord").value.items)).isTrue()
+        // Expired is expired: a reload does not open the stream a second time.
+        conversations.reload("bc-coord")
+        awaitUntil { api.conversationCalls == 2 }
+        delay(150)
+        assertThat(streamer.connections).containsExactly("run-1")
     }
 }

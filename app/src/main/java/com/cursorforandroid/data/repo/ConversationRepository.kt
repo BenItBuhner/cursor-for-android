@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
+import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
@@ -79,6 +80,11 @@ data class ConversationState(
     val hasOlder: Boolean = false,
     /** Older turns are being paged in right now: their run records fetched, or their traces read. */
     val isLoadingOlder: Boolean = false,
+    /**
+     * The account's own record says the chat runs in Project mode (`agent_mode = AGENT_MODE_PROJECT` on a prompt of
+     * its transcript, Extended mode): a coordinator's chat, whatever the list calls it and whatever its tools show.
+     */
+    val isProjectConversation: Boolean = false,
 )
 
 /** The failure of a [ConversationRepository.launch] that was stopped from the chat before the server had answered. */
@@ -229,6 +235,15 @@ class ConversationRepository(
          * transcript, and [loadTraces] never asks for a run again once it is present.
          */
         var traces: Map<String, List<TimelineItem>> = emptyMap()
+        /**
+         * Runs whose trace in [traces] came off the disk from a build that did not read the coordinator's message
+         * tool, so its message calls have no body (see [CoordinatorTranscript.needsRefresh]). Shown as they are —
+         * re-read on the way to the screen — and asked for again like a run without a trace: the replay, or the
+         * account's record, brings the bodies and replaces the file. Cleared as each lands.
+         */
+        val staleTraces = HashSet<String>()
+        /** The account's record said a prompt of this chat was sent in Project mode (see [ConversationState.isProjectConversation]). */
+        var projectMode = false
         /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
@@ -506,6 +521,11 @@ class ConversationRepository(
 
     fun state(agentId: String): StateFlow<ConversationState> = entry(agentId).state.asStateFlow()
 
+    private val lastOpened = MutableStateFlow<String?>(null)
+
+    /** The chat a screen most recently attached to, or null before any: the one Settings › Advanced diagnoses. */
+    val lastOpenedAgentId: StateFlow<String?> = lastOpened.asStateFlow()
+
     /** True while at least one conversation screen shows this agent. */
     fun isAttached(agentId: String): Boolean = synchronized(entries) { (entries[agentId]?.attached ?: 0) > 0 }
 
@@ -516,6 +536,7 @@ class ConversationRepository(
      */
     fun attach(agentId: String) {
         val e = entry(agentId)
+        lastOpened.value = agentId
         val firstScreen = synchronized(e) {
             e.attached++
             // A screen attaching can see the chat, whatever the last one that left had done.
@@ -620,6 +641,8 @@ class ConversationRepository(
                 paused = false
                 traceQueue.clear()
                 traceInFlight.clear()
+                staleTraces.clear()
+                projectMode = false
                 expiredRuns.clear()
                 expiredBefore = Long.MIN_VALUE
                 recordedFinishes.clear()
@@ -1016,7 +1039,14 @@ class ConversationRepository(
         // so the chat is whole, tool calls and payloads included, before the network has said a word.
         val shown = e.shownRuns().filter { it.statusEnum().isTerminal }
         val saved = readTraces(agentId, shown.map { it.id })
-        if (saved.isNotEmpty()) e.publish(mutate = { traces = saved.mapValues { it.value.items } + traces })
+        if (saved.isNotEmpty()) {
+            e.publish(mutate = {
+                traces = saved.mapValues { it.value.items } + traces
+                // A file from an earlier build without the coordinator's messages is shown, and asked for again
+                // once the network answers (see [loadTraces]).
+                staleTraces += saved.filterValues { CoordinatorTranscript.needsRefresh(it.items) }.keys
+            })
+        }
     }
 
     private suspend fun readCache(agentId: String): CachedConversation? {
@@ -1070,7 +1100,7 @@ class ConversationRepository(
     private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
         synchronized(e) {
             finishedRuns
-                .filter { it.id !in e.traces && it.id !in e.traceQueue && it.id !in e.expiredRuns && parseIsoMillis(it.createdAt) >= e.expiredBefore }
+                .filter { (it.id !in e.traces || it.id in e.staleTraces) && it.id !in e.traceQueue && it.id !in e.expiredRuns && parseIsoMillis(it.createdAt) >= e.expiredBefore }
                 .sortedByDescending { parseIsoMillis(it.createdAt) }
                 .forEach { e.traceQueue[it.id] = it }
             // A worker still registered drains what was just queued on its next round (it unregisters itself under
@@ -1112,11 +1142,18 @@ class ConversationRepository(
             }
             if (batch.isEmpty()) return
             try {
-                val saved = readTraces(agentId, batch.map { it.id })
+                // A stale trace is already shown from the disk; what is wanted for it is the replay, not the file again.
+                val stale = synchronized(e) { e.staleTraces.toSet() }
+                val saved = readTraces(agentId, batch.map { it.id }.filter { it !in stale })
                 if (saved.isNotEmpty()) {
                     e.publish(mutate = {
                         traces = saved.mapValues { it.value.items } + traces
                         saved.keys.forEach { traceInFlight.remove(it) }
+                        // A file from an earlier build without the coordinator's messages: shown, and replayed after all.
+                        saved.filterValues { CoordinatorTranscript.needsRefresh(it.items) }.keys.forEach { runId ->
+                            staleTraces += runId
+                            batch.firstOrNull { it.id == runId }?.let { traceInFlight[runId] = it }
+                        }
                     })
                 }
                 val pending = synchronized(e) { batch.filter { it.id in e.traceInFlight } }
@@ -1158,7 +1195,7 @@ class ConversationRepository(
                     }
                 }
                 // The runs whose logs are gone: in Extended mode the account's own transcript still has their turns.
-                val gone = synchronized(e) { pending.filter { it.id in e.expiredRuns && it.id !in e.traces } }
+                val gone = synchronized(e) { pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
                 if (gone.isNotEmpty()) fillFromRecord(e, agentId, gone, tokens)
             } finally {
                 // Runs this pass did not get to (paused half-way) wait on the queue for the next one — unless a pause
@@ -1190,6 +1227,10 @@ class ConversationRepository(
             .onFailure { if (it is CancellationException) throw it }
             .getOrNull() ?: return
         if (turns.isEmpty()) return
+        // The record carries the mode a prompt was sent in; a Project's coordinator is told from that alone.
+        if (turns.any { it.projectMode } && synchronized(e) { !e.projectMode }) {
+            e.publish(mutate = { projectMode = true }, transform = { copy(isProjectConversation = true) })
+        }
         val sink = images?.forAgent(agentId)
         for ((run, index) in wanted) {
             val position = unfetched + index
@@ -1206,13 +1247,16 @@ class ConversationRepository(
 
     /** What a cut-short pass was working on goes back on the queue for the next one. Under the entry's monitor. */
     private fun Entry.requeueInFlight() {
-        traceInFlight.values.filter { it.id !in traces && it.id !in expiredRuns }.forEach { traceQueue.putIfAbsent(it.id, it) }
+        traceInFlight.values.filter { (it.id !in traces || it.id in staleTraces) && it.id !in expiredRuns }.forEach { traceQueue.putIfAbsent(it.id, it) }
         traceInFlight.clear()
     }
 
     /** Shows a run's complete trace and hands it to the caller for the file. */
     private fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>): CachedTrace {
-        e.publish(mutate = { traces = traces + (run.id to items) })
+        e.publish(mutate = {
+            traces = traces + (run.id to items)
+            staleTraces -= run.id
+        })
         return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 

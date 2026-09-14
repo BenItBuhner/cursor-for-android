@@ -1,0 +1,32 @@
+[
+ {
+  "name": "subagent_completion_necessary_follow_up",
+  "source": "coordinator transcript, 2026-09-12 turn; title and detail replaced",
+  "text": "<timestamp>Saturday, Sep 12, 2026, 11:05 PM (UTC)</timestamp>\n<system_notification>\nThe following task has finished. If you were already aware, ignore this notification and do not restate prior responses.\n\n<task>\nkind: subagent\nstatus: success\ntask_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ntitle: Land merge train and prep release\ntool_call_id: toolu_01CRGAspS8qhi8Wfr74zYnJA\nagent_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ndetail: This is the last output of the subagent:\n\nThe merge train landed: #113 merged, v0.3.4 tagged, main bumped to 0.3.5. Release notes are in the PR body.\n\nAgent ID: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671 (can be used with the `resume` parameter to send a follow-up)\n</task>\n</system_notification>\n<user_query>Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required. If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`. Don't repeat the same confirmation every time.</user_query>"
+ },
+ {
+  "name": "subagent_completion_already_visible",
+  "source": "coordinator transcript, 2026-09-09 turn; title and detail replaced",
+  "text": "<timestamp>Wednesday, Sep 9, 2026, 5:51 AM (UTC)</timestamp>\n<system_notification>\nThe following task has finished. If you were already aware, ignore this notification and do not restate prior responses.\n\n<task>\nkind: subagent\nstatus: success\ntask_id: bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724\ntitle: Build Projects under Extended mode\ntool_call_id: toolu_01X2wLBxbsiYArYcpymYcwud\nagent_id: bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724\ndetail: This is the last output of the subagent:\n\nThe merge train landed: #113 merged, v0.3.4 tagged, main bumped to 0.3.5. Release notes are in the PR body.\n\nAgent ID: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671 (can be used with the `resume` parameter to send a follow-up)\n</task>\n</system_notification>\n<user_query>The beginning of the above subagent result is already visible to the user. Perform any follow-up actions (if needed). DO NOT regurgitate or reiterate its result unless asked. If multiple subagents have now completed and none are still running, briefly summarize the findings and conclusions across all of them. Otherwise, if no follow-ups remain, end your response with a brief third-person confirmation that the subagent has completed. If you mention an agent or subagent in your response, link it with the `[label](id)` format using the agent_id or task_id from the notification instead of printing the raw ID. Don't repeat the same confirmation every time.</user_query>"
+ },
+ {
+  "name": "subagent_completion_html_entities",
+  "source": "the 2026-09-12 shape with the title of internal/reference/coordinator-system-prompts-as-user.jpg (Bennett's device, v0.3.6)",
+  "text": "<timestamp>Saturday, Sep 12, 2026, 11:05 PM (UTC)</timestamp>\n<system_notification>\nThe following task has finished. If you were already aware, ignore this notification and do not restate prior responses.\n\n<task>\nkind: subagent\nstatus: success\ntask_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ntitle: Hand &amp; Arm Renders\ntool_call_id: toolu_01CRGAspS8qhi8Wfr74zYnJA\nagent_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ndetail: This is the last output of the subagent:\n\nRendered the hand &amp; arm stills into demo/ &lt;4k&gt;; PR opened.\n\nAgent ID: bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724\n</task>\n</system_notification>\n<user_query>Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required. If you mention an agent or subagent in your response, link it with the `[Name](id)` Don't use generic label such as `[agent]`, `[worker]`, or `[subagent]`. Don't repeat the same confirmation every time.</user_query>"
+ },
+ {
+  "name": "github_pull_request_synchronize",
+  "source": "coordinator transcript, verbatim",
+  "text": "<system_notification source=\"github\" pr=\"https://github.com/BenItBuhner/cursor-for-android/pull/59\" action=\"synchronize\" sender=\"cursor[bot]\">\nA subscribed pull request changed. Use the linked PR for details if needed.\n</system_notification>"
+ },
+ {
+  "name": "github_pull_request_merged",
+  "source": "coordinator transcript, verbatim",
+  "text": "<system_notification source=\"github\" pr=\"https://github.com/BenItBuhner/cursor-for-android/pull/59\" action=\"merged\" sender=\"cursor[bot]\">\nA subscribed pull request changed. Use the linked PR for details if needed.\n</system_notification>"
+ },
+ {
+  "name": "subagent_completion_with_users_own_words",
+  "source": "the 2026-09-12 shape with the user's own <user_query> in place of the boilerplate",
+  "text": "<timestamp>Saturday, Sep 12, 2026, 11:05 PM (UTC)</timestamp>\n<system_notification>\nThe following task has finished. If you were already aware, ignore this notification and do not restate prior responses.\n\n<task>\nkind: subagent\nstatus: success\ntask_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ntitle: Land merge train and prep release\ntool_call_id: toolu_01CRGAspS8qhi8Wfr74zYnJA\nagent_id: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671\ndetail: This is the last output of the subagent:\n\nThe merge train landed: #113 merged, v0.3.4 tagged, main bumped to 0.3.5. Release notes are in the PR body.\n\nAgent ID: bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671 (can be used with the `resume` parameter to send a follow-up)\n</task>\n</system_notification>\n<user_query>Hold the release until I've checked the keyboard fix on my phone.</user_query>"
+ }
+]

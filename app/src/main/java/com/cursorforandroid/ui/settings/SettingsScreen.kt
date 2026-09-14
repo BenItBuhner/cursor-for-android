@@ -222,6 +222,8 @@ fun SettingsScreen(
                     ExtendedModeRows(graph)
                     HairlineDivider()
                     ProjectDiagnosticsRow(graph)
+                    HairlineDivider()
+                    TranscriptDiagnosticsRow(graph)
                 }
             }
             Text(

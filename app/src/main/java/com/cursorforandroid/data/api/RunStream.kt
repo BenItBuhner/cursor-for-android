@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -233,7 +235,9 @@ object SseParser {
                 "status" -> json.decodeFromString(SseStatusDto.serializer(), frame.data).let { RunStreamEvent.Status(it.runId, RunStatus.parse(it.status)) }
                 "assistant" -> RunStreamEvent.Assistant(json.decodeFromString(SseTextDto.serializer(), frame.data).text)
                 "thinking" -> RunStreamEvent.Thinking(json.decodeFromString(SseTextDto.serializer(), frame.data).text)
-                "tool_call" -> RunStreamEvent.ToolCall(json.decodeFromString(SseToolCallDto.serializer(), frame.data))
+                // The SDK's own reader takes the call from a `data` member when the frame has one and reads the frame
+                // itself otherwise; the same here, so a frame wrapped that way is a call and not an undecodable frame.
+                "tool_call" -> RunStreamEvent.ToolCall(json.decodeFromJsonElement(SseToolCallDto.serializer(), unwrapData(json.parseToJsonElement(frame.data))))
                 // The SDK-shape update duplicates the text and thinking deltas, which the simplified events already
                 // deliver; only its tool-call updates carry something the simplified `tool_call` does not.
                 "interaction_update" -> json.decodeFromString(SseInteractionUpdateDto.serializer(), frame.data).let {
@@ -252,6 +256,13 @@ object SseParser {
     }
 
     fun toEvent(frame: SseFrame): RunStreamEvent? = (parse(frame) as? Parsed.Delivered)?.event
+
+    /** [element]'s `data` member when it is an object and the element itself names no call; else [element]. */
+    private fun unwrapData(element: JsonElement): JsonElement {
+        val obj = element as? JsonObject ?: return element
+        val data = obj["data"] as? JsonObject ?: return element
+        return if ("callId" in obj) element else data
+    }
 }
 
 /**

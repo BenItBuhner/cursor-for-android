@@ -1,0 +1,269 @@
+{
+ "_source": "agent.v1 protos from @cursor/sdk 1.0.31 dist/bundled/index.js, serialised with @bufbuild/protobuf 1.x; see generate-fixtures.mjs",
+ "sendMessage": {
+  "text": {
+   "toJson": {
+    "text": {
+     "content": "The keyboard worker merged #113 with four root causes fixed against the Gboard reference; **v0.3.4** is being cut from it, Bennett has the explanation plus the note that his recording was the reference app, and the board is updated."
+    }
+   },
+   "stringify": {
+    "text": {
+     "content": "The keyboard worker merged #113 with four root causes fixed against the Gboard reference; **v0.3.4** is being cut from it, Bennett has the explanation plus the note that his recording was the reference app, and the board is updated."
+    }
+   },
+   "snake": {
+    "text": {
+     "content": "The keyboard worker merged #113 with four root causes fixed against the Gboard reference; **v0.3.4** is being cut from it, Bennett has the explanation plus the note that his recording was the reference app, and the board is updated."
+    }
+   }
+  },
+  "attachment": {
+   "toJson": {
+    "attachment": {
+     "url": "https://cursor.com/agents/bc-demo/artifacts/board.png",
+     "alt": "The board after the merge"
+    }
+   },
+   "stringify": {
+    "attachment": {
+     "url": "https://cursor.com/agents/bc-demo/artifacts/board.png",
+     "alt": "The board after the merge"
+    }
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {
+     "timestamp": "1789341071043",
+     "messageId": "msg_01R9x"
+    }
+   },
+   "stringify": {
+    "success": {
+     "timestamp": "1789341071043",
+     "messageId": "msg_01R9x"
+    }
+   },
+   "snake": {
+    "success": {
+     "timestamp": "1789341071043",
+     "message_id": "msg_01R9x"
+    }
+   }
+  },
+  "error": {
+   "toJson": {
+    "error": {
+     "error": "message rejected: coordinator is not the root conversation"
+    }
+   },
+   "stringify": {
+    "error": {
+     "error": "message rejected: coordinator is not the root conversation"
+    }
+   }
+  }
+ },
+ "sendToUser": {
+  "args": {
+   "toJson": {
+    "message": "PR #215 is merged."
+   },
+   "stringify": {
+    "message": "PR #215 is merged."
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {}
+   },
+   "stringify": {
+    "success": {}
+   }
+  }
+ },
+ "sendToAgent": {
+  "args": {
+   "toJson": {
+    "toolCallId": "toolu_01CRGAspS8qhi8Wfr74zYnJA",
+    "agentId": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+    "message": "Land merge train and prep release: merge #113 and cut v0.3.4.",
+    "delivery": "queue",
+    "title": "Land merge train and prep release"
+   },
+   "snake": {
+    "tool_call_id": "toolu_01CRGAspS8qhi8Wfr74zYnJA",
+    "agent_id": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+    "message": "Land merge train and prep release: merge #113 and cut v0.3.4.",
+    "delivery": "queue",
+    "title": "Land merge train and prep release"
+   },
+   "stringify": {
+    "toolCallId": "toolu_01CRGAspS8qhi8Wfr74zYnJA",
+    "agentId": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+    "message": "Land merge train and prep release: merge #113 and cut v0.3.4.",
+    "delivery": "queue",
+    "title": "Land merge train and prep release"
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {
+     "workerBcId": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+     "deliveredAs": "queue",
+     "message": "Delivered as queue"
+    }
+   },
+   "snake": {
+    "success": {
+     "worker_bc_id": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+     "delivered_as": "queue",
+     "message": "Delivered as queue"
+    }
+   },
+   "stringify": {
+    "success": {
+     "workerBcId": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+     "deliveredAs": "queue",
+     "message": "Delivered as queue"
+    }
+   }
+  }
+ },
+ "createAgent": {
+  "args": {
+   "toJson": {
+    "toolCallId": "toolu_01X2wLBxbsiYArYcpymYcwud",
+    "prompt": "Fix the Projects list: workers leak into Today.",
+    "name": "Build Projects under Extended mode",
+    "model": "claude-fable-5-1-thinking-max"
+   },
+   "snake": {
+    "tool_call_id": "toolu_01X2wLBxbsiYArYcpymYcwud",
+    "prompt": "Fix the Projects list: workers leak into Today.",
+    "name": "Build Projects under Extended mode",
+    "model": "claude-fable-5-1-thinking-max"
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {
+     "agentId": "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724",
+     "message": "Created agent Build Projects under Extended mode"
+    }
+   },
+   "snake": {
+    "success": {
+     "agent_id": "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724",
+     "message": "Created agent Build Projects under Extended mode"
+    }
+   },
+   "stringify": {
+    "success": {
+     "agentId": "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724",
+     "message": "Created agent Build Projects under Extended mode"
+    }
+   }
+  }
+ },
+ "getAgentStatus": {
+  "args": {
+   "toJson": {
+    "toolCallId": "toolu_01Status",
+    "agentIds": [
+     "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+     "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724"
+    ]
+   },
+   "snake": {
+    "tool_call_id": "toolu_01Status",
+    "agent_ids": [
+     "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+     "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724"
+    ]
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {
+     "workers": [
+      {
+       "bcId": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+       "name": "Land merge train and prep release",
+       "lifecycle": "IDLE",
+       "lastTerminalTurnStatus": "FINISHED",
+       "prUrl": "https://github.com/BenItBuhner/cursor-for-android/pull/117",
+       "lastActivityAtMs": "1789340000000"
+      },
+      {
+       "bcId": "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724",
+       "name": "Build Projects under Extended mode",
+       "lifecycle": "ACTIVE",
+       "turnInFlight": true,
+       "lastActivityAtMs": "1789341000000"
+      }
+     ],
+     "message": "2 workers"
+    }
+   },
+   "snake": {
+    "success": {
+     "workers": [
+      {
+       "bc_id": "bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671",
+       "name": "Land merge train and prep release",
+       "lifecycle": "IDLE",
+       "last_terminal_turn_status": "FINISHED",
+       "pr_url": "https://github.com/BenItBuhner/cursor-for-android/pull/117",
+       "last_activity_at_ms": "1789340000000"
+      },
+      {
+       "bc_id": "bc-4bb9edb1-ccec-5ae4-80f8-8f515daa7724",
+       "name": "Build Projects under Extended mode",
+       "lifecycle": "ACTIVE",
+       "turn_in_flight": true,
+       "last_activity_at_ms": "1789341000000"
+      }
+     ],
+     "message": "2 workers"
+    }
+   }
+  }
+ },
+ "toolNames": {
+  "sdkPublicVocabulary": [
+   "sendMessage",
+   "sendToUser",
+   "sendToAgent",
+   "createAgent",
+   "getAgentStatus",
+   "stopAgent",
+   "readAgentTranscript",
+   "communicateUpdate",
+   "sendFinalSummary",
+   "fetchCloudAgentData"
+  ],
+  "desktopModelFacing": {
+   "sendMessageToolCall": "SendMessage",
+   "sendToUserToolCall": "send_to_user",
+   "sendToAgentToolCall": "send_to_agent",
+   "createAgentToolCall": "create_agent",
+   "getAgentStatusToolCall": "get_agent_status",
+   "stopAgentToolCall": "stop_agent",
+   "readAgentTranscriptToolCall": "read_agent_transcript",
+   "communicateUpdateToolCall": "update_current_step",
+   "sendFinalSummaryToolCall": "send_final_summary",
+   "fetchCloudAgentDataToolCall": "fetch_cloud_agent_data"
+  },
+  "protoOneof": [
+   "send_message_tool_call",
+   "send_to_user_tool_call",
+   "send_to_agent_tool_call",
+   "create_agent_tool_call",
+   "get_agent_status_tool_call",
+   "stop_agent_tool_call",
+   "read_agent_transcript_tool_call"
+  ]
+ }
+}

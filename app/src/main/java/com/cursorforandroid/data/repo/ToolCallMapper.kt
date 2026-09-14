@@ -8,6 +8,7 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolLabels
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolOutput
+import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.ToolTruncation
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -45,7 +46,13 @@ object ToolCallMapper {
         // Everything the row needs is read here; the payload itself is not kept (see [ToolCall.output]).
         val output = ToolOutput.from(described.kind, described.detail, result)
         // What the call produced, clipped like the output: the simplified event carries it when it is small enough.
-        val payload = if (isError) null else ToolPayloads.from(dto.name, dto.args, result, images, dto.callId)
+        // A coordinator's message whose arguments the stream left out for size is still a message: marked as one
+        // without its body, so the row can say so and the turn can be asked for again (see CoordinatorTranscript).
+        val payload = when {
+            isError -> null
+            else -> ToolPayloads.from(dto.name, dto.args, result, images, dto.callId)
+                ?: ToolPayload.CoordinatorMessage("", missing = true).takeIf { dto.truncated?.args == true && ToolNames.coordinatorTool(dto.name) == ToolNames.USER_MESSAGE_TOOL }
+        }
         return ToolCall(
             callId = dto.callId,
             name = dto.name,
@@ -63,6 +70,7 @@ object ToolCallMapper {
             payload = payload,
             truncated = dto.truncated?.takeIf { it.args || it.result }?.let { ToolTruncation(it.args, it.result) },
             linkedAgentIds = if (CoordinatorLineage.isCoordinatorTool(dto.name)) linkedAgentIds(args, result) else emptyList(),
+            argKeys = args?.keys?.toList().orEmpty(),
         )
     }
 
@@ -166,7 +174,7 @@ object ToolCallMapper {
     private fun coordinator(name: String, args: JsonObject?, result: JsonElement?): Description {
         val resultObj = result.obj()
         return when (ToolNames.coordinatorTool(name)) {
-            "send_to_user" -> args.string(listOf("message", "text", "content", "body", "markdown")).let { Description(truncate(it?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), ToolKind.Coordinator, detail = it) }
+            ToolNames.USER_MESSAGE_TOOL -> ToolPayloads.coordinatorMessage(args).let { Description(truncate(it?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), ToolKind.Coordinator, detail = it) }
             "create_agent" -> Description(args.string(listOf("name")) ?: resultObj?.deep("agent_id").str() ?: "", ToolKind.Coordinator, detail = args.string(listOf("prompt")))
             "get_agent_status" -> {
                 val workers = resultObj?.deep("workers") as? JsonArray
@@ -317,14 +325,17 @@ object ToolCallMapper {
     }
 
     /**
-     * Whether a finished call's result says it failed: an `error` key, an error `status`, the MCP result's `isError`,
-     * or a rejection. A result that is not an object says nothing.
+     * Whether a finished call's result says it failed: an `error` key (a proto `result` oneof's error case, which
+     * proto3 JSON writes as `{"error": {"error": "…"}}`, included), an error `status`, a `result` oneof kept as an
+     * object whose `case` is the error, the MCP result's `isError`, or a rejection. A result that is not an object
+     * says nothing.
      */
     private fun isErrorResult(result: JsonElement?): Boolean {
         val obj = result.obj() ?: return false
         if (obj["error"].isReported()) return true
         if (obj["rejected"].isTrue() || obj["permissionDenied"].isTrue()) return true
         if (obj.string(listOf("status"))?.lowercase() == "error") return true
+        if ((obj["result"] as? JsonObject)?.string(listOf("case"))?.lowercase() == "error") return true
         if (obj.string(listOf("resultType"))?.lowercase()?.contains("error") == true) return true
         val value = obj["value"] as? JsonObject
         return (value?.get("isError") as? JsonPrimitive)?.booleanOrNull == true || (obj["isError"] as? JsonPrimitive)?.booleanOrNull == true

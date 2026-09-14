@@ -18,8 +18,11 @@ import kotlinx.serialization.json.JsonElement
  */
 object HeadlessTranscript {
 
-    /** One turn of the record: the prompt that started it and everything the agent did until the next one. */
-    class Turn(val prompt: String?, val steps: List<HeadlessStep>)
+    /**
+     * One turn of the record: the prompt that started it and everything the agent did until the next one.
+     * [projectMode] says the prompt was sent in Project mode (`agent_mode = AGENT_MODE_PROJECT`): the chat is a coordinator's.
+     */
+    class Turn(val prompt: String?, val steps: List<HeadlessStep>, val projectMode: Boolean = false)
 
     /**
      * The last [count] turns of the record, oldest first, read from its end a page at a time until [count] whole turns
@@ -51,12 +54,14 @@ object HeadlessTranscript {
     fun split(steps: List<HeadlessStep>): List<Turn> {
         val turns = ArrayList<Turn>()
         var prompt: String? = null
+        var projectMode = false
         var current = ArrayList<HeadlessStep>()
         var started = false
         for (step in steps) {
             if (step.userMessage != null) {
-                if (started) turns += Turn(prompt, current)
+                if (started) turns += Turn(prompt, current, projectMode)
                 prompt = step.userMessage
+                projectMode = step.projectMode
                 current = ArrayList()
                 started = true
                 continue
@@ -64,7 +69,7 @@ object HeadlessTranscript {
             current += step
             started = true
         }
-        if (started) turns += Turn(prompt, current)
+        if (started) turns += Turn(prompt, current, projectMode)
         return turns
     }
 

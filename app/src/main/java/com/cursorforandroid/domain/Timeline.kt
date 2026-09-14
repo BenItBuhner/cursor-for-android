@@ -131,6 +131,12 @@ data class ToolCall(
      * Project's workers the documented stream carries (see [CoordinatorLineage]); empty for every other tool.
      */
     val linkedAgentIds: List<String> = emptyList(),
+    /**
+     * The top-level keys of the call's arguments as the stream carried them, and nothing of their values: the shape
+     * of what arrived, for the transcript diagnostics (see `TranscriptDiagnostics`). The values themselves are read
+     * into the fields above and dropped (see [output]).
+     */
+    val argKeys: List<String> = emptyList(),
 ) : ActivityStep {
     val isRunning: Boolean get() = status == STATUS_RUNNING
 
@@ -450,9 +456,18 @@ data class SystemNotification(
      * its coordinator, or a cloud subagent. The row opens that agent's conversation.
      */
     val agentId: String? = null,
+    /**
+     * What the agent said in reply to the notice when that was brief and it said nothing else to the user — a
+     * coordinator's "Noted; the release worker is done." — folded under the row rather than shown as a line of its
+     * own (see `CoordinatorTranscript.present`). Set at presentation time only; null in a stored item.
+     */
+    val narration: String? = null,
 ) : TimelineItem {
     /** [Worker] is a Project's worker (or a cloud agent) reporting in: a [Subagent] with a chat of its own to open. */
     enum class Kind { Goal, Subagent, Task, Other, Worker }
+
+    /** Whether the row has anything to open onto: the report, or the reply folded under it. */
+    val hasDetails: Boolean get() = !body.isNullOrBlank() || !narration.isNullOrBlank()
 }
 
 /** Terminal marker for a run: status, duration and pushed branches. */
@@ -493,7 +508,10 @@ object ToolNames {
         put(ToolKind.Question, "ask_question", "askquestion")
         put(ToolKind.Image, "generate_image", "generateimage")
         put(ToolKind.Plan, "create_plan", "createplan")
-        // A Project coordinator's tools, in the public stream's spelling and the SDK's camel case (lowercased).
+        // A Project coordinator's tools (`agent.v1.ToolCall`'s `create_agent_tool_call` … `send_message_tool_call`), under
+        // the two names the clients give each: the SDK's public vocabulary — the oneof's camel case minus `ToolCall`,
+        // `sendMessage`, which is what the documented stream's `tool_call` events carry — and the model-facing name of
+        // the desktop's table (`SendMessage`, `send_to_user`, `create_agent`, …). Lowercased here, as [kindOf] compares.
         put(ToolKind.Coordinator, "create_agent", "createagent", "send_to_agent", "sendtoagent", "get_agent_status", "getagentstatus", "stop_agent", "stopagent", "read_agent_transcript", "readagenttranscript", "send_to_user", "sendtouser", "send_message", "sendmessage")
     }
 
@@ -539,6 +557,14 @@ object ToolNames {
         "pr_management" to ToolLabels("Managing PR", "Managed PR", "Manage PR"),
         "edit_pr_labels" to ToolLabels("Editing PR labels", "Edited PR labels", "Edit PR labels"),
         "fetch_cloud_agent_data" to ToolLabels("Fetching cloud agent data", "Fetched cloud agent data", "Fetch cloud agent data"),
+        "fetchcloudagentdata" to ToolLabels("Fetching cloud agent data", "Fetched cloud agent data", "Fetch cloud agent data"),
+        // A cloud agent's progress line and its closing summary (`communicate_update_tool_call`, `send_final_summary_tool_call`):
+        // `update_current_step` / `send_final_summary` in the desktop's table, camel case on the stream, with its verbs.
+        "update_current_step" to ToolLabels("Updating progress", "Updated progress", "Update progress"),
+        "communicate_update" to ToolLabels("Updating progress", "Updated progress", "Update progress"),
+        "communicateupdate" to ToolLabels("Updating progress", "Updated progress", "Update progress"),
+        "send_final_summary" to ToolLabels("Recording final summary", "Recorded final summary", "Record final summary"),
+        "sendfinalsummary" to ToolLabels("Recording final summary", "Recorded final summary", "Record final summary"),
         "mcp_auth" to ToolLabels("Authenticating MCP server", "Authenticated MCP server", "MCP authentication"),
         "connect_scm" to ToolLabels("Connecting GitHub", "Connected GitHub", "Connect GitHub"),
         "setup_vm_environment" to ToolLabels("Setting up VM", "Set up VM", "Set up VM"),
@@ -557,13 +583,20 @@ object ToolNames {
 
     /**
      * The public name of a coordinator's tool from any spelling the streams use (`sendToAgent` → `send_to_agent`).
-     * The coordinator's word to the user is `send_to_user` in the proto and `SendMessage` on today's stream.
+     *
+     * The coordinator's word to the user is the `SendMessage` tool — `send_message_tool_call` in the proto, whose
+     * `SendMessageArgs` carry the text under `text.content`; `sendMessage` in the SDK's vocabulary on the documented
+     * stream — which is the one Cursor's own client shows as the message of a Project's chat. `send_to_user`
+     * (`SendToUserArgs {message}`) is the older tool for the same purpose; both land on [USER_MESSAGE_TOOL] here.
      */
     fun coordinatorTool(name: String): String? {
         val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call")
-        if (n == "send_message" || n == "sendmessage") return "send_to_user"
+        if (n == "send_message" || n == "sendmessage") return USER_MESSAGE_TOOL
         return COORDINATOR.keys.firstOrNull { it == n || it.replace("_", "") == n }
     }
+
+    /** The key [coordinatorTool] answers for the coordinator's message to the user, whichever of its two tools sent it. */
+    const val USER_MESSAGE_TOOL = "send_to_user"
 
     /** The verbs of a kind; for [ToolKind.Other] the tool's own, or its name read as words ("Switched mode"). */
     fun labels(kind: ToolKind, name: String): ToolLabels = when (kind) {

@@ -154,10 +154,19 @@ sealed interface ToolPayload {
         val worker: WorkerStatus? get() = workers.firstOrNull()
     }
 
-    /** The coordinator's message to the user (`send_to_user`), as the markdown it wrote. */
+    /**
+     * The coordinator's message to the user, as the markdown it wrote: the `SendMessage` tool's `text.content`
+     * (`agent.v1.SendMessageArgs`, the tool Cursor's client shows as a Project chat's message), or the older
+     * `send_to_user`'s `message`. An attachment sent instead of text is the markdown for its link.
+     *
+     * [missing] marks a message whose body this copy of the turn does not have: the stream left the arguments out
+     * for size (`tool_call.truncated.args`), or the turn was kept by a build that did not read the tool and dropped
+     * the arguments with the rest (see `CoordinatorTranscript.reinterpret`). The row then says so rather than
+     * standing bare, and the turn is asked for again where it can be.
+     */
     @Serializable
     @SerialName("coordinator_message")
-    data class CoordinatorMessage(val message: String) : ToolPayload
+    data class CoordinatorMessage(val message: String, val missing: Boolean = false) : ToolPayload
 }
 
 /**
