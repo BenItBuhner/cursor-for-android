@@ -23,7 +23,7 @@ import androidx.compose.foundation.lazy.layout.NestedPrefetchScope
 @OptIn(ExperimentalFoundationApi::class)
 internal class TranscriptPrefetchStrategy(private val aheadCount: Int = AHEAD_COUNT) : LazyListPrefetchStrategy {
     private val scrolling = LazyListPrefetchStrategy()
-    private val ahead = LinkedHashMap<Int, LazyLayoutPrefetchState.PrefetchHandle>()
+    private val ahead = AheadRows<LazyLayoutPrefetchState.PrefetchHandle> { it.cancel() }
 
     override fun LazyListPrefetchScope.onScroll(delta: Float, layoutInfo: LazyListLayoutInfo) {
         with(scrolling) { onScroll(delta, layoutInfo) }
@@ -31,20 +31,36 @@ internal class TranscriptPrefetchStrategy(private val aheadCount: Int = AHEAD_CO
 
     override fun LazyListPrefetchScope.onVisibleItemsUpdated(layoutInfo: LazyListLayoutInfo) {
         with(scrolling) { onVisibleItemsUpdated(layoutInfo) }
-        val last = layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        val wanted = if (last == null) emptyList() else (last + 1..minOf(last + aheadCount, layoutInfo.totalItemsCount - 1)).toList()
-        // Handles for items that have scrolled into view, or that are no longer next in line, are let go; disposing
-        // one whose item the layout has since adopted is a no-op, so a visible item is never composed twice.
-        ahead.keys.filter { it !in wanted }.forEach { index -> ahead.remove(index)?.cancel() }
-        wanted.forEach { index -> if (index !in ahead) ahead[index] = schedulePrefetch(index) }
+        ahead.update(rowsAhead(layoutInfo.visibleItemsInfo.lastOrNull()?.index, layoutInfo.totalItemsCount, aheadCount)) { schedulePrefetch(it) }
     }
 
     override fun NestedPrefetchScope.onNestedPrefetch(firstVisibleItemIndex: Int) {
         with(scrolling) { onNestedPrefetch(firstVisibleItemIndex) }
     }
 
-    private companion object {
+    companion object {
         /** Two turns: a user prompt and the reply above it cover a keyboard's worth of transcript in the usual chat. */
         const val AHEAD_COUNT = 2
+
+        /** The [count] indices past [lastVisible] worth composing ahead, kept within a list of [total] items. */
+        internal fun rowsAhead(lastVisible: Int?, total: Int, count: Int): List<Int> =
+            if (lastVisible == null) emptyList() else (lastVisible + 1..minOf(lastVisible + count, total - 1)).toList()
+    }
+}
+
+/**
+ * The rows held composed ahead of the viewport, by index. [update] brings them in line with what is wanted now:
+ * a row that has scrolled into view, or that is no longer next in line, is released — disposing a prefetch whose
+ * item the layout has since adopted is a no-op, so a visible item is never composed twice — and a row newly next
+ * in line is acquired once.
+ */
+internal class AheadRows<H>(private val release: (H) -> Unit) {
+    private val held = LinkedHashMap<Int, H>()
+
+    val indices: Set<Int> get() = held.keys
+
+    fun update(wanted: List<Int>, acquire: (Int) -> H) {
+        held.keys.filter { it !in wanted }.forEach { index -> held.remove(index)?.let(release) }
+        wanted.forEach { index -> if (index !in held) held[index] = acquire(index) }
     }
 }
