@@ -96,6 +96,7 @@ import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.TranscriptDiagnostics
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
@@ -700,6 +701,39 @@ class AppGraph(
                     pins.state.value.let { ProjectDiagnostics.AccountRoundSummary(true, it.active, it.isSyncing, it.lastSyncedAtMillis?.takeIf { ms -> ms > 0 }?.let { ms -> java.time.Instant.ofEpochMilli(ms).toString() }, it.error) }
                 } else null,
                 rootFailures = agents.rootFailures(),
+            ),
+        )
+    }
+
+    /**
+     * The redacted account of the last opened chat's transcript as this build reads it (see [TranscriptDiagnostics]):
+     * item kinds, tool names with their argument key names, the payload read off each call, and the decision that
+     * reads the chat as a coordinator's. No message, prompt or argument text is in it.
+     */
+    suspend fun transcriptDiagnosticsReport(): String {
+        val agentId = if (lazyConversations.isInitialized()) conversations.lastOpenedAgentId.value else null
+        val state = agentId?.let { conversations.state(it).value }
+        return TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input(
+                appVersion = BuildConfig.VERSION_NAME,
+                nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
+                extendedMode = extendedMode.enabled.first(),
+                agentId = agentId,
+                agent = agentId?.let { agents.agent(it) },
+                state = state?.let {
+                    TranscriptDiagnostics.State(
+                        items = it.items,
+                        isLoading = it.isLoading,
+                        isStreaming = it.isStreaming,
+                        isReconnecting = it.isReconnecting,
+                        runStatus = it.runStatus,
+                        hasOlder = it.hasOlder,
+                        transcriptUnavailable = it.transcriptUnavailable,
+                        recordProjectMode = it.isProjectConversation,
+                        error = it.error,
+                    )
+                },
+                placement = agentId?.let { agents.placementOf(it) },
             ),
         )
     }
