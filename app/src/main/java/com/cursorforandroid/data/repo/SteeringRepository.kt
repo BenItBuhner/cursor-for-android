@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.FollowupQueueApi
+import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.RunControlApi
 import com.cursorforandroid.data.api.userMessage
@@ -47,6 +48,8 @@ class SteeringRepository(
     private val interactions: InteractionApi? = null,
     private val queueApi: FollowupQueueApi? = null,
     private val runs: RunControlApi? = null,
+    /** The goal the account keeps on a chat, read with the queue on every poll; null leaves the goal to the transcript. */
+    private val goals: GoalStateApi? = null,
     /** Runs after an action the transcript should reflect (an answer, a hold): the conversation's revalidation. */
     private val afterAction: suspend (String) -> Unit = {},
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -80,10 +83,35 @@ class SteeringRepository(
         if (count > 1) return
         pollers[agentId]?.cancel()
         pollers[agentId] = scope.launch {
+            var polls = 0
             while (isActive) {
                 refreshQueue(agentId)
+                // The goal moves slowly and its record is the conversation's whole state structure: read on the
+                // first poll and every few after, the transcript's own reading carrying the strip in between.
+                if (polls++ % GOAL_POLL_EVERY == 0) refreshGoal(agentId)
                 delay(pollIntervalMs)
             }
+        }
+    }
+
+    // ---- the goal ---------------------------------------------------------------------------------------------------
+
+    /**
+     * One read of the goal the account keeps on [agentId] (`GetLatestAgentConversationState`), Extended mode only:
+     * with the surface off, in the demo, or when the account would not answer, nothing is recorded and the strip goes
+     * by the chat's own transcript. Once the account has answered, its word stands — a goal, or none.
+     */
+    suspend fun refreshGoal(agentId: String) {
+        if (session.isDemo || !capabilities().accountGoal) return
+        val api = goals ?: return
+        val f = flow(agentId)
+        try {
+            val goal = api.goal(agentId)
+            f.update { it.copy(goal = goal, goalKnown = true) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // A refusal or a changed endpoint leaves the transcript's reading in place; the next poll asks again.
         }
     }
 
@@ -256,6 +284,8 @@ class SteeringRepository(
 
     companion object {
         private const val POLL_INTERVAL_MS = 10_000L
+        /** The account's goal is read on one queue poll in this many: every 30 s at the default interval. */
+        private const val GOAL_POLL_EVERY = 3
         private const val LOCAL_RUN_PREFIX = "local-"
 
         /** Why a control is refused with Extended mode off; the screen names it instead of the control. */

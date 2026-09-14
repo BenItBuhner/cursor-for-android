@@ -65,8 +65,9 @@ internal fun ToolPayloadView(call: ToolCall, modifier: Modifier = Modifier) {
         is ToolPayload.FileContent -> FileCard(payload, modifier)
         is ToolPayload.Subagent -> SubagentCard(payload, modifier)
         is ToolPayload.Question -> if (call.pendingQuestion == null) QuestionCard(payload, pending = false, modifier = modifier)
-        // A coordinator's calls are rows and cards of their own (see CoordinatorContent.kt), not lines that open.
-        is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage -> Unit
+        // A coordinator's calls are rows and cards of their own (see CoordinatorContent.kt), not lines that open;
+        // a goal call is lifted into a row of its own before it reaches a group (see GoalTranscript.lift).
+        is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange -> Unit
         is ToolPayload.GeneratedImage, is ToolPayload.Recording, null -> Unit
     }
 }
@@ -75,7 +76,7 @@ internal fun ToolPayloadView(call: ToolCall, modifier: Modifier = Modifier) {
 internal fun ToolCall.hasExpandablePayload(): Boolean = when (payload) {
     is ToolPayload.FileDiff, is ToolPayload.FileContent, is ToolPayload.Subagent -> true
     is ToolPayload.Question -> pendingQuestion == null
-    is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage -> false
+    is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange -> false
     is ToolPayload.GeneratedImage, is ToolPayload.Recording, null -> false
 }
 

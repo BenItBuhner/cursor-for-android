@@ -1,0 +1,297 @@
+{
+ "_source": "agent.v1 goal protos from @cursor/sdk 1.0.31 dist/bundled/index.js (ToolCall.tool fields 70 create_goal_tool_call / 71 update_goal_tool_call; ConversationStateStructure field 32 goal_state), serialised with @bufbuild/protobuf 1.10; see generate-goal-fixtures.mjs",
+ "names": {
+  "sdk": [
+   "createGoal",
+   "updateGoal"
+  ],
+  "desktopTable": [
+   "create_goal",
+   "update_goal"
+  ],
+  "prompt": [
+   "CreateGoal",
+   "UpdateGoal"
+  ],
+  "labels": {
+   "createGoalToolCall": {
+    "loading": "Creating goal",
+    "completed": "Created goal",
+    "error": "Create goal"
+   },
+   "updateGoalToolCall": {
+    "loading": "Updating goal",
+    "completed": "Updated goal",
+    "error": "Update goal"
+   }
+  }
+ },
+ "goalStatus": {
+  "GOAL_STATUS_UNSPECIFIED": 0,
+  "GOAL_STATUS_ACTIVE": 1,
+  "GOAL_STATUS_PAUSED": 2,
+  "GOAL_STATUS_COMPLETE": 3,
+  "GOAL_STATUS_CLEARED": 4
+ },
+ "createGoal": {
+  "args": {
+   "toJson": {
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."
+   },
+   "stringify": {
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."
+   },
+   "snake": {
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip."
+   }
+  },
+  "success": {
+   "toJson": {
+    "success": {}
+   },
+   "stringify": {
+    "success": {}
+   },
+   "snake": {
+    "success": {}
+   }
+  },
+  "error": {
+   "toJson": {
+    "error": {
+     "error": "A goal is already active on this conversation"
+    }
+   },
+   "stringify": {
+    "error": {
+     "error": "A goal is already active on this conversation"
+    }
+   },
+   "snake": {
+    "error": {
+     "error": "A goal is already active on this conversation"
+    }
+   }
+  }
+ },
+ "updateGoal": {
+  "args": {
+   "complete": {
+    "toJson": {
+     "status": "GOAL_STATUS_COMPLETE"
+    },
+    "stringify": {
+     "status": "GOAL_STATUS_COMPLETE"
+    },
+    "snake": {
+     "status": "GOAL_STATUS_COMPLETE"
+    }
+   },
+   "paused": {
+    "toJson": {
+     "status": "GOAL_STATUS_PAUSED"
+    },
+    "stringify": {
+     "status": "GOAL_STATUS_PAUSED"
+    },
+    "snake": {
+     "status": "GOAL_STATUS_PAUSED"
+    }
+   },
+   "active": {
+    "toJson": {
+     "status": "GOAL_STATUS_ACTIVE"
+    },
+    "stringify": {
+     "status": "GOAL_STATUS_ACTIVE"
+    },
+    "snake": {
+     "status": "GOAL_STATUS_ACTIVE"
+    }
+   },
+   "cleared": {
+    "toJson": {
+     "status": "GOAL_STATUS_CLEARED"
+    },
+    "stringify": {
+     "status": "GOAL_STATUS_CLEARED"
+    },
+    "snake": {
+     "status": "GOAL_STATUS_CLEARED"
+    }
+   },
+   "completeAsInteger": {
+    "status": 3
+   }
+  },
+  "success": {
+   "complete": {
+    "toJson": {
+     "success": {
+      "status": "GOAL_STATUS_COMPLETE"
+     }
+    },
+    "stringify": {
+     "success": {
+      "status": "GOAL_STATUS_COMPLETE"
+     }
+    },
+    "snake": {
+     "success": {
+      "status": "GOAL_STATUS_COMPLETE"
+     }
+    }
+   },
+   "paused": {
+    "toJson": {
+     "success": {
+      "status": "GOAL_STATUS_PAUSED"
+     }
+    },
+    "stringify": {
+     "success": {
+      "status": "GOAL_STATUS_PAUSED"
+     }
+    },
+    "snake": {
+     "success": {
+      "status": "GOAL_STATUS_PAUSED"
+     }
+    }
+   },
+   "active": {
+    "toJson": {
+     "success": {
+      "status": "GOAL_STATUS_ACTIVE"
+     }
+    },
+    "stringify": {
+     "success": {
+      "status": "GOAL_STATUS_ACTIVE"
+     }
+    },
+    "snake": {
+     "success": {
+      "status": "GOAL_STATUS_ACTIVE"
+     }
+    }
+   }
+  },
+  "error": {
+   "toJson": {
+    "error": {
+     "error": "No active goal to update"
+    }
+   },
+   "stringify": {
+    "error": {
+     "error": "No active goal to update"
+    }
+   },
+   "snake": {
+    "error": {
+     "error": "No active goal to update"
+    }
+   }
+  }
+ },
+ "goalState": {
+  "active": {
+   "toJson": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_ACTIVE",
+    "activeDurationMs": "4512000",
+    "lastAccruedAtMs": "1789380000000",
+    "continuationCount": 3,
+    "agentSessionId": "sess-01"
+   },
+   "stringify": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_ACTIVE",
+    "idleContinuationsWithoutToolCalls": 0,
+    "activeDurationMs": "4512000",
+    "lastAccruedAtMs": "1789380000000",
+    "continuationCount": 3,
+    "agentSessionId": "sess-01"
+   },
+   "snake": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_ACTIVE",
+    "activeDurationMs": "4512000",
+    "lastAccruedAtMs": "1789380000000",
+    "continuationCount": 3,
+    "agentSessionId": "sess-01"
+   }
+  },
+  "paused": {
+   "toJson": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_PAUSED",
+    "activeDurationMs": "5100000",
+    "continuationCount": 3
+   },
+   "stringify": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_PAUSED",
+    "idleContinuationsWithoutToolCalls": 0,
+    "activeDurationMs": "5100000",
+    "continuationCount": 3
+   },
+   "snake": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_PAUSED",
+    "activeDurationMs": "5100000",
+    "continuationCount": 3
+   }
+  },
+  "complete": {
+   "toJson": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_COMPLETE",
+    "activeDurationMs": "7260000",
+    "continuationCount": 3
+   },
+   "stringify": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_COMPLETE",
+    "idleContinuationsWithoutToolCalls": 0,
+    "activeDurationMs": "7260000",
+    "continuationCount": 3
+   },
+   "snake": {
+    "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+    "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+    "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+    "status": "GOAL_STATUS_COMPLETE",
+    "activeDurationMs": "7260000",
+    "continuationCount": 3
+   }
+  },
+  "activeAsInteger": {
+   "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+   "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+   "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+   "status": 1,
+   "activeDurationMs": "4512000",
+   "lastAccruedAtMs": "1789380000000",
+   "continuationCount": 3,
+   "agentSessionId": "sess-01"
+  }
+ }
+}

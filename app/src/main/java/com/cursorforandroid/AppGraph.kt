@@ -23,6 +23,7 @@ import com.cursorforandroid.data.api.DashboardSlashCommandApi
 import com.cursorforandroid.data.api.DesktopProbe
 import com.cursorforandroid.data.api.DiffDetailsApi
 import com.cursorforandroid.data.api.FollowupQueueApi
+import com.cursorforandroid.data.api.GoalStateApi
 import com.cursorforandroid.data.api.GitHubApi
 import com.cursorforandroid.data.api.GitHubSlashCommandApi
 import com.cursorforandroid.data.api.AgentStoreApi
@@ -323,6 +324,7 @@ class AppGraph(
         override suspend fun cancelToolCall(agentId: String, toolCallId: String): Boolean = lazySteeringApi.value.cancelToolCall(agentId, toolCallId)
         override suspend fun wake(agentId: String): Boolean = lazySteeringApi.value.wake(agentId)
     }
+    private val accountGoals = GoalStateApi { agentId -> lazySteeringApi.value.goal(agentId) }
     private val accountSlashCommands = object : SlashCommandApi {
         override suspend fun forRepository(repoUrl: String, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forRepository(repoUrl, ref)
         override suspend fun forAgent(agentId: String, repoUrl: String?, ref: String?): SlashCatalog = lazyAccountSlashCommands.value.forAgent(agentId, repoUrl, ref)
@@ -494,6 +496,7 @@ class AppGraph(
             interactions = steeringAccount,
             queueApi = steeringAccount,
             runs = steeringAccount,
+            goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },
             capabilities = capabilities,
         )

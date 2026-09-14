@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.DiffStats
+import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolLabels
@@ -49,6 +50,8 @@ object ToolCallMapper {
         // A coordinator's message whose arguments the stream left out for size is still a message: marked as one
         // without its body, so the row can say so and the turn can be asked for again (see CoordinatorTranscript).
         val payload = when {
+            // A goal call keeps its payload through a refusal: the row names the objective that was refused, and why.
+            ToolNames.goalTool(dto.name) != null -> ToolPayloads.from(dto.name, dto.args, result, images, dto.callId)
             isError -> null
             else -> ToolPayloads.from(dto.name, dto.args, result, images, dto.callId)
                 ?: ToolPayload.CoordinatorMessage("", missing = true).takeIf { dto.truncated?.args == true && ToolNames.coordinatorTool(dto.name) == ToolNames.USER_MESSAGE_TOOL }
@@ -163,7 +166,15 @@ object ToolCallMapper {
         ToolKind.Image -> args.string(listOf("prompt")).orEmpty().let { Description(truncate(it, PROMPT_MAX), kind, detail = it.ifBlank { null }) }
         ToolKind.Plan -> Description("", kind)
         ToolKind.Coordinator -> coordinator(name, args, result)
-        ToolKind.Other -> Description("", kind)
+        ToolKind.Other -> when (ToolNames.goalTool(name)) {
+            // "Created goal Ship the release…": the objective's first line, the whole of it behind the row.
+            ToolPayload.GoalChange.Action.Set -> args.string(listOf("objective", "goal", "text", "description")).let { objective ->
+                Description(truncate(objective?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), kind, detail = objective)
+            }
+            // "Updated goal complete": the status asked for, in plain words.
+            ToolPayload.GoalChange.Action.Update -> Description(GoalStatus.parse(args?.get("status"))?.name?.lowercase().orEmpty(), kind)
+            null -> Description("", kind)
+        }
     }
 
     /**

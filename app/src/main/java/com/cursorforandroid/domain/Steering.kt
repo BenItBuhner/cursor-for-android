@@ -123,6 +123,13 @@ data class ConversationControls(
     val cancelledCallIds: Set<String> = emptySet(),
     /** Actions under way, by name ("pause", "steer", "queue:<id>"), so a control shows busy rather than taking a second tap. */
     val inFlight: Set<String> = emptySet(),
+    /**
+     * The goal the account keeps on the chat (`GetLatestAgentConversationState`), as last read; null when it has none,
+     * or when it has not been read. [goalKnown] tells the two apart: once the account has answered, its word — a goal
+     * or none — stands over what the transcript alone would say.
+     */
+    val goal: Goal? = null,
+    val goalKnown: Boolean = false,
 ) {
     val isQueueAvailable: Boolean get() = queueLoad is QueueLoad.Loaded || queueLoad is QueueLoad.Loading && queue.isNotEmpty()
 

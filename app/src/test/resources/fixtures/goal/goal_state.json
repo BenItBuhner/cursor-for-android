@@ -1,0 +1,118 @@
+{
+ "active": {
+  "latestConversationState": {
+   "conversationState": {
+    "turns": [
+     "AAECAw=="
+    ],
+    "todos": [],
+    "pendingToolCalls": [],
+    "mode": "AGENT_MODE_AGENT",
+    "goalState": {
+     "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+     "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+     "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+     "status": "GOAL_STATUS_ACTIVE",
+     "activeDurationMs": "4512000",
+     "lastAccruedAtMs": "1789380000000",
+     "continuationCount": 3,
+     "agentSessionId": "sess-01"
+    },
+    "isRootProjectConversation": false
+   },
+   "numPriorInteractionUpdates": 412,
+   "conversationRewindEpoch": 0
+  },
+  "preFetchedBlobs": []
+ },
+ "paused": {
+  "latestConversationState": {
+   "conversationState": {
+    "turns": [
+     "AAECAw=="
+    ],
+    "todos": [],
+    "pendingToolCalls": [],
+    "mode": "AGENT_MODE_AGENT",
+    "goalState": {
+     "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+     "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+     "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+     "status": "GOAL_STATUS_PAUSED",
+     "activeDurationMs": "5100000",
+     "continuationCount": 3
+    },
+    "isRootProjectConversation": false
+   },
+   "numPriorInteractionUpdates": 412,
+   "conversationRewindEpoch": 0
+  },
+  "preFetchedBlobs": []
+ },
+ "complete": {
+  "latestConversationState": {
+   "conversationState": {
+    "turns": [
+     "AAECAw=="
+    ],
+    "todos": [],
+    "pendingToolCalls": [],
+    "mode": "AGENT_MODE_AGENT",
+    "goalState": {
+     "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+     "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+     "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+     "status": "GOAL_STATUS_COMPLETE",
+     "activeDurationMs": "7260000",
+     "continuationCount": 3
+    },
+    "isRootProjectConversation": false
+   },
+   "numPriorInteractionUpdates": 412,
+   "conversationRewindEpoch": 0
+  },
+  "preFetchedBlobs": []
+ },
+ "activeAsInteger": {
+  "latestConversationState": {
+   "conversationState": {
+    "turns": [
+     "AAECAw=="
+    ],
+    "todos": [],
+    "pendingToolCalls": [],
+    "mode": "AGENT_MODE_AGENT",
+    "goalState": {
+     "conversationId": "bc-3b7f1c2e-9d4a-5f60-8e21-6a0c9d2f4b18",
+     "goalId": "8a1c3f52-6b7e-4d90-9f13-2e5c7a8b0d64",
+     "objective": "Ship the 0.3.10 release: every open PR of the panel worker merged, CI green on main, the tag pushed and the release notes published with screenshots of the new goal strip.",
+     "status": 1,
+     "activeDurationMs": "4512000",
+     "lastAccruedAtMs": "1789380000000",
+     "continuationCount": 3,
+     "agentSessionId": "sess-01"
+    },
+    "isRootProjectConversation": false
+   },
+   "numPriorInteractionUpdates": 412,
+   "conversationRewindEpoch": 0
+  },
+  "preFetchedBlobs": []
+ },
+ "none": {
+  "latestConversationState": {
+   "conversationState": {
+    "turns": [
+     "AAECAw=="
+    ],
+    "todos": [],
+    "pendingToolCalls": [],
+    "mode": "AGENT_MODE_AGENT",
+    "isRootProjectConversation": false
+   },
+   "numPriorInteractionUpdates": 412,
+   "conversationRewindEpoch": 0
+  },
+  "preFetchedBlobs": []
+ }
+}

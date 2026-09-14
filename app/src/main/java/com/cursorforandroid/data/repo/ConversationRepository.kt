@@ -20,6 +20,7 @@ import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
@@ -237,7 +238,8 @@ class ConversationRepository(
         var traces: Map<String, List<TimelineItem>> = emptyMap()
         /**
          * Runs whose trace in [traces] came off the disk from a build that did not read the coordinator's message
-         * tool, so its message calls have no body (see [CoordinatorTranscript.needsRefresh]). Shown as they are —
+         * tool or the goal tools, so its message calls have no body and its goal no objective (see
+         * [CoordinatorTranscript.needsRefresh], [GoalTranscript.needsRefresh]). Shown as they are —
          * re-read on the way to the screen — and asked for again like a run without a trace: the replay, or the
          * account's record, brings the bodies and replaces the file. Cleared as each lands.
          */
@@ -1040,9 +1042,9 @@ class ConversationRepository(
         if (saved.isNotEmpty()) {
             e.publish(mutate = {
                 traces = saved.mapValues { it.value.items } + traces
-                // A file from an earlier build without the coordinator's messages is shown, and asked for again
-                // once the network answers (see [loadTraces]).
-                staleTraces += saved.filterValues { CoordinatorTranscript.needsRefresh(it.items) }.keys
+                // A file from an earlier build without the coordinator's messages or the goal's objective is shown,
+                // and asked for again once the network answers (see [loadTraces]).
+                staleTraces += saved.filterValues { isStaleTrace(it.items) }.keys
             })
         }
     }
@@ -1147,8 +1149,8 @@ class ConversationRepository(
                     e.publish(mutate = {
                         traces = saved.mapValues { it.value.items } + traces
                         saved.keys.forEach { traceInFlight.remove(it) }
-                        // A file from an earlier build without the coordinator's messages: shown, and replayed after all.
-                        saved.filterValues { CoordinatorTranscript.needsRefresh(it.items) }.keys.forEach { runId ->
+                        // A file from an earlier build without the coordinator's messages or the goal's objective: shown, and replayed after all.
+                        saved.filterValues { isStaleTrace(it.items) }.keys.forEach { runId ->
                             staleTraces += runId
                             batch.firstOrNull { it.id == runId }?.let { traceInFlight[runId] = it }
                         }
@@ -1248,6 +1250,12 @@ class ConversationRepository(
         traceInFlight.values.filter { (it.id !in traces || it.id in staleTraces) && it.id !in expiredRuns }.forEach { traceQueue.putIfAbsent(it.id, it) }
         traceInFlight.clear()
     }
+
+    /**
+     * A trace off the disk that this build would read more from than the build that wrote it kept: a coordinator's
+     * message without its body, a goal set without its objective. Worth asking the run's log for again.
+     */
+    private fun isStaleTrace(items: List<TimelineItem>): Boolean = CoordinatorTranscript.needsRefresh(items) || GoalTranscript.needsRefresh(items)
 
     /** Shows a run's complete trace and hands it to the caller for the file. */
     private fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>): CachedTrace {

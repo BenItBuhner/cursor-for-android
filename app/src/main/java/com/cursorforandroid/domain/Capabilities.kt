@@ -65,11 +65,18 @@ data class Capabilities(
      * their text alone.
      */
     val accountTranscript: Boolean = false,
+    /**
+     * The goal the account keeps on a chat (`BackgroundComposerService/GetLatestAgentConversationState`, the
+     * `goal_state` of the conversation's `ConversationStateStructure`): its status, its objective and the active time
+     * it has accrued, as Cursor's own clients read them. Off: the goal as the chat's own transcript tells it — the
+     * agent's `CreateGoal` / `UpdateGoal` calls on the documented stream and the "Goal continued" turns.
+     */
+    val accountGoal: Boolean = false,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
-            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript || accountGoal
 
     companion object {
         /** The default: the documented API only. */
@@ -90,6 +97,7 @@ data class Capabilities(
             accountQueue = false,
             agentModes = false,
             accountTranscript = false,
+            accountGoal = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -110,6 +118,7 @@ data class Capabilities(
             accountQueue = true,
             agentModes = true,
             accountTranscript = true,
+            accountGoal = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

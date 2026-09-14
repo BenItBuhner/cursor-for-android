@@ -76,6 +76,9 @@ object SystemNotifications {
         Regex("""\bdon'?t use generic labels? such as\b""", RegexOption.IGNORE_CASE) to 1,
     )
 
+    /** The row's title for a turn Cursor started to keep working toward the goal (`source="goal"`, "Continue working toward…"). */
+    const val GOAL_CONTINUED = "Goal continued"
+
     /** Whether [text] is (or contains) an injected notification rather than a prompt the user wrote. */
     fun isInjected(text: String): Boolean = notificationBlock.containsMatchIn(text)
 
@@ -163,7 +166,7 @@ object SystemNotifications {
         return SystemNotification(
             id = id,
             kind = SystemNotification.Kind.Goal,
-            title = if (continued) "Goal continued" else "Goal",
+            title = if (continued) GOAL_CONTINUED else "Goal",
             summary = body?.let(::firstLine),
             body = body,
             raw = raw,

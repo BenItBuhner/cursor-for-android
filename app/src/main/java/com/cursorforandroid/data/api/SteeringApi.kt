@@ -3,6 +3,8 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.Goal
+import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.InteractionResolution
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptImage
@@ -83,6 +85,15 @@ interface RunControlApi {
 }
 
 /**
+ * The goal the account keeps on a chat: `GetLatestAgentConversationState {bc_id}` → `latest_conversation_state
+ * .conversation_state.goal_state` (`agent.v1.GoalState`), the same record the desktop's goal tray and Cursor's
+ * goal-continuation reconciler read. Null when the account has no goal on the chat.
+ */
+fun interface GoalStateApi {
+    suspend fun goal(agentId: String): Goal?
+}
+
+/**
  * The conversation-control corner of `aiserver.v1.BackgroundComposerService` (see [BackgroundComposerApi] for the
  * service and its transport): answering an agent's question, the account's follow-up queue, steering and holding a
  * run. Field names are the proto's in Connect JSON's lowerCamelCase; enums go out by their proto names and are read
@@ -92,7 +103,32 @@ interface RunControlApi {
 class SteeringApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
-) : InteractionApi, FollowupQueueApi, RunControlApi {
+) : InteractionApi, FollowupQueueApi, RunControlApi, GoalStateApi {
+
+    // ---- the goal ---------------------------------------------------------------------------------------------------
+
+    /**
+     * `GetLatestAgentConversationState`: the conversation's state structure, of which the goal is read and the rest —
+     * the turns' blob ids, the todos, the plans — skipped. Enums arrive by name (`GOAL_STATUS_ACTIVE`) or by number,
+     * the two `uint64` timings as decimal strings, and a field at its default (a zero count) is left out, as proto3
+     * JSON does; a status this build cannot read, or no `goal_state` at all, is no goal.
+     */
+    override suspend fun goal(agentId: String): Goal? {
+        val response = call("GetLatestAgentConversationState", BcIdDto(agentId), BcIdDto.serializer(), ConversationStateResponseDto.serializer())
+        val state = response.latestConversationState?.conversationState?.goalState ?: return null
+        val objective = state.objective?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val status = GoalStatus.parse(state.status) ?: return null
+        return Goal.fromAccount(
+            objective = objective,
+            status = status,
+            activeDurationMs = state.activeDurationMs.asLong(),
+            lastAccruedAtMs = state.lastAccruedAtMs.asLong(),
+            continuationCount = state.continuationCount.asLong()?.toInt() ?: 0,
+            goalId = state.goalId,
+        )
+    }
+
+    private fun JsonPrimitive?.asLong(): Long? = this?.longOrNull ?: this?.contentOrNull?.toLongOrNull()
 
     // ---- the question -----------------------------------------------------------------------------------------------
 
@@ -353,6 +389,31 @@ class SteeringApi(
 
     @Serializable
     private data class WakeResponseDto(val signaled: Boolean? = null)
+
+    /** `GetLatestAgentConversationStateResponse`, the goal's corner of it; `pre_fetched_blobs` and the rest are skipped. */
+    @Serializable
+    private data class ConversationStateResponseDto(val latestConversationState: LatestConversationStateDto? = null)
+
+    @Serializable
+    private data class LatestConversationStateDto(val conversationState: ConversationStateDto? = null)
+
+    /** `agent.v1.ConversationStateStructure`, of which only `goal_state` (field 32) is read. */
+    @Serializable
+    private data class ConversationStateDto(val goalState: GoalStateDto? = null)
+
+    /** `agent.v1.GoalState`: enums by name or number, `uint64` as decimal strings (or numbers, from a lenient encoder). */
+    @Serializable
+    private data class GoalStateDto(
+        val conversationId: String? = null,
+        val goalId: String? = null,
+        val objective: String? = null,
+        val status: JsonPrimitive? = null,
+        val idleContinuationsWithoutToolCalls: JsonPrimitive? = null,
+        val activeDurationMs: JsonPrimitive? = null,
+        val lastAccruedAtMs: JsonPrimitive? = null,
+        val continuationCount: JsonPrimitive? = null,
+        val agentSessionId: String? = null,
+    )
 
     @Serializable
     private class EmptyDto

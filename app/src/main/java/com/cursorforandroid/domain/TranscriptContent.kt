@@ -97,8 +97,8 @@ data class TranscriptContent(
                         pending = payload
                         pendingCallId = call.callId
                     }
-                    // A coordinator's workers are the Project view's business, not the Changes or Files lists'.
-                    is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, null -> Unit
+                    // A coordinator's workers are the Project view's business, not the Changes or Files lists'; the goal is the strip's.
+                    is ToolPayload.WorkerAction, is ToolPayload.CoordinatorMessage, is ToolPayload.GoalChange, null -> Unit
                 }
             }
             return TranscriptContent(
