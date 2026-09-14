@@ -107,11 +107,13 @@ class SettingsExtendedScreenshotTest {
     @Test
     fun extendedModeOn() {
         runBlocking {
-            graph.extendedMode.acknowledge()
-            graph.extendedMode.enable()
+            check(graph.extendedMode.acknowledge()) { "The acknowledgment could not be written." }
+            check(graph.extendedMode.enable()) { "Extended mode could not be turned on." }
         }
         composeSettings()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(ExtendedModeTags.PIN_SYNC)).fetchSemanticsNodes().isNotEmpty() }
+        // The first composition in a cold sandbox loads the native renderer and the fonts; the walkthrough's waits
+        // allow the same, so a slow runner does not read as the option never appearing.
+        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(ExtendedModeTags.PIN_SYNC)).fetchSemanticsNodes().isNotEmpty() }
         scrollToAdvanced()
         compose.onNodeWithText(ExtendedModeCopy.OPTIONS_NOTE).assertIsDisplayed()
         compose.onNodeWithText(ExtendedModeCopy.PIN_SYNC_TITLE).assertIsDisplayed()
