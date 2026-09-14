@@ -21,11 +21,14 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.GitFilter
+import com.cursorforandroid.domain.KnownRoot
+import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.Sidebar
@@ -210,6 +213,45 @@ class ProjectFilterScreenshotTest {
         show(state)
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Latest release process").fetchSemanticsNodes().isEmpty() }
         capture("57_sidebar_filter_projects_kept")
+    }
+
+    /**
+     * The account after one page: the rows loaded are the three Projects above and their chats, and the root
+     * registry knows six more Projects whose rows no page holds yet — their records' names and looks, and the
+     * account's count of their members. Every one of the nine renders, the six as stand-ins the fetch by id will
+     * replace, in the Projects group's order (the loaded ones by activity, the stand-ins after them by name).
+     */
+    @Test
+    fun sidebarWithProjectsBeyondTheLoadedPages() {
+        val seen = NOW - 20 * 60_000L
+        val registry = listOf(
+            KnownRoot("bc-billing", "Cesium billing launch", ProjectAppearance("rocket", "purple"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-shipyard", "Shipyard", ProjectAppearance("logo-github", "blue"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-design", "Design system", ProjectAppearance("logo-figma", "magenta"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-mobile", "Cursor for Android", ProjectAppearance("phone", "green"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-notion", "Notion knowledge base", ProjectAppearance("logo-notion", "gray"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-infra", "Infra cost review", ProjectAppearance("gauge", "orange"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-linear", "Linear triage", ProjectAppearance("logo-linear", "indigo"), signal = LineageSignal.MEMBERSHIP, lastSeenMillis = seen),
+            KnownRoot("bc-rust", "Rust rewrite spike", ProjectAppearance("logo-rust", "red"), signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+            KnownRoot("bc-old", "Q3 launch retro", ProjectAppearance("flag", "yellow"), archived = true, signal = LineageSignal.ACCOUNT_RECORD, lastSeenMillis = seen),
+        )
+        val counts = mapOf("bc-billing" to 3, "bc-shipyard" to 3, "bc-design" to 2, "bc-mobile" to 5, "bc-notion" to 1, "bc-infra" to 2, "bc-linear" to 4, "bc-rust" to 2, "bc-old" to 6)
+        val prefs = ListPreferences()
+        val sections = AgentListOrganizer.organize(agents, prefs, local, nowMillis = NOW, knownRoots = registry, memberCounts = counts)
+        val projects = sections.first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
+        // Eight Projects render — the archived one waits behind the Archived filter — the loaded three first.
+        assertThat(projects.map { it.agent.name })
+            .containsExactly("Shipyard", "Cesium billing launch", "Design system", "Cursor for Android", "Infra cost review", "Linear triage", "Notion knowledge base", "Rust rewrite spike").inOrder()
+        assertThat(projects.filter { it.isStandIn }.map { it.agent.id }).containsExactly("bc-mobile", "bc-infra", "bc-linear", "bc-notion", "bc-rust").inOrder()
+        assertThat(projects.none { it.isPlaceholder }).isTrue()
+        assertThat(projects.map { it.shownCount }).containsExactly(3, 3, 2, 5, 2, 4, 1, 2).inOrder()
+        assertThat(projects.all { it.agent.isProjectRoot && it.agent.projectAppearance != null }).isTrue()
+        val archivedToo = AgentListOrganizer.organize(agents, ListPreferences(statuses = StatusFilter.entries.toSet()), local, nowMillis = NOW, knownRoots = registry, memberCounts = counts)
+            .first { it.key == AgentListOrganizer.PROJECTS_KEY }.rows
+        assertThat(archivedToo.map { it.agent.name }).contains("Q3 launch retro")
+        show(AgentListUiState(sections = sections, allAgents = agents, prefs = prefs, local = local, hasLoaded = true, nowMillis = NOW))
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Rust rewrite spike").fetchSemanticsNodes().isNotEmpty() }
+        capture("58_sidebar_all_projects")
     }
 
     private companion object {

@@ -21,6 +21,12 @@ data class TranscriptControls(
     val onCancelToolCall: ((callId: String) -> Unit)? = null,
     val onOpenAgent: ((agentId: String) -> Unit)? = null,
     val agentById: (agentId: String) -> Agent? = { null },
+    /**
+     * The chat is a Project coordinator's. Cursor's own client reads such a chat the other way round from an
+     * agent's: what the coordinator said to the user through its SendMessage tool is the message, and the plain
+     * text it produced between tool calls is its working notes, folded away under "Background" unless opened.
+     */
+    val coordinatorMode: Boolean = false,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

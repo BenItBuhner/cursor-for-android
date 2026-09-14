@@ -73,7 +73,7 @@ object ToolPayloads {
     private fun coordinator(name: String, args: JsonObject?, value: JsonObject?): ToolPayload? {
         val tool = ToolNames.coordinatorTool(name) ?: return null
         if (tool == "send_to_user") {
-            val message = args.string(listOf("message", "text", "content")) ?: return null
+            val message = args.string(listOf("message", "text", "content", "body", "markdown")) ?: value?.deepString("message", "text") ?: return null
             return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first)
         }
         val note = value?.deepString("message")

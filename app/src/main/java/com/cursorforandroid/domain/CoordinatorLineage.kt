@@ -15,8 +15,14 @@ object CoordinatorLineage {
 
     fun isCoordinatorTool(name: String): Boolean = name.trim().lowercase().removeSuffix("_tool_call") in TOOLS
 
+    /**
+     * The coordinator's tool for speaking to the user (`SendMessage` on the stream, `send_to_user` in the proto and
+     * older streams): names no worker, but only a Project's coordinator has it.
+     */
+    fun isUserMessageTool(name: String): Boolean = ToolNames.coordinatorTool(name) == "send_to_user"
+
     /** True when [items] hold a coordinator's tool call: the chat they belong to runs a Project. */
-    fun isCoordinator(items: List<TimelineItem>): Boolean = calls(items).any { isCoordinatorTool(it.name) }
+    fun isCoordinator(items: List<TimelineItem>): Boolean = calls(items).any { isCoordinatorTool(it.name) || isUserMessageTool(it.name) }
 
     /** The ids of the workers the coordinator's calls in [items] name, in the order they were first named. */
     fun workerIds(items: List<TimelineItem>): Set<String> =

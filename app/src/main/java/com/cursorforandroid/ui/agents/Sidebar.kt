@@ -242,7 +242,8 @@ fun Sidebar(
                                 modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
                                 depth = depth,
-                                childrenExpanded = if (row.children.isEmpty()) null else id in expandedIds,
+                                // A Project whose chats the pages do not hold yet still shows the account's count of them.
+                                childrenExpanded = if (row.children.isEmpty() && (row.memberCount ?: 0) == 0) null else id in expandedIds,
                                 onToggleChildren = {
                                     expandedParents = if (id in expandedIds) expandedParents - id else expandedParents + id
                                 },

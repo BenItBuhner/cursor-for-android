@@ -94,6 +94,15 @@ data class ProjectViewState(
     val isEmpty: Boolean get() = workers.isEmpty() && sideChats.isEmpty() && subagents.isEmpty()
 }
 
+/** What the last root discovery pass found (see [ProjectRepository.discoverRoots]): roots named, pages read, whether it reached the end. */
+data class RootScanRecord(
+    val rootsFound: Int,
+    val pagesRead: Int,
+    val complete: Boolean,
+    val notice: String? = null,
+    val atMillis: Long = 0L,
+)
+
 /** What one root's last membership pass answered: which of the two reads did, how many it named, and what went wrong. */
 data class LineageSyncRecord(
     val workersRead: Boolean,
@@ -199,6 +208,72 @@ class ProjectRepository(
         scope.launch { syncLineage(rootIds) }
     }
 
+    /** [discoverRoots] then [syncLineage], on this repository's own scope: what follows every account list read. */
+    fun scheduleRootDiscovery(rootIds: Collection<String>) {
+        scope.launch {
+            discoverRoots()
+            syncLineage(rootIds)
+        }
+    }
+
+    @Volatile private var lastRootScanAtMillis = 0L
+    private val discoveryMutex = Mutex()
+    private val _lastRootScan = MutableStateFlow<RootScanRecord?>(null)
+    /** What the last root discovery pass found, for the diagnostics; null before one. */
+    val lastRootScan: StateFlow<RootScanRecord?> = _lastRootScan.asStateFlow()
+
+    /**
+     * The root discovery pass (Extended mode): the whole account list, page after page, for every record that is a
+     * Project's and every record that names a manager or a parent — folded into the root registry and the placement
+     * registry, whether or not the loaded pages hold the rows — then the roots the registry knows and the list does
+     * not are fetched by id. At most once per [ROOT_SCAN_INTERVAL_MS] (the pin round runs every refresh); [force]
+     * for a pass now. Default mode has no list to scan: its registry is what earlier sessions and the coordinators'
+     * transcripts filled, and its roots are fetched by id all the same.
+     */
+    suspend fun discoverRoots(force: Boolean = false) {
+        if (session.isDemo) return
+        if (!capabilities().projects) {
+            agents.materializeRoots()
+            return
+        }
+        discoveryMutex.withLock {
+            if (!force && now() - lastRootScanAtMillis < ROOT_SCAN_INTERVAL_MS) {
+                agents.materializeRoots()
+                return
+            }
+            val token = agents.token()
+            val scan = try {
+                api.scanRoots(ROOT_SCAN_PAGES)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                _lastRootScan.value = RootScanRecord(0, 0, false, describeFailure(t), now())
+                agents.materializeRoots(token)
+                return
+            }
+            lastRootScanAtMillis = now()
+            if (scan == null || agents.token() != token) {
+                agents.materializeRoots(token)
+                return
+            }
+            // The Projects' records and the workers' records naming them: roots and placements, held or not.
+            agents.applyAccountSnapshots(scan.roots + scan.children, token)
+            scan.managers.forEach { manager -> agents.applyLineage(manager, emptyMap(), LineageSignal.MEMBERSHIP, startedIn = token) }
+            _lastRootScan.value = RootScanRecord(scan.roots.size + scan.managers.size, scan.pagesRead, scan.complete, null, now())
+            agents.materializeRoots(token)
+        }
+    }
+
+    /** The account's member count per root — workers and children the last membership pass named — for the rows' counts. */
+    val memberCounts: Flow<Map<String, Int>>
+        get() = countsFlow
+
+    private val countsFlow = MutableStateFlow<Map<String, Int>>(emptyMap())
+
+    private fun publishCounts() {
+        countsFlow.value = extras.mapNotNull { (id, flow) -> flow.value.lastSync?.let { s -> id to s.workerCount + s.childCount } }.toMap()
+    }
+
     /**
      * Reads the memberships of each Project from the account and folds them onto the rows: every worker and child
      * becomes the root's, whatever the list said before. The roots are [rootIds] — what the account list's window
@@ -211,7 +286,7 @@ class ProjectRepository(
         if (session.isDemo || !capabilities().projects) return
         syncMutex.withLock {
             val token = agents.token()
-            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id }
+            val known = agents.state.value.agents.filter { it.isProjectRoot || it.isProject }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id }
             val roots = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
             for (rootId in roots.take(maxRootsPerSync)) {
                 if (!readLineage(rootId, token)) return
@@ -253,9 +328,10 @@ class ProjectRepository(
                 hasSynced = true,
                 lastSyncedAtMillis = now(),
                 lineageNotice = notice,
-                lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.size, lineage.children.size),
+                lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.count { m -> m.isActive }, lineage.children.size),
             )
         }
+        publishCounts()
         // A root the windowed list did not reach is a root only by its workers' word: its own record — the Project
         // flag, the icon and colour, a parent of its own — is read by id, once per pass.
         val row = agents.agent(rootId)
@@ -559,6 +635,10 @@ class ProjectRepository(
 
     companion object {
         private const val MAX_ROOTS_PER_SYNC = 20
+        /** Pages of the account list the root discovery pass reads at most (see [discoverRoots]): two thousand records. */
+        const val ROOT_SCAN_PAGES = 10
+        /** How often the account list is scanned for roots in full. */
+        const val ROOT_SCAN_INTERVAL_MS = 10 * 60_000L
         private const val MAX_MATERIALIZED = 8
         private const val RETRY_AFTER_MS = 30 * 60_000L
         private const val POLL_INTERVAL_MS = 20_000L

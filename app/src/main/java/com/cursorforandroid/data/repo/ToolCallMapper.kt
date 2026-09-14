@@ -166,7 +166,7 @@ object ToolCallMapper {
     private fun coordinator(name: String, args: JsonObject?, result: JsonElement?): Description {
         val resultObj = result.obj()
         return when (ToolNames.coordinatorTool(name)) {
-            "send_to_user" -> args.string(listOf("message")).let { Description(truncate(it?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), ToolKind.Coordinator, detail = it) }
+            "send_to_user" -> args.string(listOf("message", "text", "content", "body", "markdown")).let { Description(truncate(it?.lineSequence()?.firstOrNull()?.trim().orEmpty(), PROMPT_MAX), ToolKind.Coordinator, detail = it) }
             "create_agent" -> Description(args.string(listOf("name")) ?: resultObj?.deep("agent_id").str() ?: "", ToolKind.Coordinator, detail = args.string(listOf("prompt")))
             "get_agent_status" -> {
                 val workers = resultObj?.deep("workers") as? JsonArray

@@ -121,7 +121,7 @@ fun AgentRowItem(
                     interactionSource = interaction,
                     indication = ripple(color = colors.base),
                     onClick = { actions.onOpen(row) },
-                    onLongClick = if (showMenu && !placeholder) ({ menuOpen = true }) else null,
+                    onLongClick = if (showMenu && !placeholder && !row.isStandIn) ({ menuOpen = true }) else null,
                 )
                 .height(CursorDimens.sidebarRow)
                 .padding(start = 8.dp, end = 10.dp),
@@ -151,7 +151,8 @@ fun AgentRowItem(
             )
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
-                if (prefs.showRuntime && !placeholder) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                // A stand-in's last activity is not known until its row is fetched; the slot waits for it.
+                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
@@ -211,9 +212,12 @@ private fun ChildrenToggle(row: AgentRow, expanded: Boolean, onToggle: () -> Uni
             RunningGlyph(color = colors.iconTertiary, size = 12.dp)
             Spacer(Modifier.width(4.dp))
         }
-        Text(row.descendants().size.toString(), style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
-        Spacer(Modifier.width(2.dp))
-        Icon(if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+        Text(row.shownCount.toString(), style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 1)
+        // Nothing loaded to open onto: the count stands alone until the Project's chats have been fetched.
+        if (row.children.isNotEmpty()) {
+            Spacer(Modifier.width(2.dp))
+            Icon(if (expanded) CursorIcons.ChevronDown else CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
+        }
     }
 }
 

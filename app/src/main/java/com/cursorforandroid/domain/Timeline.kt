@@ -494,7 +494,7 @@ object ToolNames {
         put(ToolKind.Image, "generate_image", "generateimage")
         put(ToolKind.Plan, "create_plan", "createplan")
         // A Project coordinator's tools, in the public stream's spelling and the SDK's camel case (lowercased).
-        put(ToolKind.Coordinator, "create_agent", "createagent", "send_to_agent", "sendtoagent", "get_agent_status", "getagentstatus", "stop_agent", "stopagent", "read_agent_transcript", "readagenttranscript", "send_to_user", "sendtouser")
+        put(ToolKind.Coordinator, "create_agent", "createagent", "send_to_agent", "sendtoagent", "get_agent_status", "getagentstatus", "stop_agent", "stopagent", "read_agent_transcript", "readagenttranscript", "send_to_user", "sendtouser", "send_message", "sendmessage")
     }
 
     fun kindOf(name: String): ToolKind {
@@ -555,9 +555,13 @@ object ToolNames {
         "stop_agent" to ToolLabels("Stopping agent", "Stopped agent", "Stop agent"),
     )
 
-    /** The public name of a coordinator's tool from any spelling the streams use (`sendToAgent` → `send_to_agent`). */
+    /**
+     * The public name of a coordinator's tool from any spelling the streams use (`sendToAgent` → `send_to_agent`).
+     * The coordinator's word to the user is `send_to_user` in the proto and `SendMessage` on today's stream.
+     */
     fun coordinatorTool(name: String): String? {
         val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call")
+        if (n == "send_message" || n == "sendmessage") return "send_to_user"
         return COORDINATOR.keys.firstOrNull { it == n || it.replace("_", "") == n }
     }
 
