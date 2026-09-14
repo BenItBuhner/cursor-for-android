@@ -25,9 +25,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -35,7 +32,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolCall
@@ -57,7 +53,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * "Created agent", "Sent message" with nothing to open. Here each is first-class: a card per worker created, naming
  * it and saying where it stands (live, from the list's row, once the worker is loaded here) that opens its
  * conversation; a row per worker in a status check; a compact row for a message or a stop, opening onto the message;
- * and the coordinator's own words to the user as a message in its voice, set apart from an agent's reply.
+ * and the coordinator's own words to the user as a plain reply, exactly as any agent's reads.
  */
 @Composable
 internal fun CoordinatorStep(call: ToolCall, modifier: Modifier = Modifier): Boolean {
@@ -301,50 +297,24 @@ internal fun WorkerActionRow(call: ToolCall, action: ToolPayload.WorkerAction, m
 }
 
 /**
- * The coordinator speaking to the user (`send_to_user`), in a voice of its own: not a reply's bare prose and not the
- * user's bubble, but a message set behind a coloured rule with "Coordinator" over it, so a Project's transcript
- * tells the coordinator's words from a worker's report and from the agent's own thinking aloud. Press and hold for
- * the same actions as any message.
+ * The coordinator speaking to the user through `SendMessage` (or the older `send_to_user`): its reply, and so shown
+ * exactly as any agent's reply is — the same prose, typography, spacing and markdown as [ReplyMessage], with no
+ * rule, label or glyph to set it apart. In a Project's chat the coordinator's own words *are* the replies; what it
+ * writes between tool calls is folded under "Background". Press and hold for the same actions as any message.
  */
 @Composable
 internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.CoordinatorMessage, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    val accent = colors.blue
-    // A message whose body this copy lacks (the stream left it out, or an earlier build did): the row says so in
-    // the coordinator's voice rather than standing bare, until the turn is asked for again.
-    val body = payload.message.trim().ifEmpty { if (payload.missing) MISSING_MESSAGE else "" }
-    MessageActions(text = payload.message, enabled = payload.message.isNotBlank(), modifier = modifier.fillMaxWidth().clip(CursorTheme.shapes.lg)) {
-        // The rule is drawn, not laid out: the message's blocks measure by subcomposition, which an intrinsic
-        // height cannot read, so a bar sized to the column's height is painted behind it instead.
-        val bar = accent.copy(alpha = 0.7f)
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .testTag("coordinator-message")
-                .drawBehind {
-                    val width = 2.dp.toPx()
-                    drawRoundRect(bar, size = Size(width, size.height), cornerRadius = CornerRadius(width, width))
-                }
-                .padding(start = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(CursorIcons.Layers, null, tint = accent, modifier = Modifier.size(12.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("Coordinator", style = type.small.copy(letterSpacing = 0.2.sp), color = accent, maxLines = 1)
-                if (call.isRunning) {
-                    Spacer(Modifier.width(6.dp))
-                    ShimmerText("sending", style = type.small, color = colors.textQuaternary, active = true, maxLines = 1)
-                }
-            }
-            if (payload.missing && payload.message.isBlank()) {
-                Text(body, style = type.base, color = colors.textTertiary, modifier = Modifier.testTag("coordinator-message-missing"))
-            } else {
-                MarkdownText(body, style = type.message, color = colors.textPrimary)
-            }
-        }
-    }
+    // A message whose body this copy lacks (the stream left it out, or an earlier build did) says so, dimmed,
+    // rather than standing bare, until the turn is asked for again.
+    val missing = payload.missing && payload.message.isBlank()
+    ReplyMessage(
+        markdown = if (missing) MISSING_MESSAGE else payload.message,
+        isStreaming = call.isRunning,
+        modifier = modifier.testTag(if (missing) "coordinator-message-missing" else "coordinator-message"),
+        text = payload.message,
+        color = if (missing) colors.textTertiary else colors.textPrimary,
+    )
 }
 
 /** What a coordinator's message row says when the body did not reach this device. */

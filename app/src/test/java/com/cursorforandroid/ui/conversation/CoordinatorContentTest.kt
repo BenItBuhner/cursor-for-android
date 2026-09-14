@@ -38,7 +38,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * A Project coordinator's transcript as first-class items: a card per worker created — the list's live name and
  * state, a way to its chat — status rows per worker checked on, compact rows for a message or a stop, the
- * coordinator's own words to the user set apart, and a worker's completion notice opening the worker's chat.
+ * coordinator's own words to the user as a plain reply, and a worker's completion notice opening the worker's chat.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -198,13 +198,13 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `the coordinator's words to the user are set apart from a reply`() {
+    fun `the coordinator's words to the user read as a plain reply, with nothing to set them apart`() {
         val said = ToolCall("k5", "send_to_user", ToolKind.Coordinator, "completed", "PR #215 is merged.", payload = ToolPayload.CoordinatorMessage("PR #215 is **merged**. One decision is open."))
         show(ActivityGroup("g", listOf(said)))
-        // The message's press-and-hold merges its semantics; the tag is on the column inside.
         compose.onNodeWithTag("coordinator-message", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithText("Coordinator").assertIsDisplayed()
         compose.onNodeWithText("One decision is open.", substring = true).assertIsDisplayed()
+        // No label, no rule, no glyph: the message is the reply, as an agent's is.
+        assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Sent message", substring = true).fetchSemanticsNodes()).isEmpty()
     }
 
@@ -228,13 +228,12 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `a coordinator's message whose body did not reach the device says so, in the coordinator's voice`() {
+    fun `a coordinator's message whose body did not reach the device says so, dimmed, in the reply's place`() {
         val missing = ToolCall("k6", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
         show(ActivityGroup("g", listOf(missing)))
-        compose.onNodeWithTag("coordinator-message", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithText("Coordinator").assertIsDisplayed()
         compose.onNodeWithTag("coordinator-message-missing", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Sent message", substring = true).fetchSemanticsNodes()).isEmpty()
     }
 

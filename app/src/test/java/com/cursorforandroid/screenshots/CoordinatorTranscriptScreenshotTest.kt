@@ -52,7 +52,7 @@ import java.io.File
  * turn Cursor injected when a subagent finished — its instruction to the model hidden, the coordinator's brief remark
  * folded under the row — then the turn of the reference frame replayed from the documented stream's frames: the
  * coordinator's notes under "Background", its message to a worker as a row, and its `SendMessage` updates as the
- * messages, read off `args.text.content`. The chat is read as a coordinator's from this content alone; no list row
+ * messages — plain replies, read off `args.text.content`, with nothing to set them apart from an agent's. The chat is read as a coordinator's from this content alone; no list row
  * says so. Written to `screenshots/` beside the walkthrough and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
@@ -126,7 +126,7 @@ class CoordinatorTranscriptScreenshotTest {
                 }
             }
         }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes().size >= 2 }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("PR #215 is merged.").fetchSemanticsNodes().isNotEmpty() }
         capture("61_coordinator_transcript_live_shape")
     }
 }

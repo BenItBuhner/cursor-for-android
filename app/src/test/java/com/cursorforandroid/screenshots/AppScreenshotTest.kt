@@ -453,10 +453,11 @@ class AppScreenshotTest {
         // created (a card each), the status check, its message to a worker, its own words to the user, and the
         // worker's completion notice that started the turn.
         compose.onNodeWithText("Plans the work and delegates it", substring = true).performClick()
-        waitForText("Coordinator", 30_000)
+        // The coordinator's SendMessage update reads as a plain reply: its own text is what says the chat is open.
+        waitForText("PR #215 (usage aggregation) is", 30_000)
         compose.waitUntil(30_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
         // The earlier turn's worker cards sit above the current turn; bring the first of them into the frame.
-        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("Coordinator"))).onFirst().performScrollToNode(hasTestTag("worker-card"))
+        compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasTestTag("worker-action"))).onFirst().performScrollToNode(hasTestTag("worker-card"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
         Espresso.pressBack()
