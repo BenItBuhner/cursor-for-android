@@ -91,7 +91,6 @@ private fun ProjectPanelBody(graph: AppGraph, projectId: String, onOpenAgent: (S
         onMove = { sheet = ProjectSheet.Move(it.id, it.name) },
         onNewWorker = { sheet = ProjectSheet.NewWorker },
         onAdopt = { sheet = ProjectSheet.Adopt },
-        onNewSideChat = { sheet = ProjectSheet.NewSideChat },
         onEditAppearance = { sheet = ProjectSheet.Appearance },
         onLoadContext = viewModel::loadContext,
         onContextUp = viewModel::contextUp,
@@ -105,7 +104,6 @@ private fun ProjectPanelBody(graph: AppGraph, projectId: String, onOpenAgent: (S
         null -> Unit
         ProjectSheet.NewWorker -> NewWorkerSheet(root = state.root, onLaunch = { prompt, name -> viewModel.createWorker(prompt, name, repoUrl = null, baseBranch = null) }, onDismiss = { sheet = null })
         ProjectSheet.Adopt -> AdoptSheet(candidates = adoptable, onPick = viewModel::adopt, onDismiss = { sheet = null })
-        ProjectSheet.NewSideChat -> NameSheet(title = "New side chat", placeholder = "Name (optional)", action = "Start", onConfirm = viewModel::startSideChat, onDismiss = { sheet = null })
         ProjectSheet.Appearance -> AppearanceSheet(current = state.root?.projectAppearance, onPick = viewModel::updateAppearance, onDismiss = { sheet = null })
         is ProjectSheet.Steer -> SteerSheet(workerName = open.name, onSteer = { text -> viewModel.steer(open.agentId, text) }, onDismiss = { sheet = null })
         is ProjectSheet.Move -> MoveSheet(workerName = open.name, projects = otherProjects, onPick = { viewModel.reparent(open.agentId, it) }, onDismiss = { sheet = null })

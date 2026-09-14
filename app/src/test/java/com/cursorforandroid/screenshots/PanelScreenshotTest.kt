@@ -66,10 +66,11 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * The conversation panel, section by section, in the states the documented API leaves them in: the Changes list
- * with a patch open, the Files browser at the repository's root, the pull request verbatim, the media and usage
- * sections, the file viewer, and every degraded state — loading, unsupported host, a failed read, and the
- * Extended-mode placeholders. Written to `screenshots/`; CI compares them pixel for pixel.
+ * The conversation panel, section by section, in the states the documented API leaves them in: the panel as it
+ * opens, the Changes list with a patch open, the Files browser at the repository's root, the pull request verbatim,
+ * the artifacts and usage sections, the file viewer, and every degraded state — loading, unsupported host, a failed
+ * read — plus the Extended-mode sections (workspace, branch diff, side chats, the run's controls). Written to
+ * `screenshots/`; CI compares them pixel for pixel.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -151,11 +152,19 @@ class PanelScreenshotTest {
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
+    /** Default mode, as the panel opens on a finished chat with a pull request: the sections it has something for, nothing else. */
+    @Test
+    fun decluttered() {
+        compose.setContent { Panel(PanelFixtures.loaded()) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("changed-file")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("62_panel_decluttered")
+    }
+
     @Test
     fun changes() {
         compose.setContent { Panel(PanelFixtures.loaded()) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         // The first file open onto its patch.
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("changed-file"))
         compose.onAllNodesWithTag("changed-file")[0].performClick()
@@ -168,7 +177,6 @@ class PanelScreenshotTest {
     fun files() {
         compose.setContent { Panel(PanelFixtures.loaded()) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         toggle(PanelSectionId.Changes)
         toggle(PanelSectionId.Files)
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("files-tab-Repository"))
@@ -182,7 +190,6 @@ class PanelScreenshotTest {
     fun pullRequest() {
         compose.setContent { Panel(PanelFixtures.loaded()) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         toggle(PanelSectionId.Changes)
         toggle(PanelSectionId.PullRequest)
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("pull-request")).fetchSemanticsNodes().isNotEmpty() }
@@ -190,19 +197,18 @@ class PanelScreenshotTest {
         capture("41_panel_pull_request")
     }
 
+    /** The Artifacts section: the gallery of what the chat produced, the files under it, and the usage below. */
     @Test
-    fun mediaArtifactsUsage() {
+    fun artifactsUsage() {
         compose.setContent { Panel(PanelFixtures.loaded(generatedImage())) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         toggle(PanelSectionId.Changes)
-        toggle(PanelSectionId.Media)
         toggle(PanelSectionId.Artifacts)
         toggle(PanelSectionId.Usage)
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("The new toggle")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("settings-dark.png")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("42_panel_media_usage")
+        capture("42_panel_artifacts_usage")
     }
 
     @Test
@@ -218,9 +224,6 @@ class PanelScreenshotTest {
         toggle(PanelSectionId.Changes)
         toggle(PanelSectionId.PullRequest)
         toggle(PanelSectionId.Artifacts)
-        toggle(PanelSectionId.Queue)
-        toggle(PanelSectionId.Project)
-        toggle(PanelSectionId.Remote)
         toggle(PanelSectionId.Usage)
         scrollToTop()
         capture("43_panel_degraded_states")
@@ -232,7 +235,6 @@ class PanelScreenshotTest {
         val state = PanelFixtures.extended().copy(workspace = WorkspaceBrowserState(path = "app", tree = RemoteLoad.Loaded(PanelFixtures.workspaceTree)))
         compose.setContent { Panel(state) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         toggle(PanelSectionId.Changes)
         toggle(PanelSectionId.Files)
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("files-tab-Workspace"))
@@ -242,30 +244,13 @@ class PanelScreenshotTest {
         capture("49_panel_workspace_files")
     }
 
-    /** Extended mode: the Remote section of a cloud chat, offering its VM desktop. */
-    @Test
-    fun remoteDesktop() {
-        compose.setContent { Panel(PanelFixtures.extended()) }
-        toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
-        toggle(PanelSectionId.Changes)
-        toggle(PanelSectionId.Remote)
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-view")).fetchSemanticsNodes().isNotEmpty() }
-        scrollToTop()
-        capture("50_panel_remote_desktop")
-    }
-
-    /** Default mode: a Remote Control chat's machine, its state from the fleet endpoint and the documented floors. */
+    /** Default mode: a Remote Control chat, its machine's state from the fleet endpoint among the Overview's facts. */
     @Test
     fun remoteControl() {
         compose.setContent { Panel(PanelFixtures.remoteControl()) }
-        toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
-        toggle(PanelSectionId.Changes)
-        toggle(PanelSectionId.Remote)
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("machine-status")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("machine-fact")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("51_panel_remote_control")
+        capture("50_panel_remote_control")
     }
 
     /** Extended mode: the Changes section reading the branch's diff before a pull request exists. */
@@ -273,10 +258,21 @@ class PanelScreenshotTest {
     fun branchDiff() {
         compose.setContent { Panel(PanelFixtures.extended()) }
         toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("branch-diff-file")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
         capture("52_panel_branch_diff")
+    }
+
+    /** Extended mode: the Side chats section of an ordinary chat, its two side chats and the offer of a new one. */
+    @Test
+    fun sideChats() {
+        compose.setContent { Panel(PanelFixtures.withSideChats()) }
+        toggle(PanelSectionId.Header)
+        toggle(PanelSectionId.Changes)
+        toggle(PanelSectionId.SideChats)
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("new-side-chat")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("64_panel_side_chats")
     }
 
     /** The desktop screen's chrome over the (empty, under Robolectric) noVNC canvas, in control. */
@@ -294,20 +290,14 @@ class PanelScreenshotTest {
         capture("53_panel_desktop_screen")
     }
 
-    /**
-     * Extended mode on a running chat: the Overview's run controls, and the Queue and steering section with the steer
-     * line answered, the two follow-ups the account holds and every edit each offers.
-     */
+    /** Extended mode on a running chat: the Overview's run controls and the question the agent is waiting on, answerable. */
     @Test
-    fun queueSteering() {
+    fun runningExtended() {
         compose.setContent { Panel(PanelFixtures.extendedRunning()) }
-        toggle(PanelSectionId.Header)
-        toggle(PanelSectionId.PendingQuestion)
         toggle(PanelSectionId.Changes)
-        toggle(PanelSectionId.Queue)
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("queued-followup")).fetchSemanticsNodes().size == 2 }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("send-answer")).fetchSemanticsNodes().isNotEmpty() }
         scrollToTop()
-        capture("45_panel_queue_steering")
+        capture("45_panel_running_extended")
     }
 
     @Test

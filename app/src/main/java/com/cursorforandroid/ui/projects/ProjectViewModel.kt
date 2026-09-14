@@ -86,8 +86,6 @@ class ProjectViewModel(private val graph: AppGraph, val projectId: String) : Vie
 
     fun updateAppearance(appearance: ProjectAppearance) = act { graph.projects.updateAppearance(projectId, appearance).map { "Look saved." } }
 
-    fun startSideChat(name: String?) = act { graph.projects.startSideChat(projectId, name?.trim()?.takeIf { it.isNotEmpty() }).map { "Side chat started." } }
-
     fun steer(agentId: String, text: String) = act { graph.projects.steer(agentId, text).map { it.message } }
 
     fun pauseWorker(agentId: String) = act { graph.projects.pause(agentId).map { "Paused; resume when you're ready." } }

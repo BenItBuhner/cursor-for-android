@@ -47,10 +47,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 /**
- * The panel's contents: a header row, then every registered section as a collapsible group — or, while a file is
- * open from Files or Changes, the file viewer in their place. Sections that the mode or the chat cannot feed show
- * their named state under their header instead of disappearing (spec §7: "every section shows a named degraded
- * state").
+ * The panel's contents: a header row, then the sections the chat has something for ([PanelRegistry.shown]) as
+ * collapsible groups — or, while a file is open from Files or Changes, the file viewer in their place. A section
+ * whose read is under way or failed says so under its header; one with nothing to show is not there.
  */
 @Composable
 fun ConversationPanel(
@@ -63,17 +62,10 @@ fun ConversationPanel(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val file = state.browser.file
-    // The desktop takes the whole screen in its own window, over the panel and the chat alike, for as long as the
-    // session is open; back or the X ends the session.
-    (state.desktop as? DesktopState.Open)?.let { open ->
-        DesktopDialog(
-            session = open.session,
-            agentName = state.agent?.name,
-            onViewOnlyChange = actions::setDesktopViewOnly,
-            onReconnect = { actions.openDesktop(open.session.viewOnly) },
-            onClose = actions::closeDesktop,
-        )
-    }
+    // Whether the chat has artifacts decides whether the Artifacts section is there at all, so the list is asked for
+    // as the panel opens rather than when a section is; the view model asks once.
+    LaunchedEffect(state.agentId) { actions.loadArtifacts() }
+    val sections = registry.shown(state.capabilities, state)
     Column(modifier.fillMaxSize().testTag("conversation-panel")) {
         if (file != null) {
             FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl)
@@ -90,7 +82,7 @@ fun ConversationPanel(
         }
         HairlineDivider()
         LazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
-            items(registry.sections, key = { it.id.name }) { section ->
+            items(sections, key = { it.id.name }) { section ->
                 PanelSectionView(section, state, actions)
             }
         }
@@ -111,7 +103,8 @@ private fun PanelSectionView(section: PanelSection, state: PanelState, actions: 
     }
     val hint = when (availability) {
         is SectionAvailability.Available -> section.hint(state)
-        is SectionAvailability.RequiresExtended -> if (state.capabilities.anyExtended) "Not yet" else "Extended mode"
+        // Not drawn: the registry leaves such a section out (see PanelRegistry.shown).
+        is SectionAvailability.RequiresExtended -> return
         is SectionAvailability.NotForThisChat -> "—"
     }
     Column(Modifier.fillMaxWidth()) {
@@ -119,7 +112,7 @@ private fun PanelSectionView(section: PanelSection, state: PanelState, actions: 
         AnimatedVisibility(visible = expanded) {
             when (availability) {
                 is SectionAvailability.Available -> section.content(state, actions)
-                is SectionAvailability.RequiresExtended -> RequiresExtendedRow(availability, extendedOn = state.capabilities.anyExtended, modifier = Modifier.padding(bottom = 4.dp))
+                is SectionAvailability.RequiresExtended -> Unit
                 is SectionAvailability.NotForThisChat -> EmptyRow(availability.reason, modifier = Modifier.padding(bottom = 4.dp))
             }
         }
@@ -194,6 +187,8 @@ fun rememberPanelActions(
                 if (message.isNotBlank()) Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
             override fun setSectionExpanded(id: PanelSectionId, expanded: Boolean) = viewModel.setSectionExpanded(id, expanded)
+            override fun refreshSideChats() = viewModel.refreshSideChats()
+            override fun startSideChat(name: String?) = control { viewModel.startSideChat(name) }
             override fun loadDiff(force: Boolean) = viewModel.loadDiff(force)
             override fun openBranchDiffFile(file: AgentDiffFile) = viewModel.openBranchDiffFile(file)
             override fun loadWorkspace(force: Boolean) = viewModel.loadWorkspace(force)
@@ -213,21 +208,10 @@ fun rememberPanelActions(
                 }
             }
             override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = control { viewModel.answerQuestion(callId, answers) }
-            override fun steer(text: String) = control { viewModel.steer(text) }
             override fun pauseRun() = control { viewModel.pauseRun() }
             override fun resumeRun() = control { viewModel.resumeRun() }
             override fun stopRun() = control { viewModel.stopRun() }
             override fun wake() = control { viewModel.wake() }
-            override fun cancelToolCall(callId: String) = control { viewModel.cancelToolCall(callId) }
-            override fun refreshQueue() {
-                scope.launch { viewModel.refreshQueue() }
-            }
-            override fun queueSendNow(followupId: String) = control { viewModel.queueSendNow(followupId) }
-            override fun queueDelete(followupId: String) = control { viewModel.queueDelete(followupId) }
-            override fun queueMove(followupId: String, up: Boolean) = control { viewModel.queueMove(followupId, up) }
-            override fun queueUpdate(followupId: String, text: String) = control { viewModel.queueUpdate(followupId, text) }
-            override fun queueMarkEditing(followupId: String, editing: Boolean) = control { viewModel.queueMarkEditing(followupId, editing) }
-            override fun queueSteerNow(followupId: String) = control { viewModel.queueSteerNow(followupId) }
         }
     }
 }

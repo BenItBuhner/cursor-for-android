@@ -20,7 +20,6 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectContext
 import com.cursorforandroid.domain.ProjectWorker
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.util.AppClock
@@ -86,7 +85,6 @@ data class ProjectViewState(
     val hasSynced: Boolean = false,
     /** Why the account's word is missing, when it is: the named state under the primaries. */
     val lineageNotice: String? = null,
-    val sideChatAvailability: SideChatAvailability = SideChatAvailability.UNKNOWN,
     val context: ContextState = ContextState.Idle,
     /** Whether the Project's actions may be offered at all (Extended mode, or the demo's in-memory stand-ins). */
     val actionsAvailable: Boolean = false,
@@ -159,7 +157,6 @@ class ProjectRepository(
         val isSyncing: Boolean = false,
         val hasSynced: Boolean = false,
         val lineageNotice: String? = null,
-        val sideChatAvailability: SideChatAvailability = SideChatAvailability.UNKNOWN,
         val context: ContextState = ContextState.Idle,
         val actionsAvailable: Boolean = false,
         /** The last membership pass: when, and what each read answered — for the sync's rotation and the diagnostics. */
@@ -462,7 +459,6 @@ class ProjectRepository(
             isSyncing = extra.isSyncing,
             hasSynced = extra.hasSynced,
             lineageNotice = extra.lineageNotice,
-            sideChatAvailability = extra.sideChatAvailability,
             context = extra.context,
             actionsAvailable = extra.actionsAvailable,
         )
@@ -567,22 +563,49 @@ class ProjectRepository(
         agents.patch(projectId) { it.copy(projectAppearance = recorded, isProject = true) }
     }
 
+    // ---- side chats, of any chat ------------------------------------------------------------------------------------
+
     /**
-     * Starts a side chat off [projectId] (`StartSideChatBackgroundComposer`). The attempt is the probe the help page
-     * leaves us: a refusal that reads as "not offered" moves the view to [SideChatAvailability.COMING_TO_CURSOR], a
-     * side chat that comes back to [SideChatAvailability.AVAILABLE].
+     * Reads the chats branched off or spawned by [parentId] — its side chats and cloud subagents — from the account
+     * (`ListBackgroundComposerChildren`) and folds them onto the rows as its children, whatever [parentId] is: a
+     * Project's coordinator, one of its primaries, or a chat of the account's own. The children list places its
+     * members and releases the side chats and subagents it no longer names (see [AgentRepository.applyLineage]);
+     * it never makes a Project of the parent. Members the list does not hold are fetched by id so the section can
+     * list them. Answers how many side chats it named; with Extended mode off, or in the demo, nothing is called and
+     * the answer says so.
      */
-    suspend fun startSideChat(projectId: String, name: String?): Result<String> {
-        val flow = extrasOf(projectId)
-        val result = action(needs = { it.projects }) { api ->
-            val created = api.startSideChat(projectId, name)
-            agents.applyLineage(projectId, mapOf(created.id to AgentParentKind.SIDE_CHAT), LineageSignal.ACTION)
-            agents.loadDetail(created.id)
-            created.id
+    suspend fun refreshChildren(parentId: String): VmRead<Int> {
+        if (session.isDemo) return VmRead.Loaded(agents.state.value.agents.count { it.parent?.id == parentId && it.parent.kind == AgentParentKind.SIDE_CHAT })
+        if (!capabilities().projects) return VmRead.NotAvailable(NEEDS_EXTENDED_MODE)
+        val token = agents.token()
+        val children = try {
+            api.children(parentId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            return VmRead.Failed(describeFailure(t), endpointChanged = t is ConnectRpcException && t.isNotOffered)
         }
-        result.onSuccess { flow.update { it.copy(sideChatAvailability = SideChatAvailability.AVAILABLE) } }
-        result.onFailure { t -> if (t is ConnectRpcException && t.isNotOffered) flow.update { it.copy(sideChatAvailability = SideChatAvailability.COMING_TO_CURSOR) } }
-        return result
+        if (agents.token() != token) return VmRead.Failed("The account changed while the side chats were being read.")
+        val members = children.associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) }
+        agents.applyLineage(parentId, members, LineageSignal.CHILDREN_LIST, retract = setOf(AgentParentKind.SIDE_CHAT, AgentParentKind.SUBAGENT), startedIn = token)
+        for (id in members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)) {
+            if (agents.token() != token) break
+            agents.loadDetail(id)
+        }
+        return VmRead.Loaded(members.count { it.value == AgentParentKind.SIDE_CHAT })
+    }
+
+    /**
+     * Starts a side chat off [parentId] (`StartSideChatBackgroundComposer`) — any chat's, not a Project's alone, the
+     * way the Agents Window's "Ask in Side Chat" does. The new chat is placed by its own record's word: a side chat's
+     * record names the chat it branched from, so it sits under [parentId] in either mode and never among the
+     * account's own rows, and nothing makes a Project of the parent. A refusal is an error like any other action's.
+     */
+    suspend fun startSideChat(parentId: String, name: String?): Result<String> = action(needs = { it.projects }) { api ->
+        val created = api.startSideChat(parentId, name)
+        agents.applyAccountSnapshots(listOf(created.copy(parent = created.parent ?: AgentParent(parentId, AgentParentKind.SIDE_CHAT))))
+        agents.loadDetail(created.id)
+        created.id
     }
 
     /** Steers the running turn of [agentId] (`InjectBackgroundComposerContext`); the outcome is the message to show. */

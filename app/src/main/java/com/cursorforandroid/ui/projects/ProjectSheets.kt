@@ -63,7 +63,6 @@ import com.cursorforandroid.ui.theme.ProjectPalette
 sealed interface ProjectSheet : java.io.Serializable {
     data object NewWorker : ProjectSheet { private fun readResolve(): Any = NewWorker }
     data object Adopt : ProjectSheet { private fun readResolve(): Any = Adopt }
-    data object NewSideChat : ProjectSheet { private fun readResolve(): Any = NewSideChat }
     data object Appearance : ProjectSheet { private fun readResolve(): Any = Appearance }
     data class Steer(val agentId: String, val name: String) : ProjectSheet
     data class Move(val agentId: String, val name: String) : ProjectSheet
@@ -148,6 +147,7 @@ internal fun MoveSheet(workerName: String, projects: List<Agent>, onPick: (Strin
 }
 
 /** One line of text with a confirm button: a side chat's name, and the like. */
+/** One optional line of text — a name — with a cancel and the action; the panel's Side chats section borrows it. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NameSheet(title: String, placeholder: String, action: String, onConfirm: (String?) -> Unit, onDismiss: () -> Unit) {

@@ -25,7 +25,6 @@ import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectContext
 import com.cursorforandroid.domain.ProjectWorker
 import com.cursorforandroid.domain.RunStatus
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -76,14 +75,13 @@ class ProjectScreenTest {
     )
     private val sideChat = agent("bc-s", "Pricing page copy", AgentParent("bc-p", AgentParentKind.SIDE_CHAT))
 
-    private fun state(actionsAvailable: Boolean, context: ContextState = ContextState.Idle, sideChats: SideChatAvailability = SideChatAvailability.UNKNOWN, notice: String? = null) = ProjectViewState(
+    private fun state(actionsAvailable: Boolean, context: ContextState = ContextState.Idle, sideChats: List<Agent> = listOf(sideChat), notice: String? = null) = ProjectViewState(
         projectId = "bc-p",
         root = root,
         workers = workers,
-        sideChats = listOf(sideChat),
+        sideChats = sideChats,
         hasSynced = true,
         lineageNotice = notice,
-        sideChatAvailability = sideChats,
         context = context,
         actionsAvailable = actionsAvailable,
     )
@@ -108,7 +106,6 @@ class ProjectScreenTest {
         onMove = { tapped += "move:${it.id}" },
         onNewWorker = { tapped += "new-worker" },
         onAdopt = { tapped += "adopt" },
-        onNewSideChat = { tapped += "new-side" },
         onEditAppearance = { tapped += "appearance" },
         onLoadContext = { tapped += "context:$it" },
         onContextUp = { tapped += "context-up" },
@@ -137,9 +134,10 @@ class ProjectScreenTest {
         scrollTo("New primary")
         compose.onNodeWithText("New primary").assertIsDisplayed()
         compose.onNodeWithText("Adopt a chat").assertIsDisplayed()
-        scrollTo("New side chat")
+        // The coordinator's side chats are listed as part of its tree; starting one is the chat panel's business.
+        scrollTo("Side chats \u00B7 1")
         compose.onNodeWithText("Pricing page copy").assertIsDisplayed()
-        compose.onNodeWithText("New side chat").assertIsDisplayed()
+        compose.onNodeWithText("New side chat").assertDoesNotExist()
         scrollTo("Show shared context")
         compose.onNodeWithText("Show shared context").performClick()
         assertThat(tapped).contains("context:")
@@ -178,13 +176,12 @@ class ProjectScreenTest {
     }
 
     @Test
-    fun `side chats Cursor does not offer yet read as coming to Cursor, and the context shows its files`() {
+    fun `a Project without side chats has no side chats block, and the context shows its files`() {
         val context = ContextState.Loaded(ProjectContext("st-1", listOf(ContextEntry("docs", isDirectory = true), ContextEntry("notes.md", isDirectory = false, sizeBytes = 2048L)), relativePath = ""))
-        show(state(actionsAvailable = true, context = context, sideChats = SideChatAvailability.COMING_TO_CURSOR))
+        show(state(actionsAvailable = true, context = context, sideChats = emptyList()))
 
-        scrollTo(SIDE_CHATS_COMING)
-        compose.onNodeWithText(SIDE_CHATS_COMING).assertIsDisplayed()
-        compose.onNodeWithText("New side chat").assertDoesNotExist()
+        compose.onNodeWithText("Side chats", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("No side chats.").assertDoesNotExist()
         scrollTo("notes.md")
         compose.onNodeWithText("2.0 KB").assertIsDisplayed()
         compose.onNodeWithText("docs").performClick()
