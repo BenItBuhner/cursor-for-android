@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentUsage
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
@@ -97,6 +98,10 @@ internal fun OverviewSection(state: PanelState, actions: PanelActions) {
             return@Column
         }
         FactRow("Status", statusLabel(state))
+        // A side chat's way back to the conversation it branched from, whatever kind of chat that is.
+        agent.parent?.takeIf { it.kind == AgentParentKind.SIDE_CHAT }?.let { parent ->
+            FactRow("Side chat of", state.parentAgent?.name ?: "another chat", onClick = { actions.openAgent(parent.id) }, modifier = Modifier.testTag("parent-fact"))
+        }
         agent.repoSlug?.let { slug -> FactRow("Repository", slug, onClick = agent.repoUrl?.let { url -> { actions.openUrl(url) } }) }
         val branch = agent.branchName
         if (branch != null) {

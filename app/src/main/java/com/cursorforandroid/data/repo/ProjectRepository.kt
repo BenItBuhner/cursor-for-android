@@ -20,7 +20,6 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectContext
 import com.cursorforandroid.domain.ProjectWorker
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.util.AppClock
@@ -184,13 +183,6 @@ class ProjectRepository(
     private val extras = ConcurrentHashMap<String, MutableStateFlow<Extras>>()
     private val attached = ConcurrentHashMap<String, Int>()
     private val pollers = ConcurrentHashMap<String, Job>()
-
-    private val _sideChatAvailability = MutableStateFlow(SideChatAvailability.UNKNOWN)
-    /**
-     * Whether Cursor starts side chats for cloud chats on this account (see [SideChatAvailability]): the account's
-     * answer, not one chat's, learned from the attempts made here ([startSideChat]) and forgotten on sign-out.
-     */
-    val sideChatAvailability: StateFlow<SideChatAvailability> = _sideChatAvailability.asStateFlow()
 
     private var watcher: Job? = null
 
@@ -604,22 +596,16 @@ class ProjectRepository(
     }
 
     /**
-     * Starts a side chat off [parentId] (`StartSideChatBackgroundComposer`) — any chat's, not a Project's alone. The
-     * new chat is placed by its own record's word: a side chat's record names the chat it branched from, so it sits
-     * under [parentId] in either mode and never among the account's own rows, and nothing makes a Project of the
-     * parent. The attempt is the probe the help page leaves us: a refusal that reads as "not offered" moves the
-     * account to [SideChatAvailability.COMING_TO_CURSOR], a side chat that comes back to [SideChatAvailability.AVAILABLE].
+     * Starts a side chat off [parentId] (`StartSideChatBackgroundComposer`) — any chat's, not a Project's alone, the
+     * way the Agents Window's "Ask in Side Chat" does. The new chat is placed by its own record's word: a side chat's
+     * record names the chat it branched from, so it sits under [parentId] in either mode and never among the
+     * account's own rows, and nothing makes a Project of the parent. A refusal is an error like any other action's.
      */
-    suspend fun startSideChat(parentId: String, name: String?): Result<String> {
-        val result = action(needs = { it.projects }) { api ->
-            val created = api.startSideChat(parentId, name)
-            agents.applyAccountSnapshots(listOf(created.copy(parent = created.parent ?: AgentParent(parentId, AgentParentKind.SIDE_CHAT))))
-            agents.loadDetail(created.id)
-            created.id
-        }
-        result.onSuccess { _sideChatAvailability.value = SideChatAvailability.AVAILABLE }
-        result.onFailure { t -> if (t is ConnectRpcException && t.isNotOffered) _sideChatAvailability.value = SideChatAvailability.COMING_TO_CURSOR }
-        return result
+    suspend fun startSideChat(parentId: String, name: String?): Result<String> = action(needs = { it.projects }) { api ->
+        val created = api.startSideChat(parentId, name)
+        agents.applyAccountSnapshots(listOf(created.copy(parent = created.parent ?: AgentParent(parentId, AgentParentKind.SIDE_CHAT))))
+        agents.loadDetail(created.id)
+        created.id
     }
 
     /** Steers the running turn of [agentId] (`InjectBackgroundComposerContext`); the outcome is the message to show. */
@@ -693,7 +679,6 @@ class ProjectRepository(
         scanAttempts = 0
         _lastRootScan.value = null
         countsFlow.value = emptyMap()
-        _sideChatAvailability.value = SideChatAvailability.UNKNOWN
     }
 
     /**

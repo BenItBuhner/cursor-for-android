@@ -14,21 +14,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.Agent
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.projects.NameSheet
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
-/** The named state of a side chat Cursor will not start for a cloud chat yet (spec §4). */
-const val SIDE_CHATS_COMING = "Side chats for cloud agents are coming to Cursor"
-
 /**
- * The chats branched off this one — any chat's, not a Project's alone. Each row opens the side chat in place; the
- * list is what the agent list knows in either mode and, in Extended mode, what `ListBackgroundComposerChildren`
- * says when the section opens. "New side chat" is the Extended half (`StartSideChatBackgroundComposer`); the first
- * attempt is the probe the help page leaves us, and a refusal that reads as "not offered" turns the action into the
- * named "coming to Cursor" state rather than an error.
+ * The chats branched off this one — any chat's, as in Cursor, where "Ask in Side Chat" is on every conversation.
+ * Each row opens the side chat in place. The list is what the agent list knows in either mode and, in Extended
+ * mode, what `ListBackgroundComposerChildren` says when the section opens; "New side chat" is the Extended half
+ * (`StartSideChatBackgroundComposer`), and a refusal reads as an error with a way to try again. The documented API
+ * carries no side-chat surface of its own, so default mode lists and says nothing more.
  */
 @Composable
 internal fun SideChatsSection(state: PanelState, actions: PanelActions) {
@@ -45,21 +41,25 @@ internal fun SideChatsSection(state: PanelState, actions: PanelActions) {
             RemoteLoad.Idle, is RemoteLoad.Unsupported -> Unit
         }
         if (canStart) {
-            when {
-                state.sideChatAvailability == SideChatAvailability.COMING_TO_CURSOR ->
-                    StateRow(CursorIcons.Clock, SIDE_CHATS_COMING, "Cursor's account refused to start one for a cloud chat; its help page says support is on the way.", modifier = Modifier.testTag("side-chats-coming"))
-                state.sideChatCreation is RemoteLoad.Loading -> LoadingRow("Starting a side chat…")
-                else -> {
-                    (state.sideChatCreation as? RemoteLoad.Failed)?.let { PanelNote("The last side chat could not be started: ${it.message}") }
-                    PanelRow(
-                        title = "New side chat",
-                        icon = CursorIcons.Plus,
-                        iconTint = CursorTheme.colors.accent,
-                        subtitle = "Branch a conversation off this chat",
-                        onClick = { naming = true },
-                        modifier = Modifier.testTag("new-side-chat"),
-                    )
-                }
+            when (val creation = state.sideChatCreation) {
+                RemoteLoad.Loading -> LoadingRow("Starting a side chat…")
+                is RemoteLoad.Failed -> StateRow(
+                    icon = CursorIcons.Warning,
+                    title = "Couldn't start a side chat",
+                    detail = creation.message,
+                    tint = CursorTheme.colors.red,
+                    actionLabel = "Try again",
+                    onAction = { naming = true },
+                    modifier = Modifier.testTag("side-chat-failed"),
+                )
+                else -> PanelRow(
+                    title = "New side chat",
+                    icon = CursorIcons.Plus,
+                    iconTint = CursorTheme.colors.accent,
+                    subtitle = "Branch a conversation off this chat",
+                    onClick = { naming = true },
+                    modifier = Modifier.testTag("new-side-chat"),
+                )
             }
         }
     }

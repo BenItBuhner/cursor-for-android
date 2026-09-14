@@ -27,7 +27,6 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ScmHost
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.AgentParentKind
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
@@ -139,12 +138,12 @@ data class PanelState(
     val pullRequestCreation: RemoteLoad<String> = RemoteLoad.Idle,
     /** What the account has said about the chat's controls (Extended mode): its queue, the last steer, what was held or answered from here. */
     val controls: ConversationControls = ConversationControls.EMPTY,
+    /** The chat this one hangs off — as a side chat, a worker or a subagent — when the list holds its row. */
+    val parentAgent: Agent? = null,
     /** The chats branched off this one as side chats, as the agent list knows them, newest first. */
     val sideChats: List<Agent> = emptyList(),
     /** The account's read of the chat's children (Extended); [RemoteLoad.Unsupported] names why not, otherwise. */
     val sideChatsLoad: RemoteLoad<Unit> = RemoteLoad.Idle,
-    /** Whether Cursor starts side chats for cloud chats on this account, as far as the attempts made here have shown. */
-    val sideChatAvailability: SideChatAvailability = SideChatAvailability.UNKNOWN,
     /** Starting a side chat from here: idle until asked; the new chat's id once Cursor has started it. */
     val sideChatCreation: RemoteLoad<String> = RemoteLoad.Idle,
     /**
@@ -201,6 +200,12 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** The row of the chat this one hangs off, once the list holds it (a side chat's parent, a worker's coordinator). */
+    private val parentAgent: StateFlow<Agent?> = graph.agents.state
+        .map { s -> s.agents.firstOrNull { it.id == agentId }?.parent?.id?.let { parentId -> s.agents.firstOrNull { it.id == parentId } } }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /** The tool payloads read off the timeline, recomputed only when the items change and off the main thread. */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val content: StateFlow<Pair<TranscriptContent, List<MessageAttachment>>> = graph.conversations.state(agentId)
@@ -211,8 +216,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** The reads of the agent's VM and of the account, folded so the main combine stays within its arity. */
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
-    /** The chat's side chats and what the account has said about them, folded for the same reason. */
-    private val sideChatLoads = combine(sideChats, sideChatsLoad, graph.projects.sideChatAvailability, sideChatCreation) { chats, load, availability, creation -> SideChatLoads(chats, load, availability, creation) }
+    /** The chat's kin — its parent, its side chats and the reads and writes about them — folded for the same reason. */
+    private val sideChatLoads = combine(parentAgent, sideChats, sideChatsLoad, sideChatCreation) { parent, chats, load, creation -> SideChatLoads(parent, chats, load, creation) }
     /** [vmLoads] with what the account has said about the chat's controls, its side chats and the reader's expanded sections. */
     private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections) { vm, controls, side, expanded -> ExtendedLoads(vm, controls, side, expanded) }
 
@@ -242,9 +247,9 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             desktop = loads.extended.vm.desktop,
             pullRequestCreation = loads.extended.vm.pullRequestCreation,
             controls = loads.extended.controls,
+            parentAgent = loads.extended.sideChats.parent,
             sideChats = loads.extended.sideChats.chats,
             sideChatsLoad = loads.extended.sideChats.load,
-            sideChatAvailability = loads.extended.sideChats.availability,
             sideChatCreation = loads.extended.sideChats.creation,
             expandedSections = loads.extended.expandedSections,
         )
@@ -266,9 +271,9 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     )
 
     private data class SideChatLoads(
+        val parent: Agent?,
         val chats: List<Agent>,
         val load: RemoteLoad<Unit>,
-        val availability: SideChatAvailability,
         val creation: RemoteLoad<String>,
     )
 

@@ -1,5 +1,6 @@
 package com.cursorforandroid.ui.panel
 
+import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.TokenUsage
 import com.cursorforandroid.ui.components.CursorIcons
@@ -105,9 +106,11 @@ object DefaultPanelSections {
     )
 
     /**
-     * The chats branched off this one, for any chat: the ones the list knows in either mode; in Extended mode read
-     * from the account (`ListBackgroundComposerChildren`) and started from here (`StartSideChatBackgroundComposer`).
-     * With the mode off and none known there is nothing to show or to do, and the section is not there.
+     * The chats branched off this one, for any chat — as in the Agents Window, which lists every cloud chat's side
+     * chats and offers "Ask in Side Chat" on each: the ones the list knows in either mode; in Extended mode read from
+     * the account (`ListBackgroundComposerChildren`) and started from here (`StartSideChatBackgroundComposer`). The
+     * documented API has no side-chat surface, so with the mode off and none known there is nothing to show or to
+     * do, and the section is not there.
      */
     val sideChats = PanelSection(
         id = PanelSectionId.SideChats,
@@ -122,12 +125,13 @@ object DefaultPanelSections {
      * The Project section is the Projects work's [ProjectPanelSection], for a chat that is part of one: a
      * coordinator's primaries and actions, or a primary's, side chat's or subagent's way back to its Project. It
      * owns its view model, so it needs the graph the panel lives in ([LocalPanelGraph]) and the host's navigation.
-     * Any other chat has no Project, and no Project section.
+     * Any other chat has no Project, and no Project section — a side chat of an ordinary chat included: its way
+     * back is the Overview's "Side chat of" row.
      */
     val project = PanelSection(
         id = PanelSectionId.Project,
         icon = CursorIcons.Lightning,
-        visible = { _, state -> state.agent?.let { it.isProjectScopedByEvidence || it.looksLikeProject } == true },
+        visible = { _, state -> isProjectScoped(state) },
         hint = { state -> state.agent?.let { if (it.looksLikeProject) "Coordinator" else it.parent?.let { "In a Project" } } },
         content = { state, actions ->
             val graph = LocalPanelGraph.current
@@ -156,12 +160,29 @@ object DefaultPanelSections {
         return capabilities.scmPullRequests && !state.isDemo && agent.hasBranch && agent.repoUrl != null
     }
 
-    /** Extended mode can branch a side chat off a chat that is not archived; the demo has no account to ask. */
+    /**
+     * Extended mode can branch a side chat off any chat that is still active and is not a side chat itself — the two
+     * refusals the Agents Window makes before asking the account ("Cannot create a side chat inside a side chat",
+     * "This agent is no longer active"). The demo has no account to ask.
+     */
     fun canStartSideChat(capabilities: Capabilities, state: PanelState): Boolean {
         val agent = state.agent ?: return false
-        return capabilities.projects && !state.isDemo && !agent.isArchived
+        return capabilities.projects && !state.isDemo && !agent.isArchived && agent.parent?.kind != AgentParentKind.SIDE_CHAT
     }
 
     /** The gallery's tiles plus the artifacts that are not pictures: what the Artifacts section has to show. */
     fun artifactCount(state: PanelState): Int = mediaTiles(state).size + artifactFiles(state).size
+
+    /**
+     * Whether the chat is part of a Cursor Project: its coordinator, a primary the coordinator created or adopted
+     * (its parent is a manager by definition), or a side chat or subagent whose parent the list shows to be a
+     * Project — on positive evidence, never on a coordinator's transcript merely mentioning it. A side chat of a
+     * chat of the account's own is not in a Project, whatever placed it.
+     */
+    fun isProjectScoped(state: PanelState): Boolean {
+        val agent = state.agent ?: return false
+        if (agent.looksLikeProject) return true
+        if (!agent.isProjectScopedByEvidence) return false
+        return agent.parent?.kind == AgentParentKind.PROJECT_WORKER || state.parentAgent?.looksLikeProject == true
+    }
 }

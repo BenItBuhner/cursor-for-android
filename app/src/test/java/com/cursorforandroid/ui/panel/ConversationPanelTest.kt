@@ -143,10 +143,12 @@ class ConversationPanelTest {
     fun `side chats are a section for any chat that has them or can start one, and the Project section is for Project-scoped chats alone`() {
         val plain = PanelFixtures.loaded()
         assertThat(titles(plain)).containsNoneOf("Side chats", "Project")
-        // Extended mode can start one off any chat, so the section is there to do it from; not for an archived chat, nor in the demo.
+        // Extended mode can start one off any chat, so the section is there to do it from; not for an archived chat, nor in the demo,
+        // nor inside a side chat (the Agents Window's rule: no side chat of a side chat).
         assertThat(titles(plain, Capabilities.EXTENDED)).contains("Side chats")
         assertThat(titles(plain.copy(agent = PanelFixtures.agent.copy(lifecycle = AgentLifecycle.ARCHIVED)), Capabilities.EXTENDED)).doesNotContain("Side chats")
         assertThat(titles(plain.copy(isDemo = true), Capabilities.EXTENDED)).doesNotContain("Side chats")
+        assertThat(titles(plain.copy(agent = PanelFixtures.sideChats[0], agentId = "bc-side-1"), Capabilities.EXTENDED)).doesNotContain("Side chats")
         // Side chats the list knows show in either mode.
         assertThat(titles(plain.copy(sideChats = PanelFixtures.sideChats))).contains("Side chats")
         // The Project section: a coordinator, or a chat the account placed under one — never a chat of the account's own, in either mode.
@@ -158,6 +160,27 @@ class ConversationPanelTest {
         // A chat a coordinator's transcript merely mentioned is not placed by evidence: no Project section for it.
         val mentioned = plain.copy(agent = PanelFixtures.agent.copy(parent = AgentParent("bc-root", AgentParentKind.PROJECT_WORKER), scopeSignal = LineageSignal.COORDINATOR_TRANSCRIPT))
         assertThat(titles(mentioned)).doesNotContain("Project")
+        // A side chat is in a Project only when the chat it branched from is one; a side chat of an ordinary chat is not.
+        val sideChat = plain.copy(agent = PanelFixtures.sideChats[0], agentId = "bc-side-1", parentAgent = PanelFixtures.agent)
+        assertThat(titles(sideChat)).doesNotContain("Project")
+        assertThat(titles(sideChat.copy(parentAgent = PanelFixtures.projectRoot().agent))).contains("Project")
+        assertThat(titles(sideChat.copy(parentAgent = null))).doesNotContain("Project")
+    }
+
+    @Test
+    fun `a side chat's overview names the chat it branched from and opens it`() {
+        state = PanelFixtures.loaded().copy(agent = PanelFixtures.sideChats[0], agentId = "bc-side-1", parentAgent = PanelFixtures.agent)
+        val opened = mutableListOf<String>()
+        compose.setContent { CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, object : PanelActions by PanelActions.None { override fun openAgent(agentId: String) { opened += agentId } }, onClose = {}) } }
+        compose.onNodeWithTag("parent-fact").assertIsDisplayed()
+        assertThat(shown("Side chat of")).isTrue()
+        assertThat(shown("Dark theme toggle for Settings")).isTrue()
+        compose.onNodeWithTag("parent-fact").performClick()
+        assertThat(opened).containsExactly("bc-demo")
+        // The parent's row not loaded yet: the link still stands, to "another chat".
+        state = state.copy(parentAgent = null)
+        compose.waitForIdle()
+        assertThat(shown("another chat")).isTrue()
     }
 
     @Test

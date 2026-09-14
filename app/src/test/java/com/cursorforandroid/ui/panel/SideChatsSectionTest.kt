@@ -16,7 +16,6 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.Capabilities
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -31,7 +30,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * The Side chats section, for any chat: the side chats the list hangs off it, each opening in place; the account's
- * read of them in Extended mode; starting one from here, and the named state Cursor's refusal turns that into.
+ * read of them in Extended mode; starting one from here, and the plain error a refusal is.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -106,22 +105,18 @@ class SideChatsSectionTest {
         assertThat(shown("Starting a side chat…")).isTrue()
         assertThat(compose.onAllNodesWithTag("new-side-chat").fetchSemanticsNodes()).isEmpty()
 
+        // A refusal is an error, whatever it says: the account's words, and a way to try again — never a "coming soon".
         state = state.copy(sideChatCreation = RemoteLoad.Failed("Cursor refused (name too long)."))
         compose.waitForIdle()
+        scrollTo("side-chat-failed")
+        assertThat(shown("Couldn't start a side chat")).isTrue()
         assertThat(shown("name too long")).isTrue()
-        compose.onNodeWithTag("new-side-chat").assertIsDisplayed()
-    }
-
-    @Test
-    fun `a refusal that reads as not offered becomes the coming-to-Cursor state in place of the action`() {
-        state = state.copy(sideChatAvailability = SideChatAvailability.COMING_TO_CURSOR)
-        show()
-        open()
-        scrollTo("side-chats-coming")
-        assertThat(shown(SIDE_CHATS_COMING)).isTrue()
-        assertThat(compose.onAllNodesWithTag("new-side-chat").fetchSemanticsNodes()).isEmpty()
+        assertThat(shown("coming")).isFalse()
         // The side chats it already has are still listed and openable.
         assertThat(compose.onAllNodesWithTag("side-chat").fetchSemanticsNodes()).hasSize(2)
+        compose.onNodeWithText("Try again").performClick()
+        compose.onNodeWithText("Start").performClick()
+        assertThat(asked.last()).isEqualTo("start:null")
     }
 
     @Test

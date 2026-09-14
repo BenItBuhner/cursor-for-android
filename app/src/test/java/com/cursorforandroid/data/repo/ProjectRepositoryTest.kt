@@ -23,7 +23,6 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ProjectAppearance
-import com.cursorforandroid.domain.SideChatAvailability
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
@@ -306,33 +305,28 @@ class ProjectRepositoryTest {
     }
 
     @Test
-    fun `a side chat is probed by the attempt, and a refusal that reads as not offered becomes the named state`() = runBlocking<Unit> {
+    fun `a side chat off a Project's coordinator is the Project's, and a refusal is an error with the account's words`() = runBlocking<Unit> {
         extended = true
         api.addIdleAgent("bc-p", "Billing launch", "run-p")
         val agents = agents()
         agents.refresh()
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true)))
         val projects = projects(agents)
-        lineage.sideChatFailure = ConnectRpcException(400, "failed_precondition", "Side chats are not enabled for cloud agents")
 
+        // Any refusal is a failure carrying what the account said — there is no "not offered" state to fall into.
+        lineage.sideChatFailure = ConnectRpcException(400, "failed_precondition", "Side chats are not enabled for cloud agents")
         val refused = projects.startSideChat("bc-p", "Pricing")
         assertThat(refused.isFailure).isTrue()
-        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
-
-        // A different failure is an error, not the named state.
+        assertThat(refused.exceptionOrNull()).isInstanceOf(ConnectRpcException::class.java)
         lineage.sideChatFailure = ConnectRpcException(400, "invalid_argument", "name too long")
-        projects.startSideChat("bc-p", "x".repeat(200))
-        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.COMING_TO_CURSOR)
+        assertThat(projects.startSideChat("bc-p", "x".repeat(200)).exceptionOrNull()?.message).contains("name too long")
 
-        // The day it answers, the side chat is the Project's and the state says so — for the account, not one chat.
         lineage.sideChatFailure = null
         api.addIdleAgent("bc-side", "Pricing", "run-side")
         assertThat(projects.startSideChat("bc-p", "Pricing").getOrNull()).isEqualTo("bc-side")
-        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.AVAILABLE)
         assertThat(agents.agent("bc-side")?.parent).isEqualTo(AgentParent("bc-p", AgentParentKind.SIDE_CHAT))
         assertThat(agents.agent("bc-side")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
-        // Sign-out forgets what the account said.
-        projects.reset()
-        assertThat(projects.sideChatAvailability.value).isEqualTo(SideChatAvailability.UNKNOWN)
+        assertThat(agents.agent("bc-p")?.scope).isEqualTo(AgentScope.PROJECT_ROOT)
     }
 
     @Test
