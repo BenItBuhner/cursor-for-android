@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.AgentIndicator
@@ -112,6 +113,7 @@ fun IconRail(
 private fun ProjectRailGlyph(row: AgentRow, selected: Boolean, onOpen: () -> Unit) {
     val colors = CursorTheme.colors
     val name = row.agent.name
+    val unread = row.indicator == AgentIndicator.Unread
     Box(
         Modifier
             .padding(vertical = 1.dp)
@@ -121,12 +123,13 @@ private fun ProjectRailGlyph(row: AgentRow, selected: Boolean, onOpen: () -> Uni
             .semantics {
                 contentDescription = "Project $name"
                 this.selected = selected
+                if (unread) stateDescription = "unread"
             }
             .testTag("icon-rail-project"),
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.scale(1.15f)) {
-            ProjectGlyph(row.agent.projectAppearance, badge = if (row.indicator == AgentIndicator.Unread) colors.unreadDot else null)
+            ProjectGlyph(row.agent.projectAppearance, badge = if (unread) colors.unreadDot else null)
         }
     }
 }

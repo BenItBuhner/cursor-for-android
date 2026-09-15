@@ -95,9 +95,9 @@ sealed interface PanelTab {
     }
 }
 
-/** Which tabs are open and which one is showing; see [PanelViewModel]. */
+/** Which tabs are open and which one is showing; see [PanelViewModel]. The default is a chat of its own before anything was opened. */
 data class PanelTabsState(
-    val open: List<PanelTab> = listOf(PanelTab.Chat),
+    val open: List<PanelTab> = listOf(PanelTab.Chat, PanelTab.AllFiles),
     val selected: PanelTab = PanelTab.Chat,
 ) {
     /** [selected] when it is still open, else the first tab: a closed tab never leaves the panel on nothing. */

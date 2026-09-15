@@ -99,7 +99,7 @@ internal fun ProjectNotesTab(state: PanelState, actions: PanelActions, modifier:
                         EmptyRow("No notes yet", "The coordinator writes the Project's notes to notes.md in its Context as the work moves.")
                     } else {
                         Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp).testTag("project-notes-body")) {
-                            MarkdownText(document.text, style = type.message)
+                            MarkdownText(withoutLeadingTitle(document.text), style = type.message)
                         }
                     }
                 }
@@ -250,6 +250,13 @@ private fun TreeRow(
     }
 }
 
+/** The notes without a title line that would repeat the header above them: a `# Heading` the file opens with. */
+internal fun withoutLeadingTitle(markdown: String): String {
+    val trimmed = markdown.trimStart()
+    if (!trimmed.startsWith("# ")) return markdown
+    return trimmed.substringAfter('\n', "").trimStart('\n')
+}
+
 /** "Today at 2:37 AM", "Yesterday at 5:56 AM", "Friday at 3:19 AM", "Sep 2 at 11:04 PM": the web's file times. */
 internal fun writtenAt(millis: Long): String = TimeFormat.dayAndTime(millis)
 
@@ -289,16 +296,17 @@ private fun RecentTile(recent: RecentContextFile, actions: PanelActions) {
             Modifier
                 .size(RecentTileWidth, RecentTileHeight)
                 .cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
-                .pressable(open, shape, role = Role.Image),
+                .pressable(open, shape, role = Role.Image)
+                .semantics { contentDescription = recent.entry.name },
             contentAlignment = Alignment.Center,
         ) {
             val picture = bitmap
             if (picture != null) {
-                Image(picture, contentDescription = recent.entry.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(shape))
+                Image(picture, contentDescription = "Thumbnail of ${recent.entry.name}", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(shape))
             } else {
                 Icon(
                     if (recent.isImage) CursorIcons.Image else iconForExtension(recent.entry.name.substringAfterLast('.', "").lowercase()),
-                    recent.entry.name,
+                    null,
                     tint = colors.iconTertiary,
                     modifier = Modifier.size(22.dp),
                 )
