@@ -22,6 +22,7 @@ import com.cursorforandroid.data.local.CachedPlacement
 import com.cursorforandroid.data.local.CachedRecord
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
@@ -1044,6 +1045,7 @@ class AgentRepository(
         hasPendingInteraction = hasPendingInteraction,
         scopeSignal = if (parent != null || isProject) LineageSignal.ACCOUNT_RECORD else null,
         record = record,
+        accountModel = model,
     )
 
     /**
@@ -1325,15 +1327,26 @@ class AgentRepository(
             )
         }
         patch(agentId, startedIn) { current ->
-            // The old label would describe the old model, so without a new one the id stands in.
-            val switched = if (modelId != null) {
-                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
-            } else {
-                current
-            }
-            switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
+            current.switchedTo(modelId, modelParams, modelDisplayName)
+                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
         }
         response.run
+    }
+
+    /**
+     * The row after a follow-up that switched the chat to [modelId] was accepted: the device's record of the model
+     * (the old label would describe the old model, so without a new one the id stands in) and, where the account's
+     * record had named a model, that word too — the server now holds this one, and the list's next read would only
+     * confirm it. A follow-up that sent no model changes nothing.
+     */
+    private fun Agent.switchedTo(modelId: String?, modelParams: List<ModelParam>, modelDisplayName: String?): Agent {
+        if (modelId == null) return this
+        return copy(
+            modelId = modelId,
+            modelParams = modelParams,
+            modelDisplayName = modelDisplayName ?: modelId,
+            accountModel = accountModel?.let { AccountModel(modelId, modelParams) },
+        )
     }
 
     /**
@@ -1356,12 +1369,8 @@ class AgentRepository(
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
         patch(agentId, startedIn) { current ->
-            val switched = if (modelId != null) {
-                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
-            } else {
-                current
-            }
-            switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
+            current.switchedTo(modelId, modelParams, modelDisplayName)
+                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
         }
         run
     }
@@ -1529,6 +1538,9 @@ class AgentRepository(
                 record = record,
                 source = snap.source ?: agent.source,
                 hasPendingInteraction = snap.hasPendingInteraction,
+                // The account's word on the model outranks what this device remembers sending; a record that names
+                // none leaves what an earlier record said.
+                accountModel = snap.model ?: agent.accountModel,
             )
             if (updated == agent) agent else updated.also { changed = true }
         }

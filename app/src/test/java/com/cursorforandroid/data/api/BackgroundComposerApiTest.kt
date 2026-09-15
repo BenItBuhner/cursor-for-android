@@ -1,10 +1,12 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.google.common.truth.Truth.assertThat
@@ -123,6 +125,39 @@ class BackgroundComposerApiTest {
         // The workers' and subagents' records, which the Agents Window never asks for: they carry the lineage.
         assertThat(body["includeWorkers"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["includeSubagents"]?.jsonPrimitive?.content).isEqualTo("true")
+    }
+
+    /**
+     * The model a chat runs on rides on its record as `requested_model` (`agent.v1.RequestedModel`, field 59 of
+     * `aiserver.v1.BackgroundComposer` in Cursor 3.20.21) — `model_id`, `parameters[{id, value}]`, `max_mode` — and,
+     * on records from before it, as `model_details.model_name`; the desktop's `default` is Auto. Neither is read
+     * from a record that carries none, and a `requested_model` without an id yields to `model_details`.
+     */
+    @Test
+    fun `the model a record names is read from requested_model, else model_details, Auto being default`() = runBlocking<Unit> {
+        server.enqueue(session("session-1"))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"composers":[
+                     {"bcId":"bc-1","requestedModel":{"modelId":"claude-4.6-sonnet-thinking","maxMode":true,"parameters":[{"id":"effort","value":"high"},{"id":"","value":"dropped"}]},"modelDetails":{"modelName":"claude-4-sonnet","maxMode":false}},
+                     {"bcId":"bc-2","modelDetails":{"modelName":"gpt-5.6","maxMode":true}},
+                     {"bcId":"bc-3","requestedModel":{"modelId":"default","maxMode":false,"parameters":[]}},
+                     {"bcId":"bc-4","requestedModel":{"modelId":" ","parameters":[]},"modelDetails":{"modelName":"composer-2"}},
+                     {"bcId":"bc-5","name":"nothing said"}
+                   ],"hasMore":false}""",
+            ),
+        )
+
+        val models = api.list().composers.associate { it.id to it.model }
+
+        assertThat(models["bc-1"]).isEqualTo(AccountModel("claude-4.6-sonnet-thinking", listOf(ModelParam("effort", "high")), maxMode = true))
+        assertThat(models["bc-2"]).isEqualTo(AccountModel("gpt-5.6", emptyList(), maxMode = true))
+        assertThat(models["bc-3"]).isEqualTo(AccountModel("default"))
+        assertThat(models["bc-3"]!!.isAuto).isTrue()
+        assertThat(models["bc-3"]!!.fallbackLabel).isEqualTo("Auto")
+        assertThat(models["bc-4"]).isEqualTo(AccountModel("composer-2"))
+        assertThat(models["bc-4"]!!.fallbackLabel).isEqualTo("composer-2")
+        assertThat(models["bc-5"]).isNull()
     }
 
     @Test

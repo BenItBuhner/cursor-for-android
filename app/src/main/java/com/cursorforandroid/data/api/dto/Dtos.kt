@@ -235,9 +235,16 @@ data class WorkerDto(
     val isInUse: Boolean = false,
     /** The cloud agent the worker is busy with, when the endpoint says (`activeBcId` in the fleet docs). */
     val activeBcId: String? = null,
+    /**
+     * The primary repository the worker registered from its worker directory's git remote: "Empty strings for
+     * any-repo workers" (`repoOwner`, `repoName`), "Omitted for any-repo workers" (`repoUrl`). A machine only runs
+     * agents for the repository it is checked out at, so this is what the composer's repository follows.
+     */
     val repoOwner: String? = null,
     val repoName: String? = null,
     val repoUrl: String? = null,
+    /** "Primary workspace path on the worker": the checkout's directory. */
+    val workspaceRootPath: String? = null,
     val scope: String? = null,
     val labels: List<WorkerLabelDto> = emptyList(),
 ) {

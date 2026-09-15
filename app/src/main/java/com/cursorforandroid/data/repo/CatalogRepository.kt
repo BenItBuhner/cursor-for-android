@@ -234,18 +234,22 @@ class CatalogRepository(
                     subtitle = if (worker.isInUse) "Busy" else "Online",
                     online = true,
                     section = DeviceSection.Pools,
+                    repoUrl = worker.repositoryUrl(),
                 )
                 poolRows.putIfAbsent(option.key, option)
             }
             return machines + poolRows.values
         }
 
+        /** The worker's primary repository (`repoUrl`, else `repoOwner`/`repoName`); null for an any-repo worker. */
+        fun WorkerDto.repositoryUrl(): String? = DeviceOption.repositoryUrl(repoUrl, repoOwner, repoName)
+
         fun WorkerDto.toMachineOption(): DeviceOption? {
             val raw = targetName() ?: return null
             val target = DeviceTarget.machine(raw)
-            val workspace = raw.substringAfter('#', "").trim().takeIf { it.isNotEmpty() }
-            val repo = listOfNotNull(repoOwner, repoName).joinToString("/").takeIf { it.isNotBlank() }
-                ?: repoUrl?.let(Agent::repoSlugOf)
+            val workspace = raw.substringAfter('#', "").trim().takeIf { it.isNotEmpty() } ?: workspaceRootPath?.trim()?.takeIf { it.isNotEmpty() }
+            val repoUrl = repositoryUrl()
+            val repo = repoUrl?.let(Agent::repoSlugOf)
             val subtitle = when {
                 isInUse && workspace != null -> "Busy · $workspace"
                 isInUse && repo != null -> "Busy · $repo"
@@ -254,7 +258,7 @@ class CatalogRepository(
                 repo != null -> repo
                 else -> "Online"
             }
-            return DeviceOption(target = target, subtitle = subtitle, online = true, section = DeviceSection.Machines)
+            return DeviceOption(target = target, subtitle = subtitle, online = true, section = DeviceSection.Machines, repoUrl = repoUrl)
         }
 
         fun PoolDto.toPoolOption(): DeviceOption? {
@@ -271,6 +275,8 @@ class CatalogRepository(
                 subtitle = subtitle,
                 online = connected > 0,
                 section = DeviceSection.Pools,
+                // "Repository metadata when the pool is tied to a repo. Omitted for any-repo pools."
+                repoUrl = DeviceOption.repositoryUrl(repoUrl, repoOwner, repoName),
             )
         }
     }

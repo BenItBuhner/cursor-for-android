@@ -558,9 +558,14 @@ fun ConversationScreen(
             onDismiss = { modelSheet = false },
             pinnedIds = picker.pinnedModelIds,
             onTogglePin = viewModel::togglePinnedModel,
-            // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
-            // (started elsewhere), or no longer offered. It reads as the label when there is one.
-            noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),
+            // The chat's model has its own row only while the catalog cannot show it checked in the list: nothing
+            // reports it (a chat started elsewhere, in default mode — Auto is assumed and the row says so), or the
+            // catalog no longer offers it. Picking the row keeps whatever the chat has been using.
+            noModelRow = when {
+                picker.current != null -> null
+                picker.currentAssumed -> NoModelRow("Current model", "Auto, assumed: Cursor doesn't report this chat's model to the app. Follow-ups keep the model it has been using.")
+                else -> NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using")
+            },
         )
     }
 
