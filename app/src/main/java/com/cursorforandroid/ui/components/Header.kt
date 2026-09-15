@@ -15,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -33,6 +34,8 @@ fun CursorHeader(
     subtitle: String? = null,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
+    /** A glyph before the title — a Project's icon in its colour, as the web's header names a Project chat. */
+    titleGlyph: (@Composable () -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -41,12 +44,17 @@ fun CursorHeader(
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
             .heightIn(min = CursorDimens.headerHeight)
-            .padding(horizontal = 6.dp),
+            .padding(horizontal = 6.dp)
+            .testTag("cursor-header"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         leading?.invoke(this)
         if (title != null) {
             Spacer(Modifier.width(if (leading != null) 4.dp else 10.dp))
+            if (titleGlyph != null) {
+                titleGlyph()
+                Spacer(Modifier.width(8.dp))
+            }
             Column(Modifier.weight(1f)) {
                 Text(title, style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (subtitle != null) {

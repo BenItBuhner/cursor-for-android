@@ -146,14 +146,16 @@ class RichContentTest {
     fun `a subagent opens onto its transcript path`() {
         val subagent = ToolPayload.Subagent("Audit the tests", agentId = "bc-sub-1", transcriptPath = "/home/u/.cursor/projects/w/agent-transcripts/x.json", durationMs = 61_000, subagentType = "explore")
         show(group(call("t1", ToolKind.Task, "Audit the tests", detail = "Go through the suite", payload = subagent)))
-        // Behind the summary row the task is the web's Task card — its title, the cloud glyph, "Completed" and how
-        // long it ran — which, with no screen to open the cloud agent on, opens onto the subagent's details.
+        // Behind the summary row the task is the web's Task card — its title, the cloud glyph, "Completed" (the time
+        // it ran is the stretch's, above) — which, with no screen to open the cloud agent on, opens onto the
+        // subagent's details.
         compose.onNodeWithText("Explored").performClick()
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("task-row")).fetchSemanticsNodes().isNotEmpty() }
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()
         assertThat(shown("Audit the tests")).isTrue()
-        assertThat(shown("Completed · 1m 1s")).isTrue()
+        assertThat(shown("Completed")).isTrue()
+        assertThat(shown("Completed · 1m 1s")).isFalse()
         compose.onNodeWithTag("task-row").performClick()
         compose.mainClock.advanceTimeBy(1_000)
         compose.waitForIdle()

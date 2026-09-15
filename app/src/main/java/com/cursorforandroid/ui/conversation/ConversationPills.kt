@@ -5,12 +5,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
@@ -90,8 +87,8 @@ fun ConversationPills(
     if (state.isEmpty) return
     val colors = CursorTheme.colors
     Row(
-        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("conversation-pills"),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier.horizontalScroll(rememberScrollState()).testTag("conversation-pills"),
+        horizontalArrangement = Arrangement.spacedBy(PillGap),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         state.agents?.let { agents ->
@@ -100,10 +97,10 @@ fun ConversationPills(
                 agents.working > 0 -> colors.accent
                 else -> colors.iconQuaternary
             }
-            val label = if (agents.working > 0) "Agents · ${agents.working}" else "Agents"
             ComposerPill(
-                label = label,
-                leading = { Box(Modifier.size(7.dp).background(dot, CircleShape)) },
+                label = "Agents",
+                leading = { Box(Modifier.size(DotSize).background(dot, CircleShape)) },
+                trailing = if (agents.working > 0) ({ Text(agents.working.toString(), style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1) }) else null,
                 onClick = onAgents,
                 description = "Agents: ${agents.total} under this chat, ${agents.working} working" + if (agents.needsInput > 0) ", ${agents.needsInput} need input" else "",
                 modifier = Modifier.testTag("pill-agents"),
@@ -114,9 +111,9 @@ fun ConversationPills(
             ComposerPill(
                 label = "Changes",
                 trailing = {
-                    changes.additions?.let { Text("+$it", style = CursorTheme.typography.small.copy(fontFeatureSettings = "tnum"), color = colors.gitAdded, maxLines = 1) }
-                    changes.deletions?.let { Text("−$it", style = CursorTheme.typography.small.copy(fontFeatureSettings = "tnum"), color = colors.gitRemoved, maxLines = 1) }
-                    if (changes.lineStats == null) Text("${changes.files} ${if (changes.files == 1) "file" else "files"}", style = CursorTheme.typography.small, color = colors.textTertiary, maxLines = 1)
+                    changes.additions?.let { Text("+$it", style = CursorTheme.typography.base.copy(fontFeatureSettings = "tnum"), color = colors.gitAdded, maxLines = 1) }
+                    changes.deletions?.let { Text("−$it", style = CursorTheme.typography.base.copy(fontFeatureSettings = "tnum"), color = colors.gitRemoved, maxLines = 1) }
+                    if (changes.lineStats == null) Text("${changes.files} ${if (changes.files == 1) "file" else "files"}", style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1)
                 },
                 onClick = onChanges,
                 description = "Changes" + (changes.lineStats?.let { " $it" } ?: " ${changes.files} files"),
@@ -137,11 +134,8 @@ private fun ListeningPill(listening: Subscriptions.Listening) {
     Box {
         ComposerPill(
             label = "Listening",
-            trailing = {
-                Box(Modifier.size(16.dp).background(colors.fillMedium, CircleShape), contentAlignment = Alignment.Center) {
-                    Text(listening.count.toString(), style = CursorTheme.typography.tiny, color = colors.textSecondary, maxLines = 1)
-                }
-            },
+            // The count in the dimmer tone beside the word, as the web writes "Listening 3".
+            trailing = { Text(listening.count.toString(), style = CursorTheme.typography.base, color = colors.textTertiary, maxLines = 1) },
             onClick = { open = true },
             description = "Listening to ${listening.count} ${if (listening.count == 1) "subscription" else "subscriptions"}",
             modifier = Modifier.testTag("pill-listening"),
@@ -162,7 +156,10 @@ private fun ListeningPill(listening: Subscriptions.Listening) {
     }
 }
 
-/** One pill: a stadium on the composer's surface with a hairline, the label in the secondary colour, a slot on either side. */
+/**
+ * One pill, measured off cursor.com's: a 28px stadium in the composer's own fill (#212121 on the dark canvas, no
+ * stroke), the label at 13px in the secondary colour, 12px of side padding, a slot on either side of the word.
+ */
 @Composable
 internal fun ComposerPill(
     label: String,
@@ -179,21 +176,21 @@ internal fun ComposerPill(
     Row(
         modifier
             .height(PillHeight)
-            .cursorSurface(colors.elevated, colors.strokeSubtle, shape)
+            .cursorSurface(colors.elevated, Color.Transparent, shape)
             .pressable(onClick, shape, role = Role.Button)
             .semantics { contentDescription = description }
-            .padding(horizontal = 10.dp),
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         if (leading != null) leading()
         if (icon != null) Icon(icon, null, tint = tint, modifier = Modifier.size(13.dp))
-        Text(label, style = CursorTheme.typography.small, color = tint, maxLines = 1)
-        if (trailing != null) {
-            Spacer(Modifier.width(0.dp))
-            trailing()
-        }
+        Text(label, style = CursorTheme.typography.base, color = tint, maxLines = 1)
+        if (trailing != null) trailing()
     }
 }
 
-private val PillHeight = 26.dp
+/** The pill's height, the gap between pills and the dot's size, as measured on cursor.com. */
+private val PillHeight = 28.dp
+private val PillGap = 8.dp
+private val DotSize = 8.dp

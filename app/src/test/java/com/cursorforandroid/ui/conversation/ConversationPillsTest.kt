@@ -67,7 +67,9 @@ class ConversationPillsTest {
 
         show(ConversationPillsState(agents = agents))
         compose.onNodeWithTag("pill-agents").assertIsDisplayed()
-        assertThat(shown("Agents · 1")).isTrue()
+        assertThat(shown("Agents")).isTrue()
+        // The count of workers working sits beside the word, as the web writes "Listening 3".
+        assertThat(shown("1")).isTrue()
         compose.onNodeWithTag("pill-agents").performClick()
         assertThat(tapped).containsExactly("agents")
     }

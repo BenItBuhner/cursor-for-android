@@ -55,11 +55,12 @@ class TaskRowTest {
     private fun shown(text: String) = compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
 
     @Test
-    fun `a finished task reads Completed under its title with how long it ran`() {
+    fun `a finished task reads Completed under its title, the time it ran left to the stretch above`() {
         show(task())
         compose.onNodeWithTag("task-row").assertIsDisplayed()
         assertThat(shown("Icon fidelity gaps: target and layered triangle")).isTrue()
-        assertThat(shown("Completed · 45m 9s")).isTrue()
+        assertThat(shown("Completed")).isTrue()
+        assertThat(shown("45m 9s")).isFalse()
         // A local subagent: no cloud glyph; the tap opens the details instead.
         assertThat(compose.onAllNodesWithContentDescription("Cloud agent").fetchSemanticsNodes()).isEmpty()
         compose.onNodeWithTag("task-row").performClick()

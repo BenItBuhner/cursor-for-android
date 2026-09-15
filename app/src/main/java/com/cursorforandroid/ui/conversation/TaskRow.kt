@@ -31,7 +31,6 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
-import com.cursorforandroid.util.TimeFormat
 
 /**
  * A task the agent handed to a subagent (`task`, `task_v2`), drawn as cursor.com draws its Task card: a dot in the
@@ -57,7 +56,8 @@ internal fun TaskRow(call: ToolCall, modifier: Modifier = Modifier) {
         call.isError -> colors.red
         else -> colors.iconTertiary
     }
-    val detail = listOfNotNull(state, TimeFormat.duration(payload?.durationMs)?.takeIf { !call.isRunning }).joinToString(" · ")
+    // The state alone, as the web's card writes it; the task's time is the stretch's ("Worked 45m 9s") above.
+    val detail = state
     val agentId = payload?.agentId
     val open = controls.onOpenAgent?.takeIf { agentId != null && payload.isCloudAgent }?.let { handler -> { handler(agentId!!) } }
     val expandable = open == null && payload != null && (payload.transcriptPath != null || payload.durationMs != null || payload.subagentType != null)
