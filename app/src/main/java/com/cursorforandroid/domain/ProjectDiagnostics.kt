@@ -47,6 +47,12 @@ object ProjectDiagnostics {
         val notificationPrefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
         /** Chats workers' records name as manager (information: the desktop makes no Project of a manager). */
         val managerCandidates: Set<String> = emptySet(),
+        /**
+         * What the icon catalog draws for an icon id (`lucide:rocket`, `simple:notion`, `own:target`, …), or null for
+         * an id it does not know and draws as the cube; see `ProjectIcons.glyphName`. Printed beside every Project's
+         * raw id so a missing icon can be reported by name.
+         */
+        val glyphOf: (String) -> String? = { null },
     )
 
     data class RootScanSummary(
@@ -143,7 +149,7 @@ object ProjectDiagnostics {
         }
 
         appendLine()
-        appendLine("roots (id · signal · children by kind · last membership pass):")
+        appendLine("roots (id · signal · children by kind · last membership pass), each with its appearance as the record spells it and the glyph this build draws for it:")
         roots.sortedBy { it.id }.forEach { root ->
             val kids = children.filter { it.parent?.id == root.id }
             val byKind = AgentParentKind.entries.map { kind -> "${kind.name.lowercase()}=${kids.count { it.parent?.kind == kind }}" }.joinToString(" ")
@@ -151,6 +157,7 @@ object ProjectDiagnostics {
                 "sync=workers:${if (s.workersRead) "ok(${s.workerCount})" else "failed"} children:${if (s.childrenRead) "ok(${s.childCount})" else "failed"}" + (s.notice?.let { " notice=\"${redactNotice(it)}\"" } ?: "")
             } ?: "sync=never"
             appendLine("  ${tail(root.id)} signal=${root.scopeSignal?.name ?: signalOf(root, input)} $byKind $sync")
+            appendLine("    appearance: ${describeAppearance(root.projectAppearance, input.glyphOf)}")
         }
         val pendingRoots = input.agents.asSequence().mapNotNull { it.parent?.id }.distinct().filter { id -> rows.none { it.id == id } }.toList()
         pendingRoots.forEach { appendLine("  ${tail(it)} (not loaded) ${input.rootSyncs[it]?.let { s -> "sync=workers:${s.workersRead} children:${s.childrenRead}" } ?: "sync=never"}") }
@@ -197,6 +204,17 @@ object ProjectDiagnostics {
             row.isProject -> "row.isProject"
             else -> "none"
         }
+    }
+
+    /**
+     * A Project's icon and colour as the account spells them, and what this build draws for the icon: the catalog's
+     * glyph name, or `UNKNOWN (drawn as the cube)` for an id the catalog has not heard of — the line to quote when a
+     * Project's icon looks wrong. Icon ids are the desktop's own names, never the user's text.
+     */
+    fun describeAppearance(appearance: ProjectAppearance?, glyphOf: (String) -> String?): String {
+        if (appearance == null) return "none (drawn as the default cube in the default tone)"
+        val glyph = glyphOf(appearance.icon) ?: "UNKNOWN (drawn as the cube)"
+        return "icon=\"${appearance.icon}\" glyph=$glyph colorId=\"${appearance.colorId}\""
     }
 
     /** The last [TAIL] characters of an id: enough to match rows against each other, not enough to name the chat. */

@@ -5,7 +5,8 @@ Cursor Projects carry an `appearance {icon, color_id}`; the icon is one of the n
 ("Cursor Icons 16", copyright Anysphere, not redistributable), and the picker in the Agents Window offers every
 glyph of that font. cursor-icon-names.json holds those names as extracted from the desktop bundle (see its `source`);
 this script pairs each of them with an open-licensed glyph of the same meaning — Lucide (ISC) for line icons,
-Simple Icons (CC0 1.0) for brand marks — and writes them out as path data the app draws at runtime.
+Simple Icons (CC0 1.0) for brand marks, and the project's own path data (OWN, below) where neither carries the
+object the desktop draws — and writes them out as path data the app draws at runtime.
 
     python3 scripts/project-icons/generate.py <lucide-static package dir> <simple-icons package dir>
 
@@ -26,14 +27,15 @@ OUT = REPO / "app/src/main/java/com/cursorforandroid/ui/icons/ProjectIconCatalog
 L = "l:"  # Lucide, ISC
 S = "s:"  # Simple Icons, CC0 1.0
 C = "c:"  # the app's own glyphs (CursorIcons)
+P = "p:"  # path data drawn for this catalog (OWN below), where no open library has the desktop's object
 
-# Cursor icon id -> glyph. "l:<lucide>" / "s:<simple-icons slug>" / "c:cube". A trailing "!" marks a neutral
-# stand-in for a mark no open library carries (the owner asked Simple Icons to drop it, or it was never there);
-# "#fill" draws a Lucide outline filled; "@<deg>" rotates it about the centre.
+# Cursor icon id -> glyph. "l:<lucide>" / "s:<simple-icons slug>" / "c:cube" / "p:<own glyph>". A trailing "!" marks
+# a neutral stand-in for a mark no open library carries (the owner asked Simple Icons to drop it, or it was never
+# there); "#fill" draws a Lucide outline filled; "@<deg>" rotates it about the centre.
 MAPPING: dict[str, str] = {
     # --- Agents, account, alerts
-    "account": L + "circle-user", "add": L + "plus", "agent": L + "navigation", "agent-circle": L + "circle-arrow-out-up-right",
-    "agent-square": L + "square-arrow-out-up-right", "agents": L + "send", "agents-swarm": L + "waypoints",
+    "account": L + "circle-user", "add": L + "plus", "agent": L + "navigation", "agent-circle": P + "agent-circle",
+    "agent-square": P + "agent-square", "agents": P + "agents", "agents-swarm": P + "agents-swarm",
     "alarm-clock": L + "alarm-clock", "alert": L + "triangle-alert", "archive": L + "archive", "army-base": L + "tent",
     # --- Arrows
     "arrow-block-down": L + "arrow-big-down", "arrow-block-left": L + "arrow-big-left", "arrow-block-right": L + "arrow-big-right",
@@ -48,8 +50,8 @@ MAPPING: dict[str, str] = {
     "arrow-down": L + "arrow-down", "arrow-left": L + "arrow-left", "arrow-right": L + "arrow-right", "arrow-up": L + "arrow-up",
     "arrow-left-down": L + "arrow-down-left", "arrow-left-up": L + "arrow-up-left", "arrow-right-down": L + "arrow-down-right", "arrow-right-up": L + "arrow-up-right",
     "arrow-square-down": L + "square-arrow-down", "arrow-square-left": L + "square-arrow-left", "arrow-square-right": L + "square-arrow-right", "arrow-square-up": L + "square-arrow-up",
-    "arrow-square-from-down": L + "square-arrow-out-down-right", "arrow-square-from-left": L + "square-arrow-out-down-left",
-    "arrow-square-from-right": L + "square-arrow-out-up-right", "arrow-square-from-up": L + "square-arrow-out-up-left",
+    "arrow-square-from-down": P + "arrow-square-from-down", "arrow-square-from-left": P + "arrow-square-from-down@90",
+    "arrow-square-from-right": P + "arrow-square-from-down@270", "arrow-square-from-up": P + "arrow-square-from-down@180",
     "arrow-square-left-down": L + "square-arrow-down-left", "arrow-square-left-up": L + "square-arrow-up-left",
     "arrow-square-right-down": L + "square-arrow-down-right", "arrow-square-right-up": L + "square-arrow-up-right",
     "arrow-square-to-down": L + "square-arrow-down", "arrow-square-to-left": L + "square-arrow-left", "arrow-square-to-right": L + "square-arrow-right", "arrow-square-to-up": L + "square-arrow-up",
@@ -58,19 +60,19 @@ MAPPING: dict[str, str] = {
     "arrows-ccw-angular": L + "repeat", "arrows-contract": L + "minimize-2", "arrows-contract-simple": L + "shrink", "arrows-down-up": L + "arrow-down-up",
     "arrows-expand": L + "maximize-2", "arrows-expand-simple": L + "expand", "arrows-out-cardinal": L + "move",
     # --- Symbols and objects A-C
-    "asterisk": L + "asterisk", "at": L + "at-sign", "atom": L + "atom", "bandaid": L + "bandage", "banknote": L + "banknote", "banknotes-stack": L + "wallet-cards",
+    "asterisk": L + "asterisk", "at": L + "at-sign", "atom": L + "atom", "bandaid": L + "bandage", "banknote": L + "banknote", "banknotes-stack": P + "banknotes-stack",
     "barbell": L + "dumbbell", "basketball": L + "volleyball", "beach-umbrella": L + "umbrella", "beaker": L + "flask-conical", "beaker-stop": L + "flask-conical-off",
     "beehouse": L + "birdhouse", "bell": L + "bell", "bell-dot": L + "bell-dot", "bell-slash": L + "bell-off", "binary": L + "binary", "binoculars": L + "binoculars",
-    "bluetooth": L + "bluetooth", "board-kanban": L + "kanban", "book": L + "book", "book-open": L + "book-open", "bookmark": L + "bookmark", "bowtie": L + "ribbon",
+    "bluetooth": L + "bluetooth", "board-kanban": L + "square-kanban", "book": L + "book", "book-open": L + "book-open", "bookmark": L + "bookmark", "bowtie": P + "bowtie",
     "bracket-dot": L + "braces", "bracket-error": L + "braces", "brackets-curly": L + "braces",
-    "brain": L + "brain", "brain-hourglass": L + "brain-cog", "brain-simple": L + "brain", "brain-simplest": L + "brain", "brain-slash": L + "brain",
+    "brain": L + "brain", "brain-hourglass": L + "brain-cog", "brain-simple": L + "brain", "brain-simplest": L + "brain", "brain-slash": P + "brain-slash",
     "briefcase": L + "briefcase", "browser": L + "app-window", "browsers": L + "app-window-mac", "brush": L + "brush", "bug": L + "bug", "bugbot": L + "bug-off",
     "building": L + "building", "buildings": L + "building-2", "calculator": L + "calculator", "calendar": L + "calendar", "calendar-hourglass": L + "calendar-clock",
     "camera": L + "camera", "car": L + "car", "cardholder": L + "wallet-cards", "castle": L + "castle", "cd": L + "disc",
-    "chart-bars": L + "chart-column", "chart-pie": L + "chart-pie", "chart-pyramid": L + "pyramid", "chart-scatter": L + "chart-scatter",
-    "chat-bubble-chevrons-left-right": L + "message-square-code", "chat-bubble-pencil": L + "message-square-diff", "chat-bubbles": L + "messages-square",
+    "chart-bars": L + "chart-column", "chart-pie": L + "chart-pie", "chart-pyramid": P + "chart-pyramid", "chart-scatter": L + "chart-scatter",
+    "chat-bubble-chevrons-left-right": L + "message-square-code", "chat-bubble-pencil": P + "chat-bubble-pencil", "chat-bubbles": L + "messages-square",
     "chat-bubbles-grid": L + "messages-square", "chatBubble": L + "message-square", "chatBubble-question": L + "message-circle-question-mark",
-    "check": L + "check", "check-square": L + "square-check", "checks": L + "check-check", "chef-hat": L + "chef-hat", "chess-king": L + "crown", "chess-tower": L + "castle",
+    "check": L + "check", "check-square": L + "square-check", "checks": L + "check-check", "chef-hat": L + "chef-hat", "chess-king": L + "chess-king", "chess-tower": L + "castle",
     "chevron-circle-down": L + "circle-chevron-down", "chevron-circle-left": L + "circle-chevron-left", "chevron-circle-right": L + "circle-chevron-right", "chevron-circle-up": L + "circle-chevron-up",
     "chevron-down": L + "chevron-down", "chevron-down-small": L + "chevron-down", "chevron-left": L + "chevron-left", "chevron-left-small": L + "chevron-left",
     "chevron-right": L + "chevron-right", "chevron-right-small": L + "chevron-right", "chevron-up": L + "chevron-up", "chevron-up-small": L + "chevron-up",
@@ -78,36 +80,36 @@ MAPPING: dict[str, str] = {
     "chevrons-right": L + "chevrons-right", "chevrons-right-dotted-left": L + "chevrons-left-right-ellipsis", "chevrons-up": L + "chevrons-up", "chevrons-up-down": L + "chevrons-up-down",
     "chip": L + "cpu", "chip-simple": L + "cpu", "circle": L + "circle", "circle-circle": L + "circle-dot", "circles": L + "blend", "circles-check": L + "circle-check-big",
     "clipboard": L + "clipboard", "clock": L + "clock", "cloud": L + "cloud", "cloud-download": L + "cloud-download", "cloud-upload": L + "cloud-upload",
-    "code": L + "code", "code-brackets": L + "brackets", "code-simple": L + "code-xml", "cog": L + "settings", "collection": L + "package-open", "collection-plus": L + "package-plus",
+    "code": L + "code", "code-brackets": L + "brackets", "code-simple": L + "code-xml", "cog": L + "settings", "collection": P + "collection", "collection-plus": P + "collection-plus",
     "color-mode": L + "contrast", "command": L + "command", "comment": L + "message-square", "comment-dashed": L + "message-square-dashed", "comment-dot": L + "message-square-dot",
     "comments": L + "messages-square", "compass": L + "compass", "compass-check": L + "compass", "compass-dot": L + "compass", "cookie": L + "cookie", "copy": L + "copy",
-    "corners-in": L + "minimize", "corners-out": L + "maximize", "corners-out-check": L + "scan-search", "corners-out-sparkle": L + "scan-eye",
-    "cost-high": L + "banknote", "cost-low": L + "dollar-sign", "cost-medium": L + "coins", "credit-card": L + "credit-card", "cross-medical": L + "cross", "crosshair": L + "crosshair",
-    "crown": L + "crown", "crystal-ball": L + "orbit", "cube": L + "box", "cube-coordinates": L + "axis-3d", "cube-nodes": L + "network", "cube-transparent": L + "cuboid",
+    "corners-in": L + "minimize", "corners-out": L + "maximize", "corners-out-check": P + "corners-out-check", "corners-out-sparkle": P + "corners-out-sparkle",
+    "cost-high": P + "cost-high", "cost-low": L + "dollar-sign", "cost-medium": P + "cost-medium", "credit-card": L + "credit-card", "cross-medical": L + "cross", "crosshair": L + "crosshair",
+    "crown": L + "crown", "crystal-ball": P + "crystal-ball", "cube": L + "box", "cube-coordinates": P + "cube-coordinates", "cube-nodes": L + "network", "cube-transparent": L + "cuboid",
     "currency-btc": L + "bitcoin", "currency-dollar": L + "dollar-sign", "currency-eth": L + "diamond", "cursor-logo": C + "cube", "cursor-text": L + "text-cursor",
     "cutlery": L + "utensils", "cylinder": L + "cylinder",
     # --- D-F
-    "dashboard": L + "layout-dashboard", "database": L + "database", "database-network": L + "database-zap", "debug-stop": L + "circle-stop", "deckchair-umbrella": L + "tree-palm",
+    "dashboard": L + "layout-dashboard", "database": L + "database", "database-network": P + "database-network", "debug-stop": L + "circle-stop", "deckchair-umbrella": P + "deckchair-umbrella",
     "diagram": L + "workflow", "diff": L + "columns-2", "diff-added": L + "square-plus", "diff-ignored": L + "square-slash", "diff-modified": L + "square-dot",
     "diff-multiple": L + "file-diff", "diff-removed": L + "square-minus", "diff-renamed": L + "square-arrow-right", "diff-single": L + "file-diff",
     "diff-single-arrow-right-up": L + "file-symlink", "diff-single-dot": L + "file-diff",
     "display-check": L + "monitor-check", "display-circle": L + "monitor-dot", "display-connect": L + "monitor-up", "display-play": L + "monitor-play",
-    "display-waves": L + "monitor-speaker", "displays": L + "monitor", "drop": L + "droplet", "easel": L + "presentation", "edit": L + "pencil", "elephant": L + "paw-print",
-    "envelope": L + "mail", "envelope-open": L + "mail-open", "eraser": L + "eraser", "error": L + "circle-x", "execution-parallel": L + "chevrons-right",
+    "display-waves": L + "monitor-speaker", "displays": L + "monitor", "drop": L + "droplet", "easel": L + "presentation", "edit": L + "pencil", "elephant": P + "elephant",
+    "envelope": L + "mail", "envelope-open": L + "mail-open", "eraser": L + "eraser", "error": L + "circle-x", "execution-parallel": P + "execution-parallel",
     "execution-sequential": L + "arrow-right", "extensions": L + "blocks", "eye": L + "eye", "eye-closed": L + "eye-closed", "eye-slash": L + "eye-off",
     "fast-backward": L + "rewind", "fast-forward": L + "fast-forward", "feedback": L + "message-square-more", "file": L + "file", "file-add": L + "file-plus",
     "file-arrow-right-up": L + "file-symlink", "file-chevrons-left-right": L + "file-code", "file-image": L + "file-image", "file-list": L + "file-text", "file-lock": L + "file-lock",
-    "file-pdf": L + "file-text!", "file-text": L + "file-text", "files": L + "files", "film-reel": L + "clapperboard", "film-strip": L + "film", "filter": L + "funnel",
-    "flag": L + "flag", "flag-hill": L + "flag-triangle-right", "flame": L + "flame", "floppy-disc": L + "save", "focus-window": L + "picture-in-picture-2",
+    "file-pdf": L + "file-text!", "file-text": L + "file-text", "files": L + "files", "film-reel": P + "film-reel", "film-strip": L + "film", "filter": L + "funnel",
+    "flag": L + "flag", "flag-hill": P + "flag-hill", "flame": L + "flame", "floppy-disc": L + "save", "focus-window": L + "picture-in-picture-2",
     "fold-dashed": L + "fold-vertical", "folder": L + "folder", "folder-arrow-right-up": L + "folder-symlink", "folder-check": L + "folder-check", "folder-dashed": L + "folder-dot",
     "folder-library": L + "folder-archive", "folder-open": L + "folder-open", "folders": L + "folders", "fork": L + "split",
     # --- G-L
     "game-controller": L + "gamepad-2", "game-controller-retro": L + "gamepad", "gauge": L + "gauge", "gem": L + "gem", "gift": L + "gift",
     "git-branch": L + "git-branch", "git-commit": L + "git-commit-vertical", "git-commit-horizontal": L + "git-commit-horizontal", "git-compare": L + "git-compare",
     "git-fetch": L + "arrow-down-to-dot", "git-fork": L + "git-fork", "git-merge": L + "git-merge", "git-pull": L + "git-pull-request-arrow", "git-pull-request": L + "git-pull-request",
-    "git-pull-request-closed": L + "git-pull-request-closed", "git-pull-request-create": L + "git-pull-request-create", "git-pull-request-done": L + "git-merge",
+    "git-pull-request-closed": L + "git-pull-request-closed", "git-pull-request-create": L + "git-pull-request-create", "git-pull-request-done": P + "git-pull-request-done",
     "git-pull-request-draft": L + "git-pull-request-draft", "git-push": L + "arrow-up-from-dot", "github": S + "github", "github-actions": S + "githubactions",
-    "globe": L + "globe", "graduation-cap": L + "graduation-cap", "graph-line": L + "chart-line", "grid": L + "layout-grid", "grid-plus": L + "grid-2x2-plus", "grid-sparkle": L + "grid-2x2-check",
+    "globe": L + "globe", "graduation-cap": L + "graduation-cap", "graph-line": L + "chart-line", "grid": L + "layout-grid", "grid-plus": L + "grid-2x2-plus", "grid-sparkle": P + "grid-sparkle",
     "gripper": L + "grip-vertical", "hamburger": L + "hamburger", "hammer": L + "hammer", "hash": L + "hash", "hat": L + "hard-hat", "headphones": L + "headphones", "headset": L + "headset",
     "heart": L + "heart", "hexagon": L + "hexagon", "history": L + "history", "home": L + "house", "hourglass": L + "hourglass", "image": L + "image", "image-square": L + "image",
     "infinity": L + "infinity", "info": L + "info", "inspect": L + "square-mouse-pointer", "issue": L + "circle-dot", "issue-draft": L + "circle-dashed", "issues": L + "circle-alert",
@@ -125,57 +127,57 @@ MAPPING: dict[str, str] = {
     "logo-markdown": S + "markdown", "logo-microsoft-teams": L + "users!", "logo-notion": S + "notion", "logo-python": S + "python", "logo-sentry": S + "sentry",
     "logo-slack": L + "hash!", "logo-vscode": L + "code-xml!", "logo-vscode-insiders": L + "code-xml!", "logo-x": S + "x",
     # --- M-P
-    "mac-mini": L + "hard-drive", "magic-wand": L + "wand-sparkles", "magnet": L + "magnet", "magnifying-glass-fuzzy": L + "text-search", "magnifying-glass-sparkle": L + "search-check",
+    "mac-mini": L + "hard-drive", "magic-wand": L + "wand-sparkles", "magnet": L + "magnet", "magnifying-glass-fuzzy": L + "text-search", "magnifying-glass-sparkle": P + "magnifying-glass-sparkle",
     "map": L + "map", "map-pin": L + "map-pin", "markdown": S + "markdown", "mask-happy": L + "venetian-mask", "masks-happy": L + "drama", "mcp": S + "modelcontextprotocol",
     "megaphone": L + "megaphone", "menu": L + "menu", "merge": L + "merge", "mic": L + "mic", "minus": L + "minus", "minus-circle": L + "circle-minus", "minus-small": L + "minus",
-    "mobile": L + "smartphone", "moon": L + "moon", "moon-sparkle": L + "moon-star", "moon-z": L + "bed", "more": L + "ellipsis", "music": L + "music", "mute": L + "volume-x",
-    "new-folder": L + "folder-plus", "newspaper": L + "newspaper", "note": L + "sticky-note", "one-circle": L + "circle-dot", "owl": L + "bird", "package": L + "package",
+    "mobile": L + "smartphone", "moon": L + "moon", "moon-sparkle": L + "moon-star", "moon-z": P + "moon-z", "more": L + "ellipsis", "music": L + "music", "mute": L + "volume-x",
+    "new-folder": L + "folder-plus", "newspaper": L + "newspaper", "note": L + "sticky-note", "one-circle": P + "one-circle", "owl": P + "owl", "package": L + "package",
     "paint-roller": L + "paint-roller", "palette": L + "palette", "paperclip": L + "paperclip", "paperplane": L + "send", "paragraph": L + "text", "pass": L + "circle-check",
     "pause": L + "pause", "pause-circle": L + "circle-pause", "paw": L + "paw-print", "pen-nib": L + "pen-tool", "pencil-square": L + "square-pen", "pentagon": L + "pentagon",
     "people": L + "users", "people-3": L + "users-round", "percent": L + "percent", "person": L + "user", "person-add": L + "user-plus", "person-chat-bubble": L + "speech",
-    "piano": L + "piano", "pilcrow": L + "pilcrow", "pin": L + "pin", "pin-slash": L + "pin-off", "pipe": L + "cable", "plan": L + "route", "plane": L + "plane",
+    "piano": L + "piano", "pilcrow": L + "pilcrow", "pin": L + "pin", "pin-slash": L + "pin-off", "pipe": P + "pipe", "plan": L + "route", "plane": L + "plane",
     "play-bug": L + "bug-play", "play-circle": L + "circle-play", "play-slow": L + "play", "play-super-fast": L + "fast-forward", "playback-loop": L + "repeat", "plays-bug": L + "bug-play",
     "plug": L + "plug", "plug-slash": L + "unplug", "plus-circle": L + "circle-plus", "plus-minus": L + "diff", "pointer-arrow": L + "mouse-pointer-2", "pug": L + "dog",
     "pulse": L + "activity", "puzzle-piece": L + "puzzle",
     # --- Q-S
-    "question": L + "circle-question-mark", "question-circle": L + "circle-question-mark", "quote": L + "quote", "radar": L + "radar", "radio-tower": L + "radio-tower",
-    "redo": L + "rotate-cw", "regex": L + "regex", "remote-control": L + "radio-receiver", "replace": L + "replace", "report": L + "message-square-warning", "return": L + "corner-down-left",
-    "review": L + "circle-dashed", "robot": L + "bot", "rocket": L + "rocket", "rocking-chair": L + "rocking-chair", "rss": L + "rss", "ruler": L + "ruler", "run": L + "play",
+    "question": P + "question", "question-circle": L + "circle-question-mark", "quote": L + "quote", "radar": L + "radar", "radio-tower": L + "radio-tower",
+    "redo": L + "rotate-cw", "regex": L + "regex", "remote-control": P + "remote-control", "replace": L + "replace", "report": L + "message-square-warning", "return": L + "corner-down-left",
+    "review": P + "review", "robot": L + "bot", "rocket": L + "rocket", "rocking-chair": L + "rocking-chair", "rss": L + "rss", "ruler": L + "ruler", "run": L + "play",
     "satellite": L + "satellite", "scales": L + "scale", "seal": L + "badge", "search": L + "search", "search-stop": L + "search-slash", "server": L + "server", "servers": L + "server",
     "shapes-square-circle": L + "shapes", "share": L + "share", "shield": L + "shield", "shield-check": L + "shield-check", "shield-question": L + "shield-question", "shield-x": L + "shield-x",
     "shoe-fast": L + "sport-shoe", "shopping-bag": L + "shopping-bag", "shopping-basket": L + "shopping-basket", "signal": L + "radio", "slash-circle": L + "ban",
-    "sliders": L + "sliders-horizontal", "smartwatch": L + "watch", "smiley-happy": L + "smile", "smiley-happy-square": L + "laugh", "smiley-neutral": L + "meh", "smiley-plus": L + "smile-plus",
+    "sliders": L + "sliders-horizontal", "smartwatch": L + "watch", "smiley-happy": L + "smile", "smiley-happy-square": P + "smiley-happy-square", "smiley-neutral": L + "meh", "smiley-plus": L + "smile-plus",
     "smiley-sad": L + "frown", "snowflake": L + "snowflake", "soccer-ball": L + "volleyball", "sort-ascending": L + "arrow-down-narrow-wide", "sort-descending": L + "arrow-up-wide-narrow",
-    "sparkle": L + "sparkles", "speaker-hifi": L + "speaker", "split": L + "split", "split-horizontal": L + "columns-2", "split-vertical": L + "rows-2", "sprint": L + "footprints",
+    "sparkle": L + "sparkles", "speaker-hifi": L + "speaker", "split": L + "split", "split-horizontal": L + "columns-2", "split-vertical": L + "rows-2", "sprint": P + "sprint",
     "square": L + "square", "square-dashed": L + "square-dashed", "square-dot": L + "square-dot", "squares": L + "copy", "squares-minus": L + "copy-minus", "squares-plus": L + "copy-plus",
     "squares-x": L + "copy-x", "stack": L + "layers", "star": L + "star", "star-full": L + "star#fill", "status-draft": L + "circle-dashed", "stop": L + "square",
     "stopwatch": L + "timer", "storefront": L + "store", "sun": L + "sun", "swatches": L + "swatch-book", "sync": L + "refresh-cw",
     # --- T-Z
     "t-shirt": L + "shirt", "table": L + "table", "tabs": L + "panels-top-left", "tag": L + "tag", "tags-chevron-down": L + "chevrons-down", "tags-chevron-left": L + "chevrons-left",
-    "tags-chevron-right": L + "chevrons-right", "tags-chevron-up": L + "chevrons-up", "target": L + "target", "terminal": L + "terminal", "terminal-rectangle": L + "square-terminal",
-    "text-aa": L + "case-sensitive", "text-ab": L + "case-upper", "text-b": L + "bold", "text-c": L + "type!", "text-d": L + "type!", "text-italic": L + "italic", "text-j": L + "type!",
-    "text-r": L + "type!", "text-s": L + "type!", "text-strikethrough": L + "strikethrough", "text-t": L + "type", "text-t-square": L + "type-outline", "text-tt": L + "type", "text-y": L + "type!",
-    "thinking-high": L + "brain-cog", "thinking-low": L + "brain", "thinking-medium": L + "brain-circuit", "threads-parallel": L + "align-justify", "threads-single": L + "minus",
+    "tags-chevron-right": L + "chevrons-right", "tags-chevron-up": L + "chevrons-up", "target": P + "target", "terminal": L + "terminal", "terminal-rectangle": L + "square-terminal",
+    "text-aa": L + "case-sensitive", "text-ab": L + "case-upper", "text-b": L + "bold", "text-c": P + "text-c", "text-d": P + "text-d", "text-italic": L + "italic", "text-j": P + "text-j",
+    "text-r": P + "text-r", "text-s": P + "text-s", "text-strikethrough": L + "strikethrough", "text-t": L + "type", "text-t-square": P + "text-t-square", "text-tt": P + "text-tt", "text-y": P + "text-y",
+    "thinking-high": P + "thinking-high", "thinking-low": P + "thinking-low", "thinking-medium": P + "thinking-medium", "threads-parallel": L + "align-justify", "threads-single": L + "minus",
     "three-bars": L + "menu", "thumbsdown": L + "thumbs-down", "thumbsup": L + "thumbs-up", "trafficCone": L + "traffic-cone", "trash": L + "trash-2", "tray": L + "inbox",
-    "treasure-chest": L + "package-open", "trending-down": L + "trending-down", "trending-up": L + "trending-up",
+    "treasure-chest": P + "treasure-chest", "trending-down": L + "trending-down", "trending-up": L + "trending-up",
     "triangle-small-down": L + "triangle#fill@180", "triangle-small-left": L + "triangle#fill@270", "triangle-small-right": L + "triangle#fill@90", "triangle-small-up": L + "triangle#fill",
     "twig": L + "sprout", "unfold-dashed": L + "unfold-vertical", "unlock": L + "lock-open", "unmute": L + "volume-2", "unverified": L + "badge-question-mark", "vault": L + "vault",
-    "verified": L + "badge-check", "versions": L + "layers-2", "video-camera": L + "video", "vm": L + "monitor", "vr": L + "glasses", "vr-headset": L + "glasses", "vr-headset-head": L + "hat-glasses",
+    "verified": L + "badge-check", "versions": L + "layers-2", "video-camera": L + "video", "vm": L + "monitor", "vr": P + "vr", "vr-headset": P + "vr-headset", "vr-headset-head": P + "vr-headset-head",
     "wallet": L + "wallet", "watch": L + "watch", "waveform": L + "audio-waveform", "whole-word": L + "whole-word", "window": L + "app-window", "windows": L + "app-window-mac",
-    "wrench": L + "wrench", "x": L + "x", "yarn": S + "yarn", "zipper": L + "file-archive", "zoom-in": L + "zoom-in", "zoom-out": L + "zoom-out", "zzz": L + "bed",
+    "wrench": L + "wrench", "x": L + "x", "yarn": S + "yarn", "zipper": P + "zipper", "zoom-in": L + "zoom-in", "zoom-out": L + "zoom-out", "zzz": P + "zzz",
     # --- File types (language and tool marks)
     "file-type-adobe-illustrator": L + "pen-tool!", "file-type-adobe-photoshop": L + "image!", "file-type-babel": S + "babel", "file-type-bazel": S + "bazel", "file-type-bevy": S + "bevy",
-    "file-type-bicep": L + "file-code!", "file-type-biomejs": S + "biome", "file-type-bower": S + "bower", "file-type-bun": S + "bun", "file-type-c-plus-plus": S + "cplusplus",
+    "file-type-bicep": L + "biceps-flexed", "file-type-biomejs": S + "biome", "file-type-bower": S + "bower", "file-type-bun": S + "bun", "file-type-c-plus-plus": S + "cplusplus",
     "file-type-c-sharp": L + "file-code!", "file-type-clojure": S + "clojure", "file-type-crystal": S + "crystal", "file-type-cuda": L + "cpu!", "file-type-dart": S + "dart",
     "file-type-docker": S + "docker", "file-type-ejs": S + "ejs", "file-type-elixir": S + "elixir", "file-type-eslint": S + "eslint", "file-type-f-sharp": S + "fsharp",
     "file-type-firebase": S + "firebase", "file-type-geckodriver": L + "file-code!", "file-type-git-meta": S + "git", "file-type-go": S + "go", "file-type-godot": S + "godotengine",
-    "file-type-grails": L + "file-code!", "file-type-graphql": S + "graphql", "file-type-groovy": S + "apachegroovy", "file-type-grunt": S + "grunt", "file-type-gulp": S + "gulp",
+    "file-type-grails": L + "wine!", "file-type-graphql": S + "graphql", "file-type-groovy": L + "star", "file-type-grunt": S + "grunt", "file-type-gulp": S + "gulp",
     "file-type-haml": L + "file-code!", "file-type-handlebars": S + "handlebarsdotjs", "file-type-haskell": S + "haskell", "file-type-ionic": S + "ionic", "file-type-java": L + "coffee!",
     "file-type-javascript": S + "javascript", "file-type-julia": S + "julia", "file-type-jupyter": S + "jupyter", "file-type-karma": L + "test-tube!", "file-type-kotlin": S + "kotlin",
-    "file-type-latex": S + "latex", "file-type-liquid": L + "droplet!", "file-type-maven": S + "apachemaven", "file-type-mustache": L + "file-code!", "file-type-npm": S + "npm",
-    "file-type-nunjucks": S + "nunjucks", "file-type-ocaml": S + "ocaml", "file-type-odata": L + "database!", "file-type-pdf": L + "file-text!", "file-type-perl": S + "perl",
+    "file-type-latex": S + "latex", "file-type-liquid": S + "shopify", "file-type-maven": S + "apachemaven", "file-type-mustache": P + "mustache", "file-type-npm": S + "npm",
+    "file-type-nunjucks": S + "nunjucks", "file-type-ocaml": S + "ocaml", "file-type-odata": L + "list!", "file-type-pdf": L + "file-text!", "file-type-perl": S + "perl",
     "file-type-platformio": S + "platformio", "file-type-powershell": L + "square-terminal!", "file-type-prettier": S + "prettier", "file-type-prisma": S + "prisma",
-    "file-type-prolog": L + "file-code!", "file-type-puppet": S + "puppet", "file-type-python": S + "python", "file-type-reason": S + "reason", "file-type-rescript": S + "rescript",
+    "file-type-prolog": P + "owl!", "file-type-puppet": S + "puppet", "file-type-python": S + "python", "file-type-reason": S + "reason", "file-type-rescript": S + "rescript",
     "file-type-rollup": S + "rollupdotjs", "file-type-rust": S + "rust", "file-type-sass": S + "sass", "file-type-sbt": L + "file-code!", "file-type-scala": S + "scala",
     "file-type-slim": L + "file-code!", "file-type-stylus": S + "stylus", "file-type-sublime": S + "sublimetext", "file-type-svelte": S + "svelte", "file-type-swift": S + "swift",
     "file-type-terraform": S + "terraform", "file-type-typescript": S + "typescript", "file-type-vala": S + "vala", "file-type-vite": S + "vite", "file-type-vsc": L + "code-xml!",
@@ -238,6 +240,77 @@ GROUPS: list[tuple[str, set[str], tuple[str, ...]]] = [
 
 STROKE_WEIGHT = 1.75  # the app draws its Lucide glyphs at this width (CursorIcons.kt), so the catalog matches
 
+# Glyphs drawn for this catalog, on Lucide's 24-unit grid with its 2-unit margin, for the objects the desktop draws that
+# no open library carries (checked glyph by glyph against the desktop's own font). An item is path data, or "@name" /
+# "@name[i]" to splice every path / the i-th path of a Lucide icon. All are strokes; "@<deg>" in MAPPING rotates.
+OWN: dict[str, list[str]] = {
+    # a dartboard with the dart in: two rings, the shaft from the centre out to the top right, and its fletching
+    "target": ["M21 12a9 9 0 1 1-2.64-6.36", "M12 12a3.5 3.5 0 1 0 3.5 3.5", "M12 12l8-8", "M16.5 4H20v3.5"],
+    # a triangle split into three layers
+    "chart-pyramid": ["@triangle", "M8.5 10.5h7", "M6 15.5h12"],
+    "bowtie": ["M4 6.5 11 10.2v3.6L4 17.5z", "M20 6.5 13 10.2v3.6l7 3.7z", "M10.5 9.5h3a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1z"],
+    "brain-slash": ["@brain", "M2 2l20 20"],
+    "corners-out-check": ["@maximize", "m8.5 12 2.5 2.5 5-5"],
+    "corners-out-sparkle": ["@maximize", "M12 7.5c.5 3 1.5 4 4.5 4.5-3 .5-4 1.5-4.5 4.5-.5-3-1.5-4-4.5-4.5 3-.5 4-1.5 4.5-4.5z"],
+    "cost-medium": ["M8.5 6v12", "M11 8.5H7.5a1.75 1.75 0 0 0 0 3.5h2a1.75 1.75 0 0 1 0 3.5H6", "M15.5 6v12", "M18 8.5h-3.5a1.75 1.75 0 0 0 0 3.5h2a1.75 1.75 0 0 1 0 3.5H13"],
+    "cost-high": [
+        "M5 7v10", "M6.8 8.6H4.4a1.3 1.3 0 0 0 0 2.6h1.2a1.3 1.3 0 0 1 0 2.6H3.2",
+        "M12 7v10", "M13.8 8.6h-2.4a1.3 1.3 0 0 0 0 2.6h1.2a1.3 1.3 0 0 1 0 2.6h-2.4",
+        "M19 7v10", "M20.8 8.6h-2.4a1.3 1.3 0 0 0 0 2.6h1.2a1.3 1.3 0 0 1 0 2.6h-2.4",
+    ],
+    "execution-parallel": ["M4 7h13", "m14 4 3 3-3 3", "M4 12h13", "m14 9 3 3-3 3", "M4 17h13", "m14 14 3 3-3 3"],
+    "grid-sparkle": ["M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6", "M3 5v14a2 2 0 0 0 2 2h6", "M12 3v9", "M3 12h9",
+                     "M16.5 12.5c.4 2.4 1.2 3.2 3.6 3.6-2.4.4-3.2 1.2-3.6 3.6-.4-2.4-1.2-3.2-3.6-3.6 2.4-.4 3.2-1.2 3.6-3.6z"],
+    "magnifying-glass-sparkle": ["@search", "M11 7.5c.4 2.4 1.1 3.1 3.5 3.5-2.4.4-3.1 1.1-3.5 3.5-.4-2.4-1.1-3.1-3.5-3.5 2.4-.4 3.1-1.1 3.5-3.5z"],
+    "moon-z": ["@moon", "M16 2h5l-5 5.5h5"],
+    "one-circle": ["@circle", "M10 9.5 12.5 7.5v9"],
+    "question": ["M8.5 8.5a3.5 3.5 0 1 1 5.5 2.9c-1.2.9-2 1.6-2 3.1", "M12 19h.01"],
+    "review": ["@circle-dashed", "m8.5 12 2.5 2.5 5-5"],
+    "smiley-happy-square": ["@square", "M9 9h.01", "M15 9h.01", "M8.5 14a4.5 4.5 0 0 0 7 0"],
+    "text-c": ["M17.5 7.5a7 7 0 1 0 0 9"],
+    "text-d": ["M7 4v16h4.5a8 8 0 0 0 0-16z"],
+    "text-j": ["M16 4v10.5a5 5 0 0 1-10 0"],
+    "text-r": ["M7 20V4h5.5a4.5 4.5 0 0 1 0 9H7", "M12.5 13 17 20"],
+    "text-s": ["M16.5 6.5A5 5 0 0 0 12 4.5c-2.8 0-4.5 1.3-4.5 3.2 0 4.3 9.5 2.3 9.5 7.6 0 2.2-2 4.2-5 4.2a5.5 5.5 0 0 1-5-2.8"],
+    "text-y": ["M6 4l6 8.5L18 4", "M12 12.5V20"],
+    "text-tt": ["M4 5h9", "M8.5 5v14", "M16.5 9v10", "M14.5 12h4"],
+    "text-t-square": ["@square", "M8 8h8", "M12 8v8"],
+    "git-pull-request-done": ["@circle-dashed[0]", "M6 3a3 3 0 1 0 0 6 3 3 0 1 0 0-6z", "M6 9v12", "M18 21a3 3 0 1 0 0-6 3 3 0 1 0 0 6z", "M18 15v-4", "m14.5 5.5 2.5 2.5 4.5-4.5"],
+    "zzz": ["M3 12h4l-4 4.5h4", "M9.5 4.5h7l-7 8.5h7", "M17 15h4l-4 4.5h4"],
+    "mustache": ["M12 12c-1.5-2.5-4-3-6-2-2 1-3.5 3.5-3 5.5 2 .5 4.5-.5 6-2 1-1 2-1.5 3-1.5s2 .5 3 1.5c1.5 1.5 4 2.5 6 2 .5-2-1-4.5-3-5.5-2-1-4.5-.5-6 2z"],
+    "collection": ["M3.5 7h17l-1.3 10.4A3 3 0 0 1 16.2 20H7.8a3 3 0 0 1-3-2.6z"],
+    "collection-plus": ["M3.5 7h17l-1 8", "M4.8 17.4A3 3 0 0 0 7.8 20H12", "M3.5 7l1.3 10.4", "M18 15v6", "M15 18h6"],
+    # a square with the arrow leaving through a gap in its bottom edge; MAPPING rotates it for the other three sides
+    "arrow-square-from-down": ["M8.5 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3.5", "M12 7v15", "m8.5 18.5 3.5 3.5 3.5-3.5"],
+    "banknotes-stack": ["M3 9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "M6 4h12", "M12 11a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5z", "M6.5 13.5h.01", "M17.5 13.5h.01"],
+    # the desktop's agent is a pointer (Lucide's navigation), alone, in a frame, doubled, and as a swarm of four
+    "agent-circle": ["@circle", "M7.5 11.5 16.5 7.5l-4.3 9-.9-3.8z"],
+    "agent-square": ["@square", "M7.5 11.5 16.5 7.5l-4.3 9-.9-3.8z"],
+    "agents": ["M2 8.5 15 3l-6 13-1.5-5.5z", "M9 15.5 22 10l-6 13-1.5-5.5z"],
+    "agents-swarm": ["M2.5 7.5 11 3.5l-4 8.5-.9-3.6z", "M13.5 7.5 22 3.5l-4 8.5-.9-3.6z", "M2.5 18 11 14l-4 8.5-.9-3.6z", "M13.5 18 22 14l-4 8.5-.9-3.6z"],
+    "sprint": ["M15.5 2.5a2 2 0 1 0 0 4 2 2 0 1 0 0-4z", "M13.5 8.5 9.5 12l3 2.5-2.5 6", "M13.5 8.5l3.5 2.5 3-1.5", "M9.5 12 6 11.5", "M12.5 14.5l4.5 1.5 2 4.5", "M3 8h2", "M2 12h2", "M3 16h2"],
+    # a head in profile, the thought inside it growing from a dot to a circle to a spiral
+    "thinking-low": ["M8.5 21v-3.5a7 7 0 1 1 8.7-2.4l1.5 2.4H17v2.5a1.5 1.5 0 0 1-1.5 1.5H13V21", "M11.5 10h.01"],
+    "thinking-medium": ["M8.5 21v-3.5a7 7 0 1 1 8.7-2.4l1.5 2.4H17v2.5a1.5 1.5 0 0 1-1.5 1.5H13V21", "M11.5 8a2 2 0 1 0 0 4 2 2 0 1 0 0-4z"],
+    "thinking-high": ["M8.5 21v-3.5a7 7 0 1 1 8.7-2.4l1.5 2.4H17v2.5a1.5 1.5 0 0 1-1.5 1.5H13V21", "M11.5 7.5a2.5 2.5 0 1 1-2.5 2.5 1.5 1.5 0 1 1 1.5-1.5"],
+    "remote-control": ["M9 9.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 9.5v11a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 20.5z", "M12 12h.01", "M12 15h.01", "M12 18h.01", "M8.5 5a5 5 0 0 1 7 0", "M6 2.5a8.5 8.5 0 0 1 12 0"],
+    "vr": ["M3 8a9 3.5 0 0 1 18 0 9 3.5 0 0 1-18 0z", "M3 8v8a9 3.5 0 0 0 18 0V8"],
+    "vr-headset": ["M3 10a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4h-2.5l-2.5-2.5L9.5 18H7a4 4 0 0 1-4-4z"],
+    "vr-headset-head": ["M12 3.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 1 0 0-15z", "M3 10a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 14 10v2a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 3 12z", "M14 11h5.5"],
+    "pipe": ["M3 8h9a5 5 0 0 1 5 5v8", "M3 14h8.5a.5.5 0 0 1 .5.5V21", "M3 6.5v9", "M10 21h9"],
+    "zipper": ["M5 5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z", "M12 3v10", "M10.5 5.5h3", "M10.5 8h3", "M10.5 10.5h3", "M12 13v1.5", "M10.5 15.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-1a1 1 0 0 1-1-1z"],
+    "treasure-chest": ["M3 11a9 6 0 0 1 18 0", "M3 11v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8", "M3 11h18", "M10.5 10.75a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v2.5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1-.75-.75z"],
+    "film-reel": ["M12 3a8 8 0 1 0 0 16 8 8 0 1 0 0-16z", "M12 9.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 1 0 0-3z", "M12 5a1.3 1.3 0 1 0 0 2.6A1.3 1.3 0 1 0 12 5z", "M7.5 8.7a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 1 0 0-2.6z", "M16.5 8.7a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 1 0 0-2.6z", "M9.3 13.9a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 1 0 0-2.6z", "M14.7 13.9a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 1 0 0-2.6z", "M19.5 14.5V21H12"],
+    "flag-hill": ["M3 21 12 7l9 14z", "M12 7V2h5l-1.3 1.8L17 5.5h-5"],
+    "crystal-ball": ["M12 3.5a7 7 0 1 0 0 14 7 7 0 1 0 0-14z", "M7 21h10", "M9 17.2 8 21", "M15 17.2 16 21", "M19.5 1.5c.3 1.5.8 2 2.3 2.3-1.5.3-2 .8-2.3 2.3-.3-1.5-.8-2-2.3-2.3 1.5-.3 2-.8 2.3-2.3z"],
+    "cube-coordinates": ["M12 2.5 20.5 7.25v9.5L12 21.5l-8.5-4.75v-9.5z", "M12 12V4.5", "M12 12l-6.5 3.75", "M12 12l6.5 3.75"],
+    "database-network": ["M4 6a8 3 0 1 0 16 0 8 3 0 1 0-16 0z", "M4 6v5a8 3 0 0 0 16 0V6", "M12 14v3", "M12 17 6 21", "M12 17l6 4"],
+    "deckchair-umbrella": ["M2 10.5a7.5 7.5 0 0 1 15 0z", "M9.5 10.5V21", "M12 21l2-7h6l2 7", "M11 17h11"],
+    "owl": ["M6 12a6 6 0 0 1 12 0v6a6 6 0 0 1-12 0z", "M6 9 5 4l4 2.5", "M18 9l1-5-4 2.5", "M9.5 9.9a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 1 0 0-3.2z", "M14.5 9.9a1.6 1.6 0 1 0 0 3.2 1.6 1.6 0 1 0 0-3.2z", "M12 14.5l-1 1.5h2z"],
+    "elephant": ["M3.5 20v-6.5a8.5 8.5 0 0 1 17 0V20", "M15.5 8.5a3.5 3.5 0 1 1 4.5 4.5", "M9 11.5h.01", "M3.5 13.5v4a2.5 2.5 0 0 0 5 0V16", "M8 15.5h2.5"],
+    "chat-bubble-pencil": ["@message-square", "M8 15l6.5-6.5 2 2L10 17H8z"],
+}
+
 
 def humanise(name: str) -> str:
     text = name
@@ -253,6 +326,45 @@ def fmt(value: float) -> str:
     return "0" if text in ("", "-0") else text
 
 
+NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def normalize_path(data: str) -> str:
+    """
+    Path data with every number separated by a space. SVG lets an arc's two flags run into the number after them
+    (`A2 2 0 0022 17`), which Compose's PathParser reads as one number and draws as something else; Lucide's
+    `book-open` is written that way. Arc flags are single characters, so the tokenizer reads them as such.
+    """
+    out: list[str] = []
+    args: list[str] = []
+    command = ""
+    i = 0
+    while i < len(data):
+        ch = data[i]
+        if ch in "MmZzLlHhVvCcSsQqTtAa":
+            if command:
+                out.append(command + " ".join(args))
+            command, args = ch, []
+            i += 1
+        elif ch in " ,\t\r\n":
+            i += 1
+        else:
+            if command in "Aa" and len(args) % 7 in (3, 4):
+                if ch not in "01":
+                    raise ValueError(f"bad arc flag in {data!r}")
+                args.append(ch)
+                i += 1
+                continue
+            match = NUMBER.match(data, i)
+            if not match:
+                raise ValueError(f"cannot read path data at {data[i:i + 12]!r}")
+            args.append(match.group(0))
+            i = match.end()
+    if command:
+        out.append(command + " ".join(args))
+    return "".join(out)
+
+
 def lucide_paths(svg: str) -> list[str]:
     """Every drawable element of a Lucide SVG as path data; Compose's PathParser draws the arcs."""
     paths: list[str] = []
@@ -260,7 +372,7 @@ def lucide_paths(svg: str) -> list[str]:
         a = dict(re.findall(r'([a-zA-Z0-9-]+)="([^"]*)"', attrs))
         f = lambda key, default="0": float(a.get(key, default))  # noqa: E731
         if tag == "path":
-            paths.append(re.sub(r"\s+", " ", a["d"].strip()))
+            paths.append(normalize_path(a["d"]))
         elif tag == "circle":
             cx, cy, r = f("cx"), f("cy"), f("r")
             paths.append(f"M{fmt(cx - r)} {fmt(cy)}a{fmt(r)} {fmt(r)} 0 1 0 {fmt(2 * r)} 0a{fmt(r)} {fmt(r)} 0 1 0 {fmt(-2 * r)} 0")
@@ -310,10 +422,36 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
     simple_version = json.loads((simple_dir / "package.json").read_text())["version"]
     simple_titles = {icon["slug"]: icon["title"] for icon in json.loads((simple_dir / "data/simple-icons.json").read_text())}
 
+    # Lucide ships every alias as a file of its own with the same drawing (`edit.svg` is `square-pen.svg`); the glyph a
+    # mapping names is reported under the canonical name, the one icon-nodes.json lists, so `beaker` and `flask-conical`
+    # count as the same glyph.
+    canonical_lucide = set(json.loads((lucide_dir / "icon-nodes.json").read_text()).keys())
+    lucide_svgs: dict[str, list[str]] = {}
+    for file in (lucide_dir / "icons").glob("*.svg"):
+        lucide_svgs[file.stem] = lucide_paths(file.read_text())
+    by_drawing: dict[str, str] = {}
+    for stem, paths in lucide_svgs.items():
+        if stem in canonical_lucide:
+            by_drawing.setdefault("\n".join(paths), stem)
+    lucide_canonical: dict[str, str] = {stem: by_drawing.get("\n".join(paths), stem) for stem, paths in lucide_svgs.items()}
+
+    def own_paths(ref: str) -> list[str]:
+        paths: list[str] = []
+        for item in OWN[ref]:
+            if item.startswith("@"):
+                spliced = re.fullmatch(r"@([a-z0-9-]+)(?:\[(\d+)\])?", item)
+                assert spliced, item
+                source = lucide_svgs[spliced.group(1)]
+                paths += [source[int(spliced.group(2))]] if spliced.group(2) else source
+            else:
+                paths.append(normalize_path(item))
+        return paths
+
     specs: list[tuple[str, str]] = []  # (id, kotlin expression)
     stand_ins: list[str] = []
     labels: dict[str, str] = {}
-    sources = {"lucide": 0, "simple": 0, "cursor": 0}
+    glyphs: dict[str, str] = {}  # id -> "lucide:<canonical>", "simple:<slug>", "cursor:cube", "own:<name>"
+    sources = {"lucide": 0, "simple": 0, "cursor": 0, "own": 0}
     for name in picker:
         target = MAPPING[name]
         stand_in = target.endswith("!")
@@ -327,25 +465,31 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
             target = target[: -len("#fill")]
             filled = True
         kind, ref = target.split(":", 1)
-        if kind == "l":
-            svg = (lucide_dir / "icons" / f"{ref}.svg").read_text()
-            paths = lucide_paths(svg)
+        if kind in ("l", "p"):
+            paths = lucide_svgs[ref] if kind == "l" else own_paths(ref)
             assert paths, f"{ref}: no drawable elements"
             args = ", ".join(kotlin_string(p) for p in paths)
-            if filled and rotation:
+            if filled:
                 expr = f"filledStroke({rotation}f, {args})"
-            elif filled:
-                expr = f"filledStroke(0f, {args})"
+            elif rotation:
+                expr = f"rotatedStroke({rotation}f, {args})"
             else:
                 expr = f"stroke({args})"
-            sources["lucide"] += 1
+            if kind == "l":
+                glyphs[name] = "lucide:" + lucide_canonical[ref]
+                sources["lucide"] += 1
+            else:
+                glyphs[name] = "own:" + ref
+                sources["own"] += 1
         elif kind == "s":
             svg = (simple_dir / "icons" / f"{ref}.svg").read_text()
             expr = f"fill({kotlin_string(simple_icon_path(svg))})"
             labels.setdefault(name, simple_titles[ref])
+            glyphs[name] = "simple:" + ref
             sources["simple"] += 1
         elif kind == "c":
             expr = "cursorCube()"
+            glyphs[name] = "cursor:" + ref
             sources["cursor"] += 1
         else:
             sys.exit(f"unknown source in {target}")
@@ -354,6 +498,9 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
             stand_ins.append(name)
         if name in LABELS:
             labels[name] = LABELS[name]
+    # Ids that are also Lucide icon names: the coverage test holds the catalog to Lucide's drawing of the same name
+    # unless the desktop's glyph is a different object (the test lists those with the reason).
+    namesakes = {name: "lucide:" + lucide_canonical[name] for name in picker if name in lucide_svgs}
 
     def group_of(name: str) -> str:
         for label, explicit, prefixes in GROUPS:
@@ -372,7 +519,7 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
     w = lines.append
     w("// GENERATED by scripts/project-icons/generate.py from scripts/project-icons/cursor-icon-names.json - do not edit by hand.")
     w(f"// Glyphs: Lucide {lucide_version} (ISC, app/licenses/ISC_Lucide.txt) and Simple Icons {simple_version} (CC0 1.0, app/licenses/CC0_SimpleIcons.txt).")
-    w(f"// {len(picker)} icons: {sources['lucide']} Lucide, {sources['simple']} Simple Icons, {sources['cursor']} of the app's own; {len(stand_ins)} neutral stand-ins for marks no open library carries.")
+    w(f"// {len(picker)} icons: {sources['lucide']} Lucide, {sources['simple']} Simple Icons, {sources['own']} drawn for this catalog, {sources['cursor']} the app's Cursor mark; {len(stand_ins)} neutral stand-ins for marks no open library carries.")
     w("@file:Suppress(\"LargeClass\", \"LongMethod\", \"MaxLineLength\", \"ktlint\")")
     w("")
     w("package com.cursorforandroid.ui.icons")
@@ -409,6 +556,20 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
         w("        " + ", ".join(f"{kotlin_string(a)} to {kotlin_string(c)}" for a, c in label_items[i : i + 4]) + ",")
     w("    )")
     w("")
+    w("    /** The glyph each id is drawn with: `lucide:<name>` (canonical, aliases folded), `simple:<slug>`, `own:<name>` or `cursor:cube`. */")
+    w("    val GLYPHS: Map<String, String> = mapOf(")
+    glyph_items = [(n, glyphs[n]) for n in picker]
+    for i in range(0, len(glyph_items), 4):
+        w("        " + ", ".join(f"{kotlin_string(a)} to {kotlin_string(c)}" for a, c in glyph_items[i : i + 4]) + ",")
+    w("    )")
+    w("")
+    w("    /** Ids that name a Lucide icon too, with that icon's canonical glyph name: what the coverage test holds the catalog to. */")
+    w("    val LUCIDE_NAMESAKES: Map<String, String> = mapOf(")
+    namesake_items = sorted(namesakes.items())
+    for i in range(0, len(namesake_items), 4):
+        w("        " + ", ".join(f"{kotlin_string(a)} to {kotlin_string(c)}" for a, c in namesake_items[i : i + 4]) + ",")
+    w("    )")
+    w("")
     w("    /** The picker's sections, in display order; every picker id appears in exactly one. */")
     w("    val GROUPS: List<ProjectIconGroup> = listOf(")
     for label, _, _ in GROUPS:
@@ -438,6 +599,7 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
         w("    }")
     w("")
     w("    private fun stroke(vararg paths: String) = ProjectIconSpec(ProjectIconSpec.Style.STROKE, paths, 0f)")
+    w("    private fun rotatedStroke(rotation: Float, vararg paths: String) = ProjectIconSpec(ProjectIconSpec.Style.STROKE, paths, rotation)")
     w("    private fun filledStroke(rotation: Float, vararg paths: String) = ProjectIconSpec(ProjectIconSpec.Style.FILLED_STROKE, paths, rotation)")
     w("    private fun fill(path: String) = ProjectIconSpec(ProjectIconSpec.Style.FILL, arrayOf(path), 0f)")
     w("    private fun cursorCube() = ProjectIconSpec(ProjectIconSpec.Style.CURSOR_CUBE, emptyArray(), 0f)")
@@ -445,7 +607,10 @@ def main(lucide_dir: Path, simple_dir: Path) -> None:
     w("")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines))
-    print(f"wrote {OUT.relative_to(REPO)}: {len(picker)} icons ({sources}), {len(aliases)} aliases, {len(stand_ins)} stand-ins, {OUT.stat().st_size} bytes")
+    print(f"wrote {OUT.relative_to(REPO)}: {len(picker)} icons ({sources}), {len(aliases)} aliases, {len(stand_ins)} stand-ins, {len(namesakes)} Lucide namesakes, {OUT.stat().st_size} bytes")
+    for name, glyph in sorted(namesakes.items()):
+        if glyphs[name] != glyph:
+            print(f"  namesake drawn otherwise: {name} -> {glyphs[name]}")
     for label, _, _ in GROUPS:
         print(f"  {label}: {len(grouped[label])}")
 
