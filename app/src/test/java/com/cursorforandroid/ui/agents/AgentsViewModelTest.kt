@@ -251,8 +251,15 @@ class AgentsViewModelTest {
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
-        graph.pullRequests.statuses.first { it.isNotEmpty() }
+        // The pass publishes each answer as it lands (the pills fill in one by one), and it runs on the repository's
+        // own threads, not the test scheduler: the snapshot is taken only once every pull request the list carries
+        // has been answered. Taking it at the first non-empty map compared a partial pass against the finished one
+        // later on, and flaked (#111, #119, #149).
+        val urls = graph.agents.state.value.agents.mapNotNullTo(HashSet()) { it.prUrl }
+        assertThat(urls).isNotEmpty()
+        graph.pullRequests.statuses.first { it.keys.containsAll(urls) }
         val first = graph.pullRequests.statuses.value
+        assertThat(first.keys).containsExactlyElementsIn(urls)
         assertThat(first.values.map { it.checkedAtMillis }.toSet()).containsExactly(now)
 
         val polling = vm.pollWhileVisible()
