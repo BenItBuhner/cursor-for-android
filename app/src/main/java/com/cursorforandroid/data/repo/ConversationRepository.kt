@@ -233,6 +233,8 @@ class ConversationRepository(
         val olderCount: Int,
         /** How many turns the chat has, runs in hand or not (see `Entry.chatTotal`). */
         val total: Int,
+        /** How many of the window's prompts come before the first run in hand: they render without a run. */
+        val runOffset: Int = 0,
     )
 
     /**
@@ -417,6 +419,7 @@ class ConversationRepository(
                 standing = shown.drop(pairedCount),
                 olderCount = firstShown,
                 total = total,
+                runOffset = (base - firstShown).coerceAtLeast(0),
             )
         }
 
@@ -454,7 +457,7 @@ class ConversationRepository(
         private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout): List<TimelineItem> {
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
-            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending).toMutableList()
+            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset).toMutableList()
             layout.standing.forEach { run ->
                 val prompt = local.firstOrNull { it.run.id == run.id }
                 items += TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending)
@@ -931,7 +934,8 @@ class ConversationRepository(
                 // The run the agent's row names as its latest: the one anchor that says which runs are the chat's
                 // newest, whatever order the list came in (see [newestRuns]).
                 val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
-                val newest = firstPage?.let { newestRuns(api, agentId, it, latestId) }
+                val (known, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+                val newest = firstPage?.let { newestRuns(api, agentId, it, latestId, known, knownComplete) }
                 val page = newest?.page
                 val fetched = convResult.isSuccess || page?.items?.isNotEmpty() == true
                 // The newest run once the inputs are merged: usually the server's, but a follow-up sent from here
@@ -1050,13 +1054,19 @@ class ConversationRepository(
      * page listed newest first that lacks the latest run — the list lagging the agent's record — gets it by id. The
      * cursor a newest-first page carries stays the way to the older records (see [pageOlderRuns]).
      */
-    private suspend fun newestRuns(api: CursorApi, agentId: String, first: ListRunsResponseDto, latestId: String?): NewestRuns {
+    private suspend fun newestRuns(api: CursorApi, agentId: String, first: ListRunsResponseDto, latestId: String?, known: List<RunDto>, knownComplete: Boolean): NewestRuns {
         val items = first.items
         val cursor = first.nextCursor?.takeIf { it.isNotBlank() }
         val ascending = items.size >= 2 && parseIsoMillis(items.first().createdAt) < parseIsoMillis(items.last().createdAt)
         var page = first
         var endKnown = true
-        if (ascending && cursor != null) {
+        if (ascending && cursor != null && latestId != null && known.any { it.id == latestId }) {
+            // Read before, and the agent has started nothing since: the runs in hand are the newest still, the page
+            // refreshes the records it names, and the rest of the pages are not read again.
+            val fresh = items.associateBy { it.id }
+            page = ListRunsResponseDto(items = known.map { fresh[it.id] ?: it }, nextCursor = null)
+            endKnown = knownComplete
+        } else if (ascending && cursor != null) {
             // Oldest first: the newest runs are at the end of the list, so read to it.
             val all = items.toMutableList()
             var next: String? = cursor

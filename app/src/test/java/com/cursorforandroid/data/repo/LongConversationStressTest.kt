@@ -270,6 +270,52 @@ class LongConversationStressTest {
     }
 
     /**
+     * An oldest-first list longer than the load will page (small pages here): the runs read are old ones and are not
+     * laid under the newest prompts; the newest run alone stands, fetched by id, paired with the newest prompt and
+     * followed. The prompts before it show without runs, and the chat says nothing false about their activity.
+     */
+    @Test
+    fun `past the page bound on an oldest-first list, the newest run alone stands, fetched by id`() = runBlocking<Unit> {
+        api.ascendingRuns = true
+        api.pageSize = 10
+        seed()
+        val conversations = repository(hub())
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.isStreaming }
+        val state = conversations.state(agentId).value
+        assertThat(state.activeRunId).isEqualTo("run-$runs")
+        assertThat(state.prompts()).containsExactly(*((runs - 9)..runs).map { "Prompt $it" }.toTypedArray()).inOrder()
+        assertThat(state.footers()).isEmpty()
+        assertThat(state.hasOlder).isTrue()
+        assertThat(state.traceStatus).isEqualTo(TraceStatus())
+        assertThat(api.getRunCalls).isAtLeast(1)
+        // Once fetched by id, a refresh does not read the sixteen pages again: the newest run is in hand.
+        val listCalls = api.listRunsCalls
+        conversations.reload(agentId)
+        awaitUntil { api.listRunsCalls > listCalls }
+        delay(300)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.isStreaming }
+        assertThat(api.listRunsCalls - listCalls).isEqualTo(1)
+    }
+
+    /** An oldest-first list read to its end once is not read again on a refresh: the row's latest run is already in hand. */
+    @Test
+    fun `an oldest-first list read to its end is not paged again on a refresh`() = runBlocking<Unit> {
+        api.ascendingRuns = true
+        seed()
+        val conversations = repository(hub())
+        conversations.attach(agentId)
+        assertOpensOnTheNewestTurns(conversations)
+        val listCalls = api.listRunsCalls
+        conversations.reload(agentId)
+        awaitUntil { api.listRunsCalls > listCalls }
+        delay(300)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.isStreaming }
+        assertThat(api.listRunsCalls - listCalls).isEqualTo(1)
+        assertThat(conversations.state(agentId).value.footers()).containsExactly(*((runs - 9) until runs).map { "run-$it" }.toTypedArray()).inOrder()
+    }
+
+    /**
      * What 0.3.13 left on Bennett's disk: the process died with the first page persisted and the rest of the list
      * unread, in the field's order — a page of the chat's oldest twenty runs, marked incomplete, laid under the newest
      * prompts. The restart must not open the chat on it, and must recover once the network answers, whether the
