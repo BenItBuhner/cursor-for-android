@@ -75,6 +75,30 @@ class ProjectDiagnosticsTest {
     }
 
     @Test
+    fun `every root's line names its raw icon id, the glyph this build draws for it, and its colour`() {
+        val rows = listOf(
+            agent("bc-11111111-target", "Murmur") { it.copy(isProject = true, projectAppearance = ProjectAppearance("target", "cyan")) },
+            agent("bc-22222222-newer", "Shipyard") { it.copy(isProject = true, projectAppearance = ProjectAppearance("hologram-from-cursor-4", "purple")) },
+            agent("bc-33333333-bare", "Noetic") { it.copy(isProject = true) },
+        )
+        val report = ProjectDiagnostics.render(
+            ProjectDiagnostics.Input(
+                appVersion = "0.3.13", nowIso = "2026-09-15T06:00:00Z", extendedMode = true, projectsCapability = true, accountSession = true,
+                listFromCache = false, lastRefreshedIso = null, agents = rows, placementOf = { null }, rootSyncs = emptyMap(),
+                glyphOf = { icon -> if (icon == "target") "own:target" else null },
+            ),
+        )
+
+        assertThat(report).contains("roots (id · signal · children by kind · last membership pass), each with its appearance as the record spells it and the glyph this build draws for it:")
+        assertThat(report).contains("…target signal=row.isProject")
+        assertThat(report).contains("    appearance: icon=\"target\" glyph=own:target colorId=\"cyan\"")
+        assertThat(report).contains("    appearance: icon=\"hologram-from-cursor-4\" glyph=UNKNOWN (drawn as the cube) colorId=\"purple\"")
+        assertThat(report).contains("    appearance: none (drawn as the default cube in the default tone)")
+        assertThat(report).doesNotContain("Murmur")
+        assertThat(report).doesNotContain("Shipyard")
+    }
+
+    @Test
     fun `ids are shortened to a tail that tells rows apart without naming them`() {
         assertThat(ProjectDiagnostics.tail("bc-6c5768e2-379e-5d25-969b-23cb015f0e15")).isEqualTo("…5f0e15")
         assertThat(ProjectDiagnostics.tail("bc-1")).isEqualTo("bc-1")
