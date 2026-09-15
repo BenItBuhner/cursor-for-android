@@ -28,7 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -112,9 +112,13 @@ class PinnedResolutionTest {
         val agents = agents()
         agents.refresh()
         assertThat(agents.agent("bc-9")).isNull()
-        prefs.setPinnedIds(setOf("bc-9"))
-        withTimeout(5_000) { while (agents.agent("bc-9") == null) delay(10) }
-        assertThat(agents.agent("bc-9")?.name).isEqualTo("Chat 9")
+        assertThat(prefs.setPinnedIds(setOf("bc-9"))).isTrue()
+        // Awaited on the list's own publication rather than by polling. The pin's collector is told of the write by
+        // `PreferencesStore` itself — DataStore 1.1's flow could drop the push to a collector that raced the write
+        // (b/431787506), which is what left this wait to time out with the pin written and the row never fetched.
+        val landed = withTimeout(5_000) { agents.state.first { s -> s.agents.any { it.id == "bc-9" } } }
+        assertThat(landed.agents.first { it.id == "bc-9" }.name).isEqualTo("Chat 9")
+        assertThat(agents.unresolvedPinned()).isEmpty()
     }
 
     @Test

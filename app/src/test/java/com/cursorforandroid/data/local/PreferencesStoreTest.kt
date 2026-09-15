@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -115,6 +116,42 @@ class PreferencesStoreTest {
         assertThat(prefs.localAgentState.first().pinnedIds).isEmpty()
         prefs.togglePinnedAwaitingServer("bc-2", recordPending = false)
         assertThat(prefs.localAgentState.first().pinnedIds).containsExactly("bc-2")
+    }
+
+    /**
+     * A store whose flow never pushes an update to a collector already collecting — what DataStore 1.1's `data` does
+     * to a collector whose collection raced the write (b/431787506, fixed upstream only from 1.3.0-alpha03) — while a
+     * fresh read returns the latest, as the real store's does.
+     */
+    private class DroppedPushes(context: Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("dropped_pushes") },
+        )
+
+        override val data: Flow<Preferences> get() = kotlinx.coroutines.flow.flow { emit(delegate.data.first()); kotlinx.coroutines.awaitCancellation() }
+
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences = delegate.updateData(transform)
+    }
+
+    @Test
+    fun `a collector sees every write this process makes, even when the store's flow drops the push`() = runBlocking<Unit> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = PreferencesStore(context, DroppedPushes(context))
+        val seen = java.util.concurrent.CopyOnWriteArrayList<Set<String>>()
+        val collecting = launch(Dispatchers.Default) { prefs.localAgentState.collect { seen += it.pinnedIds } }
+        kotlinx.coroutines.withTimeout(5_000) { while (seen.isEmpty()) kotlinx.coroutines.yield() }
+        assertThat(seen.last()).isEmpty()
+
+        // The store's flow will never say so; the write itself is what the collector is told.
+        assertThat(prefs.setPinnedIds(setOf("bc-9"))).isTrue()
+        kotlinx.coroutines.withTimeout(5_000) { while (seen.none { "bc-9" in it }) kotlinx.coroutines.yield() }
+        assertThat(prefs.localAgentState.first().pinnedIds).containsExactly("bc-9")
+        // And a later collector starts from what was written, not from what the store's flow last pushed.
+        assertThat(prefs.togglePinnedAwaitingServer("bc-10", recordPending = false)).isTrue()
+        kotlinx.coroutines.withTimeout(5_000) { while (seen.none { "bc-10" in it }) kotlinx.coroutines.yield() }
+        assertThat(seen.last()).containsExactly("bc-9", "bc-10")
+        collecting.cancel()
     }
 
     /** The real store, with its writes refused on demand: what a full disk or an unreadable file does. */
