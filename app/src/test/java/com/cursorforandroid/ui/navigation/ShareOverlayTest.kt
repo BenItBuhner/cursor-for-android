@@ -51,7 +51,8 @@ class ShareOverlayTest {
                     graph = graph,
                     user = CursorUser("Demo", "demo@cursor.local", "Demo", "User", null),
                     isDemo = true,
-                    wide = false,
+                    windowWidthDp = 411,
+                    windowHeightDp = 914,
                     deepLinkAgentId = null,
                     onDeepLinkConsumed = {},
                 )

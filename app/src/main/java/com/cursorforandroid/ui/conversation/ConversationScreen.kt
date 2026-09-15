@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -42,7 +43,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -71,6 +73,7 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
+import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
@@ -85,14 +88,21 @@ import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
+import com.cursorforandroid.ui.navigation.LocalWindowPosture
+import com.cursorforandroid.ui.navigation.WindowPosture
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
 import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
+import com.cursorforandroid.ui.panel.PanelPane
+import com.cursorforandroid.ui.panel.PanelSectionId
+import com.cursorforandroid.ui.panel.PanelState
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
+import com.cursorforandroid.ui.panel.SidePanelState
 import com.cursorforandroid.ui.panel.rememberPanelActions
 import com.cursorforandroid.ui.panel.rememberSidePanelState
+import com.cursorforandroid.domain.Subscriptions
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -126,8 +136,16 @@ fun ConversationScreen(
     onOpenSidebar: (() -> Unit)? = null,
     /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
+    /**
+     * Composed inside another conversation's panel (a side chat tab): the transcript and the composer alone — no
+     * header, no pills, no panel of its own — since the host's chrome frames it.
+     */
+    embedded: Boolean = false,
+    /** The reader dragged the panel's pane to a new width (dp); the shell keeps it. Null where the panel is a sheet. */
+    onPanelResize: ((Int) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
+    val posture = LocalWindowPosture.current
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent by viewModel.agent.collectAsStateWithLifecycle()
@@ -270,6 +288,16 @@ fun ConversationScreen(
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
     // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
     val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
+    // The pills above the composer, from what the screen and the panel already hold: the workers under this chat by
+    // the list's rows, the transcript's subscriptions, the changes as the panel's Changes section would count them.
+    val pills = remember(agentList.agents, agentId, coordinatorMode, conversation.items, panel.pullRequest, panel.diff, panel.content, canOpenDesktop) {
+        ConversationPillsState(
+            agents = ConversationPillsState.AgentsSummary.of(agentId, agentList.agents, isCoordinator = coordinatorMode),
+            listening = Subscriptions.of(conversation.items),
+            changes = changesSummary(panel),
+            canOpenDesktop = canOpenDesktop,
+        )
+    }
     (panel.desktop as? DesktopState.Open)?.let { open ->
         DesktopDialog(
             session = open.session,
@@ -290,19 +318,39 @@ fun ConversationScreen(
         }
     }
 
-    SidePanel(
-        state = panelState,
+    // The panel's expand control: a pane grows to the most the window allows, a sheet to the window's width.
+    var panelExpanded by rememberSaveable { mutableStateOf(false) }
+    val expandedPosture = if (panelExpanded) posture.copy(panelWidthDp = WindowPosture.PANEL_MAX_DP) else posture
+    val panelContent: @Composable () -> Unit = {
+        // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
+        // open into the same lightbox as the transcript's.
+        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
+            ConversationPanel(
+                panel,
+                panelActions,
+                onClose = { scope.launch { panelState.close() } },
+                onExpand = { panelExpanded = !panelExpanded },
+                expanded = panelExpanded,
+                // A side chat opened from the panel is composed here, beside its parent, as its own conversation.
+                sideChatContent = { sideChatId -> ConversationScreen(graph = graph, agentId = sideChatId, onBack = null, onOpenAgent = onOpenAgent, embedded = true) },
+            )
+        }
+    }
+    // The panel is a pane beside the content where the window has room for both (see WindowPosture.panelAsPane),
+    // a sheet over it otherwise; an embedded chat has no panel, its host's frames it.
+    val paneLayout = !embedded && expandedPosture.panelAsPane
+    ConversationFrame(
+        embedded = embedded,
+        pane = paneLayout,
+        panelState = panelState,
+        paneWidth = expandedPosture.paneWidthDp.dp,
+        panelExpanded = panelExpanded,
+        onPanelResize = onPanelResize,
+        panelContent = panelContent,
         modifier = modifier,
-        panelContent = {
-            // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
-            // open into the same lightbox as the transcript's.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
-                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
-            }
-        },
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
-        CursorHeader(
+        if (!embedded) CursorHeader(
             title = agent?.name ?: "Chat",
             subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
             leading = {
@@ -311,15 +359,11 @@ fun ConversationScreen(
                     onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
                 }
             },
+            // A Project's coordinator is named with its icon, as the web's header names a Project chat.
+            titleGlyph = if (agent?.looksLikeProject == true) ({ ProjectGlyph(agent?.projectAppearance) }) else null,
             trailing = {
-                // The pull request lives here and nowhere else in the chat: its own button beside the menu, in the same
-                // green glyph the list rows use for it. It is the one thing a reader most often leaves the chat for, and
-                // the header stays in reach however long the transcript gets. The subtitle already names the branch.
-                agent?.prUrl?.let { prUrl ->
-                    FlatIconButton(CursorIcons.GitPullRequest, "Open pull request", tint = colors.gitAdded, onClick = { uriHandler.openUri(prUrl) })
-                }
-                // The panel's button: the sidebar glyph mirrored, for the sheet that comes in from the other side.
-                FlatIconButton(CursorIcons.Sidebar, "Open panel", onClick = { scope.launch { panelState.open() } }, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f))
+                // The web's order, left to right: "IDE ↗", the menu, then the panel toggle at the far edge.
+                IdeLink(onClick = { (agent?.url ?: CursorEndpoints.webUrl(agentId)).let(uriHandler::openUri) })
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
@@ -327,6 +371,10 @@ fun ConversationScreen(
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
                         if (isDemo || extendedMode) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
+                        // The chat's own facts — its changes, pull request, files, artifacts, side chats, usage — as the
+                        // panel showed them before the Project surface: the sections, reachable from here for any chat.
+                        MenuItem("Chat details", CursorIcons.Layers) { menuOpen = false; panelActions.showSection(PanelSectionId.Header); scope.launch { panelState.open() } }
+                        agent?.prUrl?.let { prUrl -> MenuItem("Open pull request", CursorIcons.GitPullRequest) { menuOpen = false; uriHandler.openUri(prUrl) } }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
@@ -351,6 +399,9 @@ fun ConversationScreen(
                         }
                     }
                 }
+                // The panel's toggle, at the far right edge as on the web: the Project surface for a chat in a Project,
+                // the chat's own sections otherwise.
+                FlatIconButton(CursorIcons.PanelRight, if (panelState.isOpen) "Hide panel" else "Open panel", onClick = { scope.launch { panelState.toggle() } })
             },
         )
 
@@ -483,9 +534,22 @@ fun ConversationScreen(
         // (keyboardInsetPadding); the transcript above takes whatever height is left and keeps its newest turn on the
         // composer through the change, being a bottom-anchored list.
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding(),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding().testTag("composer-column"),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // The web's pills — Agents, Listening, Changes, Open Desktop — sit directly above the composer box, at its
+            // start edge inside the composer's column; then the goal strip and the queue. Not for an embedded chat.
+            if (!embedded && !pills.isEmpty) {
+                Box(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().padding(bottom = 4.dp)) {
+                    ConversationPills(
+                        state = pills,
+                        onAgents = { panelActions.showSection(PanelSectionId.Project); scope.launch { panelState.open() } },
+                        onChanges = { panelActions.showSection(PanelSectionId.Changes); scope.launch { panelState.open() } },
+                        onOpenDesktop = { panelActions.openDesktop(viewOnly = false) },
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    )
+                }
+            }
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
             // trays in above the composer. Each strip keeps the same width and the same gap to the next.
             goal?.let { current ->
@@ -600,6 +664,74 @@ fun ConversationScreen(
             onPick = { until -> snoozeOpen = false; viewModel.snooze(until) },
             onDismiss = { snoozeOpen = false },
         )
+    }
+}
+
+/**
+ * How the chat and its panel share the screen: side by side with the panel as a resizable pane ([pane]), the panel
+ * as a sheet over the chat (the phone's layout, [SidePanel]), or the chat alone when it is [embedded] in another
+ * chat's panel. The sheet's state doubles as the pane's: open is open in either layout, so a Fold unfolding with the
+ * sheet open finds the pane open.
+ */
+@Composable
+private fun ConversationFrame(
+    embedded: Boolean,
+    pane: Boolean,
+    panelState: SidePanelState,
+    paneWidth: androidx.compose.ui.unit.Dp,
+    panelExpanded: Boolean,
+    onPanelResize: ((Int) -> Unit)?,
+    panelContent: @Composable () -> Unit,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    val colors = CursorTheme.colors
+    when {
+        embedded -> Box(modifier.fillMaxSize()) { content() }
+        pane -> Row(modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxSize()) { content() }
+            if (panelState.isOpen) PanelPane(width = paneWidth, onResize = onPanelResize) { panelContent() }
+        }
+        // The sheet sits on the canvas colour, as the web's panel does; the scrim behind it is what sets it off.
+        else -> SidePanel(state = panelState, modifier = modifier, expanded = panelExpanded, containerColor = colors.canvas, panelContent = panelContent) { content() }
+    }
+}
+
+/** The Changes pill's figures: the pull request's files, else the branch diff's, else the transcript's edits — the panel's own order. */
+internal fun changesSummary(panel: PanelState): ConversationPillsState.ChangesSummary? {
+    panel.pullRequest.valueOrNull?.files?.takeIf { it.isNotEmpty() }?.let { files ->
+        return ConversationPillsState.ChangesSummary(files.sumOf { it.additions }, files.sumOf { it.deletions }, files.size)
+    }
+    panel.branchDiffFiles.takeIf { it.isNotEmpty() }?.let { files ->
+        return ConversationPillsState.ChangesSummary(files.sumOf { it.additions }, files.sumOf { it.deletions }, files.size)
+    }
+    val changes = panel.content.changes
+    if (changes.isEmpty()) return null
+    val additions = changes.map { it.linesAdded }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
+    val deletions = changes.map { it.linesRemoved }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
+    return ConversationPillsState.ChangesSummary(additions, deletions, changes.size)
+}
+
+/**
+ * The web header's "IDE ↗": the chat where Cursor's own client opens it. There is no IDE on a phone, so the link
+ * opens the chat on cursor.com, which is where the desktop's "IDE" hand-off lands too.
+ */
+@Composable
+private fun IdeLink(onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(
+        Modifier
+            .heightIn(min = 28.dp)
+            .pressable(onClick, CursorTheme.shapes.base)
+            .semantics { contentDescription = "Open in IDE" }
+            .padding(horizontal = 8.dp)
+            .testTag("header-ide"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("IDE", style = type.small, color = colors.textSecondary, maxLines = 1)
+        Spacer(Modifier.width(2.dp))
+        Icon(CursorIcons.ArrowUpRight, null, tint = colors.iconSecondary, modifier = Modifier.size(12.dp))
     }
 }
 

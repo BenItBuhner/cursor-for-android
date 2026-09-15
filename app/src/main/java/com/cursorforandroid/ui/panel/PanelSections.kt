@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.panel
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.cursorforandroid.domain.AgentDiffFile
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ToolPayload
@@ -101,6 +102,33 @@ interface PanelActions {
     /** Wakes the chat's machine ahead of a follow-up. */
     fun wake()
 
+    // -- the panel's surfaces and tabs (see PanelSurface, PanelTab) ----------------------------------------------------
+
+    /** The Project panel or the chat's sections. */
+    fun showSurface(surface: PanelSurface)
+    fun selectTab(tab: PanelTab)
+    /** Closes a document or side chat tab; the Project tab stays. */
+    fun closeTab(tab: PanelTab)
+    /** Opens the side chat [agentId] beside this conversation, as a tab of the Project panel. */
+    fun openSideChat(agentId: String)
+    /** Opens [path] of [store] as a document tab (Preview for markdown, Source for the rest). */
+    fun openDocument(store: AgentStoreRef, path: String)
+    /** The Project tab, on its notes ([allFiles] false) or its files ([allFiles] true): the header's toggle. */
+    fun openProject(allFiles: Boolean)
+    /** The chat's sections with [section] open: where a pill above the composer sends the reader. */
+    fun showSection(section: PanelSectionId)
+
+    // -- Context: the Project's Agent Store and the user's (Extended mode) ---------------------------------------------
+
+    /** Reads which stores the chat has, the Project's notes and the Recents row; folders are listed as they are opened. */
+    fun loadContext(force: Boolean = false)
+    /** Opens or closes a folder of the All Files tree, listing it on first open. */
+    fun toggleFolder(store: AgentStoreRef, path: String)
+    /** Reads (or re-reads) the document behind [tab]. */
+    fun loadDocument(tab: PanelTab.Document, force: Boolean = false)
+    /** Preview (rendered markdown) or Source (the text) for a document tab. */
+    fun setDocumentSource(tab: PanelTab.Document, source: Boolean)
+
     companion object {
         /** Does nothing; for previews and tests of the sections' rendering. */
         val None: PanelActions = object : PanelActions {
@@ -138,6 +166,17 @@ interface PanelActions {
             override fun resumeRun() = Unit
             override fun stopRun() = Unit
             override fun wake() = Unit
+            override fun showSurface(surface: PanelSurface) = Unit
+            override fun selectTab(tab: PanelTab) = Unit
+            override fun closeTab(tab: PanelTab) = Unit
+            override fun openSideChat(agentId: String) = Unit
+            override fun openDocument(store: AgentStoreRef, path: String) = Unit
+            override fun openProject(allFiles: Boolean) = Unit
+            override fun showSection(section: PanelSectionId) = Unit
+            override fun loadContext(force: Boolean) = Unit
+            override fun toggleFolder(store: AgentStoreRef, path: String) = Unit
+            override fun loadDocument(tab: PanelTab.Document, force: Boolean) = Unit
+            override fun setDocumentSource(tab: PanelTab.Document, source: Boolean) = Unit
         }
     }
 }

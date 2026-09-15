@@ -51,6 +51,7 @@ import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoPullRequests
 import com.cursorforandroid.data.demo.DemoReview
+import com.cursorforandroid.data.demo.DemoStores
 import com.cursorforandroid.data.local.AppCaches
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -76,6 +77,7 @@ import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectRepository
+import com.cursorforandroid.data.repo.AgentStoreRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
 import com.cursorforandroid.data.repo.RemoteRepository
@@ -90,6 +92,7 @@ import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
 import com.cursorforandroid.domain.InteractionResolution
@@ -296,6 +299,7 @@ class AppGraph(
         override suspend fun pause(agentId: String, runId: String?) = lazyProjectApi.value.pause(agentId, runId)
         override suspend fun resume(agentId: String) = lazyProjectApi.value.resume(agentId)
         override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
+        override suspend fun stores(): List<AgentStoreRef> = lazyProjectApi.value.stores()
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
         override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(requesterId, storeId, relativePath)
@@ -421,8 +425,15 @@ class AppGraph(
      * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
      * lacks in either — and, in Extended mode, what a Project's view shows and does.
      */
-    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities) }
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, demoStore = DemoStores) }
     val projects: ProjectRepository get() = lazyProjects.value
+
+    /**
+     * The panel's Context tabs: the Project's Agent Store (its notes, its files) and the user's own, read through the
+     * same account endpoints as the Project section, behind the `projects` capability; the demo's stores stand in.
+     */
+    private val lazyStores = lazy { AgentStoreRepository(api = projectAccount, capabilities = capabilities, isDemo = { session.isDemo }, demo = DemoStores) }
+    val stores: AgentStoreRepository get() = lazyStores.value
 
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value
@@ -587,6 +598,7 @@ class AppGraph(
             if (lazyPullRequests.isInitialized()) pullRequests.reset()
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyStores.isInitialized()) stores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
             if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
@@ -616,6 +628,7 @@ class AppGraph(
             // The panel's account reads — a pull request the SCM service answered, a workspace listing, a diff — go too.
             if (lazyReviews.isInitialized()) reviews.reset()
             if (lazyWorkspace.isInitialized()) workspace.reset()
+            if (lazyStores.isInitialized()) stores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyAgents.isInitialized()) agents.forgetAccountSources(prefs.localAgentState.first().launchedHereIds)
             session.forgetAccountProfile()
@@ -661,6 +674,7 @@ class AppGraph(
             "pullRequestApi" to lazyPullRequestApi,
             "machineApi" to lazyMachineApi,
             "workspace" to lazyWorkspace,
+            "stores" to lazyStores,
             "remote" to lazyRemote,
             "agents" to lazyAgents,
             "pullRequests" to lazyPullRequests,

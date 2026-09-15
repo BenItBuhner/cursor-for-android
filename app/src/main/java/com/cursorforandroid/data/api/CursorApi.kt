@@ -125,5 +125,7 @@ object CursorEndpoints {
     const val BASE_URL = "https://api.cursor.com/"
     fun streamUrl(agentId: String, runId: String) = "${BASE_URL}v1/agents/$agentId/runs/$runId/stream"
     fun webUrl(agentId: String) = "https://cursor.com/agents/$agentId"
+    /** The web's Automations page, which the sidebar's row opens: the app has no automations surface of its own. */
+    const val AUTOMATIONS_URL = "https://cursor.com/automations"
     const val DASHBOARD_API_KEYS = "https://cursor.com/dashboard/api"
 }

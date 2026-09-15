@@ -37,6 +37,10 @@ import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import org.junit.Rule
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import com.cursorforandroid.domain.GroupBy
+import com.cursorforandroid.domain.ListPreferences
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -73,26 +77,38 @@ class SidebarSectionsTest {
     }
 
     @Test
-    fun `a Project's workers stay behind their count until the row's chevron is tapped`() {
+    fun `a Project's row lists the Project alone, as the web's does, and a search still finds the chats under it`() {
         val project = row("proj", "Billing launch", isProject = true, children = listOf(row("w1", "Webhook worker"), row("w2", "Usage aggregation", children = listOf(row("w3", "Backfill subagent")))))
         showSidebar(sections = listOf(AgentSection(AgentListOrganizer.PROJECTS_KEY, "Projects", listOf(project)), AgentSection("date:Today", "Today", listOf(row("today", "Morning standup")))))
         compose.onNodeWithText("Projects").assertIsDisplayed()
         compose.onNodeWithText("Billing launch").assertIsDisplayed()
+        // Its workers and their subagents are the coordinator's panel's, not the sidebar's: no count, no chevron.
         compose.onNodeWithText("Webhook worker").assertDoesNotExist()
-        // Three chats hang off the Project: the two workers and the subagent one of them spawned.
-        compose.onNodeWithText("3").assertIsDisplayed()
-
-        compose.onNodeWithContentDescription("Show chats under Billing launch").performClick()
-        compose.onNodeWithText("Webhook worker").assertIsDisplayed()
-        compose.onNodeWithText("Usage aggregation").assertIsDisplayed()
-        compose.onNodeWithText("Backfill subagent").assertDoesNotExist()
-        compose.onNodeWithContentDescription("Show chats under Usage aggregation").performClick()
-        compose.onNodeWithText("Backfill subagent").assertIsDisplayed()
-
-        compose.onNodeWithContentDescription("Hide chats under Billing launch").performClick()
-        compose.onNodeWithText("Webhook worker").assertDoesNotExist()
-        compose.onNodeWithText("Backfill subagent").assertDoesNotExist()
+        compose.onNodeWithText("3").assertDoesNotExist()
+        compose.onAllNodesWithContentDescription("Show chats under Billing launch").assertCountEquals(0)
         compose.onNodeWithText("Morning standup").assertIsDisplayed()
+
+        // A search opens the tree so every match is shown where it sits.
+        compose.onNodeWithContentDescription("Search").performClick()
+        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("work")
+        compose.onNodeWithText("Webhook worker").assertIsDisplayed()
+        compose.onNodeWithText("Backfill subagent").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the web's date buckets are listed even when empty, in its order`() {
+        showSidebar()
+        compose.onNodeWithText("Last 7 Days").assertIsDisplayed()
+        compose.onNodeWithText("Last 30 Days").assertIsDisplayed()
+        compose.onNodeWithText("Older").assertIsDisplayed()
+        // The list's filter sits on the first bucket's label, as the web puts it.
+        compose.onNodeWithContentDescription("Filter and group chats").assertIsDisplayed()
+        val sections = listOf(AgentSection("date:Yesterday", "Yesterday", listOf(row("yday", "Old chat"))))
+        val filled = withEmptyDateBuckets(sections, ListPreferences())
+        assertThat(filled.map { it.title }).containsExactly("Today", "Yesterday", "Last 7 Days", "Last 30 Days", "Older").inOrder()
+        assertThat(filled.single { it.title == "Yesterday" }.rows).hasSize(1)
+        // Grouped another way, the buckets are not the web's and nothing is added.
+        assertThat(withEmptyDateBuckets(sections, ListPreferences(groupBy = GroupBy.Repo))).isEqualTo(sections)
     }
 
     @Test
@@ -159,7 +175,7 @@ class SidebarSectionsTest {
             }
         }
 
-        compose.onNodeWithContentDescription("Search chats").performClick()
+        compose.onNodeWithContentDescription("Search").performClick()
         val field = compose.onAllNodes(hasSetTextAction()).onFirst()
         // One character, then a list recomposition that still carries the old (empty) query — the combine that
         // organises the sidebar runs off the main thread, so this is what a keystroke actually looks like.
