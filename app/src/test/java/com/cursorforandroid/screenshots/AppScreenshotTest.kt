@@ -421,16 +421,18 @@ class AppScreenshotTest {
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("New chat")).fetchSemanticsNodes().isNotEmpty() }
         waitForSidebarSections()
         compose.onNodeWithContentDescription("Filter and group chats").performClick()
-        waitForText("Read All")
+        // The Actions card leads the sheet: Read all, with the unread count under it.
+        waitForText("Read all")
+        waitForText("unread chats")
         capture("04_chats_filter")
 
-        compose.onNodeWithText("Read All").performClick()
-        // The count is the UI's word that the write landed. Do not read DataStore from waitUntil:
+        compose.onNodeWithText("Read all").performClick()
+        // The row's own word is the UI's word that the write landed. Do not read DataStore from waitUntil:
         // that blocks the main thread and the mark-all coroutine never finishes.
-        compose.waitUntil(10_000) {
-            compose.onAllNodes(hasContentDescription("unread", substring = true)).fetchSemanticsNodes().isEmpty()
-        }
+        waitForText("Nothing unread", 10_000)
         compose.waitForIdle()
+        // Nothing left to read: the action stays listed, dimmed, so the sheet reads the same either way.
+        capture("58_chats_filter_all_read")
         Espresso.pressBack()
         compose.waitUntil(10_000) { compose.onAllNodesWithText("Grouping").fetchSemanticsNodes().isEmpty() }
         compose.waitForIdle()
