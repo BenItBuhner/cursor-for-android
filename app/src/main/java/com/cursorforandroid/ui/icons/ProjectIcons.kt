@@ -1,6 +1,5 @@
 package com.cursorforandroid.ui.icons
 
-import android.util.Log
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.SolidColor
@@ -26,8 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Names are matched the way the desktop matches them: exact, after trimming. A name this build has never heard
  * of draws as [DEFAULT_ICON], the cube the Agents Window itself falls back to (`project-agents.js`), so a Project
- * given an icon by a newer Cursor still reads as a Project here; the miss is logged once per name (tag
- * [LOG_TAG]) and the Project diagnostics export names it (see [glyphName]).
+ * given an icon by a newer Cursor still reads as a Project here.
  */
 object ProjectIcons {
 
@@ -43,12 +41,8 @@ object ProjectIcons {
     /** The picker's sections; together they hold every id of [ids] exactly once. */
     val groups: List<ProjectIconGroup> = ProjectIconCatalog.GROUPS
 
-    /** The logcat tag an unknown icon id is reported under. */
-    const val LOG_TAG = "ProjectIcons"
-
     private val specs: HashMap<String, ProjectIconSpec> by lazy { ProjectIconCatalog.specs() }
     private val vectors = ConcurrentHashMap<String, ImageVector>()
-    private val reportedUnknown = ConcurrentHashMap.newKeySet<String>()
 
     /** The picker id [name] stands for — itself, or the id its alias points at — or null for a name the account would refuse. */
     fun canonical(name: String?): String? {
@@ -63,26 +57,10 @@ object ProjectIcons {
     /** True when [name] is drawn with a neutral glyph because its mark has no open-licensed rendering. */
     fun isStandIn(name: String?): Boolean = canonical(name) in ProjectIconCatalog.STAND_INS
 
-    /** The glyph for [name], or the [DEFAULT_ICON] cube for a name the catalog does not know (logged once per name). */
+    /** The glyph for [name], or the [DEFAULT_ICON] cube for a name the catalog does not know. */
     fun vector(name: String?): ImageVector {
-        val id = canonical(name) ?: DEFAULT_ICON.also { reportUnknown(name) }
+        val id = canonical(name) ?: DEFAULT_ICON
         return vectors.getOrPut(id) { build(id, specs.getValue(id)) }
-    }
-
-    /**
-     * What [name] is drawn with, as the catalog names it — `lucide:<icon>`, `simple:<slug>`, `own:<glyph>` or
-     * `cursor:cube` — or null for a name the catalog does not know (which draws the cube). The diagnostics export
-     * prints it beside the raw id, so a Project whose icon misses can be reported with the exact name.
-     */
-    fun glyphName(name: String?): String? = canonical(name)?.let { ProjectIconCatalog.GLYPHS[it] }
-
-    /** The unknown names [vector] has fallen back on so far in this process, for tests and diagnostics. */
-    fun unknownNamesSeen(): Set<String> = reportedUnknown.toSet()
-
-    private fun reportUnknown(name: String?) {
-        val raw = name?.trim().orEmpty()
-        if (raw.isEmpty() || !reportedUnknown.add(raw)) return
-        Log.w(LOG_TAG, "Unknown Project icon id \"$raw\" (catalog: Cursor ${ProjectIconCatalog.CURSOR_VERSION}, ${ids.size} ids); drawing the ${DEFAULT_ICON} instead")
     }
 
     /** A readable name for [id]: the brand's own spelling where it has one, the id's words otherwise. */
