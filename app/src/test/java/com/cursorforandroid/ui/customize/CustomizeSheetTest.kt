@@ -2,9 +2,14 @@ package com.cursorforandroid.ui.customize
 
 import android.content.Context
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -85,6 +90,29 @@ class CustomizeSheetTest {
         compose.onNodeWithText("Repo").performClick()
         awaitOnScreen { composed("All repositories") }
         return viewModel
+    }
+
+    @Test
+    fun `the Actions card leads the sheet, and Read all marks every chat read and then goes off`() {
+        val viewModel = AgentsViewModel(graph)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) { CustomizeSheet(viewModel, onDismiss = {}) }
+        }
+        awaitOnScreen { composed("Grouping") && viewModel.uiState.value.unreadCount == repoCount }
+        // Actions sit above Grouping and the filters, in their own card, with the count on the row.
+        val actionsTop = compose.onNodeWithTag("sheet-actions").fetchSemanticsNode().boundsInRoot.top
+        assertThat(actionsTop).isLessThan(compose.onNodeWithText("Grouping").fetchSemanticsNode().boundsInRoot.top)
+        assertThat(actionsTop).isLessThan(compose.onNodeWithText("Status").fetchSemanticsNode().boundsInRoot.top)
+        compose.onNodeWithText("Actions").assertIsDisplayed()
+        compose.onNodeWithText("$repoCount unread chats").assertIsDisplayed()
+        compose.onNodeWithTag("sheet-action-$READ_ALL").assertIsEnabled()
+
+        compose.onNodeWithTag("sheet-action-$READ_ALL").performClick()
+        awaitOnScreen { viewModel.uiState.value.unreadCount == 0 }
+        compose.onNodeWithText("Nothing unread").assertIsDisplayed()
+        compose.onNodeWithTag("sheet-action-$READ_ALL").assertIsNotEnabled()
+        // Read all is the card's only action, and the filters list no such row of their own any more.
+        assertThat(compose.onAllNodesWithText(READ_ALL).fetchSemanticsNodes()).hasSize(1)
     }
 
     @Test
