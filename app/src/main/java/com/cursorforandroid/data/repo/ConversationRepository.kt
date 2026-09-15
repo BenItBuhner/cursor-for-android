@@ -882,8 +882,9 @@ class ConversationRepository(
                 run.id in traceQueue || run.id in traceInFlight -> pending++
                 run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> expired++
                 run.id in failedTraces -> failed++
-                // Not asked yet (the load is still on its way to asking): pending, not failed.
-                else -> pending++
+                // Not asked yet: the load is still on its way to asking — unless it failed before it could, in which
+                // case the run's trace is as unread as one whose replay failed, and Retry asks for it.
+                else -> if (fetched || state.value.isLoading) pending++ else failed++
             }
         }
         return TraceStatus(shown, pending, expired, failed)
@@ -1205,6 +1206,8 @@ class ConversationRepository(
     private fun Entry.reportLoadFailure(cause: Throwable?) {
         val standingIn = synchronized(this) { local.isNotEmpty() }
         state.update { it.copy(isLoading = false, error = if (standingIn) it.error else cause?.userMessage()) }
+        // Republished: the traces the load did not get to ask for read as failed now, with their Retry (see [traceStatus]).
+        publish()
     }
 
     /**
