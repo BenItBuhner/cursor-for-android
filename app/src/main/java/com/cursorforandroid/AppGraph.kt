@@ -707,7 +707,6 @@ class AppGraph(
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
                 managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
-                glyphOf = com.cursorforandroid.ui.icons.ProjectIcons::glyphName,
             ),
         )
     }
