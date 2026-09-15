@@ -11,10 +11,12 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0SourceDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ArtifactPaths
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import java.time.Instant
@@ -581,15 +583,21 @@ internal object DemoData {
     const val PROJECT_ID = "bc-demo-0018"
 
     /**
-     * What the account's list says about the seeds' place among Cursor Projects — which chat is a Project and how it
-     * looks, and which chats hang off it as its workers or side chat — since the demo stands in for the account
-     * service too (see `AgentRepository.applyAccountSnapshots`).
+     * What the account's list says about the seeds — their place among Cursor Projects (which chat is a Project and
+     * how it looks, which chats hang off it as its workers or side chat) and, for chats started elsewhere, the model
+     * their record names (`requested_model`; the desktop's `default` is Auto) — since the demo stands in for the
+     * account service too (see `AgentRepository.applyAccountSnapshots`). The two newest chats (the running machine
+     * chat and the finished Cesium research) carry no model, as a record from before `requested_model` would not.
      */
     val composers: List<ComposerSnapshot> = listOf(
         ComposerSnapshot(PROJECT_ID, isProject = true, projectAppearance = ProjectAppearance(icon = "rocket", colorId = "purple")),
         ComposerSnapshot("bc-demo-0019", parent = AgentParent(PROJECT_ID, AgentParentKind.PROJECT_WORKER)),
         ComposerSnapshot("bc-demo-0020", parent = AgentParent(PROJECT_ID, AgentParentKind.PROJECT_WORKER)),
         ComposerSnapshot("bc-demo-0021", parent = AgentParent(PROJECT_ID, AgentParentKind.SIDE_CHAT)),
+        ComposerSnapshot("bc-demo-0003", model = AccountModel("composer-2.5", listOf(ModelParam("fast", "true")))),
+        ComposerSnapshot("bc-demo-0004", model = AccountModel("claude-fable-5.1-thinking", listOf(ModelParam("context", "1m"), ModelParam("effort", "max")))),
+        ComposerSnapshot("bc-demo-0005", model = AccountModel(AccountModel.AUTO_ID)),
+        ComposerSnapshot("bc-demo-0012", model = AccountModel("gpt-5.6", listOf(ModelParam("effort", "high")))),
     )
 
     /** The seeds' pull requests as GitHub would report them, by URL. */

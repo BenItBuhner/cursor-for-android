@@ -356,6 +356,8 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
                 ),
                 ModelListItemDto(
                     id = "composer-2.5", displayName = "Composer 2.5", description = "Cursor's fast frontier model.",
+                    // `aliases`: "Alternate IDs that resolve to the same model", as the live catalogue lists them.
+                    aliases = listOf("composer-latest", "composer"),
                     parameters = listOf(ModelParameterDefinitionDto("fast", "Fast", listOf(ModelParameterValueDto("false"), ModelParameterValueDto("true", "Fast")))),
                     variants = listOf(
                         ModelVariantDto(params = listOf(ModelParamDto("fast", "true")), displayName = "Composer 2.5", isDefault = true),
@@ -392,6 +394,7 @@ internal class DemoCursorApi(private val store: DemoStore) : CursorApi {
                     repoOwner = "bennett",
                     repoName = "codex-poly-bot",
                     repoUrl = "https://github.com/bennett/codex-poly-bot",
+                    workspaceRootPath = "/home/bennett/projects/codex-poly-bot",
                     scope = "personal",
                 ),
             ),

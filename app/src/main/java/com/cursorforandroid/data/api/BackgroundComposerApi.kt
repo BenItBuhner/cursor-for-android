@@ -2,10 +2,12 @@ package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import kotlinx.coroutines.CancellationException
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.RunStatus
@@ -52,6 +54,8 @@ data class ComposerSnapshot(
      * with `include_status`): running, creating, finished, error or expired; null when the list did not say.
      */
     val status: RunStatus? = null,
+    /** The model the chat runs on, as the record names it (`requested_model`, else `model_details`); null when it named none. */
+    val model: AccountModel? = null,
 ) {
     /** Where the chat belongs by this record's own facts, read the desktop's way (see [AgentScope.of]). */
     val scope: AgentScope get() = AgentScope.of(isProject, parent)
@@ -453,7 +457,29 @@ class BackgroundComposerApi(
         val startedAsNewProject: Boolean? = null,
         /** `int64`, a string in proto3's JSON; what the older service pages by (see `cursor`). */
         val lastMessageActivityAtMs: JsonPrimitive? = null,
+        /** `agent.v1.RequestedModel` (field 59): the model the chat was started or last followed up with. */
+        val requestedModel: RequestedModelDto? = null,
+        /** `aiserver.v1.ModelDetails` (field 28): the older word on the model, the one the Agents Window's badge reads. */
+        val modelDetails: ModelDetailsDto? = null,
     )
+
+    /**
+     * `agent.v1.RequestedModel` as far as it is read: `model_id`, `parameters[{id, value}]`, `max_mode`. The
+     * credentials oneof, `built_in_model` and `is_variant_string_representation` are left alone.
+     */
+    @Serializable
+    internal data class RequestedModelDto(
+        val modelId: String? = null,
+        val maxMode: Boolean? = null,
+        val parameters: List<ModelParameterValueDto> = emptyList(),
+    )
+
+    @Serializable
+    internal data class ModelParameterValueDto(val id: String = "", val value: String = "")
+
+    /** `aiserver.v1.ModelDetails`: `model_name` and `max_mode`; the provider credentials it can carry are not read. */
+    @Serializable
+    internal data class ModelDetailsDto(val modelName: String? = null, val maxMode: Boolean? = null)
 
     @Serializable
     internal data class ProjectAppearanceDto(val icon: String = "", val colorId: String = "")
@@ -555,7 +581,22 @@ class BackgroundComposerApi(
                 source = AgentSource.parse(composer.source?.contentOrNull),
                 hasPendingInteraction = composer.hasPendingInteraction == true,
                 status = composerStatus(composer.status),
+                model = accountModel(composer.requestedModel, composer.modelDetails),
             )
+        }
+
+        /**
+         * The record's model, read the way the desktop reads a cloud agent's: `requested_model` when it names an
+         * id (with its parameters and max mode), else `model_details.model_name` (with its max mode), else none.
+         * A parameter without an id is dropped.
+         */
+        internal fun accountModel(requested: RequestedModelDto?, details: ModelDetailsDto?): AccountModel? {
+            AccountModel.of(
+                requested?.modelId,
+                requested?.parameters.orEmpty().filter { it.id.isNotBlank() }.map { ModelParam(it.id.trim(), it.value.trim()) },
+                requested?.maxMode == true,
+            )?.let { return it }
+            return AccountModel.of(details?.modelName, emptyList(), details?.maxMode == true)
         }
 
         /** `aiserver.v1.BackgroundComposerStatus` by name or number: RUNNING 1, FINISHED 2, ERROR 3, CREATING 4, EXPIRED 5. */

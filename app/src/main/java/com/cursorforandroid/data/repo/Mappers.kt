@@ -63,6 +63,7 @@ fun ModelListItemDto.toModel(): ModelOption = ModelOption(
     parameters = parameters.orEmpty().map { p ->
         ModelParameter(id = p.id, displayName = p.displayName, values = p.values.map { ModelParameterValue(it.value, it.displayName) })
     },
+    aliases = aliases.orEmpty().map { it.trim() }.filter { it.isNotEmpty() },
 )
 
 /** Builds the list-row model from the v1 summary, optionally enriched with the legacy v0 record. */
@@ -137,6 +138,7 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         modelDisplayName = previous?.modelDisplayName,
         modelId = previous?.modelId,
         modelParams = previous?.modelParams.orEmpty(),
+        accountModel = previous?.accountModel,
         durationMs = previous?.durationMs,
         source = previous?.source,
         isProject = previous?.isProject ?: false,
@@ -214,6 +216,7 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         modelDisplayName = previous?.modelDisplayName,
         modelId = previous?.modelId,
         modelParams = previous?.modelParams.orEmpty(),
+        accountModel = previous?.accountModel,
         durationMs = latestRun?.durationMs ?: previous?.durationMs,
         source = previous?.source,
         isProject = previous?.isProject ?: false,

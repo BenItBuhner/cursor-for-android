@@ -12,6 +12,7 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.data.repo.TraceStatus
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.BuiltInSlashCommands
@@ -24,6 +25,7 @@ import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
@@ -32,8 +34,6 @@ import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.domain.ToolPayload
-import com.cursorforandroid.domain.choiceFor
-import com.cursorforandroid.domain.choiceLabelled
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
@@ -63,21 +63,27 @@ data class ConversationUiState(
 )
 
 /**
- * The follow-up composer's model picker. The API never says which model a chat runs on, so [currentLabel] and
- * [current] are what this device recorded when it launched the chat or last switched it, and stay null for chats
- * started elsewhere. [override] is the pick for the next follow-up: the request carries it and, as the server keeps
- * the switch for the runs after, it becomes the chat's model once that run is accepted. Without one the request
- * carries no model and the chat stays on whatever it has been using.
+ * The follow-up composer's model picker. What the chat runs on is resolved in order (see [ModelResolution.forChat]):
+ * the account's record of the chat (Extended mode — the documented API never says), what this device recorded when
+ * it launched or last switched the chat, and, with neither, Auto as an assumption ([currentAssumed]). [override] is
+ * the pick for the next follow-up: the request carries it and, as the server keeps the switch for the runs after,
+ * it becomes the chat's model once that run is accepted. Without one the request carries no model and the chat
+ * stays on whatever it has been using — the assumed Auto included.
  */
 data class FollowUpModelState(
     val models: List<ModelOption> = emptyList(),
     val isLoading: Boolean = false,
     /** `GET /v1/models` failed and nothing is cached; the picker offers a retry. */
     val unavailable: Boolean = false,
-    /** The name of the chat's model — the catalog's when [current] is resolved, the recorded one otherwise. */
+    /**
+     * The name of the chat's model — the catalog's when [current] is resolved, the record's or the recorded one
+     * otherwise; null only while the chat's row has not been read at all.
+     */
     val currentLabel: String? = null,
     /** The chat's model's entry in [models]; null when the chat's model is unknown or the catalog no longer lists it. */
     val current: ModelChoice? = null,
+    /** Nothing reports the chat's model: [currentLabel] is Auto by assumption, and the picker says so. */
+    val currentAssumed: Boolean = false,
     val override: ModelChoice? = null,
     /**
      * The mode the next follow-up asks for; null keeps the conversation's mode. Agent and plan travel on the documented
@@ -89,8 +95,11 @@ data class FollowUpModelState(
 ) {
     /** What the picker shows checked: the pick for the next run, else the chat's current model when the catalog has it. */
     val selected: ModelChoice? get() = override ?: current
-    /** The model's name alone — never its parameters. The mode is the composer's pill, not part of the chip. */
-    val chipLabel: String get() = override?.label ?: currentLabel ?: "Model"
+    /**
+     * The model's name alone — never its parameters. The mode is the composer's pill, not part of the chip. Never a
+     * bare "Model": before the row has been read, the chip already assumes Auto, as [ModelResolution.forChat] would.
+     */
+    val chipLabel: String get() = override?.label ?: currentLabel ?: AccountModel.AUTO_LABEL
     /** The documented request's plan flag for [mode]: null keeps the conversation's mode (or the mode is one it cannot carry). */
     val planMode: Boolean?
         get() = when (mode) {
@@ -228,14 +237,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     /**
-     * Finds the chat's model in the catalog: by the id recorded with it (its parameters only decide which variant
-     * shows selected), else by its label for rows recorded before the id was kept. The chip then carries the catalog's
-     * name for it; unresolved — the catalog not loaded yet, or the model gone from it — the recorded name stands in,
-     * and the picker shows it on its "Current model" row instead.
+     * The chat's model, resolved as [ModelResolution.forChat] resolves it: the account's record first, this device's
+     * record second, Auto by assumption last. The chip carries the catalog's name for it when the catalog places it;
+     * unresolved — the catalog not loaded yet, or the model gone from it — the record's own name stands in, and the
+     * picker shows it on its "Current model" row instead. A row not read yet resolves to the same assumption.
      */
     private fun pickerState(agent: Agent?, models: List<ModelOption>, local: FollowUpModelState): FollowUpModelState {
-        val current = agent?.modelId?.let { models.choiceFor(it, agent.modelParams) } ?: agent?.modelDisplayName?.let(models::choiceLabelled)
-        return local.copy(models = models, currentLabel = current?.label ?: agent?.modelName, current = current)
+        val resolved = ModelResolution.forChat(agent, models)
+        return local.copy(models = models, currentLabel = resolved.label, current = resolved.choice, currentAssumed = resolved.isAssumed)
     }
 
     /** The catalog is shared with the home composer and fetched once per session; a saved copy shows meanwhile. */

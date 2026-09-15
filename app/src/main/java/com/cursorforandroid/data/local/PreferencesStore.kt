@@ -93,9 +93,13 @@ class PreferencesStore(
         val signInMethod = stringPreferencesKey("sign_in_method")
         val apiKeyExpiresAt = longPreferencesKey("api_key_expires_at")
         val lastRepo = stringPreferencesKey("last_repo")
+        /** The repository last launched on Cloud; a machine's repository is the machine's, and the composer comes back to this one. */
+        val lastCloudRepo = stringPreferencesKey("last_cloud_repo")
         val lastRef = stringPreferencesKey("last_ref")
         val lastModel = stringPreferencesKey("last_model")
         val lastModelParams = stringPreferencesKey("last_model_params")
+        /** When [lastModel] was last written, so a pick made here can be dated against the account's newest chat. */
+        val lastModelAt = longPreferencesKey("last_model_at")
         val lastEnvType = stringPreferencesKey("last_env_type")
         val lastEnvName = stringPreferencesKey("last_env_name")
         val autoCreatePr = booleanPreferencesKey("auto_create_pr")
@@ -357,6 +361,13 @@ class PreferencesStore(
         val modelChosen: Boolean,
         /** Where the last launch ran; [DeviceTarget.Cloud] until a launch has recorded a device. */
         val env: DeviceTarget,
+        /**
+         * The repository last launched on Cloud (see [Keys.lastCloudRepo]); null until a launch on Cloud has named
+         * one. A machine's or pool's repository is the device's own, so this is what Cloud comes back to.
+         */
+        val cloudRepoUrl: String? = null,
+        /** When the model choice was recorded (a launch or a pick), or 0 for a choice from before this was kept. */
+        val modelChosenAtMillis: Long = 0L,
     )
 
     val composerDefaults: Flow<ComposerDefaults> = data.map { p ->
@@ -368,6 +379,8 @@ class PreferencesStore(
             autoCreatePr = p[Keys.autoCreatePr] ?: false,
             modelChosen = p.contains(Keys.lastModel),
             env = storedDevice(p[Keys.lastEnvType], p[Keys.lastEnvName]),
+            cloudRepoUrl = p[Keys.lastCloudRepo],
+            modelChosenAtMillis = p[Keys.lastModelAt] ?: 0L,
         )
     }
 
@@ -506,9 +519,10 @@ class PreferencesStore(
      * Records the model the new-chat picker should open on, without touching the other launch defaults.
      * [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model.
      */
-    suspend fun rememberModel(modelId: String?, params: Map<String, String> = emptyMap()) = edit { p ->
+    suspend fun rememberModel(modelId: String?, params: Map<String, String> = emptyMap(), nowMillis: Long = AppClock.now()) = edit { p ->
         p[Keys.lastModel] = modelId ?: ""
         p[Keys.lastModelParams] = encodeStringMap(params)
+        p[Keys.lastModelAt] = nowMillis
     }
 
     /** [modelId] null records an explicit "Default" choice (stored as an empty id), which restores as no model. */
@@ -519,12 +533,18 @@ class PreferencesStore(
         params: Map<String, String>,
         autoCreatePr: Boolean,
         env: DeviceTarget = DeviceTarget.Cloud,
+        nowMillis: Long = AppClock.now(),
     ) =
         edit { p ->
             if (repoUrl == null) p.remove(Keys.lastRepo) else p[Keys.lastRepo] = repoUrl
+            // A launch on a machine or pool ran in that device's checkout; only a launch on Cloud names the Cloud repository.
+            if (env.isCloud) {
+                if (repoUrl == null) p.remove(Keys.lastCloudRepo) else p[Keys.lastCloudRepo] = repoUrl
+            }
             if (ref == null) p.remove(Keys.lastRef) else p[Keys.lastRef] = ref
             p[Keys.lastModel] = modelId ?: ""
             p[Keys.lastModelParams] = encodeStringMap(params)
+            p[Keys.lastModelAt] = nowMillis
             p[Keys.autoCreatePr] = autoCreatePr
             p[Keys.lastEnvType] = env.type.name
             if (env.name == null) p.remove(Keys.lastEnvName) else p[Keys.lastEnvName] = env.name

@@ -241,11 +241,41 @@ class CatalogRepositoryTest {
         val listed = catalog.loadDevices().getOrThrow()
         assertThat(listed.map { it.target }).containsExactly(DeviceTarget.machine("studio"), DeviceTarget.pool("gpu")).inOrder()
         assertThat(listed[0].online).isTrue()
-        assertThat(listed[0].subtitle).isEqualTo("app")
+        // A name without an owner is no repository: "Empty strings for any-repo workers" is what the fleet sends for those.
+        assertThat(listed[0].subtitle).isEqualTo("Online")
+        assertThat(listed[0].repoUrl).isNull()
         assertThat(listed[1].subtitle).isEqualTo("2 connected · 1 in use")
+        assertThat(listed[1].repoUrl).isNull()
 
         api.failWorkers = IOException("forbidden")
         api.failPools = IOException("forbidden")
         assertThat(catalog.loadDevices().getOrThrow()).isEmpty()
+    }
+
+    /**
+     * `GET /v0/private-workers` names each machine's primary checkout (`repoUrl`, else `repoOwner`/`repoName`, and
+     * `workspaceRootPath`); `GET /v0/private-workers/pools` names the repository a pool is tied to. Both ride on the
+     * picker's rows so the composer's repository can follow the device; an any-repo pool pins none.
+     */
+    @Test
+    fun `workers and pools carry the repository they are checked out at`() = runBlocking<Unit> {
+        api.workers = listOf(
+            WorkerDto(workerId = "a8574fe8", name = "bennett", isInUse = true, repoOwner = "bennett", repoName = "codex-poly-bot", repoUrl = "https://github.com/bennett/codex-poly-bot", workspaceRootPath = "/home/bennett/projects/codex-poly-bot", scope = "personal"),
+            WorkerDto(workerId = "b1", name = "devbox", isInUse = false, repoOwner = "acme", repoName = "infra", scope = "personal"),
+        )
+        api.pools = listOf(
+            PoolDto(name = "payments", connectedWorkerCount = 1, inUseWorkerCount = 0, repoOwner = "acme", repoName = "payments-service", repoUrl = "https://github.com/acme/payments-service"),
+            PoolDto(name = "sandbox", connectedWorkerCount = 0),
+        )
+        val listed = CatalogRepository(session, cache).loadDevices().getOrThrow()
+
+        val bennett = listed.first { it.target == DeviceTarget.machine("bennett") }
+        assertThat(bennett.repoUrl).isEqualTo("https://github.com/bennett/codex-poly-bot")
+        assertThat(bennett.subtitle).isEqualTo("Busy · /home/bennett/projects/codex-poly-bot")
+        val devbox = listed.first { it.target == DeviceTarget.machine("devbox") }
+        assertThat(devbox.repoUrl).isEqualTo("https://github.com/acme/infra")
+        assertThat(devbox.subtitle).isEqualTo("acme/infra")
+        assertThat(listed.first { it.target == DeviceTarget.pool("payments") }.repoUrl).isEqualTo("https://github.com/acme/payments-service")
+        assertThat(listed.first { it.target == DeviceTarget.pool("sandbox") }.repoUrl).isNull()
     }
 }

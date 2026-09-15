@@ -14,6 +14,7 @@ import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptImage
@@ -99,15 +100,94 @@ class ConversationViewModelTest {
         withTimeout(10_000) { isSending.first { !it } }
     }
 
+    /**
+     * Nothing reports this chat's model — not the documented API, not an account record (the demo's Cesium research
+     * carries none): the chip assumes Auto rather than read "Model", nothing is checked, and a follow-up carries no
+     * model, so the chat keeps whatever it has been using.
+     */
     @Test
-    fun `a chat started elsewhere has no known model and the picker offers the catalogue`() {
+    fun `a chat nothing reports a model for assumes Auto and the picker offers the catalogue`() {
         val picker = open(IDLE).picker()
-        assertThat(picker.currentLabel).isNull()
+        assertThat(picker.currentLabel).isEqualTo("Auto")
+        assertThat(picker.currentAssumed).isTrue()
         assertThat(picker.current).isNull()
         assertThat(picker.override).isNull()
         assertThat(picker.selected).isNull()
-        assertThat(picker.chipLabel).isEqualTo("Model")
+        assertThat(picker.chipLabel).isEqualTo("Auto")
         assertThat(picker.models.map { it.id }).containsAtLeast("claude-fable-5.1-thinking", "composer-2.5", "gemini-3.8-flash")
+        // Before the row has even been read the chip says the same.
+        assertThat(FollowUpModelState().chipLabel).isEqualTo("Auto")
+    }
+
+    /**
+     * The account's record names the model (`requested_model`): the chat opens on it, resolved to the catalogue's
+     * entry and the variant nearest the record's parameters, at once — not after the first send.
+     */
+    @Test
+    fun `a chat started elsewhere opens on the model the account's record names`() {
+        // "Cli exploration": claude-fable-5.1-thinking, context 1m, effort max — from the record, nothing sent from here.
+        val picker = open("bc-demo-0004").picker { it.current != null }
+        val claude = picker.models.first { it.id == "claude-fable-5.1-thinking" }
+        assertThat(graph.agents.agent("bc-demo-0004")!!.modelId).isNull()
+        assertThat(picker.current).isEqualTo(ModelChoice(claude, claude.variantWithParams(mapOf("context" to "1m", "effort" to "max"))))
+        assertThat(picker.currentAssumed).isFalse()
+        assertThat(picker.chipLabel).isEqualTo("Claude Fable 5.1")
+        assertThat(picker.selected).isEqualTo(picker.current)
+
+        // "Cesium Revenue Strategy": Composer 2.5 with `fast` on — the record's parameters pick the variant.
+        val composer = open("bc-demo-0003").picker { it.current != null }
+        val composerModel = composer.models.first { it.id == "composer-2.5" }
+        assertThat(composer.current).isEqualTo(ModelChoice(composerModel, composerModel.variants.first { it.param("fast") == "true" }))
+        assertThat(composer.chipLabel).isEqualTo("Composer 2.5")
+    }
+
+    /** The desktop's `default` is Auto: the record's word lands on the catalogue's Auto row, and it is no assumption. */
+    @Test
+    fun `a record naming default opens on the catalogue's Auto row`() {
+        val picker = open("bc-demo-0005").picker { it.current != null }
+        assertThat(picker.current?.model?.id).isEqualTo("auto-smart")
+        assertThat(picker.chipLabel).isEqualTo("Auto")
+        assertThat(picker.currentAssumed).isFalse()
+    }
+
+    /** The account's word is the server's and outranks what this device remembers sending. */
+    @Test
+    fun `the account's record outranks this device's memory of the chat's model`() {
+        graph.agents.patch(IDLE) { it.copy(modelId = "composer-2.5", modelDisplayName = "Composer 2.5", accountModel = AccountModel("gpt-5.6", listOf(ModelParam("effort", "high")))) }
+        val picker = open(IDLE).picker { it.current != null }
+        assertThat(picker.current?.model?.id).isEqualTo("gpt-5.6")
+        assertThat(picker.chipLabel).isEqualTo("GPT-5.6")
+    }
+
+    /** A record's id the catalogue no longer lists still names the chip; an alias resolves like the id. */
+    @Test
+    fun `a record the catalogue cannot place labels the chip with its own name, an alias with the model's`() {
+        graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("claude-9-preview")) }
+        val unplaced = open(IDLE).picker { it.currentLabel == "claude-9-preview" }
+        assertThat(unplaced.current).isNull()
+        assertThat(unplaced.currentAssumed).isFalse()
+        assertThat(unplaced.chipLabel).isEqualTo("claude-9-preview")
+
+        graph.agents.patch(IDLE) { it.copy(accountModel = AccountModel("composer-latest", listOf(ModelParam("fast", "false")))) }
+        val aliased = open(IDLE).picker { it.current?.model?.id == "composer-2.5" }
+        assertThat(aliased.current?.variant?.param("fast")).isEqualTo("false")
+        assertThat(aliased.chipLabel).isEqualTo("Composer 2.5")
+    }
+
+    /** A switch made here is what the server now holds: the account's word on the row moves with it, no stale flash. */
+    @Test
+    fun `a switch sent from here updates the account's word on the row too`() {
+        val vm = open("bc-demo-0004")
+        val gemini = vm.picker().models.first { it.id == "gemini-3.8-flash" }
+        vm.selectModel(gemini, null)
+        vm.sendAndWait("Try it with Gemini")
+
+        assertThat(vm.toastMessage.value).isNull()
+        val after = vm.picker { it.override == null && it.current?.model?.id == "gemini-3.8-flash" }
+        assertThat(after.chipLabel).isEqualTo("Gemini 3.8 Flash")
+        val row = graph.agents.agent("bc-demo-0004")!!
+        assertThat(row.accountModel).isEqualTo(AccountModel("gemini-3.8-flash", emptyList()))
+        assertThat(row.modelId).isEqualTo("gemini-3.8-flash")
     }
 
     /** The chip names the model — "Composer 2.5" — and not the variant it was launched with; the picker shows that. */
@@ -223,7 +303,7 @@ class ConversationViewModelTest {
         vm.selectModel(gemini, null)
         assertThat(vm.picker { it.override != null }.chipLabel).isEqualTo("Gemini 3.8 Flash")
         vm.selectModel(null, null)
-        assertThat(vm.picker { it.override == null }.chipLabel).isEqualTo("Model")
+        assertThat(vm.picker { it.override == null }.chipLabel).isEqualTo("Auto")
     }
 
     /**
@@ -370,9 +450,9 @@ class ConversationViewModelTest {
         assertThat(vm.picker().planMode).isNull()
         vm.setPlanMode(true)
         // The composer wears plan mode as its own pill; the chip stays the model's name alone.
-        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Model")
+        assertThat(vm.picker { it.planMode == true }.chipLabel).isEqualTo("Auto")
         vm.setPlanMode(false)
-        assertThat(vm.picker { it.planMode == false }.chipLabel).isEqualTo("Model")
+        assertThat(vm.picker { it.planMode == false }.chipLabel).isEqualTo("Auto")
     }
 
     @Test

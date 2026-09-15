@@ -178,16 +178,17 @@ class AppScreenshotTest {
         waitForText(text, timeoutMillis)
     }
 
-    private fun enterDemo(graph: AppGraph) {
+    private fun enterDemo(graph: AppGraph, repoChip: String = "codex-poly-bot") {
         waitForText("Try the demo")
         compose.onNodeWithText("Try the demo").performClick()
         compose.waitUntil(20_000) { graph.session.state.value is SessionState.SignedIn }
         waitForText("Ask Cursor to build, fix bugs, explore", 30_000)
         // Repositories and models load in parallel; both selectors must have settled before a capture. The model chip
-        // reads the model's name alone (its variant's parameters live in the picker); the repo chip is matched exactly
-        // because the slug also occurs inside a workspace name in the list.
+        // reads the model's name alone (its variant's parameters live in the picker) — the account's newest chat's
+        // model, Claude Fable 5.1, since nothing was picked on this install; the repo chip is matched exactly because
+        // the slug also occurs inside a workspace name in the list.
         waitForText("Claude Fable 5.1", 30_000)
-        compose.waitUntil(30_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) { compose.onAllNodesWithText(repoChip).fetchSemanticsNodes().isNotEmpty() }
         // Rows are published page by page; what the demo's account list says about them — which chats are Projects,
         // which hang off which — lands with the publish that completes the fetch.
         compose.waitUntil(30_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
@@ -373,6 +374,43 @@ class AppScreenshotTest {
         // Leave the chat, so nothing of it is still streaming when the next test brings up its own app.
         Espresso.pressBack()
         compose.waitForIdle()
+    }
+
+    /**
+     * The device drives the repository: the composer opens on the repository last launched on Cloud, and picking the
+     * machine "bennett" — checked out at bennett/codex-poly-bot per `GET /v0/private-workers` — moves the repository
+     * chip there with the branch list; the repository picker then explains whose the repository is. The model chip
+     * reads the account's newest chat's model the whole time, never a bare "Model".
+     */
+    @Test
+    fun deviceDrivesRepository() {
+        val graph = launchApp()
+        // The last launch on Cloud was against cursor-for-android: that is what the composer opens on.
+        runBlocking { graph.prefs.setComposerDefaults(repoUrl = "https://github.com/bennett/cursor-for-android", ref = "", modelId = null, params = emptyMap(), autoCreatePr = false) }
+        enterDemo(graph, repoChip = "cursor-for-android")
+
+        compose.onNodeWithText("Cloud").performClick()
+        waitForText("My machines")
+        compose.onNodeWithText("bennett").performClick()
+        // The sheet closes and the repository chip follows the machine's checkout.
+        compose.waitUntil(20_000) { compose.onAllNodesWithText("My machines").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(20_000) { compose.onAllNodesWithText("codex-poly-bot").fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Ask Cursor to build, fix bugs, explore"))
+        compose.waitForIdle()
+        capture("69_composer_device_repo")
+
+        compose.onNodeWithText("codex-poly-bot").performClick()
+        waitForText("bennett is checked out at bennett/codex-poly-bot", 20_000)
+        capture("70_composer_device_repo_sheet")
+        Espresso.pressBack()
+        compose.waitForIdle()
+
+        // Back on Cloud, the repository chosen there is back.
+        compose.onNodeWithText("bennett").performClick()
+        waitForText("Cursor-hosted VM")
+        compose.onNodeWithText("Cloud").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithText("Cursor-hosted VM").fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(20_000) { compose.onAllNodesWithText("cursor-for-android").fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test

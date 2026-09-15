@@ -14,6 +14,7 @@ class KnownDevicesTest {
         envName: String? = null,
         updatedAgo: Long = 0,
         name: String = id,
+        repoUrl: String? = "https://github.com/acme/app",
     ) = Agent(
         id = id,
         name = name,
@@ -25,7 +26,7 @@ class KnownDevicesTest {
         createdAtMillis = now - updatedAgo - hour,
         updatedAtMillis = now - updatedAgo,
         latestRunId = "run-$id",
-        repoUrl = "https://github.com/acme/app",
+        repoUrl = repoUrl,
         startingRef = "main",
     )
 
@@ -95,5 +96,51 @@ class KnownDevicesTest {
         val listed = KnownDevices.compose(listOf(agent("a"), agent("b", EnvType.CLOUD, "")))
         assertThat(listed).hasSize(1)
         assertThat(listed.single().target).isEqualTo(DeviceTarget.Cloud)
+    }
+
+    /** A machine's checkout is what its chats ran in: the newest chat's repository is the row's, an older one's fills a gap. */
+    @Test
+    fun `a harvested device carries the repository of the newest chat that ran on it`() {
+        val listed = KnownDevices.compose(
+            listOf(
+                agent("older", EnvType.MACHINE, "box#/home/dev/app", updatedAgo = 2 * hour, repoUrl = "https://github.com/acme/app"),
+                agent("newer", EnvType.MACHINE, "box#/home/dev/infra", updatedAgo = hour, repoUrl = "https://github.com/acme/infra"),
+                agent("no-repo", EnvType.POOL, "gpu", updatedAgo = 0, repoUrl = null),
+                agent("with-repo", EnvType.POOL, "gpu", updatedAgo = hour, repoUrl = "https://github.com/acme/ml"),
+            ),
+        )
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.machine("box"))).isEqualTo("https://github.com/acme/infra")
+        // The pool's newest chat had no repository (an any-repo request); the one before it still says where the pool works.
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.pool("gpu"))).isEqualTo("https://github.com/acme/ml")
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.Cloud)).isNull()
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.machine("unheard-of"))).isNull()
+    }
+
+    /** The fleet endpoint's word on the repository stands over the chats': an any-repo worker pins none, whatever ran on it. */
+    @Test
+    fun `a live row's repository is the fleet's word, chats only date it`() {
+        val pinned = DeviceOption(target = DeviceTarget.machine("box"), subtitle = "/home/dev/app", online = true, section = DeviceSection.Machines, repoUrl = "https://github.com/acme/app")
+        val anyRepo = DeviceOption(target = DeviceTarget.machine("sandbox"), subtitle = "Online", online = true, section = DeviceSection.Machines, repoUrl = null)
+        val listed = KnownDevices.compose(
+            agents = listOf(
+                agent("box-chat", EnvType.MACHINE, "box", updatedAgo = 0, repoUrl = "https://github.com/acme/infra"),
+                agent("sandbox-chat", EnvType.MACHINE, "sandbox", updatedAgo = 0, repoUrl = "https://github.com/acme/infra"),
+            ),
+            live = listOf(pinned, anyRepo),
+        )
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.machine("box"))).isEqualTo("https://github.com/acme/app")
+        assertThat(KnownDevices.repositoryOf(listed, DeviceTarget.machine("sandbox"))).isNull()
+        assertThat(listed.first { it.target == DeviceTarget.machine("box") }.lastUsedAtMillis).isEqualTo(now)
+    }
+
+    @Test
+    fun `the fleet's repository fields become a GitHub URL, or nothing for an any-repo worker`() {
+        assertThat(DeviceOption.repositoryUrl("https://github.com/acme/app", "acme", "app")).isEqualTo("https://github.com/acme/app")
+        assertThat(DeviceOption.repositoryUrl(null, "acme", "app")).isEqualTo("https://github.com/acme/app")
+        assertThat(DeviceOption.repositoryUrl(" ", " acme ", "app")).isEqualTo("https://github.com/acme/app")
+        // "Empty strings for any-repo workers" (`repoOwner`, `repoName`); "Omitted for any-repo workers" (`repoUrl`).
+        assertThat(DeviceOption.repositoryUrl(null, "", "")).isNull()
+        assertThat(DeviceOption.repositoryUrl(null, null, null)).isNull()
+        assertThat(DeviceOption.repositoryUrl(null, "acme", "")).isNull()
     }
 }
