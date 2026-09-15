@@ -8,6 +8,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
@@ -114,6 +115,9 @@ class SettingsExtendedScreenshotTest {
         // The first composition in a cold sandbox loads the native renderer and the fonts; the walkthrough's waits
         // allow the same, so a slow runner does not read as the option never appearing.
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(ExtendedModeTags.PIN_SYNC)).fetchSemanticsNodes().isNotEmpty() }
+        // The About group's API row collects the setting on its own (a second collector of the same flow), and can
+        // still read "off" a frame after the pin sync option has appeared; the frame is captured once both have caught up.
+        compose.waitUntil(30_000) { compose.onAllNodesWithText("Cloud Agents v1 · v0 transcript · Cursor account service").fetchSemanticsNodes().isNotEmpty() }
         scrollToAdvanced()
         compose.onNodeWithText(ExtendedModeCopy.OPTIONS_NOTE).assertIsDisplayed()
         compose.onNodeWithText(ExtendedModeCopy.PIN_SYNC_TITLE).assertIsDisplayed()
