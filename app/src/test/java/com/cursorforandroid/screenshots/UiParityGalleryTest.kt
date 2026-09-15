@@ -10,9 +10,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -60,7 +60,7 @@ import java.util.TimeZone
  * the screenshot job); run by hand with `./gradlew :app:recordRoborazziDebug --tests '*UiParityGalleryTest*'`.
  *
  * A compact window has no rail: its `expanded` is the drawer open over the chat (panel closed, since the drawer
- * covers it), its `hidden` the five panel states; there is no `icon-only`. Wide windows cross all three by all five.
+ * covers it), its `hidden` the five panel states. Wide windows cross the sidebar showing and hidden by all five.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @RunWith(AndroidJUnit4::class)
@@ -138,8 +138,6 @@ class UiParityGalleryTest {
         // The coordinator's transcript settles once its worker cards and the trace are in.
         compose.waitUntil(60_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
         compose.waitUntil(60_000) { onScreen("PR #215 (usage aggregation) is") }
-        // The read marker reaches the rows the rail's glyph is drawn from a beat after the list; the frames wait for it.
-        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Project Cesium billing launch") and hasStateDescription("unread")).fetchSemanticsNodes().isEmpty() }
         settle()
     }
 
@@ -147,26 +145,19 @@ class UiParityGalleryTest {
         if (widthClass == WidthClass.Compact) return
         runBlocking { graph.prefs.setRailState(widthClass.name, rail.name) }
         // The shell keeps the reader's own choice for the composition; the saved one reaches it only after a fresh
-        // composition, so the toggles are used: each steps the rail on to the next state.
-        var steps = 0
-        while (currentRail() != rail && steps < 3) {
+        // composition, so the toggles are used: the sidebar's hides it, the header's brings it back.
+        if (currentRail() != rail) {
             when (currentRail()) {
                 RailState.Expanded -> compose.onNodeWithContentDescription("Toggle sidebar").performClick()
-                RailState.IconOnly -> compose.onNodeWithTag("icon-rail-toggle").performClick()
                 RailState.Hidden -> compose.onNodeWithContentDescription("Open sidebar").performClick()
             }
             settle()
-            steps++
         }
         compose.waitUntil(20_000) { currentRail() == rail }
         settle()
     }
 
-    private fun currentRail(): RailState = when {
-        tagged("icon-rail") -> RailState.IconOnly
-        described("Toggle sidebar") -> RailState.Expanded
-        else -> RailState.Hidden
-    }
+    private fun currentRail(): RailState = if (described("Toggle sidebar")) RailState.Expanded else RailState.Hidden
 
     private fun openPanel() {
         if (!tagged("conversation-panel")) {
@@ -196,13 +187,22 @@ class UiParityGalleryTest {
             "project" -> {
                 openPanel()
                 selectTab("project")
+                if (compose.onAllNodes(hasContentDescription("All Files") and isSelected()).fetchSemanticsNodes().isNotEmpty()) {
+                    compose.onNodeWithContentDescription("All Files").performClick()
+                    settle()
+                }
                 compose.waitUntil(30_000) { onScreen("Shipping") }
             }
             "allfiles" -> {
                 openPanel()
-                selectTab("files")
-                // Both trees listed (the user's root sits below the fold on a short window), then back to the top.
-                compose.waitUntil(30_000) { onScreen("notes.md") }
+                selectTab("project")
+                if (compose.onAllNodes(hasContentDescription("All Files") and isSelected()).fetchSemanticsNodes().isEmpty()) {
+                    compose.onNodeWithContentDescription("All Files").performClick()
+                    settle()
+                }
+                // Both trees listed (either root's files may sit below the fold on a short window), then back to the top.
+                compose.waitUntil(30_000) { tagged("all-files-tab") }
+                compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasText("notes.md")) }.isSuccess }
                 compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasText("preferences.md")) }.isSuccess }
                 compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasTestTag("recents-row")) }.isSuccess }
                 compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size >= 3 }
@@ -214,7 +214,11 @@ class UiParityGalleryTest {
                 if (tagged("panel-tab-$key")) {
                     selectTab(key)
                 } else {
-                    selectTab("files")
+                    selectTab("project")
+                    if (compose.onAllNodes(hasContentDescription("All Files") and isSelected()).fetchSemanticsNodes().isEmpty()) {
+                        compose.onNodeWithContentDescription("All Files").performClick()
+                        settle()
+                    }
                     compose.waitUntil(30_000) { described("Folder docs") }
                     compose.onNodeWithContentDescription("Folder docs").performScrollTo().performClick()
                     compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasContentDescription("File private-edition-feasibility.md")) }.isSuccess }
@@ -228,7 +232,11 @@ class UiParityGalleryTest {
                 if (tagged("panel-tab-$key")) {
                     selectTab(key)
                 } else {
-                    selectTab("chat")
+                    // The side chats are in the chat's sections, the panel's other surface: the Agents pill above the
+                    // composer opens it (the panel, a sheet on a phone, covers the header's menu).
+                    closePanel()
+                    compose.onNodeWithTag("pill-agents").performClick()
+                    compose.waitUntil(20_000) { tagged("panel-sections") }
                     compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-SideChats"))
                     compose.onNodeWithTag("section-SideChats").performClick()
                     compose.waitUntil(30_000) { tagged("side-chat") }
@@ -248,7 +256,7 @@ class UiParityGalleryTest {
 
     private fun wideGallery(viewport: String, width: Int, height: Int) {
         launch(width, height, RailState.Expanded)
-        for (rail in listOf(RailState.Expanded, RailState.IconOnly, RailState.Hidden)) {
+        for (rail in listOf(RailState.Expanded, RailState.Hidden)) {
             setRail(rail)
             for (panel in PANELS) {
                 panelState(panel)
@@ -275,7 +283,7 @@ class UiParityGalleryTest {
         settle()
     }
 
-    private val RailState.slug: String get() = when (this) { RailState.Expanded -> "expanded"; RailState.IconOnly -> "icon-only"; RailState.Hidden -> "hidden" }
+    private val RailState.slug: String get() = when (this) { RailState.Expanded -> "expanded"; RailState.Hidden -> "hidden" }
 
     @Test
     fun phonePortrait() = compactGallery("phone-portrait", 411, 914)

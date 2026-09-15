@@ -23,7 +23,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -68,6 +67,7 @@ import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.PanelActions
 import com.cursorforandroid.ui.panel.PanelFixtures
 import com.cursorforandroid.ui.panel.PanelState
+import com.cursorforandroid.ui.panel.PanelSurface
 import com.cursorforandroid.ui.panel.PanelTab
 import com.cursorforandroid.ui.panel.PanelTabsState
 import com.cursorforandroid.ui.panel.RemoteLoad
@@ -229,15 +229,16 @@ class PanelTabsScreenshotTest {
         return "file://${file.absolutePath}"
     }
 
-    private fun coordinatorState(thumbnail: String, tab: PanelTab): PanelState {
+    private fun coordinatorState(thumbnail: String, tab: PanelTab, allFiles: Boolean = false): PanelState {
         val docsTab = PanelTab.Document(projectStore.storeId, feasibility.path)
         return PanelFixtures.loaded().copy(
             agentId = coordinator.id,
             agent = coordinator,
             capabilities = Capabilities.EXTENDED,
             pullRequest = RemoteLoad.Idle,
-            tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.Project, PanelTab.AllFiles, docsTab), selected = tab),
-            context = context(thumbnail),
+            surface = PanelSurface.Project,
+            tabs = PanelTabsState(open = listOf(PanelTab.Project, docsTab), selected = tab),
+            context = context(thumbnail).copy(allFiles = allFiles),
         )
     }
 
@@ -250,9 +251,11 @@ class PanelTabsScreenshotTest {
         val media = remember(loader, lightbox) { MarkdownMediaContext("bc-root", loader, lightbox) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
+                // The panel as it sits on a phone: the sheet over the chat's canvas, the width the host gives it, on
+                // the canvas colour as the web's panel is.
                 Box(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).testTag("scene")) {
-                    Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.sidebar)) {
-                        ConversationPanel(state, PanelActions.None, onClose = {})
+                    Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.canvas)) {
+                        ConversationPanel(state, PanelActions.None, onClose = {}, onExpand = {})
                     }
                 }
             }
@@ -275,7 +278,7 @@ class PanelTabsScreenshotTest {
     /** All Files: the Project's tree and the user's, each entry with when it was written, then Recents with its thumbnails. */
     @Test
     fun allFilesTab() {
-        compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.AllFiles)) }
+        compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.Project, allFiles = true)) }
         // The pictures decode off the main thread, in no fixed order; the frame waits for all three to be on screen.
         compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size == 3 }
         capture("70_panel_all_files")
@@ -354,18 +357,19 @@ class PanelTabsScreenshotTest {
     }
 
     /**
-     * The shell on a tablet: the glyph rail with the demo Project's glyph, the coordinator's chat with its Agents
-     * pill, and the panel pinned beside it as a pane on the Project tab.
+     * The shell on a tablet with the sidebar hidden: the coordinator's chat with its Agents pill above the composer,
+     * and the panel pinned beside it as a pane on the Project tab.
      */
     @Test
     @Config(sdk = [35], qualifiers = "w1000dp-h720dp-night-320dpi")
-    fun tabletIconRailPane() {
+    fun tabletPane() {
         AppClock.nowMillis = { FIXED_NOW }
         val appContext = ApplicationProvider.getApplicationContext<Context>()
         val graph = AppGraph(appContext, SecureKeyStore(appContext) { appContext.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
         runBlocking {
             graph.session.enterDemo()
-            graph.prefs.setRailState("Expanded", RailState.IconOnly.name)
+            // The sidebar hidden, so the window has room for the chat and the panel side by side.
+            graph.prefs.setRailState("Expanded", RailState.Hidden.name)
             // The chat is open in the frame, so its Project reads as read whatever the demo's rows do meanwhile.
             graph.prefs.markRead(DemoData.PROJECT_ID, FIXED_NOW + 365L * 24 * 60 * 60_000L)
         }
@@ -388,14 +392,12 @@ class PanelTabsScreenshotTest {
         compose.waitUntil(60_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
         compose.waitUntil(60_000) { graph.conversations.state(DemoData.PROJECT_ID).value.items.count { it is ActivityGroup } >= 2 }
         compose.waitUntil(60_000) { compose.onAllNodes(hasText("PR #215 (usage aggregation) is", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("icon-rail")).fetchSemanticsNodes().isNotEmpty() }
-        // The read marker reaches the rows the glyph is drawn from a beat after the list; the frame waits for it.
-        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Project Cesium billing launch") and hasStateDescription("unread")).fetchSemanticsNodes().isEmpty() }
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Open sidebar")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("panel-pane")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(30_000) { compose.onAllNodes(hasText("Shipping")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
-        captureScreenRoboImage(File(outDir, "75_tablet_icon_rail_pane.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "75_tablet_pane.png").path, RoborazziOptions())
     }
 
     private companion object {
