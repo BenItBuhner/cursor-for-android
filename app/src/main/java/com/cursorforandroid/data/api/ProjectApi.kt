@@ -3,6 +3,8 @@ package com.cursorforandroid.data.api
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.AgentSource
+import com.cursorforandroid.domain.AgentStoreKind
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectLineage
@@ -12,6 +14,8 @@ import com.cursorforandroid.domain.WorkerSpawnKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
@@ -114,11 +118,20 @@ interface AgentStoreApi {
     /** The store id of the store [sourceId] (a Project's coordinator) owns, or null when the account lists none for it. */
     suspend fun storeFor(sourceId: String): String?
 
+    /** `ListAgentStores`: every store the account lists for this user, with whose it is (the Project's, the user's own). */
+    suspend fun stores(): List<AgentStoreRef> = emptyList()
+
     /** `ListAgentStoreEntries`: what [relativePath] ("" for the root) of [storeId] holds. */
     suspend fun entries(storeId: String, relativePath: String): List<ContextEntry>
 
     /** `ReadAgentStoreFile`: the text of one file. */
     suspend fun readFile(storeId: String, relativePath: String): String
+
+    /**
+     * `PresignAgentStoreReads`: URLs the files at [relativePaths] of [storeId] can be fetched from, by path — for the
+     * pictures the Recents row shows. [agentId] is the chat asking. Empty where the account presigns nothing.
+     */
+    suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> = emptyMap()
 }
 
 /**
@@ -241,6 +254,42 @@ class ProjectApi(
         return null
     }
 
+    override suspend fun stores(): List<AgentStoreRef> {
+        val stores = ArrayList<AgentStoreRef>()
+        var pageToken: String? = null
+        repeat(MAX_STORE_PAGES) {
+            val response = call("ListAgentStores", ListStoresDto(STORE_PAGE, pageToken), ListStoresDto.serializer(), ListStoresResponseDto.serializer())
+            response.stores.forEach { store ->
+                val id = store.storeId.takeIf { it.isNotBlank() } ?: return@forEach
+                stores += AgentStoreRef(
+                    storeId = id,
+                    kind = AgentStoreKind.parse(store.kind?.contentOrNull),
+                    sourceId = (store.source?.sourceId ?: store.sourceId)?.takeIf { it.isNotBlank() },
+                    lastFileWriteAtMillis = store.lastFileWriteAtMs?.longOrNull,
+                )
+            }
+            pageToken = response.nextPageToken?.takeIf { it.isNotBlank() && response.hasMore } ?: return stores
+        }
+        return stores
+    }
+
+    /**
+     * The response shape is read leniently — a list under `urls`, `presigned`, `reads` or `files`, each item naming
+     * its `relPath` / `relativePath` and `url` — since the proto's answer has not been captured; anything else reads
+     * as no presigned URLs, and the Recents row falls back to file tiles.
+     */
+    override suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> {
+        if (relativePaths.isEmpty()) return emptyMap()
+        val response = call("PresignAgentStoreReads", PresignReadsDto(agentId, relativePaths, storeId), PresignReadsDto.serializer(), JsonObject.serializer())
+        val items = listOf("urls", "presigned", "reads", "files", "presignedReads").firstNotNullOfOrNull { key -> response[key] as? JsonArray } ?: return emptyMap()
+        return items.mapNotNull { item ->
+            val obj = item as? JsonObject ?: return@mapNotNull null
+            val path = (obj["relPath"] ?: obj["relativePath"] ?: obj["path"])?.let { (it as? JsonPrimitive)?.contentOrNull }?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val url = (obj["url"] ?: obj["presignedUrl"] ?: obj["downloadUrl"])?.let { (it as? JsonPrimitive)?.contentOrNull }?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
+            path to url
+        }.toMap()
+    }
+
     override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> {
         val response = call("ListAgentStoreEntries", StoreEntriesDto(storeId, relativePath), StoreEntriesDto.serializer(), StoreEntriesResponseDto.serializer())
         return response.entries.mapNotNull { entry ->
@@ -354,11 +403,21 @@ class ProjectApi(
     @Serializable
     private data class ListStoresResponseDto(val stores: List<StoreDto> = emptyList(), val hasMore: Boolean = false, val nextPageToken: String? = null)
 
+    /** `aiserver.v1.AgentStore` as `ListAgentStores` lists it: the id, whose it is, the chat or automation it belongs to, when it last changed. */
     @Serializable
-    private data class StoreDto(val storeId: String = "", val sourceId: String? = null, val source: StoreSourceDto? = null)
+    private data class StoreDto(
+        val storeId: String = "",
+        val sourceId: String? = null,
+        val source: StoreSourceDto? = null,
+        val kind: JsonPrimitive? = null,
+        val lastFileWriteAtMs: JsonPrimitive? = null,
+    )
 
     @Serializable
-    private data class StoreSourceDto(val sourceId: String? = null)
+    private data class StoreSourceDto(val sourceId: String? = null, val kind: JsonPrimitive? = null)
+
+    @Serializable
+    private data class PresignReadsDto(val agentId: String, val relPaths: List<String>, val storeId: String)
 
     @Serializable
     private data class StoreEntriesDto(val storeId: String, val relativePath: String)

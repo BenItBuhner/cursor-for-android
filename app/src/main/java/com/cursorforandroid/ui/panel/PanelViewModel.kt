@@ -11,7 +11,12 @@ import com.cursorforandroid.data.repo.VmRead
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.domain.AgentDiffFile
+import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.AgentUsage
+import com.cursorforandroid.domain.ContextDocument
+import com.cursorforandroid.domain.ContextEntry
+import com.cursorforandroid.domain.ContextStores
+import com.cursorforandroid.domain.RecentContextFile
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DesktopFailure
@@ -113,6 +118,30 @@ sealed interface DesktopState {
     data class Failed(val failure: DesktopFailure) : DesktopState
 }
 
+/**
+ * The Context tabs' reads (see [PanelTab.Project], [PanelTab.AllFiles], [PanelTab.Document]): which stores the chat
+ * has, the Project's notes, each folder listed so far by store and path, the folders open in the tree, the Recents
+ * row, and the documents open in tabs with whether each shows its source.
+ */
+data class ContextPanelState(
+    val stores: RemoteLoad<ContextStores> = RemoteLoad.Idle,
+    val notes: RemoteLoad<ContextDocument?> = RemoteLoad.Idle,
+    val listings: Map<String, RemoteLoad<List<ContextEntry>>> = emptyMap(),
+    val expandedFolders: Set<String> = emptySet(),
+    val recents: RemoteLoad<List<RecentContextFile>> = RemoteLoad.Idle,
+    val documents: Map<String, RemoteLoad<ContextDocument>> = emptyMap(),
+    val sourceTabs: Set<String> = emptySet(),
+) {
+    fun listing(store: AgentStoreRef, path: String): RemoteLoad<List<ContextEntry>> = listings[folderKey(store, path)] ?: RemoteLoad.Idle
+    fun isExpanded(store: AgentStoreRef, path: String): Boolean = folderKey(store, path) in expandedFolders
+    fun document(tab: PanelTab.Document): RemoteLoad<ContextDocument> = documents[tab.key] ?: RemoteLoad.Idle
+    fun showsSource(tab: PanelTab.Document): Boolean = tab.key in sourceTabs
+
+    companion object {
+        fun folderKey(store: AgentStoreRef, path: String): String = "${store.storeId}:${path.trim('/')}"
+    }
+}
+
 /** Everything the panel's sections read. Derived from the repositories the conversation already keeps, plus the reads the panel asks for. */
 data class PanelState(
     val agentId: String,
@@ -152,8 +181,27 @@ data class PanelState(
      * default.
      */
     val expandedSections: Map<PanelSectionId, Boolean> = emptyMap(),
+    /** The panel's tabs: which are open, which is showing (see [PanelTab]). */
+    val tabs: PanelTabsState = PanelTabsState(),
+    /** The Context tabs' reads. */
+    val context: ContextPanelState = ContextPanelState(),
 ) {
     val prUrl: String? get() = agent?.prUrl
+    /**
+     * The Project this chat belongs to — itself for a coordinator, the coordinator for a primary, a side chat or a
+     * subagent whose parent the list shows to be a Project — or null for a chat of the account's own.
+     */
+    val projectRootId: String?
+        get() {
+            val current = agent ?: return null
+            if (current.looksLikeProject) return current.id
+            val parent = current.parent ?: return null
+            return if (parent.kind == AgentParentKind.PROJECT_WORKER || parentAgent?.looksLikeProject == true) parent.id else null
+        }
+    /** The Project's row when it is loaded: this chat, or its parent. */
+    val projectRoot: Agent? get() = projectRootId?.let { id -> if (agent?.id == id) agent else parentAgent?.takeIf { it.id == id } }
+    /** Whether the panel has a Project tab: a Project's coordinator, or a chat inside one. */
+    val hasProjectTab: Boolean get() = projectRootId != null
     val hasPullRequest: Boolean get() = prUrl != null
     /** The files the Changes section lists: the pull request's when it has them, else the branch diff's (Extended). */
     val branchDiffFiles: List<AgentDiffFile> get() = diff.valueOrNull?.files.orEmpty()
@@ -181,6 +229,13 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val sideChatsLoad = MutableStateFlow<RemoteLoad<Unit>>(RemoteLoad.Idle)
     private val sideChatCreation = MutableStateFlow<RemoteLoad<String>>(RemoteLoad.Idle)
     private val expandedSections = MutableStateFlow<Map<PanelSectionId, Boolean>>(emptyMap())
+    /** The document and side chat tabs opened this session, in order, and the key of the tab the reader picked (null: the chat's default). */
+    private val dynamicTabs = MutableStateFlow<List<PanelTab>>(emptyList())
+    private val selectedTabKey = MutableStateFlow<String?>(null)
+    private val context = MutableStateFlow(ContextPanelState())
+    private var contextJob: Job? = null
+    private val folderJobs = HashMap<String, Job>()
+    private val documentJobs = HashMap<String, Job>()
     private var browseJob: Job? = null
     private var fileJob: Job? = null
     private var pullRequestJob: Job? = null
@@ -218,8 +273,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     private val vmLoads = combine(diff, workspace, machine, desktop, pullRequestCreation) { d, w, m, dk, c -> VmLoads(d, w, m, dk, c) }
     /** The chat's kin — its parent, its side chats and the reads and writes about them — folded for the same reason. */
     private val sideChatLoads = combine(parentAgent, sideChats, sideChatsLoad, sideChatCreation) { parent, chats, load, creation -> SideChatLoads(parent, chats, load, creation) }
-    /** [vmLoads] with what the account has said about the chat's controls, its side chats and the reader's expanded sections. */
-    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections) { vm, controls, side, expanded -> ExtendedLoads(vm, controls, side, expanded) }
+    /** The panel's tabs as the reader left them, and the Context tabs' reads, folded for the same reason. */
+    private val tabLoads = combine(dynamicTabs, selectedTabKey, context) { dynamic, selected, ctx -> TabLoads(dynamic, selected, ctx) }
+    /** [vmLoads] with what the account has said about the chat's controls, its side chats, the reader's expanded sections and tabs. */
+    private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections, tabLoads) { vm, controls, side, expanded, tabs -> ExtendedLoads(vm, controls, side, expanded, tabs) }
 
     val state: StateFlow<PanelState> = combine(
         agent,
@@ -228,6 +285,9 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         graph.extendedMode.capabilities,
         combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, extended -> Loads(pr, art, use, br, extended) },
     ) { a, conversation, (transcript, prompts), capabilities, loads ->
+        val fixed = fixedTabs(a, loads.extended.sideChats.parent)
+        val open = fixed + loads.extended.tabs.dynamic
+        val selected = loads.extended.tabs.selectedKey?.let { key -> open.firstOrNull { it.key == key } } ?: defaultTab(a, fixed)
         PanelState(
             agentId = agentId,
             agent = a,
@@ -252,8 +312,27 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             sideChatsLoad = loads.extended.sideChats.load,
             sideChatCreation = loads.extended.sideChats.creation,
             expandedSections = loads.extended.expandedSections,
+            tabs = PanelTabsState(open = open, selected = selected),
+            context = loads.extended.tabs.context,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
+
+    /**
+     * The tabs every chat's panel has: its sections, then — for a Project's coordinator or a chat inside a Project —
+     * the Project's notes, then the Context stores. The order is the web's: Project first among the Context tabs.
+     */
+    private fun fixedTabs(agent: Agent?, parent: Agent?): List<PanelTab> {
+        val inProject = agent != null && (agent.looksLikeProject || agent.parent?.kind == AgentParentKind.PROJECT_WORKER || (agent.parent != null && parent?.looksLikeProject == true))
+        return buildList {
+            add(PanelTab.Chat)
+            if (inProject) add(PanelTab.Project)
+            add(PanelTab.AllFiles)
+        }
+    }
+
+    /** Where the panel opens before the reader picks a tab: a coordinator's on its Project's notes, any other chat's on its sections. */
+    private fun defaultTab(agent: Agent?, fixed: List<PanelTab>): PanelTab =
+        if (agent?.looksLikeProject == true && PanelTab.Project in fixed) PanelTab.Project else PanelTab.Chat
 
     private data class Loads(
         val pullRequest: RemoteLoad<PullRequestView>,
@@ -268,6 +347,13 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val controls: ConversationControls,
         val sideChats: SideChatLoads,
         val expandedSections: Map<PanelSectionId, Boolean>,
+        val tabs: TabLoads,
+    )
+
+    private data class TabLoads(
+        val dynamic: List<PanelTab>,
+        val selectedKey: String?,
+        val context: ContextPanelState,
     )
 
     private data class SideChatLoads(
@@ -298,6 +384,131 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     override fun onCleared() {
         graph.steering.detach(agentId)
         super.onCleared()
+    }
+
+    // -- the panel's tabs ----------------------------------------------------------------------------------------------
+
+    fun selectTab(tab: PanelTab) {
+        selectedTabKey.value = tab.key
+    }
+
+    /** Closes a document or side chat tab; a closed selected tab hands the panel to the Chat tab. */
+    fun closeTab(tab: PanelTab) {
+        if (!tab.closable) return
+        dynamicTabs.update { open -> open.filterNot { it.key == tab.key } }
+        if (selectedTabKey.value == tab.key) selectedTabKey.value = PanelTab.Chat.key
+        if (tab is PanelTab.Document) {
+            documentJobs.remove(tab.key)?.cancel()
+            context.update { it.copy(documents = it.documents - tab.key, sourceTabs = it.sourceTabs - tab.key) }
+        }
+    }
+
+    /** Opens (or returns to) the side chat's tab beside the conversation. */
+    fun openSideChat(sideChatId: String) = open(PanelTab.SideChat(sideChatId))
+
+    /** Opens (or returns to) [path] of [store] as a document tab and reads it. */
+    fun openDocument(store: AgentStoreRef, path: String) {
+        val tab = PanelTab.Document(store.storeId, path.trim('/'))
+        open(tab)
+        loadDocument(tab)
+    }
+
+    fun openAllFiles() {
+        selectedTabKey.value = PanelTab.AllFiles.key
+        loadContext()
+    }
+
+    fun openProjectTab() {
+        selectedTabKey.value = PanelTab.Project.key
+        loadContext()
+    }
+
+    /** The Chat tab with [section] open. */
+    fun showSection(section: PanelSectionId) {
+        selectedTabKey.value = PanelTab.Chat.key
+        setSectionExpanded(section, true)
+    }
+
+    private fun open(tab: PanelTab) {
+        dynamicTabs.update { open -> if (open.any { it.key == tab.key }) open else open + tab }
+        selectedTabKey.value = tab.key
+    }
+
+    // -- Context: the Project's store and the user's -----------------------------------------------------------------------
+
+    /**
+     * Reads which stores the chat has, then — in parallel — the Project's notes, both roots' listings and the
+     * Recents row. Idempotent while a read is out; [force] re-reads through the repository's cache.
+     */
+    fun loadContext(force: Boolean = false) {
+        if (contextJob?.isActive == true && !force) return
+        val current = context.value.stores
+        if (!force && current is RemoteLoad.Loaded) return
+        contextJob?.cancel()
+        context.update { it.copy(stores = RemoteLoad.Loading) }
+        contextJob = viewModelScope.launch {
+            val root = state.value.projectRootId
+            val read = graph.stores.storesFor(agentId, root, force)
+            val stores = when (read) {
+                is VmRead.Loaded -> read.value
+                is VmRead.NotAvailable -> {
+                    context.update { it.copy(stores = RemoteLoad.Unsupported(read.reason), notes = RemoteLoad.Unsupported(read.reason), recents = RemoteLoad.Unsupported(read.reason)) }
+                    return@launch
+                }
+                is VmRead.Failed -> {
+                    context.update { it.copy(stores = RemoteLoad.Failed(read.message, retryable = !read.endpointChanged)) }
+                    return@launch
+                }
+            }
+            // The roots open at once, as the web's tree does; deeper folders as they are tapped.
+            context.update { c -> c.copy(stores = RemoteLoad.Loaded(stores), expandedFolders = c.expandedFolders + stores.all.map { ContextPanelState.folderKey(it, "") }) }
+            stores.all.forEach { store -> listFolder(store, "", force) }
+            val project = stores.project
+            if (project != null) {
+                context.update { it.copy(notes = RemoteLoad.Loading) }
+                launch { context.update { it.copy(notes = graph.stores.notes(project, force).toLoad()) } }
+            } else {
+                context.update { it.copy(notes = RemoteLoad.Loaded(null)) }
+            }
+            context.update { it.copy(recents = RemoteLoad.Loading) }
+            launch { context.update { it.copy(recents = graph.stores.recents(agentId, stores.all, force = force).toLoad()) } }
+        }
+    }
+
+    /** Opens or closes a folder of the tree; an opened folder not yet listed is listed. */
+    fun toggleFolder(store: AgentStoreRef, path: String) {
+        val key = ContextPanelState.folderKey(store, path)
+        val expanding = key !in context.value.expandedFolders
+        context.update { it.copy(expandedFolders = if (expanding) it.expandedFolders + key else it.expandedFolders - key) }
+        if (expanding && context.value.listings[key] !is RemoteLoad.Loaded) listFolder(store, path)
+    }
+
+    private fun listFolder(store: AgentStoreRef, path: String, force: Boolean = false) {
+        val key = ContextPanelState.folderKey(store, path)
+        if (folderJobs[key]?.isActive == true && !force) return
+        folderJobs[key]?.cancel()
+        context.update { it.copy(listings = it.listings + (key to RemoteLoad.Loading)) }
+        folderJobs[key] = viewModelScope.launch {
+            val load = graph.stores.entries(store, path, force).toLoad()
+            context.update { it.copy(listings = it.listings + (key to load)) }
+        }
+    }
+
+    /** Reads the document behind [tab]; the store is the one the listing named, or the id alone when the tab outlived it. */
+    fun loadDocument(tab: PanelTab.Document, force: Boolean = false) {
+        val current = context.value.documents[tab.key]
+        if (!force && (current is RemoteLoad.Loaded || current is RemoteLoad.Loading)) return
+        documentJobs[tab.key]?.cancel()
+        context.update { it.copy(documents = it.documents + (tab.key to RemoteLoad.Loading)) }
+        documentJobs[tab.key] = viewModelScope.launch {
+            val store = context.value.stores.valueOrNull?.all?.firstOrNull { it.storeId == tab.storeId } ?: AgentStoreRef(tab.storeId)
+            val load = graph.stores.document(store, tab.path, force).toLoad()
+            context.update { it.copy(documents = it.documents + (tab.key to load)) }
+        }
+    }
+
+    fun setDocumentSource(tab: PanelTab.Document, source: Boolean) {
+        context.update { it.copy(sourceTabs = if (source) it.sourceTabs + tab.key else it.sourceTabs - tab.key) }
     }
 
     // -- the chat's controls on the account (Extended mode) -----------------------------------------------------------
@@ -336,6 +547,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             onSuccess = { RemoteLoad.Loaded(it) },
             onFailure = { RemoteLoad.Failed(it.userMessage(), retryable = it !is IllegalStateException) },
         )
+        // A side chat started from here opens beside the conversation at once, as a tab of the panel.
+        result.onSuccess { openSideChat(it) }
         return result.map { "Side chat started." }
     }
 

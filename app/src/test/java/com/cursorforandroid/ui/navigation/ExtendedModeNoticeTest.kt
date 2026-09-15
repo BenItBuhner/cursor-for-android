@@ -47,7 +47,8 @@ class ExtendedModeNoticeTest {
                     graph = graph,
                     user = CursorUser("Key", "alex@example.com", "Alex", "Rivera", null),
                     isDemo = isDemo,
-                    wide = false,
+                    windowWidthDp = 411,
+                    windowHeightDp = 914,
                     deepLinkAgentId = null,
                     onDeepLinkConsumed = {},
                 )

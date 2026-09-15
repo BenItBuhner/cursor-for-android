@@ -119,6 +119,9 @@ class PreferencesStore(
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
         val crashReports = booleanPreferencesKey("crash_reports")
+        val railMedium = stringPreferencesKey("layout_rail_medium")
+        val railExpanded = stringPreferencesKey("layout_rail_expanded")
+        val panelWidthDp = intPreferencesKey("layout_panel_width_dp")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -146,6 +149,32 @@ class PreferencesStore(
     private val accountData: Flow<Preferences> = data.map { p ->
         if (!sessionClearFailed) p else p.toMutablePreferences().apply { sessionKeys.forEach { this -= it } }
     }
+
+    // ---- layout (device-level; deliberately untouched by clearSession) -------------------------------------------
+
+    /**
+     * The left rail's state as the reader last left it on a window of each width class, by the class's name
+     * (`Medium`, `Expanded`; see `WindowPosture`): a foldable folded and unfolded finds each posture as it was. Null
+     * where nothing was chosen yet, so the class's default stands.
+     */
+    val railStates: Flow<Map<String, String>> = data.map { p ->
+        buildMap {
+            p[Keys.railMedium]?.let { put("Medium", it) }
+            p[Keys.railExpanded]?.let { put("Expanded", it) }
+        }
+    }
+
+    suspend fun setRailState(widthClass: String, state: String) = edit { p ->
+        when (widthClass) {
+            "Medium" -> p[Keys.railMedium] = state
+            "Expanded" -> p[Keys.railExpanded] = state
+        }
+    }
+
+    /** How wide the reader dragged the right panel's pane, in dp; null for the default. */
+    val panelWidthDp: Flow<Int?> = data.map { it[Keys.panelWidthDp] }
+
+    suspend fun setPanelWidthDp(widthDp: Int) = edit { it[Keys.panelWidthDp] = widthDp }
 
     // ---- app updates (device-level; deliberately untouched by clearSession) --------------------------------------
 

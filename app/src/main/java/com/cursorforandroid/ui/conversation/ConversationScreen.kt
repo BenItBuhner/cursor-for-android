@@ -83,14 +83,20 @@ import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.NoModelRow
+import com.cursorforandroid.ui.navigation.LocalWindowPosture
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
 import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
+import com.cursorforandroid.ui.panel.PanelPane
+import com.cursorforandroid.ui.panel.PanelSectionId
+import com.cursorforandroid.ui.panel.PanelState
 import com.cursorforandroid.ui.panel.PanelViewModel
 import com.cursorforandroid.ui.panel.SidePanel
+import com.cursorforandroid.ui.panel.SidePanelState
 import com.cursorforandroid.ui.panel.rememberPanelActions
 import com.cursorforandroid.ui.panel.rememberSidePanelState
+import com.cursorforandroid.domain.Subscriptions
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
@@ -124,8 +130,16 @@ fun ConversationScreen(
     onOpenSidebar: (() -> Unit)? = null,
     /** Where the transcript's worker cards and the panel send the reader: another chat (a primary, a side chat, a Project's coordinator). */
     onOpenAgent: ((String) -> Unit)? = null,
+    /**
+     * Composed inside another conversation's panel (a side chat tab): the transcript and the composer alone — no
+     * header, no pills, no panel of its own — since the host's chrome frames it.
+     */
+    embedded: Boolean = false,
+    /** The reader dragged the panel's pane to a new width (dp); the shell keeps it. Null where the panel is a sheet. */
+    onPanelResize: ((Int) -> Unit)? = null,
 ) {
     val viewModel: ConversationViewModel = viewModel(key = "conversation-$agentId", factory = ConversationViewModel.Factory(graph, agentId))
+    val posture = LocalWindowPosture.current
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent by viewModel.agent.collectAsStateWithLifecycle()
@@ -255,6 +269,16 @@ fun ConversationScreen(
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
     // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
     val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
+    // The pills above the composer, from what the screen and the panel already hold: the workers under this chat by
+    // the list's rows, the transcript's subscriptions, the changes as the panel's Changes section would count them.
+    val pills = remember(agentList.agents, agentId, coordinatorMode, conversation.items, panel.pullRequest, panel.diff, panel.content, canOpenDesktop) {
+        ConversationPillsState(
+            agents = ConversationPillsState.AgentsSummary.of(agentId, agentList.agents, isCoordinator = coordinatorMode),
+            listening = Subscriptions.of(conversation.items),
+            changes = changesSummary(panel),
+            canOpenDesktop = canOpenDesktop,
+        )
+    }
     (panel.desktop as? DesktopState.Open)?.let { open ->
         DesktopDialog(
             session = open.session,
@@ -275,19 +299,33 @@ fun ConversationScreen(
         }
     }
 
-    SidePanel(
-        state = panelState,
+    val panelContent: @Composable () -> Unit = {
+        // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
+        // open into the same lightbox as the transcript's.
+        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
+            ConversationPanel(
+                panel,
+                panelActions,
+                onClose = { scope.launch { panelState.close() } },
+                // A side chat opened from the panel is composed here, beside its parent, as its own conversation.
+                sideChatContent = { sideChatId -> ConversationScreen(graph = graph, agentId = sideChatId, onBack = null, onOpenAgent = onOpenAgent, embedded = true) },
+            )
+        }
+    }
+    // The panel is a pane beside the content where the window has room for both (see WindowPosture.panelAsPane),
+    // a sheet over it otherwise; an embedded chat has no panel, its host's frames it.
+    val paneLayout = !embedded && posture.panelAsPane
+    ConversationFrame(
+        embedded = embedded,
+        pane = paneLayout,
+        panelState = panelState,
+        paneWidth = posture.paneWidthDp.dp,
+        onPanelResize = onPanelResize,
+        panelContent = panelContent,
         modifier = modifier,
-        panelContent = {
-            // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
-            // open into the same lightbox as the transcript's.
-            CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
-                ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
-            }
-        },
     ) {
     Column(Modifier.fillMaxSize().background(colors.canvas)) {
-        CursorHeader(
+        if (!embedded) CursorHeader(
             title = agent?.name ?: "Chat",
             subtitle = agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ").ifBlank { null } },
             leading = {
@@ -450,6 +488,17 @@ fun ConversationScreen(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // The web's pills — Agents, Listening, Changes, Open Desktop — lead the stack above the composer, then the
+            // goal strip and the queue. Not for an embedded chat: its host's pills are the ones that count.
+            if (!embedded && !pills.isEmpty) {
+                ConversationPills(
+                    state = pills,
+                    onAgents = { panelActions.showSection(PanelSectionId.Project); scope.launch { panelState.open() } },
+                    onChanges = { panelActions.showSection(PanelSectionId.Changes); scope.launch { panelState.open() } },
+                    onOpenDesktop = { panelActions.openDesktop(viewOnly = false) },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 6.dp).align(Alignment.Start),
+                )
+            }
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
             // trays in above the composer. Each strip keeps the same width and the same gap to the next.
             goal?.let { current ->
@@ -555,6 +604,48 @@ fun ConversationScreen(
             onDismiss = { snoozeOpen = false },
         )
     }
+}
+
+/**
+ * How the chat and its panel share the screen: side by side with the panel as a resizable pane ([pane]), the panel
+ * as a sheet over the chat (the phone's layout, [SidePanel]), or the chat alone when it is [embedded] in another
+ * chat's panel. The sheet's state doubles as the pane's: open is open in either layout, so a Fold unfolding with the
+ * sheet open finds the pane open.
+ */
+@Composable
+private fun ConversationFrame(
+    embedded: Boolean,
+    pane: Boolean,
+    panelState: SidePanelState,
+    paneWidth: androidx.compose.ui.unit.Dp,
+    onPanelResize: ((Int) -> Unit)?,
+    panelContent: @Composable () -> Unit,
+    modifier: Modifier,
+    content: @Composable () -> Unit,
+) {
+    when {
+        embedded -> Box(modifier.fillMaxSize()) { content() }
+        pane -> Row(modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxSize()) { content() }
+            if (panelState.isOpen) PanelPane(width = paneWidth, onResize = onPanelResize) { panelContent() }
+        }
+        else -> SidePanel(state = panelState, modifier = modifier, panelContent = panelContent) { content() }
+    }
+}
+
+/** The Changes pill's figures: the pull request's files, else the branch diff's, else the transcript's edits — the panel's own order. */
+internal fun changesSummary(panel: PanelState): ConversationPillsState.ChangesSummary? {
+    panel.pullRequest.valueOrNull?.files?.takeIf { it.isNotEmpty() }?.let { files ->
+        return ConversationPillsState.ChangesSummary(files.sumOf { it.additions }, files.sumOf { it.deletions }, files.size)
+    }
+    panel.branchDiffFiles.takeIf { it.isNotEmpty() }?.let { files ->
+        return ConversationPillsState.ChangesSummary(files.sumOf { it.additions }, files.sumOf { it.deletions }, files.size)
+    }
+    val changes = panel.content.changes
+    if (changes.isEmpty()) return null
+    val additions = changes.map { it.linesAdded }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
+    val deletions = changes.map { it.linesRemoved }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
+    return ConversationPillsState.ChangesSummary(additions, deletions, changes.size)
 }
 
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
