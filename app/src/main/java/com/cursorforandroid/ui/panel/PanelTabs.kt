@@ -28,13 +28,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.cursorforandroid.domain.AgentStoreRef
-import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
@@ -207,11 +204,3 @@ private fun PanelTabChip(
 
 /** The web's tab labels ellipsise around this width; a long document name yields to the tabs beside it. */
 private val TabLabelMaxWidth = 148.dp
-
-/** A folder in the All Files tree, opened or closed. */
-internal data class TreeFolderKey(val store: AgentStoreRef, val entry: ContextEntry) {
-    val id: String get() = "${store.storeId}:${entry.relativePath}"
-}
-
-/** The semantic description of a panel tab, for TalkBack and the tests. */
-internal fun Modifier.panelTabDescription(label: String): Modifier = semantics { contentDescription = "Panel tab $label" }

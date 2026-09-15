@@ -455,6 +455,3 @@ internal fun SegmentToggle(options: List<String>, selected: Int, onSelect: (Int)
 private val TreeIndent = 14.dp
 private val RecentTileWidth = 104.dp
 private val RecentTileHeight = 84.dp
-
-/** Whether a name is one of the pictures a store tile shows as a thumbnail. */
-internal fun ContextEntry.isPicture(): Boolean = name.substringAfterLast('.', "").lowercase() in RecentContextFile.IMAGE_EXTENSIONS
