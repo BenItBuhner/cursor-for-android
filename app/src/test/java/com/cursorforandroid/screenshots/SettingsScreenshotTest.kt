@@ -8,6 +8,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
@@ -20,6 +21,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
+import com.cursorforandroid.ui.settings.ExtendedModeTags
 import com.cursorforandroid.ui.settings.ProjectDiagnosticsCopy
 import com.cursorforandroid.ui.settings.SettingsCopy
 import com.cursorforandroid.ui.settings.SettingsDebugCopy
@@ -31,7 +33,9 @@ import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -100,12 +104,16 @@ class SettingsScreenshotTest {
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.VERSION_ROW)).fetchSemanticsNodes().isNotEmpty() }
     }
 
+    /** Turns the mode on and waits until the flow the screen collects says so, so the frame's collectors start from an on state. */
     private fun turnExtendedModeOn() {
         runBlocking {
             check(graph.extendedMode.acknowledge()) { "The acknowledgment could not be written." }
             check(graph.extendedMode.enable()) { "Extended mode could not be turned on." }
+            withTimeout(10_000) { graph.extendedMode.enabled.first { it } }
         }
     }
+
+    private fun modeReadsOn() = compose.onAllNodes(isOn() and hasTestTag(ExtendedModeTags.TOGGLE)).fetchSemanticsNodes().isNotEmpty()
 
     /** The bottom of the page: the Extended mode section, the version with its updater and the crash report consent, the disclaimer. */
     private fun scrollToBottom() {
@@ -137,7 +145,7 @@ class SettingsScreenshotTest {
     fun extendedModeOn() {
         turnExtendedModeOn()
         composeSettings()
-        compose.waitUntil(30_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
         compose.onNodeWithText(ExtendedModeCopy.SETTING_ON).assertIsDisplayed()
         capture("67_settings_extended_on")
@@ -148,7 +156,7 @@ class SettingsScreenshotTest {
     fun debugSheet() {
         turnExtendedModeOn()
         composeSettings()
-        compose.waitUntil(30_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
         compose.onNodeWithTag(SettingsTags.VERSION_ROW).performTouchInput { longClick() }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.DEBUG_SHEET)).fetchSemanticsNodes().isNotEmpty() }
