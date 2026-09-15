@@ -21,18 +21,19 @@ class WindowPostureTest {
     }
 
     @Test
-    fun `each class opens with its own rail`() {
+    fun `a wide window opens with the sidebar, a compact one with the drawer`() {
         assertThat(WindowPosture.defaultRail(WidthClass.Compact)).isEqualTo(RailState.Hidden)
-        assertThat(WindowPosture.defaultRail(WidthClass.Medium)).isEqualTo(RailState.IconOnly)
+        assertThat(WindowPosture.defaultRail(WidthClass.Medium)).isEqualTo(RailState.Expanded)
         assertThat(WindowPosture.defaultRail(WidthClass.Expanded)).isEqualTo(RailState.Expanded)
     }
 
     @Test
-    fun `the rail's toggle cycles expanded, glyphs, hidden`() {
-        assertThat(RailState.Expanded.next).isEqualTo(RailState.IconOnly)
-        assertThat(RailState.IconOnly.next).isEqualTo(RailState.Hidden)
+    fun `the rail's toggle moves between the sidebar and nothing`() {
+        assertThat(RailState.Expanded.next).isEqualTo(RailState.Hidden)
         assertThat(RailState.Hidden.next).isEqualTo(RailState.Expanded)
-        assertThat(RailState.parse("IconOnly")).isEqualTo(RailState.IconOnly)
+        assertThat(RailState.parse("Hidden")).isEqualTo(RailState.Hidden)
+        // The glyph column an earlier revision saved: not a state any more, so the class's default stands.
+        assertThat(RailState.parse("IconOnly")).isNull()
         assertThat(RailState.parse("nope")).isNull()
     }
 
@@ -47,26 +48,26 @@ class WindowPostureTest {
 
     @Test
     fun `the panel is a pane only while the content keeps its floor beside rail and panel`() {
-        // Fold inner display, portrait: the expanded rail leaves 218 dp — a sheet; the glyph rail leaves 440 — a pane.
+        // Fold inner display, portrait: the sidebar leaves 218 dp — a sheet; hidden, 496 — a pane.
         assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.Expanded).panelAsPane).isFalse()
-        assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.IconOnly).panelAsPane).isTrue()
         assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.Hidden).panelAsPane).isTrue()
         // A phone on its side.
         assertThat(WindowPosture(WidthClass.Expanded, 914, compactHeight = true, rail = RailState.Expanded).panelAsPane).isFalse()
-        assertThat(WindowPosture(WidthClass.Expanded, 914, compactHeight = true, rail = RailState.IconOnly).panelAsPane).isTrue()
-        // A tablet on its side fits three columns with any rail; upright it needs the glyph rail.
+        assertThat(WindowPosture(WidthClass.Expanded, 914, compactHeight = true, rail = RailState.Hidden).panelAsPane).isTrue()
+        // A tablet on its side fits three columns with the sidebar showing; upright it needs the sidebar hidden.
         assertThat(WindowPosture(WidthClass.Expanded, 1497, rail = RailState.Expanded).panelAsPane).isTrue()
         assertThat(WindowPosture(WidthClass.Expanded, 936, rail = RailState.Expanded).panelAsPane).isFalse()
-        assertThat(WindowPosture(WidthClass.Expanded, 936, rail = RailState.IconOnly).panelAsPane).isTrue()
+        assertThat(WindowPosture(WidthClass.Expanded, 936, rail = RailState.Hidden).panelAsPane).isTrue()
     }
 
     @Test
     fun `the pane's width is clamped to the window`() {
         assertThat(WindowPosture.clampPanelWidth(100, 1497)).isEqualTo(WindowPosture.PANEL_MIN_DP)
-        assertThat(WindowPosture.clampPanelWidth(900, 1497)).isEqualTo(WindowPosture.PANEL_MAX_DP)
+        assertThat(WindowPosture.clampPanelWidth(900, 1497)).isEqualTo(748)
+        assertThat(WindowPosture.clampPanelWidth(900, 1855)).isEqualTo(WindowPosture.PANEL_MAX_DP)
         assertThat(WindowPosture.clampPanelWidth(500, 856)).isEqualTo(428)
-        assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.IconOnly, panelWidthDp = 700).paneWidthDp).isEqualTo(428)
+        assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.Hidden, panelWidthDp = 700).paneWidthDp).isEqualTo(428)
         // A pane dragged wide enough to starve the content turns the panel into a sheet.
-        assertThat(WindowPosture(WidthClass.Expanded, 856, rail = RailState.IconOnly, panelWidthDp = 428).panelAsPane).isFalse()
+        assertThat(WindowPosture(WidthClass.Expanded, 700, rail = RailState.Hidden, panelWidthDp = 350).panelAsPane).isFalse()
     }
 }

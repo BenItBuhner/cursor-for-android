@@ -58,6 +58,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.RunningGlyph
 import com.cursorforandroid.ui.components.StateGlyph
+import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -138,7 +139,8 @@ fun AgentRowItem(
                 project && row.indicator == AgentIndicator.Running -> Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
                     RunningGlyph(color = colors.projectTone(agent.projectAppearance?.colorId), size = 16.dp)
                 }
-                else -> StateGlyph(row.indicator, hasBranch = agent.hasBranch, hasPullRequest = agent.hasPullRequest, pullRequest = row.pullRequest)
+                // The web's rows keep the state dot at the start and put the pull request's glyph at the end.
+                else -> StateGlyph(row.indicator, hasBranch = false, hasPullRequest = false, pullRequest = null)
             }
             Spacer(Modifier.width(10.dp))
             Text(
@@ -161,6 +163,12 @@ fun AgentRowItem(
             if (prefs.showBranchStatus && agent.envType == EnvType.MACHINE) {
                 Spacer(Modifier.width(8.dp))
                 Icon(CursorIcons.Desktop, "Self-hosted machine", tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+            }
+            // What the chat pushed, at the trailing edge as on cursor.com: the pull request in the colour of the state
+            // GitHub reports (see pullRequestTint), else nothing.
+            if (prefs.showBranchStatus && agent.hasPullRequest && !project) {
+                Spacer(Modifier.width(8.dp))
+                Icon(CursorIcons.GitPullRequest, row.pullRequest?.label ?: "Pull request", tint = pullRequestTint(row.pullRequest), modifier = Modifier.size(15.dp))
             }
             if (childrenExpanded != null) {
                 Spacer(Modifier.width(6.dp))

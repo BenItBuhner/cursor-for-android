@@ -20,11 +20,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.UpdateState
@@ -102,6 +104,7 @@ internal fun AppShell(
     val selectedAgentId = (topScreen as? Screen.Agent)?.id
     val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
     var customizeOpen by remember { mutableStateOf(false) }
     val colors = CursorTheme.colors
 
@@ -269,11 +272,12 @@ internal fun AppShell(
                 onNewChat = { navigateTop(Screen.Home) },
                 onSettings = { navigateTop(Screen.Settings) },
                 onCustomize = { customizeOpen = true },
-                // The column's toggle steps the rail down: expanded to glyphs alone, glyphs to hidden.
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setRail(rail.next) }),
+                // The sidebar's top-left toggle hides the column; the content header's brings it back.
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setRail(RailState.Hidden) }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
+                onAutomations = { runCatching { uriHandler.openUri(CursorEndpoints.AUTOMATIONS_URL) } },
             ),
             modifier = modifier,
         )
@@ -338,25 +342,7 @@ internal fun AppShell(
     CompositionLocalProvider(LocalWindowPosture provides posture) {
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
-            SidebarRail(
-                state = rail,
-                iconContent = {
-                    IconRail(
-                        state = listState,
-                        user = user,
-                        selectedAgentId = selectedAgentId,
-                        selectedDestination = destination,
-                        callbacks = IconRailCallbacks(
-                            onNewChat = { navigateTop(Screen.Home) },
-                            onSearch = { setRail(RailState.Expanded) },
-                            onCustomize = { customizeOpen = true },
-                            onOpenRow = rowActions.onOpen,
-                            onSettings = { navigateTop(Screen.Settings) },
-                            onToggle = { setRail(rail.next) },
-                        ),
-                    )
-                },
-            ) {
+            SidebarRail(state = rail) {
                 sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
             }
             detailHost(Modifier.weight(1f).fillMaxHeight(), pane)

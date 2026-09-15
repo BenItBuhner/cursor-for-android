@@ -2,15 +2,17 @@ package com.cursorforandroid.ui.navigation
 
 import androidx.compose.runtime.staticCompositionLocalOf
 
-/** How much of the window the left rail takes: the full column, its glyphs alone, or nothing. */
+/**
+ * Whether the left rail is on screen: the full sidebar, or nothing — the two states cursor.com's own toggle moves
+ * between (the sidebar's top-left button hides it; the content header's button brings it back).
+ */
 enum class RailState {
     Expanded,
-    IconOnly,
     Hidden,
     ;
 
-    /** The next state the rail's own toggle moves to: Expanded → IconOnly → Hidden → Expanded. */
-    val next: RailState get() = when (this) { Expanded -> IconOnly; IconOnly -> Hidden; Hidden -> Expanded }
+    /** The other state: what the toggle moves to. */
+    val next: RailState get() = when (this) { Expanded -> Hidden; Hidden -> Expanded }
 
     companion object {
         fun parse(name: String?): RailState? = entries.firstOrNull { it.name == name }
@@ -21,7 +23,7 @@ enum class RailState {
 enum class WidthClass {
     /** Under 600 dp: a phone in portrait, a foldable's cover display. The sidebar is a drawer, the panel a sheet. */
     Compact,
-    /** 600–839 dp: a small tablet in portrait. A column for the rail, icon-only by default. */
+    /** 600–839 dp: a small tablet in portrait. A column for the rail. */
     Medium,
     /** 840 dp and up: a phone on its side, a foldable's inner display, a tablet. The rail's column, expanded by default. */
     Expanded,
@@ -45,7 +47,7 @@ enum class WidthClass {
  * the window size class and what the reader chose, read by the screens through [LocalWindowPosture].
  *
  * The rule for the pane: the content column must keep [CONTENT_MIN_DP] beside the rail and the panel; where it
- * cannot — a foldable's inner display with the rail expanded, a phone on its side — the panel is a sheet, as on a
+ * cannot — a foldable's inner display with the sidebar showing, a phone on its side — the panel is a sheet, as on a
  * phone. A compact window is always the drawer-and-sheet layout, whatever the rail state saved for wider ones.
  */
 data class WindowPosture(
@@ -65,7 +67,6 @@ data class WindowPosture(
     val railWidthDp: Int
         get() = when (effectiveRail) {
             RailState.Expanded -> RAIL_EXPANDED_DP
-            RailState.IconOnly -> RAIL_ICON_DP
             RailState.Hidden -> 0
         }
 
@@ -77,9 +78,9 @@ data class WindowPosture(
 
     companion object {
         const val RAIL_EXPANDED_DP = 278
-        const val RAIL_ICON_DP = 56
         const val PANEL_MIN_DP = 320
-        const val PANEL_MAX_DP = 560
+        /** The web's Project panel is 800px wide on a 1859px window; a pane can grow to that where the window allows (see [clampPanelWidth]). */
+        const val PANEL_MAX_DP = 800
         const val PANEL_DEFAULT_DP = 360
         const val CONTENT_MIN_DP = 380
         const val COMPACT_HEIGHT_MAX_DP = 480
@@ -87,12 +88,8 @@ data class WindowPosture(
         /** [width] held to `[PANEL_MIN_DP, min(PANEL_MAX_DP, window / 2)]`. */
         fun clampPanelWidth(width: Int, windowWidthDp: Int): Int = width.coerceIn(PANEL_MIN_DP, maxOf(PANEL_MIN_DP, minOf(PANEL_MAX_DP, windowWidthDp / 2)))
 
-        /** The rail a window of [widthClass] opens with before the reader has chosen: the web's expanded column, glyphs alone where the window is tight. */
-        fun defaultRail(widthClass: WidthClass): RailState = when (widthClass) {
-            WidthClass.Compact -> RailState.Hidden
-            WidthClass.Medium -> RailState.IconOnly
-            WidthClass.Expanded -> RailState.Expanded
-        }
+        /** The rail a window of [widthClass] opens with before the reader has chosen: the web's sidebar on any wide window. */
+        fun defaultRail(widthClass: WidthClass): RailState = if (widthClass == WidthClass.Compact) RailState.Hidden else RailState.Expanded
 
         /** A phone's posture: the drawer and the sheet. */
         fun compact(windowWidthDp: Int = 411): WindowPosture = WindowPosture(WidthClass.Compact, windowWidthDp)
