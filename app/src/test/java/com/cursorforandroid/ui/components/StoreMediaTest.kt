@@ -76,7 +76,7 @@ class StoreMediaTest {
     private fun loader(capabilities: Capabilities): MediaLoader {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val files = StoreFileRepository(api = { wire }, capabilities = { capabilities })
-        return MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() }), files)
+        return MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) { files }
     }
 
     private fun serveImage() {

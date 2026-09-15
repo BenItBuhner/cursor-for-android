@@ -40,8 +40,11 @@ class MediaLoader(
     private val context: Context,
     okHttp: OkHttpClient,
     private val artifacts: ArtifactRepository,
-    /** The Agent Store reads behind `/cursor/stores/…` paths (Extended mode); null where no account is wired. */
-    private val stores: StoreFileRepository? = null,
+    /**
+     * The Agent Store reads behind `/cursor/stores/…` paths (Extended mode); null where no account is wired. Looked
+     * up per use, so that building the loader — which a sign-out does, to wipe Coil's disk cache — builds nothing else.
+     */
+    private val stores: () -> StoreFileRepository? = { null },
 ) {
     private val imageLoader: ImageLoader = ImageLoader.Builder(context)
         .components { add(OkHttpNetworkFetcherFactory(okHttp)) }
@@ -91,10 +94,7 @@ class MediaLoader(
         withContext(Dispatchers.IO) { imageLoader.diskCache?.clear() }
     }
 
-    /** Whether `/cursor/stores/…` files can be read: the account's store reads are wired and on. */
-    suspend fun canReadStores(): Boolean = stores?.available() == true
-
-    private fun storeReads(): StoreFileRepository = stores ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
+    private fun storeReads(): StoreFileRepository = stores() ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
 
     private suspend fun storeUrl(ref: MediaRef.Store): String = storeReads().downloadUrl(ref)
 

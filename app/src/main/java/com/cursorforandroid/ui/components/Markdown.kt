@@ -179,7 +179,9 @@ object InlineMarkdown {
             val store = if (!insideLink) StorePath.parse(code)?.text else null
             val listener = store?.let { target -> p.onLinkClick?.let { click -> LinkInteractionListener { click(target) } } }
             if (store != null && listener != null) {
-                withLink(LinkAnnotation.Url(url = store, styles = TextLinkStyles(style = p.code), linkInteractionListener = listener)) { append(" $code ") }
+                // Code in the link colour: what a `[`path`](path)` link reads as, so both spellings look the same.
+                val style = p.link.style?.let { p.code.merge(it) } ?: p.code
+                withLink(LinkAnnotation.Url(url = store, styles = TextLinkStyles(style = style), linkInteractionListener = listener)) { append(" $code ") }
             } else {
                 withStyle(p.code) { append(" $code ") }
             }

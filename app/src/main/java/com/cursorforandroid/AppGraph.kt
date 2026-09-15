@@ -523,7 +523,7 @@ class AppGraph(
     }
     val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
 
-    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts, storeFiles) }
+    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts) { storeFiles } }
     val media: MediaLoader get() = lazyMedia.value
 
     private val lazyRunMonitor = lazy {
