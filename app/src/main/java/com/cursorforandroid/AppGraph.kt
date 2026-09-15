@@ -32,6 +32,7 @@ import com.cursorforandroid.data.api.MachineLookupApi
 import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
+import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
@@ -85,6 +86,7 @@ import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.WorkspaceRepository
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
+import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
@@ -296,6 +298,7 @@ class AppGraph(
         override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
+        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(requesterId, storeId, relativePath)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
@@ -507,7 +510,20 @@ class AppGraph(
     private val lazyArtifacts = lazy { ArtifactRepository(session) }
     val artifacts: ArtifactRepository get() = lazyArtifacts.value
 
-    private val lazyMedia = lazy { MediaLoader(app, CursorApiFactory.mediaClient(), artifacts) }
+    /** The files `/cursor/stores/…` paths in replies point at, read through the account's store reads (Extended mode). */
+    private val lazyMediaClient = lazy { CursorApiFactory.mediaClient() }
+    private val lazyStoreFiles = lazy {
+        StoreFileRepository(
+            api = { projectAccount },
+            capabilities = capabilities,
+            cache = caches.storeFiles,
+            blobs = File(app.cacheDir, "cursor/storefiles/blobs"),
+            http = lazyMediaClient.value,
+        )
+    }
+    val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
+
+    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts) { storeFiles } }
     val media: MediaLoader get() = lazyMedia.value
 
     private val lazyRunMonitor = lazy {
@@ -573,6 +589,7 @@ class AppGraph(
             if (lazyWorkspace.isInitialized()) workspace.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
+            if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()
@@ -660,6 +677,7 @@ class AppGraph(
             "launcher" to lazyLauncher,
             "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
+            "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
             "updates" to lazyUpdates,

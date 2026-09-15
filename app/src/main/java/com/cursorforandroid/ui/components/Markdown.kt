@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
 import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.JetBrainsMono
 
@@ -99,6 +100,8 @@ object InlineMarkdown {
         val target = raw.trim()
         // Protocol-relative, as written in copied HTML.
         if (target.startsWith("//")) return "https:$target"
+        // A path into an Agent Store is opened here (the document sheet, or the Project on cursor.com), so it is a link.
+        StorePath.parse(target)?.let { return it.text }
         val scheme = schemeRegex.matchAt(target, 0) ?: return null
         if (scheme.value.dropLast(1).lowercase() !in openableSchemes) return null
         return target.takeIf { it.length > scheme.value.length }
@@ -172,7 +175,16 @@ object InlineMarkdown {
             }
         }
         fun emitCode(code: String) {
-            withStyle(p.code) { append(" $code ") }
+            // A code span that is a store path, the way a coordinator names a document, opens like a link and reads like code.
+            val store = if (!insideLink) StorePath.parse(code)?.text else null
+            val listener = store?.let { target -> p.onLinkClick?.let { click -> LinkInteractionListener { click(target) } } }
+            if (store != null && listener != null) {
+                // Code in the link colour: what a `[`path`](path)` link reads as, so both spellings look the same.
+                val style = p.link.style?.let { p.code.merge(it) } ?: p.code
+                withLink(LinkAnnotation.Url(url = store, styles = TextLinkStyles(style = style), linkInteractionListener = listener)) { append(" $code ") }
+            } else {
+                withStyle(p.code) { append(" $code ") }
+            }
         }
         while (i < n) {
             val c = text[i]
@@ -273,6 +285,17 @@ object InlineMarkdown {
                         val url = trimTrailingUrlPunctuation(raw)
                         emitLink(url, url)
                         i += url.length
+                    } else {
+                        append(c)
+                        i++
+                    }
+                }
+                // A bare store path in prose (`see /cursor/stores/bc-…/docs/spec.md`) is a link like a bare URL.
+                !insideLink && c == '/' && text.startsWith(StorePath.ROOT, i) -> {
+                    val path = StorePath.findBare(text, i)
+                    if (path != null) {
+                        emitLink(path, path)
+                        i += path.length
                     } else {
                         append(c)
                         i++
@@ -614,7 +637,21 @@ private fun TaskCheckbox(checked: Boolean, style: TextStyle, modifier: Modifier)
 internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val uriHandler = LocalUriHandler.current
-    val openLink = remember(uriHandler) { InlineMarkdown.opener(uriHandler) }
+    val media = LocalMarkdownMedia.current
+    // A store link goes where the screen sends it — the document sheet — or to the Project on cursor.com when
+    // nothing here reads the store; anything else to the system.
+    val openLink: (String) -> Unit = remember(uriHandler, media) {
+        val system = InlineMarkdown.opener(uriHandler)
+        val open: (String) -> Unit = { url ->
+            val store = StorePath.parse(url)
+            when {
+                store == null -> system(url)
+                media?.onOpenStorePath != null -> media.onOpenStorePath.invoke(store)
+                else -> store.ownerId(media?.agentId)?.let { system(StorePath.webUrl(it)) }
+            }
+        }
+        open
+    }
     val annotated = remember(text, style, color, openLink) {
         InlineMarkdown.render(
             text = text,

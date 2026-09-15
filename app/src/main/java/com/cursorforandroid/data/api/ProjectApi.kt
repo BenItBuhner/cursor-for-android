@@ -119,7 +119,16 @@ interface AgentStoreApi {
 
     /** `ReadAgentStoreFile`: the text of one file. */
     suspend fun readFile(storeId: String, relativePath: String): String
+
+    /**
+     * `PresignAgentStoreReads`: a URL the bytes of [relativePath] in [storeId] can be fetched from for a while, made
+     * as [requesterId] (the chat the path was read in). Null when the service answered with no instruction for it.
+     */
+    suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead?
 }
+
+/** `aiserver.v1.AgentStoreReadInstruction`: where a store file's bytes are, and until when. */
+data class PresignedStoreRead(val relativePath: String, val url: String, val expiresAtMillis: Long?)
 
 /**
  * The Cursor Projects corner of `aiserver.v1.BackgroundComposerService` (see [BackgroundComposerApi] for the
@@ -257,6 +266,13 @@ class ProjectApi(
     override suspend fun readFile(storeId: String, relativePath: String): String =
         call("ReadAgentStoreFile", ReadStoreFileDto(storeId, relativePath), ReadStoreFileDto.serializer(), ReadStoreFileResponseDto.serializer()).content
 
+    override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? {
+        val response = call("PresignAgentStoreReads", PresignReadsDto(requesterId, listOf(relativePath), storeId), PresignReadsDto.serializer(), PresignReadsResponseDto.serializer())
+        val instruction = response.instructions.firstOrNull { it.relPath == relativePath } ?: response.instructions.firstOrNull() ?: return null
+        val url = instruction.url?.takeIf { it.isNotBlank() } ?: return null
+        return PresignedStoreRead(instruction.relPath ?: relativePath, url, instruction.expiresAtMs?.longOrNull)
+    }
+
     private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
         rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
 
@@ -380,6 +396,17 @@ class ProjectApi(
 
     @Serializable
     private data class ReadStoreFileResponseDto(val content: String = "")
+
+    /** `PresignAgentStoreReadsRequest {agent_id, rel_paths[], store_id?}`; the paths are the store's relative ones. */
+    @Serializable
+    private data class PresignReadsDto(val agentId: String, val relPaths: List<String>, val storeId: String)
+
+    @Serializable
+    private data class PresignReadsResponseDto(val instructions: List<ReadInstructionDto> = emptyList())
+
+    /** `AgentStoreReadInstruction {rel_path, url, expires_at_ms}`; the stamp is an int64, a string or a number in Connect JSON. */
+    @Serializable
+    private data class ReadInstructionDto(val relPath: String? = null, val url: String? = null, val expiresAtMs: JsonPrimitive? = null)
 
     @Serializable
     private class EmptyDto
