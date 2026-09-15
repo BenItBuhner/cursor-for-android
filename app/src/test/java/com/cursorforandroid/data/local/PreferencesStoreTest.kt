@@ -54,7 +54,6 @@ class PreferencesStoreTest {
         // Device-level, so a sign-out leaves it alone.
         prefs.setOledBlack(true)
         prefs.setAutoUpdate(false)
-        prefs.setPinSyncEnabled(false)
 
         prefs.clearSession()
 
@@ -70,7 +69,6 @@ class PreferencesStoreTest {
 
         assertThat(prefs.oledBlack.first()).isTrue()
         assertThat(prefs.autoUpdate.first()).isFalse()
-        assertThat(prefs.pinSyncEnabled.first()).isFalse()
     }
 
     @Test

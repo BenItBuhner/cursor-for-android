@@ -574,7 +574,7 @@ class ConversationRepository(
 
     private val lastOpened = MutableStateFlow<String?>(null)
 
-    /** The chat a screen most recently attached to, or null before any: the one Settings › Advanced diagnoses. */
+    /** The chat a screen most recently attached to, or null before any: the one Settings' debug sheet diagnoses. */
     val lastOpenedAgentId: StateFlow<String?> = lastOpened.asStateFlow()
 
     /** True while at least one conversation screen shows this agent. */

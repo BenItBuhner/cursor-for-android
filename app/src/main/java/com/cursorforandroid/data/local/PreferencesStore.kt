@@ -114,7 +114,6 @@ class PreferencesStore(
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
         val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
-        val pinSync = booleanPreferencesKey("pin_sync")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
         val pinnedModels = stringPreferencesKey("pinned_model_ids")
@@ -234,11 +233,6 @@ class PreferencesStore(
         p.remove(Keys.pendingPins)
         p.remove(Keys.pinsMigrated)
     }
-
-    /** Pins follow the Cursor account (the desktop Agents window and the iOS app) instead of staying on this device. On by default. */
-    val pinSyncEnabled: Flow<Boolean> = data.map { it[Keys.pinSync] ?: true }
-
-    suspend fun setPinSyncEnabled(enabled: Boolean) = edit { it[Keys.pinSync] = enabled }
 
     /** True once this account's first sync has pushed the pins that were made on this device before syncing existed. */
     val pinsMigrated: Flow<Boolean> = accountData.map { it[Keys.pinsMigrated] ?: false }

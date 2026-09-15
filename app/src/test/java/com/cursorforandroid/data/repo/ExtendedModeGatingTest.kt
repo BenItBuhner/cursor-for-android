@@ -267,8 +267,6 @@ class ExtendedModeGatingTest {
         assertThat(attempts.get()).isEqualTo(1)
         assertThat(pins.state.value).isEqualTo(PinSyncState())
 
-        // And the preference under the option is not the round's to change: still on, for when the mode comes back.
-        assertThat(prefs.pinSyncEnabled.first()).isTrue()
         extended = true
         assertThat(pins.sync().isSuccess).isFalse() // offline still; the point is that it asked again, now that it may
         assertThat(attempts.get()).isEqualTo(2)
