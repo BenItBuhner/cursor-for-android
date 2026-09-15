@@ -30,7 +30,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -58,22 +60,36 @@ class PreferencesStore(
 ) {
 
     /**
-     * What every flow below reads. A settings file that cannot be read even after being replaced degrades to
-     * defaults rather than throwing into whatever is collecting — a Compose screen, or the session restore the
-     * splash screen waits on.
+     * The settings as this process last wrote them, published beside the store's own flow. DataStore 1.1's `data`
+     * can drop the push of an update to a collector whose collection raced the write (b/431787506, fixed upstream
+     * only from 1.3.0-alpha03): the collector keeps the value it had while a fresh read returns the new one. Every
+     * write here goes through [edit], which records the settings it produced, and [data] prefers that record to the
+     * store's flow — so a pin, a read marker or a toggle written by this process reaches every collector, always.
+     * Nothing else writes the file: the store is this process's alone.
      */
-    private val data: Flow<Preferences> = store.data.catch { t ->
-        if (t !is IOException) throw t
-        Log.w(TAG, "Settings could not be read; using defaults", t)
-        emit(emptyPreferences())
-    }
+    private val written = MutableStateFlow<Preferences?>(null)
+
+    /**
+     * What every flow below reads: the store's flow, with this process's own writes preferred (see [written]). A
+     * settings file that cannot be read even after being replaced degrades to defaults rather than throwing into
+     * whatever is collecting — a Compose screen, or the session restore the splash screen waits on.
+     */
+    private val data: Flow<Preferences> = combine(
+        store.data.catch { t ->
+            if (t !is IOException) throw t
+            Log.w(TAG, "Settings could not be read; using defaults", t)
+            emit(emptyPreferences())
+        },
+        written,
+    ) { fromStore, mine -> mine ?: fromStore }.distinctUntilChanged()
 
     /**
      * A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. False when
-     * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so.
+     * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so. What a
+     * write produced is recorded for the flows (see [written]).
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
-        runCatching { store.edit(transform); true }.getOrElse { t ->
+        runCatching { written.value = store.edit(transform); true }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
             false
@@ -279,15 +295,17 @@ class PreferencesStore(
     suspend fun setPinnedIds(agentIds: Set<String>) = edit { it[Keys.pinned] = agentIds }
 
     /** Model ids the user pinned in the picker, most recently pinned first, so they stay at the top of the list. */
-    val pinnedModelIds: Flow<List<String>> = store.data.map { p ->
+    val pinnedModelIds: Flow<List<String>> = data.map { p ->
         p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
     }
 
     /** Pins [modelId] to the front of the list, or drops it when it is already pinned. */
-    suspend fun togglePinnedModel(modelId: String) = store.edit { p ->
-        val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
-        val next = if (modelId in current) current - modelId else listOf(modelId) + current
-        if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+    suspend fun togglePinnedModel(modelId: String) {
+        edit { p ->
+            val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+            val next = if (modelId in current) current - modelId else listOf(modelId) + current
+            if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+        }
     }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
