@@ -87,7 +87,7 @@ private fun SideChatRow(chat: Agent, onOpen: () -> Unit, onOpenAsChat: () -> Uni
         icon = CursorIcons.Ask,
         iconTint = if (chat.isRunning) colors.accent else colors.iconTertiary,
         subtitle = detail,
-        trailing = { FlatIconButton(CursorIcons.ExternalLink, "Open ${'$'}{chat.name} as a chat", onClick = onOpenAsChat, size = 24.dp, iconSize = 13.dp, modifier = Modifier.testTag("side-chat-open-as-chat")) },
+        trailing = { FlatIconButton(CursorIcons.ExternalLink, "Open ${chat.name} as a chat", onClick = onOpenAsChat, size = 24.dp, iconSize = 13.dp, modifier = Modifier.testTag("side-chat-open-as-chat")) },
         onClick = onOpen,
         modifier = Modifier.testTag("side-chat"),
     )

@@ -6,7 +6,9 @@ import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.util.AppClock
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
  * The demo's Agent Stores, standing in for `ListAgentStores` / `ListAgentStoreEntries` / `ReadAgentStoreFile`: the
@@ -51,13 +53,9 @@ object DemoStores : AgentStoreApi {
 
     override suspend fun storeFor(sourceId: String): String? = PROJECT_STORE_ID.takeIf { sourceId == DemoData.PROJECT_ID }
 
-    override suspend fun stores(): List<AgentStoreRef> {
-        delay(120)
-        return listOf(projectStore, userStore)
-    }
+    override suspend fun stores(): List<AgentStoreRef> = io { listOf(projectStore, userStore) }
 
-    override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> {
-        delay(120)
+    override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = io {
         val files = filesOf(storeId) ?: throw IllegalArgumentException("No such store: $storeId")
         val prefix = relativePath.trim('/').let { if (it.isEmpty()) "" else "$it/" }
         val now = AppClock.now()
@@ -74,14 +72,19 @@ object DemoStores : AgentStoreApi {
                 directories[dir] = maxOf(directories[dir] ?: 0L, now - file.ageMillis)
             }
         }
-        return (directories.map { (dir, at) -> ContextEntry(dir, isDirectory = true, updatedAtMillis = at) } + entries)
+        (directories.map { (dir, at) -> ContextEntry(dir, isDirectory = true, updatedAtMillis = at) } + entries)
             .sortedWith(compareByDescending<ContextEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
     }
 
-    override suspend fun readFile(storeId: String, relativePath: String): String {
-        delay(120)
+    override suspend fun readFile(storeId: String, relativePath: String): String = io {
         val file = filesOf(storeId)?.get(relativePath.trim('/')) ?: throw IllegalArgumentException("No such file: $relativePath")
-        return file.text ?: throw IllegalArgumentException("$relativePath is a picture; open it from Recents.")
+        file.text ?: throw IllegalArgumentException("$relativePath is a picture; open it from Recents.")
+    }
+
+    /** A beat of latency off the main thread, as the demo backend's reads have, so the tabs show their loading states. */
+    private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) {
+        delay(120)
+        block()
     }
 
     /** Every picture the demo store lists resolves to the one bundled screenshot. */

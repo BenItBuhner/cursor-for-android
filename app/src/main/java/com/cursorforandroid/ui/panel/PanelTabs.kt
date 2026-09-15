@@ -196,8 +196,10 @@ private fun PanelTabChip(
         )
         if (closable) {
             Spacer(Modifier.width(2.dp))
-            TouchTarget(size = 18.dp, touchSize = 32.dp, shape = CircleShape, onClick = onClose) {
-                Icon(CursorIcons.Close, "Close $label", tint = colors.iconTertiary, modifier = Modifier.size(11.dp))
+            // The label sits on the control that takes the tap: inside the chip's own tappable row the glyph's node
+            // would merge into the chip's, and a tap aimed at the cross would select the tab instead.
+            TouchTarget(size = 18.dp, touchSize = 32.dp, shape = CircleShape, onClick = onClose, contentDescription = "Close $label") {
+                Icon(CursorIcons.Close, null, tint = colors.iconTertiary, modifier = Modifier.size(11.dp))
             }
         }
     }

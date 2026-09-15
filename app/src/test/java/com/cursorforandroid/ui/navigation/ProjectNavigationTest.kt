@@ -97,9 +97,13 @@ class ProjectNavigationTest {
         compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
         assertCoordinatorChatOpen()
 
-        // The panel opens on the Project: right under the Overview, its primaries with their status, the
-        // coordinator's hands (the demo stands in for the account) and the shared context's named state.
+        // A coordinator's panel opens on its Project tab — the Project's notes under its name, as on cursor.com —
+        // and its Chat tab carries the Project section right under the Overview: its primaries with their status,
+        // the coordinator's hands (the demo stands in for the account) and the shared context.
         compose.onNodeWithContentDescription("Open panel").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("project-notes-tab")).fetchSemanticsNodes().isNotEmpty() }
+        waitForText("Shipping")
+        compose.onNodeWithTag("panel-tab-chat").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("section-Project")).fetchSemanticsNodes().isNotEmpty() }
         waitForText("Stripe webhook handler")
         assertThat(compose.onAllNodesWithTag("project-primary").fetchSemanticsNodes()).hasSize(2)
@@ -108,7 +112,7 @@ class ProjectNavigationTest {
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("project-new-primary"))
         assertThat(onScreen("New primary")).isTrue()
         assertThat(onScreen("Adopt a chat")).isTrue()
-        compose.onNodeWithTag("panel-sections").performScrollToNode(hasText("No shared context for this Project yet."))
+        compose.onNodeWithTag("panel-sections").performScrollToNode(hasText("Show shared context"))
         compose.onNodeWithTag("project-appearance").assertExists()
         // New primary opens its sheet.
         compose.onNodeWithTag("project-new-primary").performClick()
