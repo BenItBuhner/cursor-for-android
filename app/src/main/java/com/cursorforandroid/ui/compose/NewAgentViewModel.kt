@@ -116,10 +116,26 @@ data class NewAgentUiState(
      */
     val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
     val deviceLabel: String get() = selectedDevice.label
+    /**
+     * The source chip's text: the repository's short name, or — with none chosen — what the web composer calls the
+     * same choice, "Start from scratch"; "Repository" only while there is neither yet.
+     */
+    val repoLabel: String
+        get() = when {
+            noRepo -> START_FROM_SCRATCH
+            selectedRepo != null -> selectedRepo.shortName
+            isLoadingRepos -> "Loading…"
+            else -> "Repository"
+        }
     /** The device's repository as a picker entry — the catalogue's own row for it when the catalogue lists it. */
     val deviceRepository: Repository? get() = deviceRepoUrl?.let { url -> repositories.firstOrNull { it.isAt(url) } ?: Repository(url) }
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
+
+    companion object {
+        /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
+        const val START_FROM_SCRATCH = "Start from scratch"
+    }
 }
 
 class NewAgentViewModel(
