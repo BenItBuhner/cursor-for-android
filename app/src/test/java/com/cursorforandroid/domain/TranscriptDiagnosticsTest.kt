@@ -64,6 +64,41 @@ class TranscriptDiagnosticsTest {
         assertThat(report).doesNotContain("bc-bae107cb-2562")
     }
 
+    /**
+     * The load's lines: the window over the chat's turns, the run list and the order it came in, each run of the window
+     * with the state of its trace, the live follow, the failures — the account of a chat that opened with its text
+     * and no tool calls, or with its running turn read as over.
+     */
+    @Test
+    fun `the load line says where the window sits, what came of each run's trace, and what the live stream said`() {
+        val load = TranscriptLoadDiagnostics(
+            attached = 1, paused = false, fetched = true, fetchedAtIso = "2026-09-14T03:59:58Z", messages = 319, prompts = 160,
+            runsLoaded = 160, runsComplete = true, hasOlderCursor = false, runOrder = RunOrder.OLDEST_FIRST, latestFetchedById = true,
+            window = 10, windowStart = 150, chatTurns = 160,
+            runs = listOf(
+                TranscriptLoadDiagnostics.RunLine("…run151", "FINISHED", "expired", 0),
+                TranscriptLoadDiagnostics.RunLine("…run152", "FINISHED", "failed", 0),
+                TranscriptLoadDiagnostics.RunLine("…run159", "FINISHED", "shown", 4),
+                TranscriptLoadDiagnostics.RunLine("…run160", "RUNNING", "live", 0),
+            ),
+            traceQueue = 0, traceInFlight = 1, traceWorkerRunning = true, expiredBeforeIso = "2026-09-07T10:00:00Z", expiredRuns = 7, failedTraces = 1,
+            liveRunId = "run-160", following = true,
+            liveStream = TranscriptLoadDiagnostics.LiveStreamLine(events = 3, status = "RUNNING", reconnecting = false, expired = false, finished = false, items = 2),
+            lastError = null, transcriptError = "Cursor took too long to respond. https://api.cursor.com/v0/agents/bc-1234/conversation", transcriptUnavailable = false,
+        )
+        val report = TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input("0.3.15", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668", agent = null, state = TranscriptDiagnostics.State(items), load = load),
+        )
+        assertThat(report).contains("load: attached=1 paused=false fetched=true fetchedAt=2026-09-14T03:59:58Z messages=319 prompts=160 runs=160 complete=true olderCursor=false order=OLDEST_FIRST latestById=true window=10 turns=[150,160)")
+        assertThat(report).contains("traces: shown=1 of 3 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")
+        assertThat(report).contains("  run …run151 FINISHED trace=expired items=0")
+        assertThat(report).contains("  run …run152 FINISHED trace=failed items=0")
+        assertThat(report).contains("  run …run160 RUNNING trace=live items=0")
+        assertThat(report).contains("live: run=…un-160 following=true stream=events:3,status:RUNNING,reconnecting:false,expired:false,finished:false,items:2")
+        assertThat(report).contains("errors: last=- transcript=\"Cursor took too long to respond. <url>\" transcriptUnavailable=false")
+        assertThat(report).doesNotContain("bc-1234")
+    }
+
     @Test
     fun `the decision names each of its words, and a chat never opened says so`() {
         assertThat(render(recordProjectMode = true)).contains("classification: COORDINATOR listProject=false recordProjectMode=true content=true")

@@ -11,6 +11,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
+import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.BuiltInSlashCommands
@@ -527,6 +528,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /** The reader neared the oldest turn shown: the turns before it are paged in (see [ConversationState.hasOlder]). */
     fun loadOlder() = graph.conversations.loadOlder(agentId)
+
+    /** The reader's Retry on the turns whose activity could not be read (see [TraceStatus.failed]). */
+    fun retryTraces() = graph.conversations.retryTraces(agentId)
 
     /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
     fun resume() = graph.conversations.resume(agentId)
