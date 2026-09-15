@@ -263,6 +263,17 @@ class PanelScreenshotTest {
         capture("52_panel_branch_diff")
     }
 
+    /**
+     * Every section closed, every header with a hint of a different length: the hints and chevrons line up against
+     * the end edge, or the frame shows the drift.
+     */
+    @Test
+    fun headersAligned() {
+        compose.setContent { Panel(PanelFixtures.withSideChats().copy(expandedSections = PanelSectionId.entries.associateWith { false })) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("section-SideChats")).fetchSemanticsNodes().isNotEmpty() }
+        capture("66_panel_headers_aligned")
+    }
+
     /** Extended mode: the Side chats section of an ordinary chat, its two side chats and the offer of a new one. */
     @Test
     fun sideChats() {
