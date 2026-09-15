@@ -10,7 +10,6 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -21,7 +20,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -38,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 data class PinSyncState(
-    /** Pins are being kept in step with the Cursor account: the setting is on and this is a real backend. */
+    /** Pins are being kept in step with the Cursor account: Extended mode is on and this is a real backend. */
     val active: Boolean = false,
     val isSyncing: Boolean = false,
     val lastSyncedAtMillis: Long? = null,
@@ -112,9 +110,11 @@ class PinRepository(
     /** Where the account's list continues past the pages read this round; null before a round and past the last page. */
     @Volatile private var accountCursor: String? = null
 
-    /** Set after a failure retrying cannot fix (a rejected key, a device policy); cleared by a sign-in or the setting. */
+    /**
+     * Set after a failure retrying cannot fix (a rejected key, a device policy); cleared by [reset] — a sign-in, or
+     * Extended mode switched off and on again, which is what the pins follow.
+     */
     @Volatile private var halted = false
-    private val settingWatcher = AtomicReference<Job?>(null)
 
     /** The retry chain of the last round (see [syncWithRetry]); one at a time. */
     private val retryJob = AtomicReference<Job?>(null)
@@ -133,10 +133,7 @@ class PinRepository(
             agents.refreshCompleted.filter { it > 0L }.collect {
                 // A failure of the round is the round's to report; nothing thrown here may end the collector, or the
                 // account would not be read again for the life of the process.
-                runCatching {
-                    watchSetting()
-                    syncWithRetry()
-                }.onFailure { if (it is CancellationException) throw it }
+                runCatching { syncWithRetry() }.onFailure { if (it is CancellationException) throw it }
             }
         }
         scope.launch { session.backend.drop(1).collect { reset() } }
@@ -159,18 +156,6 @@ class PinRepository(
             }
         }
         retryJob.set(job)
-    }
-
-    /** Turning the setting on syncs right away, and forgives an earlier permanent failure. Started once, lazily. */
-    private fun watchSetting() {
-        if (settingWatcher.get() != null) return
-        val job = scope.launch(start = CoroutineStart.LAZY) {
-            prefs.pinSyncEnabled.distinctUntilChanged().drop(1).filter { it }.collect {
-                halted = false
-                sync()
-            }
-        }
-        if (settingWatcher.compareAndSet(null, job)) job.start() else job.cancel()
     }
 
     /**
@@ -265,8 +250,8 @@ class PinRepository(
         }
         val startedIn = generation.get()
         // The account list is read either way: it also carries the pull request states and the sources (see [onList]).
-        // Only the pins themselves are subject to the setting.
-        val pinsEnabled = allowed.pinSync && prefs.pinSyncEnabled.first()
+        // Only the pins themselves are subject to the pin sync capability.
+        val pinsEnabled = allowed.pinSync
         _state.update { it.copy(active = pinsEnabled, isSyncing = pinsEnabled) }
         try {
             val known = agents.state.value.agents.mapTo(HashSet()) { it.id }
@@ -435,7 +420,7 @@ class PinRepository(
     /** The account service can be asked at all: a real backend, and no failure that retrying cannot fix. */
     private fun sessionUsable(): Boolean = !session.isDemo && !halted
 
-    private suspend fun eligible(): Boolean = sessionUsable() && capabilities().pinSync && prefs.pinSyncEnabled.first()
+    private suspend fun eligible(): Boolean = sessionUsable() && capabilities().pinSync
 
     private suspend fun pendingCount(): Int = prefs.pendingPinChanges.first().size
 
