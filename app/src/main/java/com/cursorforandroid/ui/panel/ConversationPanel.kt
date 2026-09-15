@@ -43,17 +43,20 @@ import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 /**
- * The panel's contents, the way cursor.com keeps them beside a Project chat: a strip of tabs on top ([PanelTab]) and
- * the tab's body under it. The Chat tab is the chat's sections ([PanelRegistry.shown]) as collapsible groups — or,
- * while a file is open from Files or Changes, the file viewer in their place; the Project tab renders the Project's
- * Context notes; All Files the Context stores as trees with Recents; a document tab one Context file with Preview
- * and Source; a side chat tab the side chat itself, beside the conversation ([sideChatContent] is the host's, since
- * only the conversation screen can compose a chat).
+ * The panel's contents, one of two surfaces ([PanelSurface]). The Project panel is the one cursor.com keeps beside a
+ * Project chat: a strip of tabs on top — the Project, one tab per Context document opened from it, one per side
+ * chat opened beside the conversation, `+`, and the panel's expand and close controls at the end — and the tab's
+ * body under it: the Project's notes or, toggled from the header beside the Project's name, its files (All Files);
+ * a document with Preview and Source; a side chat itself ([sideChatContent] is the host's, since only the
+ * conversation screen can compose a chat). The Chat surface is the chat's own sections ([PanelRegistry.shown]) as
+ * collapsible groups, the panel every chat had before — or, while a file is open from Files or Changes, the file
+ * viewer in their place.
  */
 @Composable
 fun ConversationPanel(
@@ -62,54 +65,72 @@ fun ConversationPanel(
     onClose: (() -> Unit)?,
     modifier: Modifier = Modifier,
     registry: PanelRegistry = remember { PanelRegistry.default() },
+    /** The panel's expand control: null leaves it out (a phone's sheet is already the width it can be). */
+    onExpand: (() -> Unit)? = null,
+    expanded: Boolean = false,
     sideChatContent: @Composable (agentId: String) -> Unit = { SideChatPlaceholder(it, state) },
 ) {
     // Whether the chat has artifacts decides whether the Artifacts section is there at all, so the list is asked for
     // as the panel opens rather than when a section is; the view model asks once.
     LaunchedEffect(state.agentId) { actions.loadArtifacts() }
-    val canStartSideChat = DefaultPanelSections.canStartSideChat(state.capabilities, state)
     Column(modifier.fillMaxSize().testTag("conversation-panel")) {
-        PanelTabStrip(
-            tabs = state.tabs,
-            labels = { tabLabel(it, state) },
-            icons = ::tabIcon,
-            onSelect = actions::selectTab,
-            onClose = actions::closeTab,
-            onOpenFile = actions::openAllFiles,
-            onNewSideChat = if (canStartSideChat) ({ actions.startSideChat(null) }) else null,
-            onClosePanel = onClose,
-        )
-        HairlineDivider()
-        when (val tab = state.tabs.current) {
-            PanelTab.Chat -> ChatTab(state, actions, registry)
-            PanelTab.Project -> ProjectNotesTab(state, actions)
-            PanelTab.AllFiles -> AllFilesTab(state, actions)
-            is PanelTab.Document -> DocumentTab(tab, state, actions)
-            is PanelTab.SideChat -> sideChatContent(tab.agentId)
+        when (state.surface) {
+            PanelSurface.Chat -> ChatSurface(state, actions, registry, onClose)
+            PanelSurface.Project -> ProjectSurface(state, actions, onClose, onExpand, expanded, sideChatContent)
         }
     }
 }
 
-/** The tab's name on the strip: the fixed tabs' words, a document's file name, a side chat's name as the list has it. */
+/** The Project panel: the tab strip and the selected tab's body. */
+@Composable
+private fun ProjectSurface(
+    state: PanelState,
+    actions: PanelActions,
+    onClose: (() -> Unit)?,
+    onExpand: (() -> Unit)?,
+    expanded: Boolean,
+    sideChatContent: @Composable (agentId: String) -> Unit,
+) {
+    val canStartSideChat = DefaultPanelSections.canStartSideChat(state.capabilities, state)
+    PanelTabStrip(
+        tabs = state.tabs,
+        labels = { tabLabel(it, state) },
+        icons = ::tabIcon,
+        onSelect = actions::selectTab,
+        onClose = actions::closeTab,
+        onOpenFile = if (state.hasProjectTab) ({ actions.openProject(allFiles = true) }) else null,
+        onNewSideChat = if (canStartSideChat) ({ actions.startSideChat(null) }) else null,
+        onExpand = onExpand,
+        expanded = expanded,
+        onClosePanel = onClose,
+    )
+    HairlineDivider()
+    when (val tab = state.tabs.current) {
+        PanelTab.Project -> ProjectTabContent(state, actions)
+        is PanelTab.Document -> DocumentTab(tab, state, actions)
+        is PanelTab.SideChat -> sideChatContent(tab.agentId)
+        // No Project and nothing opened: the strip's `+` is the way in.
+        null -> EmptyRow("Nothing open", "Open a side chat from the chat's sections, or a file from a Project's Context.")
+    }
+}
+
+/** The tab's name on the strip: "Project", a document's file name, a side chat's name as the list has it. */
 internal fun tabLabel(tab: PanelTab, state: PanelState): String = when (tab) {
-    PanelTab.Chat -> "Chat"
     PanelTab.Project -> "Project"
-    PanelTab.AllFiles -> "All Files"
     is PanelTab.Document -> tab.name
     is PanelTab.SideChat -> state.sideChats.firstOrNull { it.id == tab.agentId }?.name ?: "Side chat"
 }
 
+/** The tab's glyph: the web's page mark for the Project, the markdown mark for a `.md` document, the file's type otherwise, the side-chat glyph. */
 internal fun tabIcon(tab: PanelTab): ImageVector = when (tab) {
-    PanelTab.Chat -> CursorIcons.Layers
-    PanelTab.Project -> CursorIcons.Book
-    PanelTab.AllFiles -> CursorIcons.Folder
-    is PanelTab.Document -> iconForExtension(tab.name.substringAfterLast('.', "").lowercase())
+    PanelTab.Project -> CursorIcons.FileText
+    is PanelTab.Document -> if (tab.name.substringAfterLast('.', "").lowercase() in setOf("md", "markdown")) CursorIcons.Markdown else iconForExtension(tab.name.substringAfterLast('.', "").lowercase())
     is PanelTab.SideChat -> CursorIcons.Ask
 }
 
-/** The Chat tab: the chat's name and repo · branch, then its sections; the file viewer takes their place while a file is open. */
+/** The Chat surface: the chat's name and repo · branch with the close control, then its sections; the file viewer takes their place while a file is open. */
 @Composable
-private fun ChatTab(state: PanelState, actions: PanelActions, registry: PanelRegistry) {
+private fun ChatSurface(state: PanelState, actions: PanelActions, registry: PanelRegistry, onClose: (() -> Unit)?) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val file = state.browser.file
@@ -118,19 +139,21 @@ private fun ChatTab(state: PanelState, actions: PanelActions, registry: PanelReg
         return
     }
     val sections = registry.shown(state.capabilities, state)
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(state.agent?.name ?: "Chat", style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val subtitle = state.agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ") }?.ifBlank { null }
-                if (subtitle != null) Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(state.agent?.name ?: "Chat", style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val subtitle = state.agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ") }?.ifBlank { null }
+            if (subtitle != null) Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        LazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
-            items(sections, key = { it.id.name }) { section ->
-                PanelSectionView(section, state, actions)
-            }
+        // A chat in a Project has the Project panel behind this one; the way back to it.
+        if (state.hasProjectTab) FlatIconButton(CursorIcons.FileText, "Project panel", onClick = { actions.openProject(allFiles = false) }, modifier = Modifier.testTag("panel-to-project"))
+        if (onClose != null) FlatIconButton(CursorIcons.Close, "Close panel", onClick = onClose)
+    }
+    HairlineDivider()
+    LazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
+        items(sections, key = { it.id.name }) { section ->
+            PanelSectionView(section, state, actions)
         }
     }
 }
@@ -269,12 +292,12 @@ fun rememberPanelActions(
             override fun stopRun() = control { viewModel.stopRun() }
             override fun wake() = control { viewModel.wake() }
 
+            override fun showSurface(surface: PanelSurface) = viewModel.showSurface(surface)
             override fun selectTab(tab: PanelTab) = viewModel.selectTab(tab)
             override fun closeTab(tab: PanelTab) = viewModel.closeTab(tab)
             override fun openSideChat(agentId: String) = viewModel.openSideChat(agentId)
             override fun openDocument(store: AgentStoreRef, path: String) = viewModel.openDocument(store, path)
-            override fun openAllFiles() = viewModel.openAllFiles()
-            override fun openProjectTab() = viewModel.openProjectTab()
+            override fun openProject(allFiles: Boolean) = viewModel.openProject(allFiles)
             override fun showSection(section: PanelSectionId) = viewModel.showSection(section)
             override fun loadContext(force: Boolean) = viewModel.loadContext(force)
             override fun toggleFolder(store: AgentStoreRef, path: String) = viewModel.toggleFolder(store, path)

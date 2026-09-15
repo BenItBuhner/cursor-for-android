@@ -39,8 +39,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The panel's tabs: which tabs a chat gets, what each Context tab shows for its state, how a document tab reads and
- * toggles between Preview and Source, and how the strip and the Side chats section hand the reader between tabs.
+ * The panel's two surfaces and the Project panel's tabs: which chats get the Project tab, what the Project tab
+ * shows in its notes and All Files modes, how a document tab reads and toggles between Preview and Source, and how
+ * the strip and the Side chats section hand the reader between tabs.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -73,12 +74,13 @@ class PanelTabsTest {
     private var state by mutableStateOf(PanelFixtures.loaded())
     private val asked = mutableListOf<String>()
     private val actions = object : PanelActions by PanelActions.None {
-        override fun selectTab(tab: PanelTab) { asked += "select:${tab.key}"; state = state.copy(tabs = state.tabs.copy(selected = tab)) }
+        override fun showSurface(surface: PanelSurface) { asked += "surface:$surface"; state = state.copy(surface = surface) }
+        override fun selectTab(tab: PanelTab) { asked += "select:${tab.key}"; state = state.copy(surface = PanelSurface.Project, tabs = state.tabs.copy(selected = tab)) }
         override fun closeTab(tab: PanelTab) { asked += "close:${tab.key}" }
         override fun openSideChat(agentId: String) { asked += "side:$agentId" }
         override fun openAgent(agentId: String) { asked += "agent:$agentId" }
         override fun openDocument(store: AgentStoreRef, path: String) { asked += "doc:${store.storeId}:$path" }
-        override fun openAllFiles() { asked += "files" }
+        override fun openProject(allFiles: Boolean) { asked += "project:$allFiles"; state = state.copy(surface = PanelSurface.Project, tabs = state.tabs.copy(selected = PanelTab.Project), context = state.context.copy(allFiles = allFiles)) }
         override fun toggleFolder(store: AgentStoreRef, path: String) { asked += "folder:${store.storeId}:$path" }
         override fun setDocumentSource(tab: PanelTab.Document, source: Boolean) { asked += "source:$source"; state = state.copy(context = state.context.copy(sourceTabs = if (source) state.context.sourceTabs + tab.key else state.context.sourceTabs - tab.key)) }
         override fun loadContext(force: Boolean) { asked += "context" }
@@ -88,7 +90,7 @@ class PanelTabsTest {
     }
 
     private fun show() {
-        compose.setContent { CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, actions, onClose = {}) } }
+        compose.setContent { CursorTheme(mode = ThemeMode.Dark) { ConversationPanel(state, actions, onClose = {}, onExpand = { asked += "expand" }) } }
     }
 
     // The tree's "Today at 2:37 AM" reads against the clock; pinned to the fixtures' day.
@@ -106,16 +108,23 @@ class PanelTabsTest {
 
     private fun hasTab(key: String) = compose.onAllNodesWithTag("panel-tab-$key").fetchSemanticsNodes().isNotEmpty()
 
+    private fun projectPanel(tab: PanelTab = PanelTab.Project, allFiles: Boolean = false, vararg extra: PanelTab): PanelState = PanelFixtures.loaded().copy(
+        agentId = coordinator.id,
+        agent = coordinator,
+        capabilities = Capabilities.EXTENDED,
+        surface = PanelSurface.Project,
+        tabs = PanelTabsState(open = listOf(PanelTab.Project) + extra, selected = tab),
+        context = loadedContext.copy(allFiles = allFiles),
+    )
+
     @Test
-    fun `a chat of its own has Chat and All Files, a Project's coordinator and its worker the Project tab too`() {
-        val plain = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.AllFiles))
-        state = PanelFixtures.loaded().copy(tabs = plain)
+    fun `a chat of its own has the sections and no Project tab, a coordinator and its worker get the Project tab`() {
+        state = PanelFixtures.loaded()
         show()
-        assertThat(hasTab("chat")).isTrue()
-        assertThat(hasTab("files")).isTrue()
-        assertThat(hasTab("project")).isFalse()
-        compose.onNodeWithTag("panel-tab-chat").assertIsSelected()
+        // The Chat surface: the sections as they were, the chat named at the top, no strip.
         assertThat(shown("Overview")).isTrue()
+        assertThat(compose.onAllNodesWithTag("panel-tabs").fetchSemanticsNodes()).isEmpty()
+        assertThat(state.hasProjectTab).isFalse()
 
         val root = PanelFixtures.loaded().copy(agentId = coordinator.id, agent = coordinator)
         assertThat(root.hasProjectTab).isTrue()
@@ -128,32 +137,49 @@ class PanelTabsTest {
     }
 
     @Test
-    fun `the Project tab renders the notes under the Project's name and offers them as a document`() {
-        state = PanelFixtures.loaded().copy(
-            agentId = coordinator.id,
-            agent = coordinator,
-            capabilities = Capabilities.EXTENDED,
-            tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.Project, PanelTab.AllFiles), selected = PanelTab.Project),
-            context = loadedContext,
-        )
+    fun `the Project tab renders the notes under the Project's name, with the strip's controls`() {
+        state = projectPanel()
         show()
+        compose.onNodeWithTag("panel-tab-project").assertIsSelected()
+        assertThat(hasTab("chat")).isFalse()
+        assertThat(hasTab("files")).isFalse()
         compose.onNodeWithTag("project-notes-title").assertIsDisplayed()
         assertThat(shown("Cesium billing launch")).isTrue()
         assertThat(shown("Shipping")).isTrue()
         assertThat(shown("Usage events aggregation")).isTrue()
         assertThat(asked).contains("context")
-        compose.onNodeWithTag("project-notes-open").performClick()
-        assertThat(asked).contains("doc:st-project:notes.md")
+        compose.onNodeWithTag("panel-expand").performClick()
+        assertThat(asked).contains("expand")
+    }
+
+    @Test
+    fun `the header's toggle switches the Project tab to All Files and back`() {
+        state = projectPanel()
+        show()
+        compose.onNodeWithContentDescription("All Files").performClick()
+        assertThat(asked).contains("project:true")
+        compose.onNodeWithTag("all-files-tab").assertIsDisplayed()
+        compose.onNodeWithContentDescription("All Files").assertIsSelected()
+        assertThat(compose.onAllNodesWithTag("store-root").fetchSemanticsNodes()).hasSize(2)
+        assertThat(shown("User")).isTrue()
+        assertThat(shown("preferences.md")).isTrue()
+        compose.onNodeWithContentDescription("Folder docs").assertIsDisplayed()
+        assertThat(shown("Today at")).isTrue()
+        compose.onNodeWithContentDescription("Folder docs").performClick()
+        assertThat(asked).contains("folder:st-project:docs")
+        state = state.copy(context = state.context.copy(expandedFolders = state.context.expandedFolders + ContextPanelState.folderKey(projectStore, "docs")))
+        compose.onNodeWithContentDescription("File spec.md").performClick()
+        assertThat(asked).contains("doc:st-project:docs/spec.md")
+        compose.onNodeWithTag("all-files-tab").performScrollToNode(hasTestTag("recents-row"))
+        assertThat(compose.onAllNodesWithTag("recent-tile").fetchSemanticsNodes()).hasSize(1)
+        compose.onNodeWithContentDescription("All Files").performClick()
+        assertThat(asked).contains("project:false")
+        compose.onNodeWithTag("project-notes-tab").assertIsDisplayed()
     }
 
     @Test
     fun `without Extended mode the Project tab names the mode and the way to cursor com`() {
-        state = PanelFixtures.loaded().copy(
-            agentId = coordinator.id,
-            agent = coordinator,
-            tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.Project, PanelTab.AllFiles), selected = PanelTab.Project),
-            context = ContextPanelState(stores = RemoteLoad.Unsupported("Needs Extended mode"), notes = RemoteLoad.Unsupported("Needs Extended mode"), recents = RemoteLoad.Unsupported("Needs Extended mode")),
-        )
+        state = projectPanel().copy(context = ContextPanelState(stores = RemoteLoad.Unsupported("Needs Extended mode"), notes = RemoteLoad.Unsupported("Needs Extended mode"), recents = RemoteLoad.Unsupported("Needs Extended mode")))
         show()
         compose.onNodeWithTag("context-unavailable").assertIsDisplayed()
         compose.onNodeWithText("Open on cursor.com").performClick()
@@ -161,41 +187,9 @@ class PanelTabsTest {
     }
 
     @Test
-    fun `All Files lists both stores as trees with their times, opens folders and files, and shows Recents`() {
-        state = PanelFixtures.loaded().copy(
-            agentId = coordinator.id,
-            agent = coordinator,
-            capabilities = Capabilities.EXTENDED,
-            tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.Project, PanelTab.AllFiles), selected = PanelTab.AllFiles),
-            context = loadedContext,
-        )
-        show()
-        assertThat(compose.onAllNodesWithTag("store-root").fetchSemanticsNodes()).hasSize(2)
-        assertThat(shown("User")).isTrue()
-        assertThat(shown("preferences.md")).isTrue()
-        // The Project's root is open: its folder and file with the time each was written.
-        compose.onNodeWithContentDescription("Folder docs").assertIsDisplayed()
-        assertThat(shown("Today at")).isTrue()
-        compose.onNodeWithContentDescription("Folder docs").performClick()
-        assertThat(asked).contains("folder:st-project:docs")
-        // The folder opened in state lists its file, which opens as a document.
-        state = state.copy(context = state.context.copy(expandedFolders = state.context.expandedFolders + ContextPanelState.folderKey(projectStore, "docs")))
-        compose.onNodeWithContentDescription("File spec.md").performClick()
-        assertThat(asked).contains("doc:st-project:docs/spec.md")
-        compose.onNodeWithTag("all-files-tab").performScrollToNode(hasTestTag("recents-row"))
-        assertThat(compose.onAllNodesWithTag("recent-tile").fetchSemanticsNodes()).hasSize(1)
-    }
-
-    @Test
     fun `a document tab shows the breadcrumb, previews markdown and switches to its source`() {
         val tab = PanelTab.Document(projectStore.storeId, "docs/spec.md")
-        state = PanelFixtures.loaded().copy(
-            agentId = coordinator.id,
-            agent = coordinator,
-            capabilities = Capabilities.EXTENDED,
-            tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.Project, PanelTab.AllFiles, tab), selected = tab),
-            context = loadedContext,
-        )
+        state = projectPanel(tab = tab, extra = arrayOf(tab))
         show()
         compose.onNodeWithTag("document-tab").assertIsDisplayed()
         assertThat(asked).contains("load:${tab.key}")
@@ -214,20 +208,20 @@ class PanelTabsTest {
     }
 
     @Test
-    fun `the strip selects tabs and its plus opens a file or a side chat`() {
-        state = PanelFixtures.withSideChats().copy(tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.AllFiles), selected = PanelTab.Chat))
+    fun `the strip's plus opens a file or a side chat`() {
+        state = projectPanel().copy(sideChats = PanelFixtures.withSideChats().sideChats)
         show()
-        compose.onNodeWithTag("panel-tab-files").performClick()
-        assertThat(asked).contains("select:files")
         compose.onNodeWithTag("panel-tab-add").performClick()
-        compose.onNodeWithText("Open a file…").assertIsDisplayed()
+        compose.onNodeWithText("Open a file…").performClick()
+        assertThat(asked).contains("project:true")
+        compose.onNodeWithTag("panel-tab-add").performClick()
         compose.onNodeWithText("New side chat").performClick()
         assertThat(asked).contains("start-side-chat")
     }
 
     @Test
     fun `a side chat row opens the side chat as a tab, its trailing button as a chat`() {
-        state = PanelFixtures.withSideChats().copy(tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.AllFiles), selected = PanelTab.Chat))
+        state = PanelFixtures.withSideChats()
         show()
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-SideChats"))
         compose.onNodeWithTag("section-SideChats").performClick()
@@ -237,12 +231,25 @@ class PanelTabsTest {
         assertThat(asked).contains("side:${sideChat.id}")
         compose.onNodeWithContentDescription("Open ${sideChat.name} as a chat").performClick()
         assertThat(asked).contains("agent:${sideChat.id}")
-        // The tab, once open, is on the strip by the side chat's name and closable.
+        // The tab, once open, is on the strip by the side chat's name and closable; a chat of its own has no Project tab beside it.
         val tab = PanelTab.SideChat(sideChat.id)
-        state = state.copy(tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.AllFiles, tab), selected = tab))
+        state = state.copy(surface = PanelSurface.Project, tabs = PanelTabsState(open = listOf(tab), selected = tab))
         compose.onNodeWithTag("panel-tab-${tab.key}").assertIsSelected()
+        assertThat(hasTab("project")).isFalse()
         assertThat(shown(sideChat.name)).isTrue()
         compose.onNodeWithTag("side-chat-tab").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a chat in a Project reaches its sections from the Project panel and back`() {
+        state = projectPanel()
+        show()
+        assertThat(compose.onAllNodesWithTag("panel-sections").fetchSemanticsNodes()).isEmpty()
+        state = state.copy(surface = PanelSurface.Chat)
+        compose.onNodeWithTag("panel-sections").assertIsDisplayed()
+        compose.onNodeWithTag("panel-to-project").performClick()
+        assertThat(asked).contains("project:false")
+        compose.onNodeWithTag("panel-tabs").assertIsDisplayed()
     }
 
     @Test
@@ -250,14 +257,14 @@ class PanelTabsTest {
         val document = PanelTab.Document("st-project", "docs/spec.md")
         assertThat(PanelTab.fromKey(document.key)).isEqualTo(document)
         assertThat(PanelTab.fromKey(PanelTab.SideChat("bc-side").key)).isEqualTo(PanelTab.SideChat("bc-side"))
-        assertThat(PanelTab.fromKey("chat")).isEqualTo(PanelTab.Chat)
         assertThat(PanelTab.fromKey("project")).isEqualTo(PanelTab.Project)
-        assertThat(PanelTab.fromKey("files")).isEqualTo(PanelTab.AllFiles)
+        assertThat(PanelTab.fromKey("chat")).isNull()
+        assertThat(PanelTab.fromKey("files")).isNull()
         assertThat(PanelTab.fromKey("doc:x")).isNull()
-        assertThat(PanelTab.fromKey("nope")).isNull()
-        val tabs = PanelTabsState(open = listOf(PanelTab.Chat, PanelTab.AllFiles), selected = document)
-        assertThat(tabs.current).isEqualTo(PanelTab.Chat)
+        val tabs = PanelTabsState(open = listOf(PanelTab.Project), selected = document)
+        assertThat(tabs.current).isEqualTo(PanelTab.Project)
+        assertThat(PanelTabsState(open = emptyList(), selected = null).current).isNull()
         assertThat(document.closable).isTrue()
-        assertThat(PanelTab.Chat.closable).isFalse()
+        assertThat(PanelTab.Project.closable).isFalse()
     }
 }

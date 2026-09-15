@@ -87,7 +87,8 @@ fun PanelPane(
             Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
             if (onResize != null) Box(Modifier.width(3.dp).height(28.dp).background(colors.strokeStrong, CircleShape))
         }
-        Surface(color = colors.sidebar, contentColor = colors.textPrimary, shape = RectangleShape, modifier = Modifier.fillMaxHeight().width(with(density) { shownPx.toDp() } - GripWidth)) {
+        // On the canvas colour, as the web's panel is: the hairline in the grip is what marks the boundary.
+        Surface(color = colors.canvas, contentColor = colors.textPrimary, shape = RectangleShape, modifier = Modifier.fillMaxHeight().width(with(density) { shownPx.toDp() } - GripWidth)) {
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.End))) { content() }
         }
     }

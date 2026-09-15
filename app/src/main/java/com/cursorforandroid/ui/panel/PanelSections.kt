@@ -102,18 +102,20 @@ interface PanelActions {
     /** Wakes the chat's machine ahead of a follow-up. */
     fun wake()
 
-    // -- the panel's tabs (see PanelTab) --------------------------------------------------------------------------------
+    // -- the panel's surfaces and tabs (see PanelSurface, PanelTab) ----------------------------------------------------
 
+    /** The Project panel or the chat's sections. */
+    fun showSurface(surface: PanelSurface)
     fun selectTab(tab: PanelTab)
-    /** Closes a document or side chat tab; the fixed tabs stay. */
+    /** Closes a document or side chat tab; the Project tab stays. */
     fun closeTab(tab: PanelTab)
-    /** Opens the side chat [agentId] beside this conversation, as a tab of the panel. */
+    /** Opens the side chat [agentId] beside this conversation, as a tab of the Project panel. */
     fun openSideChat(agentId: String)
     /** Opens [path] of [store] as a document tab (Preview for markdown, Source for the rest). */
     fun openDocument(store: AgentStoreRef, path: String)
-    fun openAllFiles()
-    fun openProjectTab()
-    /** The Chat tab with [section] open: where a pill above the composer sends the reader. */
+    /** The Project tab, on its notes ([allFiles] false) or its files ([allFiles] true): the header's toggle. */
+    fun openProject(allFiles: Boolean)
+    /** The chat's sections with [section] open: where a pill above the composer sends the reader. */
     fun showSection(section: PanelSectionId)
 
     // -- Context: the Project's Agent Store and the user's (Extended mode) ---------------------------------------------
@@ -164,12 +166,12 @@ interface PanelActions {
             override fun resumeRun() = Unit
             override fun stopRun() = Unit
             override fun wake() = Unit
+            override fun showSurface(surface: PanelSurface) = Unit
             override fun selectTab(tab: PanelTab) = Unit
             override fun closeTab(tab: PanelTab) = Unit
             override fun openSideChat(agentId: String) = Unit
             override fun openDocument(store: AgentStoreRef, path: String) = Unit
-            override fun openAllFiles() = Unit
-            override fun openProjectTab() = Unit
+            override fun openProject(allFiles: Boolean) = Unit
             override fun showSection(section: PanelSectionId) = Unit
             override fun loadContext(force: Boolean) = Unit
             override fun toggleFolder(store: AgentStoreRef, path: String) = Unit

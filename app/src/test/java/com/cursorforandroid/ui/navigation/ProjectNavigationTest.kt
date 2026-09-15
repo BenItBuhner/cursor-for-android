@@ -97,13 +97,18 @@ class ProjectNavigationTest {
         compose.onNode(hasText("Cesium billing launch") and hasAnyAncestor(sidebarList)).performClick()
         assertCoordinatorChatOpen()
 
-        // A coordinator's panel opens on its Project tab — the Project's notes under its name, as on cursor.com —
-        // and its Chat tab carries the Project section right under the Overview: its primaries with their status,
-        // the coordinator's hands (the demo stands in for the account) and the shared context.
+        // A coordinator's panel opens on the Project panel — the Project's notes under its name, as on cursor.com.
+        // The chat's own sections are the panel's other surface, reached from the Agents pill: the Project section
+        // right under the Overview, with its primaries and their status, the coordinator's hands (the demo stands in
+        // for the account) and the shared context.
         compose.onNodeWithContentDescription("Open panel").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("project-notes-tab")).fetchSemanticsNodes().isNotEmpty() }
         waitForText("Shipping")
-        compose.onNodeWithTag("panel-tab-chat").performClick()
+        // The chat's own sections are the panel's other surface: the Agents pill above the composer opens them on the
+        // Project section, as the web's pill opens the Project's agents.
+        compose.onNodeWithContentDescription("Close panel").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithTag("pill-agents").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("section-Project")).fetchSemanticsNodes().isNotEmpty() }
         waitForText("Stripe webhook handler")
         assertThat(compose.onAllNodesWithTag("project-primary").fetchSemanticsNodes()).hasSize(2)
@@ -126,7 +131,11 @@ class ProjectNavigationTest {
         compose.onNode(hasTestTag("project-primary") and (hasText("Stripe webhook handler", substring = true) or hasAnyDescendant(hasText("Stripe webhook handler", substring = true)))).performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
         waitForText("Stripe webhook handler")
-        compose.onNodeWithContentDescription("Open panel").performClick()
+        // A worker's panel opens on the Project panel too; its own sections — with the way back to the coordinator —
+        // are the panel's other surface, from the header menu.
+        compose.onNodeWithContentDescription("More").performClick()
+        waitForText("Chat details")
+        compose.onNodeWithText("Chat details").performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("project-coordinator-link")).fetchSemanticsNodes().isNotEmpty() }
         assertThat(onScreen("A primary of this chat")).isTrue()
         compose.onNodeWithTag("project-coordinator-link").performClick()

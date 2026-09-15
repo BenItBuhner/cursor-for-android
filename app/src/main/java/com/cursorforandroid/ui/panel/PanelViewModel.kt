@@ -119,11 +119,13 @@ sealed interface DesktopState {
 }
 
 /**
- * The Context tabs' reads (see [PanelTab.Project], [PanelTab.AllFiles], [PanelTab.Document]): which stores the chat
+ * The Project panel's Context reads (see [PanelTab.Project], [PanelTab.Document]): which stores the chat
  * has, the Project's notes, each folder listed so far by store and path, the folders open in the tree, the Recents
  * row, and the documents open in tabs with whether each shows its source.
  */
 data class ContextPanelState(
+    /** The Project tab shows its files rather than its notes: the header's toggle (see the web's All Files). */
+    val allFiles: Boolean = false,
     val stores: RemoteLoad<ContextStores> = RemoteLoad.Idle,
     val notes: RemoteLoad<ContextDocument?> = RemoteLoad.Idle,
     val listings: Map<String, RemoteLoad<List<ContextEntry>>> = emptyMap(),
@@ -181,7 +183,9 @@ data class PanelState(
      * default.
      */
     val expandedSections: Map<PanelSectionId, Boolean> = emptyMap(),
-    /** The panel's tabs: which are open, which is showing (see [PanelTab]). */
+    /** Which surface the panel shows: the Project panel or the chat's sections (see [PanelSurface]). */
+    val surface: PanelSurface = PanelSurface.Chat,
+    /** The Project panel's tabs: which are open, which is showing (see [PanelTab]). */
     val tabs: PanelTabsState = PanelTabsState(),
     /** The Context tabs' reads. */
     val context: ContextPanelState = ContextPanelState(),
@@ -232,6 +236,8 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     /** The document and side chat tabs opened this session, in order, and the key of the tab the reader picked (null: the chat's default). */
     private val dynamicTabs = MutableStateFlow<List<PanelTab>>(emptyList())
     private val selectedTabKey = MutableStateFlow<String?>(null)
+    /** The surface the reader asked for; null until then, when a chat in a Project opens on the Project panel and any other on its sections. */
+    private val surfaceChoice = MutableStateFlow<PanelSurface?>(null)
     private val context = MutableStateFlow(ContextPanelState())
     private var contextJob: Job? = null
     private val folderJobs = HashMap<String, Job>()
@@ -274,7 +280,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
     /** The chat's kin — its parent, its side chats and the reads and writes about them — folded for the same reason. */
     private val sideChatLoads = combine(parentAgent, sideChats, sideChatsLoad, sideChatCreation) { parent, chats, load, creation -> SideChatLoads(parent, chats, load, creation) }
     /** The panel's tabs as the reader left them, and the Context tabs' reads, folded for the same reason. */
-    private val tabLoads = combine(dynamicTabs, selectedTabKey, context) { dynamic, selected, ctx -> TabLoads(dynamic, selected, ctx) }
+    private val tabLoads = combine(dynamicTabs, selectedTabKey, context, surfaceChoice) { dynamic, selected, ctx, surface -> TabLoads(dynamic, selected, ctx, surface) }
     /** [vmLoads] with what the account has said about the chat's controls, its side chats, the reader's expanded sections and tabs. */
     private val extendedLoads = combine(vmLoads, graph.steering.state(agentId), sideChatLoads, expandedSections, tabLoads) { vm, controls, side, expanded, tabs -> ExtendedLoads(vm, controls, side, expanded, tabs) }
 
@@ -285,9 +291,10 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         graph.extendedMode.capabilities,
         combine(pullRequest, artifacts, usage, browser, extendedLoads) { pr, art, use, br, extended -> Loads(pr, art, use, br, extended) },
     ) { a, conversation, (transcript, prompts), capabilities, loads ->
-        val fixed = fixedTabs(a, loads.extended.sideChats.parent)
-        val open = fixed + loads.extended.tabs.dynamic
-        val selected = loads.extended.tabs.selectedKey?.let { key -> open.firstOrNull { it.key == key } } ?: defaultTab(a, fixed)
+        val inProject = isInProject(a, loads.extended.sideChats.parent)
+        val open = (if (inProject) listOf(PanelTab.Project) else emptyList()) + loads.extended.tabs.dynamic
+        val selected = loads.extended.tabs.selectedKey?.let { key -> open.firstOrNull { it.key == key } } ?: open.firstOrNull()
+        val surface = loads.extended.tabs.surface ?: if (inProject) PanelSurface.Project else PanelSurface.Chat
         PanelState(
             agentId = agentId,
             agent = a,
@@ -312,27 +319,15 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
             sideChatsLoad = loads.extended.sideChats.load,
             sideChatCreation = loads.extended.sideChats.creation,
             expandedSections = loads.extended.expandedSections,
+            surface = surface,
             tabs = PanelTabsState(open = open, selected = selected),
             context = loads.extended.tabs.context,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PanelState(agentId, agent = graph.agents.agent(agentId), isDemo = graph.session.isDemo))
 
-    /**
-     * The tabs every chat's panel has: its sections, then — for a Project's coordinator or a chat inside a Project —
-     * the Project's notes, then the Context stores. The order is the web's: Project first among the Context tabs.
-     */
-    private fun fixedTabs(agent: Agent?, parent: Agent?): List<PanelTab> {
-        val inProject = agent != null && (agent.looksLikeProject || agent.parent?.kind == AgentParentKind.PROJECT_WORKER || (agent.parent != null && parent?.looksLikeProject == true))
-        return buildList {
-            add(PanelTab.Chat)
-            if (inProject) add(PanelTab.Project)
-            add(PanelTab.AllFiles)
-        }
-    }
-
-    /** Where the panel opens before the reader picks a tab: a coordinator's on its Project's notes, any other chat's on its sections. */
-    private fun defaultTab(agent: Agent?, fixed: List<PanelTab>): PanelTab =
-        if (agent?.looksLikeProject == true && PanelTab.Project in fixed) PanelTab.Project else PanelTab.Chat
+    /** Whether the chat is a Project's coordinator or a chat inside a Project: what gives the panel its Project tab. */
+    private fun isInProject(agent: Agent?, parent: Agent?): Boolean =
+        agent != null && (agent.looksLikeProject || agent.parent?.kind == AgentParentKind.PROJECT_WORKER || (agent.parent != null && parent?.looksLikeProject == true))
 
     private data class Loads(
         val pullRequest: RemoteLoad<PullRequestView>,
@@ -354,6 +349,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val dynamic: List<PanelTab>,
         val selectedKey: String?,
         val context: ContextPanelState,
+        val surface: PanelSurface?,
     )
 
     private data class SideChatLoads(
@@ -386,17 +382,22 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         super.onCleared()
     }
 
-    // -- the panel's tabs ----------------------------------------------------------------------------------------------
+    // -- the panel's surfaces and tabs ---------------------------------------------------------------------------------
+
+    fun showSurface(surface: PanelSurface) {
+        surfaceChoice.value = surface
+    }
 
     fun selectTab(tab: PanelTab) {
+        surfaceChoice.value = PanelSurface.Project
         selectedTabKey.value = tab.key
     }
 
-    /** Closes a document or side chat tab; a closed selected tab hands the panel to the Chat tab. */
+    /** Closes a document or side chat tab; a closed selected tab hands the panel to the Project tab. */
     fun closeTab(tab: PanelTab) {
         if (!tab.closable) return
         dynamicTabs.update { open -> open.filterNot { it.key == tab.key } }
-        if (selectedTabKey.value == tab.key) selectedTabKey.value = PanelTab.Chat.key
+        if (selectedTabKey.value == tab.key) selectedTabKey.value = PanelTab.Project.key
         if (tab is PanelTab.Document) {
             documentJobs.remove(tab.key)?.cancel()
             context.update { it.copy(documents = it.documents - tab.key, sourceTabs = it.sourceTabs - tab.key) }
@@ -413,23 +414,22 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         loadDocument(tab)
     }
 
-    fun openAllFiles() {
-        selectedTabKey.value = PanelTab.AllFiles.key
-        loadContext()
-    }
-
-    fun openProjectTab() {
+    /** The Project tab on its notes or, with [allFiles], on the Context stores. */
+    fun openProject(allFiles: Boolean) {
+        surfaceChoice.value = PanelSurface.Project
         selectedTabKey.value = PanelTab.Project.key
+        context.update { it.copy(allFiles = allFiles) }
         loadContext()
     }
 
-    /** The Chat tab with [section] open. */
+    /** The chat's sections with [section] open. */
     fun showSection(section: PanelSectionId) {
-        selectedTabKey.value = PanelTab.Chat.key
+        surfaceChoice.value = PanelSurface.Chat
         setSectionExpanded(section, true)
     }
 
     private fun open(tab: PanelTab) {
+        surfaceChoice.value = PanelSurface.Project
         dynamicTabs.update { open -> if (open.any { it.key == tab.key }) open else open + tab }
         selectedTabKey.value = tab.key
     }
