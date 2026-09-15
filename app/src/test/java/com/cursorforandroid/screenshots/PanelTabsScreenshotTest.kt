@@ -279,8 +279,9 @@ class PanelTabsScreenshotTest {
     @Test
     fun allFilesTab() {
         compose.setContent { Panel(coordinatorState(thumbnail(), PanelTab.Project, allFiles = true)) }
-        // The pictures decode off the main thread, in no fixed order; the frame waits for all three to be on screen.
-        compose.waitUntil(20_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size == 3 }
+        // The pictures decode off the main thread, in no fixed order and slowly on a loaded CI runner; the frame waits
+        // for all three to be on screen.
+        compose.waitUntil(60_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size == 3 }
         capture("70_panel_all_files")
     }
 

@@ -464,11 +464,9 @@ private fun DocumentBody(document: ContextDocument, source: Boolean) {
     if (source) {
         TextFile(document.text, truncated = false, modifier = Modifier.testTag("document-source"))
     } else {
-        BoxWithConstraints {
-            val inset = contentInset(maxWidth)
-            LazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = inset, end = inset, top = 14.dp, bottom = 24.dp)) {
-                item { MarkdownText(document.text, style = NotesText, appearance = MarkdownAppearance.Notes.copy(h1Scale = 2f)) }
-            }
+        // A document runs to the web's 16px inset, unlike the notes under the Project's header.
+        LazyColumn(Modifier.fillMaxSize().testTag("document-preview"), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 24.dp)) {
+            item { MarkdownText(document.text, style = NotesText, appearance = MarkdownAppearance.Notes.copy(h1Scale = 2f)) }
         }
     }
 }
