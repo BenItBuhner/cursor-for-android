@@ -703,7 +703,7 @@ class AppGraph(
     internal fun builtParts(): Set<String> = deferredParts.filterValues { it.isInitialized() }.keys
 
     /**
-     * The redacted account of where every chat was placed and by what (see [ProjectDiagnostics]): Settings › Advanced
+     * The redacted account of where every chat was placed and by what (see [ProjectDiagnostics]): Settings' debug sheet
      * exports it, so a Project's chat that still shows among the account's own can be traced to the signal that
      * missed. Ids are shortened to their tails; no names, prompts or tokens are in it.
      */

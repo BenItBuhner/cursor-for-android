@@ -31,7 +31,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Settings › Advanced: exports the redacted account of where every chat was placed — which are Projects, which
+ * Settings' debug sheet (a long press on the version row): exports the redacted account of where every chat was placed — which are Projects, which
  * their workers, side chats and subagents, and which signal placed each (see `ProjectDiagnostics`) — through the
  * share sheet in one tap — as text and as a `.txt` file through the app's FileProvider — so a Project's chat that
  * still shows among the account's own can be sent as a dump rather than described. Ids are shortened to their

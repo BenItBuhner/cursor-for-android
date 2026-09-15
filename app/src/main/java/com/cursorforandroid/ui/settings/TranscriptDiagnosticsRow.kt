@@ -29,7 +29,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
 /**
- * Settings › Advanced: exports the redacted account of the last opened chat's transcript as this build reads it (see
+ * Settings' debug sheet (a long press on the version row): exports the redacted account of the last opened chat's transcript as this build reads it (see
  * `TranscriptDiagnostics`) — the kinds of its items, the tool names with their argument key names, the payload read
  * off each call, and the decision that reads the chat as a Project coordinator's — through the share sheet, so a
  * coordinator's chat that still shows its notes as messages can be sent as a dump rather than described. No message,

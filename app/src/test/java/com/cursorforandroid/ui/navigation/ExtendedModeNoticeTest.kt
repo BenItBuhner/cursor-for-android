@@ -70,7 +70,8 @@ class ExtendedModeNoticeTest {
         compose.onNodeWithText(ExtendedModeCopy.NOTICE_OPEN_SETTINGS).performClick()
 
         compose.waitUntil(10_000) { !noticeShown() }
-        compose.waitUntil(10_000) { onScreen("Advanced") }
+        // Settings, at the Extended mode section the notice points to.
+        compose.waitUntil(10_000) { onScreen(ExtendedModeCopy.SETTING_TITLE) }
         assertThat(runBlocking { graph.extendedMode.noticePending.first() }).isFalse()
     }
 
