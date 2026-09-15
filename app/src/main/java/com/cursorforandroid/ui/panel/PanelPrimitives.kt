@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,8 +33,14 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
- * A section's header: its glyph, its title (a heading, for TalkBack's heading navigation), a hint in the tertiary
- * colour at the end, and a chevron that turns down when the section is open. The whole row toggles it.
+ * A section's header, the one component every section is headed by: its glyph, its title (a heading, for
+ * TalkBack's heading navigation), and a trailing slot at the end edge — the hint in the tertiary colour, then the
+ * chevron that turns down when the section is open. The whole row toggles it.
+ *
+ * The title carries the row's weight and fills whatever the trailing slot leaves, so the hint and the chevron sit
+ * against the end edge in every header alike, hint or no hint, short or long. (A weighted spacer beside a weighted
+ * hint split the leftover between them instead, and a header with a short hint drew it in the middle of the row.)
+ * A long hint is capped at [HintMaxWidth] and ellipsised, so it can squeeze the title only so far.
  */
 @Composable
 internal fun SectionHeader(section: PanelSection, hint: String?, expanded: Boolean, onToggle: () -> Unit) {
@@ -51,14 +58,26 @@ internal fun SectionHeader(section: PanelSection, hint: String?, expanded: Boole
     ) {
         Icon(section.icon, null, tint = colors.iconTertiary, modifier = Modifier.size(15.dp))
         Spacer(Modifier.width(9.dp))
-        Text(section.title, style = type.baseMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
-        Spacer(Modifier.weight(1f))
+        Text(section.title, style = type.baseMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).semantics { heading() })
         if (hint != null) {
-            Text(hint, style = type.small.copy(fontFeatureSettings = "tnum"), color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp, end = 6.dp).weight(2f, fill = false))
+            Text(
+                hint,
+                style = type.small.copy(fontFeatureSettings = "tnum"),
+                color = colors.textQuaternary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 8.dp, end = HintChevronGap).widthIn(max = HintMaxWidth).testTag("section-hint-${section.id.name}"),
+            )
         }
-        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
+        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(ChevronSize).rotate(chevron))
     }
 }
+
+/** The most of a header's width a hint may take before it is ellipsised, so the title always keeps room. */
+internal val HintMaxWidth = 190.dp
+/** Between a header's hint and its chevron. */
+internal val HintChevronGap = 6.dp
+internal val ChevronSize = 14.dp
 
 /** One row of a section's list: a glyph, a title, a dimmed detail under or beside it, and something at the end. */
 @Composable
