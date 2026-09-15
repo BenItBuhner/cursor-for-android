@@ -606,12 +606,16 @@ class NewAgentViewModelTest {
     fun `Cloud without a repository comes back without one`() {
         val vm = loadedWithAgents()
         vm.selectRepo(null)
+        // The source chip names the choice the way the web composer does.
+        assertThat(vm.state.value.repoLabel).isEqualTo("Start from scratch")
         vm.selectDevice(bennett)
         assertThat(vm.state.value.noRepo).isFalse()
         assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+        assertThat(vm.state.value.repoLabel).isEqualTo("codex-poly-bot")
 
         vm.selectDevice(DeviceTarget.Cloud)
         assertThat(vm.state.value.noRepo).isTrue()
+        assertThat(vm.state.value.repoLabel).isEqualTo("Start from scratch")
         assertThat(vm.state.value.branches).isEmpty()
     }
 

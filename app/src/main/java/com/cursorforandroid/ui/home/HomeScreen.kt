@@ -80,6 +80,7 @@ import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -152,14 +153,8 @@ fun HomeScreen(
             item("composer") {
                 Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
                     SelectorRow {
-                        val selectedRepo = state.selectedRepo
-                        val repoLabel = when {
-                            state.noRepo -> "No repository"
-                            selectedRepo != null -> selectedRepo.shortName
-                            state.isLoadingRepos -> "Loading…"
-                            else -> "Repository"
-                        }
-                        SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
+                        // The source: a repository, or "Start from scratch" as the web composer names a chat without one.
+                        SelectorChip(state.repoLabel, onClick = { repoSheet = true }, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             // A blank ref leaves the starting point to the repository's default branch.
                             SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
@@ -453,7 +448,13 @@ private fun RepositorySheet(
                 }
             }
             item("none") {
-                SheetRow(title = "No repository", subtitle = if (device != null) "The worker's own directory" else "Empty cloud VM", checked = noRepo, icon = if (device != null) deviceIcon(device) else CursorIcons.Cloud) { pick(null) }
+                // The web composer's source for a chat without a repository; on a machine or pool the worker's own checkout stands in.
+                SheetRow(
+                    title = NewAgentUiState.START_FROM_SCRATCH,
+                    subtitle = if (device != null) "No repository: the worker's own directory" else "No repository: an empty cloud VM",
+                    checked = noRepo,
+                    icon = if (device != null) deviceIcon(device) else CursorIcons.Cloud,
+                ) { pick(null) }
                 HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
             }
             items(unlisted, key = { "unlisted:${it.url}" }) { repo ->

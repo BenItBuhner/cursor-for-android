@@ -40,18 +40,21 @@ class CreateAgentEncodingTest {
     }
 
     @Test
-    fun `no repository sends neither repos nor env, and no autoCreatePR either`() {
-        // What the reference asks for: "Omit both repos and env to start a no-repo agent." `{ "env": {} }` — the cloud
-        // default with its type dropped on the wire — is what the server used to answer with a 400.
+    fun `start from scratch on the cloud sends repos as an empty list and no env, and no autoCreatePR either`() {
+        // The reference's explicit no-repo form: "Omit both repos and env (or pass repos: []) to start a no-repo
+        // agent." The empty list is sent rather than nothing, so the request cannot be read as leaving the
+        // repository to a default of the account's (the server's repository_required refusal names "configure a
+        // default repository" as the other way to fill repos[0].url). `{ "env": {} }` — the cloud default with its
+        // type dropped on the wire — is what the server used to answer with a 400, and no env goes out at all.
         val noRepo = request.copy(repoUrl = null, ref = null)
         val body = encode(noRepo)
         assertThat(body).isEqualTo(
             """{"prompt":{"text":"Add a README with setup instructions"},""" +
                 """"agentId":"bc-00000000-0000-0000-0000-000000000001",""" +
-                """"model":{"id":"composer-2","params":[{"id":"fast","value":"true"}]}}""",
+                """"model":{"id":"composer-2","params":[{"id":"fast","value":"true"}]},""" +
+                """"repos":[]}""",
         )
         assertThat(body).doesNotContain("\"env\"")
-        assertThat(body).doesNotContain("\"repos\"")
         assertThat(body).doesNotContain("autoCreatePR")
     }
 
@@ -64,14 +67,23 @@ class CreateAgentEncodingTest {
 
     @Test
     fun `a pool or machine goes out as env with its type, with or without a repository`() {
-        assertThat(encode(request.copy(env = DeviceTarget.pool("sandbox"), repoUrl = null, ref = null)))
-            .contains(""""env":{"type":"pool","name":"sandbox"}""")
+        // Without a repository the worker's own checkout is the target, and `repos` is left out altogether: the
+        // reference's any-repo pool form ("Omit repos with type: pool to target a repo-less pool"), and the same
+        // shape for a machine, whose answer is the server's to give.
+        val pool = encode(request.copy(env = DeviceTarget.pool("sandbox"), repoUrl = null, ref = null))
+        assertThat(pool).contains(""""env":{"type":"pool","name":"sandbox"}""")
+        assertThat(pool).doesNotContain("\"repos\"")
+        val machine = encode(request.copy(env = DeviceTarget.machine("bennett#/home/bennett/app"), repoUrl = null, ref = null))
+        assertThat(machine).contains(""""env":{"type":"machine","name":"bennett"}""")
+        assertThat(machine).doesNotContain("\"repos\"")
         assertThat(encode(request.copy(env = DeviceTarget.machine("bennett#/home/bennett/app"))))
             .contains(""""env":{"type":"machine","name":"bennett"},"repos":[{"url":"https://github.com/your-org/your-repo","startingRef":"main"}]""")
     }
 
     @Test
-    fun `a named cloud environment keeps its type on the wire`() {
+    fun `a named cloud environment keeps its type on the wire and carries no repos beside it`() {
+        // "Mutually exclusive with a named cloud environment": the environment brings its repositories, so not even
+        // the empty list goes out with it.
         val named = encode(request.copy(env = DeviceTarget.of(EnvType.CLOUD, "staging"), repoUrl = null, ref = null))
         assertThat(named).contains(""""env":{"type":"cloud","name":"staging"}""")
         assertThat(named).doesNotContain("\"repos\"")

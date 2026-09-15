@@ -107,6 +107,14 @@ fun Throwable.isTransientFailure(): Boolean {
 /** `409` codes that describe a state another attempt will find unchanged, or one the caller handles in its own way. */
 private val SETTLED_CONFLICTS = setOf("agent_busy", "agent_id_conflict", "agent_archived", "run_not_cancellable", "usage_limit_exceeded")
 
+/**
+ * True for a request that went out and got no answer this client could read: the server silent past the read
+ * timeout, the connection reset or closed mid-reply, the call's overall budget spent. Not an answer the server gave
+ * (an HTTP status, with or without the API's body), and not being offline — those say what happened; a lost reply
+ * says nothing about whether the server acted on the request, which is the caller's to find out.
+ */
+fun Throwable.isLostReply(): Boolean = this is IOException && this !is java.net.UnknownHostException && toCursorError() == null
+
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {

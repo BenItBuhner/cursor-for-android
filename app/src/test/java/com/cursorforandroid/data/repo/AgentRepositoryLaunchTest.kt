@@ -76,7 +76,8 @@ class AgentRepositoryLaunchTest {
         val backend = CursorBackend(api, FakeRunStreamer(), isDemo = true)
         val session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
         session.enterDemo()
-        agents = AgentRepository(session, prefs, AttachmentStore(context))
+        // The reads a lost reply is followed by are spaced seconds apart in the app; here they only need to happen.
+        agents = AgentRepository(session, prefs, AttachmentStore(context), lostReplyProbeDelayMs = 10)
     }
 
     @After
@@ -180,10 +181,18 @@ class AgentRepositoryLaunchTest {
     @Test
     fun `a retry after a lost reply adopts the agent the first attempt created`() = runBlocking<Unit> {
         val id = LaunchIdempotency.agentId(request, "nonce")
-        // The request reaches the server, which creates the agent, but the reply never makes it back.
+        // The request reaches the server, but the reply never makes it back — and the server only gets round to
+        // creating the agent after the moments the launch spends looking for it (see the next test for the other case).
         api.failNextCreate = SocketTimeoutException("timeout")
         val first = agents.launch(request.copy(agentId = id), "Auto")
-        assertThat(first.exceptionOrNull()).isInstanceOf(SocketTimeoutException::class.java)
+        val unanswered = first.exceptionOrNull()
+        assertThat(unanswered).isInstanceOf(LaunchUnansweredException::class.java)
+        assertThat(unanswered!!.cause).isInstanceOf(SocketTimeoutException::class.java)
+        // What the composer shows: not a bare timeout, but that the chat is nowhere and a retry is safe.
+        assertThat(unanswered.userMessage()).contains("no chat appeared on your account")
+        assertThat(unanswered.userMessage()).contains("Send it again")
+        // The chat was looked for by id every time, and was not there.
+        assertThat(api.getAgentCalls).isEqualTo(AgentRepository.LOST_REPLY_PROBES)
         assertThat(agents.state.value.agents).isEmpty()
         api.addRunningAgent(id, "Sync merge and chat state", "run-server-1")
 
@@ -199,6 +208,62 @@ class AgentRepositoryLaunchTest {
         // One chat, not two.
         assertThat(api.agents.keys).containsExactly(id)
         assertThat(agents.state.value.agents.map { it.id }).containsExactly(id)
+    }
+
+    @Test
+    fun `a launch whose reply was lost adopts the chat the server created meanwhile, without a retry`() = runBlocking<Unit> {
+        val id = LaunchIdempotency.agentId(request, "nonce")
+        // The server acted on the request and then went quiet: the reply is lost to a read timeout, and the agent
+        // exists under the id the request carried by the time the launch looks for it.
+        api.failNextCreate = SocketTimeoutException("timeout")
+        api.addRunningAgent(id, "Sync merge and chat state", "run-server-1")
+
+        val (adopted, run) = agents.launch(request.copy(agentId = id), "Auto").getOrThrow()
+
+        assertThat(api.createRequests).hasSize(1)
+        assertThat(api.getAgentCalls).isEqualTo(1)
+        assertThat(adopted.id).isEqualTo(id)
+        assertThat(adopted.name).isEqualTo("Sync merge and chat state")
+        assertThat(adopted.latestRunId).isEqualTo("run-server-1")
+        assertThat(run?.id).isEqualTo("run-server-1")
+        assertThat(adopted.runStatus).isEqualTo(RunStatus.RUNNING)
+        assertThat(adopted.modelDisplayName).isEqualTo("Auto")
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly(id)
+        assertThat(prefs.localAgentState.first().launchedHereIds).contains(id)
+    }
+
+    @Test
+    fun `the search for a lost reply stops the moment the server stops answering reads too`() = runBlocking<Unit> {
+        val id = LaunchIdempotency.agentId(request, "nonce")
+        // The reply is lost and the reads by id get no answer either: the server is out of reach, and asking four
+        // more times would only hold the composer up for nothing.
+        api.failNextCreate = SocketTimeoutException("timeout")
+        api.failGetAgent = SocketTimeoutException("timeout")
+
+        val failed = agents.launch(request.copy(agentId = id), "Auto")
+
+        assertThat(failed.exceptionOrNull()).isInstanceOf(LaunchUnansweredException::class.java)
+        assertThat(api.getAgentCalls).isEqualTo(1)
+        assertThat(agents.state.value.agents).isEmpty()
+    }
+
+    @Test
+    fun `an answer the server gave is never looked up again, nor waited on`() = runBlocking<Unit> {
+        val id = LaunchIdempotency.agentId(request, "nonce")
+        // A refusal with the API's body — here the machine path's, as the server words it — fails the launch at once.
+        api.failNextCreate = FakeCursorApi.httpError(400, "repository_required", "Repository is required. Either provide a repository URL in the repos[0].url field, or configure a default repository at https://cursor.com/settings.")
+
+        val refused = agents.launch(request.copy(agentId = id), "Auto")
+
+        assertThat(refused.exceptionOrNull()!!.toCursorError()!!.code).isEqualTo("repository_required")
+        assertThat(refused.exceptionOrNull()!!.userMessage()).isEqualTo("Repository is required. Either provide a repository URL in the repos[0].url field, or configure a default repository at https://cursor.com/settings.")
+        assertThat(api.getAgentCalls).isEqualTo(0)
+        // Being offline is not a lost reply either: nothing went out, so nothing is looked for.
+        api.failNextCreate = java.net.UnknownHostException("api.cursor.com")
+        val offline = agents.launch(request.copy(agentId = id), "Auto")
+        assertThat(offline.exceptionOrNull()).isInstanceOf(java.net.UnknownHostException::class.java)
+        assertThat(api.getAgentCalls).isEqualTo(0)
+        assertThat(agents.state.value.agents).isEmpty()
     }
 
     @Test
@@ -272,7 +337,7 @@ class AgentRepositoryLaunchTest {
     }
 
     @Test
-    fun `a chat with no repository sends neither repos nor env and still launches`() = runBlocking<Unit> {
+    fun `a chat started from scratch sends an empty repos list and no env, and still launches`() = runBlocking<Unit> {
         // Auto-PR left on from an earlier launch: there is no repository for a pull request, so it stays out too.
         val noRepo = request.copy(repoUrl = null, ref = null, autoCreatePr = true)
         val id = LaunchIdempotency.agentId(noRepo, "nonce")
@@ -284,7 +349,7 @@ class AgentRepositoryLaunchTest {
         val (agent, run) = agents.launch(noRepo.copy(agentId = id), "Auto").getOrThrow()
 
         val sent = api.createRequests.single()
-        assertThat(sent.repos).isNull()
+        assertThat(sent.repos).isEmpty()
         assertThat(sent.env).isNull()
         assertThat(sent.autoCreatePR).isNull()
         assertThat(agent.id).isEqualTo(id)
