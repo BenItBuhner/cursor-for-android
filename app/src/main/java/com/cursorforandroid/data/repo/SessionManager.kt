@@ -113,6 +113,13 @@ class SessionManager(
     var onSignedOut: suspend () -> Unit = {}
 
     /**
+     * Runs on every sign-in through [signIn] — a pasted key, or the key a browser sign-in minted — once the account is
+     * recorded and before the session is published as signed in. Never on a restore: a session that was already on
+     * this device is not a sign-in. The app graph records what a fresh sign-in owes here (the first-run mode choice).
+     */
+    var onSignedIn: suspend () -> Unit = {}
+
+    /**
      * [restore], unless the session has already been decided. The activity and a widget render can both be the
      * first thing that needs the session in a fresh process; whichever comes second waits for the first instead of
      * restoring again.
@@ -218,6 +225,9 @@ class SessionManager(
                 prefs.setDemoMode(false)
                 prefs.setCachedUser(user)
                 prefs.setCredentialInfo(credential)
+                // Before the state flips: what the hook records is read by whoever renders the signed-in state, and
+                // a hook that fails does not fail the sign-in the key has already earned.
+                runCatching { onSignedIn() }
                 _signedOutReason.value = null
                 _state.value = SessionState.SignedIn(user, isDemo = false, credential = credential)
                 // The picture arrives behind the sign-in rather than holding it up.

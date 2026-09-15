@@ -123,6 +123,7 @@ class PreferencesStore(
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
         val crashReports = booleanPreferencesKey("crash_reports")
+        val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -136,6 +137,7 @@ class PreferencesStore(
         Keys.pinned,
         Keys.readMarkers,
         Keys.launchedHere,
+        Keys.modeChoicePending,
     )
 
     /**
@@ -217,6 +219,20 @@ class PreferencesStore(
 
     suspend fun setExtendedModeNoticePending(pending: Boolean) = edit { p ->
         if (pending) p[Keys.extendedModeNoticePending] = true else p.remove(Keys.extendedModeNoticePending)
+    }
+
+    // ---- first run (account-level: owed by a sign-in, settled by the choice screen, gone with the account) ------
+
+    /**
+     * True while the account signed in on this device has yet to choose between SDK only and Extended mode (see
+     * `data/repo/Onboarding.kt`). Set by a sign-in through the sign-in screen and never by a restored session, so an
+     * install that already had an account when the choice arrived is not asked; cleared with the rest of the account.
+     */
+    val modeChoicePending: Flow<Boolean> = accountData.map { it[Keys.modeChoicePending] ?: false }
+
+    suspend fun setModeChoicePending(pending: Boolean): Boolean {
+        beginSession()
+        return edit { p -> if (pending) p[Keys.modeChoicePending] = true else p.remove(Keys.modeChoicePending) }
     }
 
     /**

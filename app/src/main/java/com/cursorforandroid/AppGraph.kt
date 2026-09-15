@@ -74,6 +74,7 @@ import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
@@ -136,6 +137,11 @@ class AppGraph(
      * (a refused delete, a list endpoint that fails) without any of the account's real network.
      */
     demo: CursorBackend? = null,
+    /**
+     * Injectable for tests only: a stand-in for the account's backend, so a sign-in with a key can be driven end to
+     * end — the sign-in screen, the first-run flow behind it — against a scripted `/v1/me` rather than the real host.
+     */
+    real: CursorBackend? = null,
 ) {
     private val app = context.applicationContext
 
@@ -170,7 +176,7 @@ class AppGraph(
         val client = CursorApiFactory.okHttp { keyStore.apiKey() }
         CursorApiFactory.retrofit(client) to SseRunStreamer(CursorApiFactory.sseClient(client), { keyStore.apiKey() })
     }
-    private val realBackend = CursorBackend(isDemo = false, parts = realParts)
+    private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
     private val demoParts = lazy { DemoBackendFactory.create() }
     private val demoBackend = demo ?: CursorBackend(isDemo = true, parts = demoParts)
@@ -193,6 +199,12 @@ class AppGraph(
         },
     )
     private val capabilities: suspend () -> Capabilities = { extendedMode.capabilities() }
+
+    /**
+     * The first run's mode choice — SDK only or Extended mode — owed by a sign-in through the sign-in screen and
+     * settled by the choice screen; see [Onboarding]. Cheap: it holds the preferences and the setting above.
+     */
+    val onboarding = Onboarding(prefs, extendedMode)
 
     /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
     private val lazyAccountClient = lazy { CursorApiFactory.loginClient() }
@@ -560,8 +572,12 @@ class AppGraph(
     val updates: UpdateManager get() = lazyUpdates.value
 
     init {
+        // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
+        session.onSignedIn = { onboarding.signedIn() }
         // Whether the user signs out or the key is rejected, nothing of the account stays on disk.
         session.onSignedOut = {
+            // The choice the account owed goes with it (its stored flag is among the session keys cleared below).
+            onboarding.signedOut()
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
             // flight can land after the wipe below re-creates the directories it deleted.
             caches.invalidate()
