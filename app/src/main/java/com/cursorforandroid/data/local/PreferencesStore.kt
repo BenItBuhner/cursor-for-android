@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -84,12 +86,19 @@ class PreferencesStore(
     ) { fromStore, mine -> mine ?: fromStore }.distinctUntilChanged()
 
     /**
+     * Serialises the writes with the recording of what they produced: the store orders the writes on its own, but two
+     * callers finishing out of order would otherwise record an older snapshot over a newer one and hold every flow
+     * at the older until the next write.
+     */
+    private val writes = Mutex()
+
+    /**
      * A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. False when
      * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so. What a
      * write produced is recorded for the flows (see [written]).
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
-        runCatching { written.value = store.edit(transform); true }.getOrElse { t ->
+        runCatching { writes.withLock { written.value = store.edit(transform) }; true }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
             false

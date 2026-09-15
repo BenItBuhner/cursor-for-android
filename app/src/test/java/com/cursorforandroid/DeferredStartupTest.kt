@@ -15,6 +15,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 
 /** The wiring that reaches out to the system waits for the app to be on screen instead of joining the launch. */
@@ -33,15 +34,20 @@ class DeferredStartupTest {
         DeferredStartup.settleMs = 0
     }
 
+    private var activity: ActivityController<MainActivity>? = null
+
+    /** Restores the wait, and tears the activity down: left resumed, its composition would keep collecting the graph's settings on the shared main looper for every test after this one. */
     @After
     fun restoreWait() {
         DeferredStartup.settleMs = settle
+        activity?.pause()?.stop()?.destroy()
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     @Test
     fun `creating the activity reaches neither the notification manager nor the job scheduler`() {
         runBlocking { app.appGraph.prefs.setAutoUpdate(true) }
-        val activity = Robolectric.buildActivity(MainActivity::class.java).create()
+        val activity = Robolectric.buildActivity(MainActivity::class.java).create().also { this.activity = it }
         idle()
 
         assertThat(channels).isEmpty()
