@@ -32,7 +32,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -83,7 +85,7 @@ class AgentRepositoryTest {
         AppClock.nowMillis = System::currentTimeMillis
     }
 
-    private fun repository(persistDelayMs: Long = 10, account: ComposerLifecycleApi? = null) =
+    private fun repository(persistDelayMs: Long = 10, account: ComposerLifecycleApi? = null, scope: CoroutineScope = this.scope) =
         AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs, account)
 
     private class FakeLifecycleApi : ComposerLifecycleApi {
@@ -434,7 +436,8 @@ class AgentRepositoryTest {
         // latest run — active a minute ago by the agent's updatedAt — is still going.
         api.addRunningAgent("bc-1", "Follow-up in progress", "run-1", createdAt = iso(now - 60_000))
         api.v0["bc-1"] = V0AgentDto(id = "bc-1", name = "Follow-up in progress", status = "FINISHED", target = V0TargetDto(branchName = "cursor/x"))
-        val repo = repository()
+        val firstScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val repo = repository(scope = firstScope)
         repo.refresh()
         val cold = repo.state.value.agents.single()
         assertThat(api.getRunCalls).isEqualTo(1)
@@ -445,6 +448,10 @@ class AgentRepositoryTest {
         // The disk remembers the previous run as finished; the server has moved on to a new one since, and the legacy
         // list still has not: the new run's record decides.
         awaitUntil { cache.read()?.value?.single()?.isRunning == true }
+        // The first repository persists the current list on every conflated turn of its collector (the legacy page,
+        // then the record's settle), so a turn can still be pending after the write just read; it is stopped and
+        // waited for before the disk is rewritten by hand, or the running row lands on top of the finished one.
+        firstScope.coroutineContext.job.cancelAndJoin()
         cache.write(listOf(cachedAgent("bc-1", "Follow-up in progress", runStatus = RunStatus.FINISHED, lifecycle = AgentLifecycle.IDLE, runId = "run-0")))
         val next = repository()
         next.restoreFromCache()
