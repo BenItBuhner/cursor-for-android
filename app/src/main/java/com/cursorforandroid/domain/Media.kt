@@ -228,11 +228,15 @@ sealed interface MediaRef {
 
     companion object {
         private val dataUri = Regex("""^data:([^;,]+)?(;[^,]*)?,(.*)$""", RegexOption.DOT_MATCHES_ALL)
+        /** Where the app's bundled assets are addressed (`MediaLoader.ASSET_PREFIX`). */
+        private const val ASSET_URI_PREFIX = "file:///android_asset/"
 
         /** Interprets a `src` attribute for media shown inside [agentId]'s conversation (null outside one). */
         fun parse(src: String, agentId: String?): MediaRef {
             val trimmed = src.trim()
             if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) return Remote(trimmed)
+            // A bundled asset (the demo's pictures) is fetched by its URI, which the image loader resolves itself.
+            if (trimmed.startsWith(ASSET_URI_PREFIX, ignoreCase = true)) return Remote(trimmed)
             // Both spellings `java.io.File.toURI()` (`file:/x`) and `Uri.fromFile` (`file:///x`) produce.
             if (trimmed.startsWith("file:", ignoreCase = true)) {
                 val path = runCatching { java.net.URI(trimmed).path }.getOrNull()?.takeIf { it.isNotBlank() } ?: return Unavailable(trimmed)

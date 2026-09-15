@@ -6,6 +6,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasTestTag
@@ -15,7 +18,12 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -79,6 +87,8 @@ class UiParityGalleryTest {
 
     private lateinit var graph: AppGraph
     private var widthClass: WidthClass = WidthClass.Compact
+    /** Handed to the shell once it is up, as a notification's link is: the coordinator's chat opens over Home. */
+    private var deepLink by mutableStateOf<String?>(null)
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -91,8 +101,8 @@ class UiParityGalleryTest {
                     isDemo = true,
                     windowWidthDp = width,
                     windowHeightDp = height,
-                    deepLinkAgentId = DemoData.PROJECT_ID,
-                    onDeepLinkConsumed = {},
+                    deepLinkAgentId = deepLink,
+                    onDeepLinkConsumed = { deepLink = null },
                 )
             }
         }
@@ -120,6 +130,9 @@ class UiParityGalleryTest {
             graph.prefs.markRead(DemoData.PROJECT_ID, FIXED_NOW + 365L * 24 * 60 * 60_000L)
         }
         compose.setContent { Shell(width, height) }
+        compose.waitUntil(60_000) { onScreen("Ask Cursor to build") }
+        compose.waitUntil(60_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
+        deepLink = DemoData.PROJECT_ID
         compose.waitUntil(60_000) { onScreen("Follow up") }
         compose.waitUntil(60_000) { graph.agents.state.value.let { it.hasLoaded && !it.isRefreshing } }
         // The coordinator's transcript settles once its worker cards and the trace are in.
@@ -171,8 +184,9 @@ class UiParityGalleryTest {
         settle()
     }
 
+    /** Brings the tab into the strip's view first: a tab scrolled off the end of a narrow pane takes no tap. */
     private fun selectTab(key: String) {
-        compose.onNodeWithTag("panel-tab-$key").performClick()
+        compose.onNodeWithTag("panel-tab-$key").performScrollTo().performClick()
         settle()
     }
 
@@ -187,8 +201,12 @@ class UiParityGalleryTest {
             "allfiles" -> {
                 openPanel()
                 selectTab("files")
-                compose.waitUntil(30_000) { onScreen("notes.md") && onScreen("preferences.md") }
-                compose.waitUntil(30_000) { tagged("recents-row") }
+                // Both trees listed (the user's root sits below the fold on a short window), then back to the top.
+                compose.waitUntil(30_000) { onScreen("notes.md") }
+                compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasText("preferences.md")) }.isSuccess }
+                compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasTestTag("recents-row")) }.isSuccess }
+                compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Thumbnail of ", substring = true)).fetchSemanticsNodes().size >= 3 }
+                compose.onNodeWithTag("all-files-tab").performScrollToIndex(0)
             }
             "doc" -> {
                 openPanel()
@@ -198,8 +216,8 @@ class UiParityGalleryTest {
                 } else {
                     selectTab("files")
                     compose.waitUntil(30_000) { described("Folder docs") }
-                    compose.onNodeWithContentDescription("Folder docs").performClick()
-                    compose.waitUntil(30_000) { described("File private-edition-feasibility.md") }
+                    compose.onNodeWithContentDescription("Folder docs").performScrollTo().performClick()
+                    compose.waitUntil(30_000) { runCatching { compose.onNodeWithTag("all-files-tab").performScrollToNode(hasContentDescription("File private-edition-feasibility.md")) }.isSuccess }
                     compose.onNodeWithContentDescription("File private-edition-feasibility.md").performClick()
                 }
                 compose.waitUntil(30_000) { onScreen("Private Edition") }
@@ -247,8 +265,9 @@ class UiParityGalleryTest {
             capture("$viewport-hidden-$panel")
         }
         closePanel()
-        // The drawer open over the chat: the compact window's "expanded" rail.
-        compose.onNodeWithContentDescription("Open sidebar").performClick()
+        // The drawer open over the chat — the compact window's "expanded" rail — pulled in from the start edge, as a
+        // phone's chat has a back button rather than a sidebar button in its header.
+        compose.onRoot().performTouchInput { swipeRight(startX = 2f, endX = width * 0.9f) }
         compose.waitUntil(20_000) { described("New chat") }
         compose.waitUntil(30_000) { onScreen("Projects") }
         capture("$viewport-expanded-closed")
