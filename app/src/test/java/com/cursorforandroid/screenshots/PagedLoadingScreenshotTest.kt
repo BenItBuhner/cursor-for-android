@@ -23,12 +23,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.UserMessage
@@ -38,11 +41,14 @@ import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.OlderTurnsRow
 import com.cursorforandroid.ui.conversation.TimelineItemView
+import com.cursorforandroid.ui.conversation.TraceStatusRow
+import com.cursorforandroid.ui.conversation.TranscriptRowView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.google.common.truth.Truth.assertThat
 import okhttp3.OkHttpClient
 import org.junit.Rule
 import org.junit.Test
@@ -105,6 +111,73 @@ class PagedLoadingScreenshotTest {
                 }
             }
         }
+    }
+
+    /**
+     * A long chat opened on its newest turns: the row that pages the older ones in, the line that says Cursor no
+     * longer has the activity of three of the turns shown (where 0.3.13 showed their text and nothing), a finished
+     * turn behind its summary, and the newest turn still working — its stretch reading "Working", the run followed.
+     */
+    private fun longChat(): List<TranscriptRow> {
+        fun call(id: String, kind: ToolKind, name: String, summary: String, detail: String?, status: String = ToolCall.STATUS_COMPLETED) =
+            ToolCall(id, name, kind, status, summary, detail = detail)
+        val items = listOf(
+            UserMessage("u158", "Tighten the diagnostics export: window bounds, traces per run, the live follow.", timestampMillis = 1_736_949_600_000),
+            ActivityGroup(
+                "g158",
+                listOf(
+                    ThinkingBlock("The export already has the classification; the load's own account goes beside it.", durationSeconds = 5),
+                    call("r1", ToolKind.Read, "read_file", "TranscriptDiagnostics.kt", "app/src/main/java/com/cursorforandroid/domain/TranscriptDiagnostics.kt"),
+                    call("r2", ToolKind.Read, "read_file", "ConversationRepository.kt", "app/src/main/java/com/cursorforandroid/data/repo/ConversationRepository.kt"),
+                    call("e1", ToolKind.Edit, "edit_file", "TranscriptDiagnostics.kt", "app/src/main/java/com/cursorforandroid/domain/TranscriptDiagnostics.kt"),
+                    call("e2", ToolKind.Edit, "edit_file", "ConversationRepository.kt", "app/src/main/java/com/cursorforandroid/data/repo/ConversationRepository.kt"),
+                    call("s1", ToolKind.Shell, "run_terminal_cmd", "Run the diagnostics test", "./gradlew :app:testDebugUnitTest --tests '*TranscriptDiagnosticsTest*'"),
+                ),
+            ),
+            AssistantMessage("a158", "The export now carries a `load:` block: the window's bounds, the run list and its order, each run's trace state, the live follow and the last errors."),
+            RunFooter("f158", "run-158", RunStatus.FINISHED, 214_000, emptyList()),
+            UserMessage("u159", "Now reproduce the oldest-first run list against the stress simulation.", timestampMillis = 1_736_953_200_000),
+            ActivityGroup(
+                "g159",
+                listOf(
+                    ThinkingBlock("The fake pages newest first; a subclass can page the other way.", isStreaming = false, durationSeconds = 3),
+                    call("r3", ToolKind.Read, "read_file", "FakeBackend.kt", "app/src/test/java/com/cursorforandroid/data/FakeBackend.kt"),
+                    call("e3", ToolKind.Edit, "edit_file", "LongConversationStressTest.kt", "app/src/test/java/com/cursorforandroid/data/repo/LongConversationStressTest.kt", status = ToolCall.STATUS_RUNNING),
+                ),
+            ),
+        )
+        return TranscriptRows.of(items, coordinatorMode = false, runActive = true)
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun LongChat(rows: List<TranscriptRow>) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
+        val lightbox = rememberLightboxState("bc-demo")
+        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        CursorTheme(mode = ThemeMode.Dark) {
+            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
+                Column(
+                    Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OlderTurnsRow(isLoading = false, onLoad = {})
+                    TraceStatusRow(TraceStatus(shown = 6, pending = 0, expired = 3, failed = 0), onRetry = {})
+                    rows.forEach { TranscriptRowView(it) }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun transcriptLongChatLoaded() {
+        val rows = longChat()
+        assertThat((rows.last() as TranscriptRow.Stretch).live).isTrue()
+        compose.setContent { LongChat(rows) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("trace-status")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "69_transcript_long_chat_loaded.png").path, RoborazziOptions())
     }
 
     @Test

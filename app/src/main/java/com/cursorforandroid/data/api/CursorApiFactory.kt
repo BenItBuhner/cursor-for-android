@@ -131,8 +131,12 @@ object CursorApiFactory {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        // Bounds the whole call, retries included, so nothing can hang a screen for longer than this.
-        .callTimeout(90, TimeUnit.SECONDS)
+        // Bounds the whole call, retries included, so nothing can hang a screen for longer than this. Generous on
+        // purpose: `/v0/agents/{id}/conversation` has no paging and answers with every turn of a chat at once —
+        // megabytes for a chat of hundreds of turns — which a slow connection delivers over minutes while the read
+        // timeout above, sixty seconds of silence, still catches a connection that has died. At ninety seconds the
+        // long chats' transcripts failed on every open, and the failure read as the chat not loading at all.
+        .callTimeout(5, TimeUnit.MINUTES)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
         .addInterceptor(RetryInterceptor())
         .apply {

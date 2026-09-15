@@ -54,6 +54,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
+import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
@@ -377,6 +378,15 @@ fun ConversationScreen(
                     items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
                         TranscriptRowView(row, paneWidth)
                     }
+                    // Where the window's traces stand, when not every turn shown has its activity: the turns being
+                    // read or replayed, the ones whose logs Cursor no longer has, the ones that could not be read
+                    // this time (with a Retry). Above the oldest turn shown, where the missing activity would be
+                    // noticed; nothing when every turn is whole.
+                    if (items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }) {
+                        item("traces") {
+                            TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
+                        }
+                    }
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
                     if (hasOlder && items.isNotEmpty()) {
@@ -387,7 +397,11 @@ fun ConversationScreen(
                     if (!conversation.isLoading && items.isEmpty()) {
                         item("empty") {
                             Text(
-                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
+                                when {
+                                    conversation.transcriptError != null -> "Couldn't load the transcript: ${conversation.transcriptError}"
+                                    conversation.transcriptUnavailable -> "The transcript isn't available for this chat."
+                                    else -> conversation.error ?: "Nothing here yet."
+                                },
                                 style = type.base,
                                 color = colors.textQuaternary,
                                 modifier = Modifier.padding(top = 32.dp),
@@ -428,14 +442,22 @@ fun ConversationScreen(
             }
         }
 
-        conversation.error?.takeIf { items.isNotEmpty() }?.let { err ->
+        // A fetch that did not go through, said under the transcript rather than swallowed: the load's failure, or —
+        // with the runs answering and the transcript not — the transcript's, with the way to ask again.
+        (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
             Row(
-                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp).testTag("load-error"),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(err, style = type.small, color = colors.red, maxLines = 2)
+                Text(err, style = type.small, color = colors.red, maxLines = 2, modifier = Modifier.weight(1f))
+                Text(
+                    "Retry",
+                    style = type.small,
+                    color = colors.textSecondary,
+                    modifier = Modifier.pressable(viewModel::reload, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp),
+                )
             }
         }
 
@@ -562,6 +584,44 @@ private const val BottomTolerancePx = 48
 
 /** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
 private const val OlderTurnsPrefetchRows = 3
+
+/**
+ * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
+ * of 4 turns…" while the logs are read or replayed; "Cursor no longer has the activity of 7 turns" once their logs
+ * have expired with no copy here; "Couldn't load the activity of 3 turns" with a Retry when the network failed.
+ * What used to be silent — text with no tool calls behind it, and no word why.
+ */
+@Composable
+internal fun TraceStatusRow(status: TraceStatus, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    fun turns(n: Int) = if (n == 1) "1 turn" else "$n turns"
+    Column(modifier.padding(vertical = 4.dp).testTag("trace-status"), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (status.pending > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpinnerRing(size = 12.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Loading the activity of ${turns(status.pending)}…", style = type.small, color = colors.textQuaternary)
+            }
+        }
+        if (status.expired > 0) {
+            Text("Cursor no longer has the activity of ${turns(status.expired)}; their replies are shown.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = if (status.pending > 0) 4.dp else 0.dp))
+        }
+        if (status.failed > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = if (status.pending + status.expired > 0) 4.dp else 0.dp)) {
+                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(12.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Couldn't load the activity of ${turns(status.failed)}.", style = type.small, color = colors.red)
+                Text(
+                    "Retry",
+                    style = type.small,
+                    color = colors.textSecondary,
+                    modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("retry-traces"),
+                )
+            }
+        }
+    }
+}
 
 /**
  * The row past the oldest turn shown, while the chat has older ones: "Loading older…" while they are being paged in

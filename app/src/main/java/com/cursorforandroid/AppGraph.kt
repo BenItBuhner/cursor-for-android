@@ -740,6 +740,7 @@ class AppGraph(
                     )
                 },
                 placement = agentId?.let { agents.placementOf(it) },
+                load = agentId?.let { conversations.loadDiagnostics(it) },
             ),
         )
     }

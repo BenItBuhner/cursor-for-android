@@ -99,6 +99,13 @@ class LiveRunHub(
         var job: Job? = null
         var releaseJob: Job? = null
         /**
+         * Only replays have read this run: nothing live ever subscribed. Once its replay has been handed over and
+         * nobody holds it, the entry is among the first to go (see [evictIfNeeded]) — the caller keeps the trace, in
+         * memory and on disk, and holding thirty-two replayed traces of a long chat here as well is memory a phone
+         * does not have for it.
+         */
+        var historicalOnly = true
+        /**
          * Content events the previous connection had applied. A connection that starts over replays the run from its
          * first event, and nothing is published until it has caught up with this, so the reader never sees the trace
          * collapse and grow back.
@@ -196,6 +203,7 @@ class LiveRunHub(
         entry.subscribers++
         entry.releaseJob?.cancel()
         entry.releaseJob = null
+        if (!replay) entry.historicalOnly = false
         val snapshot = entry.state.value
         // A run followed live to an outcome read from the record has an incomplete trace; only a replay reads the
         // log again for it. An expired log stays expired: only live subscribers have anything left to learn (through
@@ -227,6 +235,12 @@ class LiveRunHub(
     }
 
     private fun evictIfNeeded() {
+        // Replays that have been read and handed over (see [Entry.historicalOnly]): a few are kept for a second look,
+        // the rest go oldest first — a long chat replays dozens on one open, and each holds its whole trace.
+        val replayed = entries.values.filter { it.historicalOnly && it.subscribers == 0 && it.job == null && (it.state.value.finished || it.state.value.expired) }
+        if (replayed.size > MAX_REPLAYED_KEPT) {
+            replayed.take(replayed.size - MAX_REPLAYED_KEPT).forEach { entries.remove(key(it.agentId, it.runId)) }
+        }
         if (entries.size < MAX_ENTRIES) return
         val iterator = entries.entries.iterator()
         while (iterator.hasNext() && entries.size >= MAX_ENTRIES) {
@@ -451,5 +465,7 @@ class LiveRunHub(
 
     private companion object {
         const val MAX_ENTRIES = 32
+        /** Replayed traces kept after they were handed over: enough for a second look at the last few, not a window's worth. */
+        const val MAX_REPLAYED_KEPT = 6
     }
 }

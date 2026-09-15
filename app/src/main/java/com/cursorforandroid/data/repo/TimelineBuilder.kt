@@ -41,8 +41,12 @@ object TimelineBuilder {
         attachments: Map<String, List<MessageAttachment>> = emptyMap(),
         /** Runs whose prompt the server has not filed yet (placeholders): their user message reads as pending. */
         pending: Set<String> = emptySet(),
+        /** The prompt, by position among [messages]' prompts, the first of [runs] belongs to: the prompts before it have no run in hand. */
+        firstRunAt: Int = 0,
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
+        /** The run of the [index]th prompt, when it is in hand. */
+        fun runAt(index: Int): RunDto? = ordered.getOrNull(index - firstRunAt)
         val items = mutableListOf<TimelineItem>()
 
         /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
@@ -69,10 +73,10 @@ object TimelineBuilder {
         messages.forEach { msg ->
             when (msg.type) {
                 "user_message" -> {
-                    if (userIndex >= 0) closeRun(ordered.getOrNull(userIndex), replies) else items += replies
+                    if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
                     replies = mutableListOf()
                     userIndex++
-                    val run = ordered.getOrNull(userIndex)
+                    val run = runAt(userIndex)
                     val startedAt = run?.let { parseIsoMillis(it.createdAt) }
                     // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
                     // but is shown as the notification it is rather than as something the user said.
@@ -82,9 +86,9 @@ object TimelineBuilder {
                 else -> replies += AssistantMessage(msg.id, msg.text)
             }
         }
-        if (userIndex >= 0) closeRun(ordered.getOrNull(userIndex), replies) else items += replies
+        if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
         // Runs without a matching transcript message (e.g. transcript truncated) still surface their result.
-        ordered.drop(userIndex + 1).forEach { run -> closeRun(run, resultReply(run)) }
+        ordered.drop((userIndex + 1 - firstRunAt).coerceAtLeast(0)).forEach { run -> closeRun(run, resultReply(run)) }
         return items.withUniqueIds()
     }
 
