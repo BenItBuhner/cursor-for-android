@@ -14,8 +14,6 @@ import com.cursorforandroid.domain.WorkerSpawnKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
@@ -128,11 +126,14 @@ interface AgentStoreApi {
     suspend fun readFile(storeId: String, relativePath: String): String
 
     /**
-     * `PresignAgentStoreReads`: URLs the files at [relativePaths] of [storeId] can be fetched from, by path — for the
-     * pictures the Recents row shows. [agentId] is the chat asking. Empty where the account presigns nothing.
+     * `PresignAgentStoreReads`: a URL the bytes of [relativePath] in [storeId] can be fetched from for a while, made
+     * as [requesterId] (the chat the path was read in). Null when the service answered with no instruction for it.
      */
-    suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> = emptyMap()
+    suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead?
 }
+
+/** `aiserver.v1.AgentStoreReadInstruction`: where a store file's bytes are, and until when. */
+data class PresignedStoreRead(val relativePath: String, val url: String, val expiresAtMillis: Long?)
 
 /**
  * The Cursor Projects corner of `aiserver.v1.BackgroundComposerService` (see [BackgroundComposerApi] for the
@@ -273,23 +274,6 @@ class ProjectApi(
         return stores
     }
 
-    /**
-     * The response shape is read leniently — a list under `urls`, `presigned`, `reads` or `files`, each item naming
-     * its `relPath` / `relativePath` and `url` — since the proto's answer has not been captured; anything else reads
-     * as no presigned URLs, and the Recents row falls back to file tiles.
-     */
-    override suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> {
-        if (relativePaths.isEmpty()) return emptyMap()
-        val response = call("PresignAgentStoreReads", PresignReadsDto(agentId, relativePaths, storeId), PresignReadsDto.serializer(), JsonObject.serializer())
-        val items = listOf("urls", "presigned", "reads", "files", "presignedReads").firstNotNullOfOrNull { key -> response[key] as? JsonArray } ?: return emptyMap()
-        return items.mapNotNull { item ->
-            val obj = item as? JsonObject ?: return@mapNotNull null
-            val path = (obj["relPath"] ?: obj["relativePath"] ?: obj["path"])?.let { (it as? JsonPrimitive)?.contentOrNull }?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val url = (obj["url"] ?: obj["presignedUrl"] ?: obj["downloadUrl"])?.let { (it as? JsonPrimitive)?.contentOrNull }?.takeIf { it.startsWith("http") } ?: return@mapNotNull null
-            path to url
-        }.toMap()
-    }
-
     override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> {
         val response = call("ListAgentStoreEntries", StoreEntriesDto(storeId, relativePath), StoreEntriesDto.serializer(), StoreEntriesResponseDto.serializer())
         return response.entries.mapNotNull { entry ->
@@ -305,6 +289,13 @@ class ProjectApi(
 
     override suspend fun readFile(storeId: String, relativePath: String): String =
         call("ReadAgentStoreFile", ReadStoreFileDto(storeId, relativePath), ReadStoreFileDto.serializer(), ReadStoreFileResponseDto.serializer()).content
+
+    override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? {
+        val response = call("PresignAgentStoreReads", PresignReadsDto(requesterId, listOf(relativePath), storeId), PresignReadsDto.serializer(), PresignReadsResponseDto.serializer())
+        val instruction = response.instructions.firstOrNull { it.relPath == relativePath } ?: response.instructions.firstOrNull() ?: return null
+        val url = instruction.url?.takeIf { it.isNotBlank() } ?: return null
+        return PresignedStoreRead(instruction.relPath ?: relativePath, url, instruction.expiresAtMs?.longOrNull)
+    }
 
     private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
         rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
@@ -416,8 +407,6 @@ class ProjectApi(
     @Serializable
     private data class StoreSourceDto(val sourceId: String? = null, val kind: JsonPrimitive? = null)
 
-    @Serializable
-    private data class PresignReadsDto(val agentId: String, val relPaths: List<String>, val storeId: String)
 
     @Serializable
     private data class StoreEntriesDto(val storeId: String, val relativePath: String)
@@ -439,6 +428,17 @@ class ProjectApi(
 
     @Serializable
     private data class ReadStoreFileResponseDto(val content: String = "")
+
+    /** `PresignAgentStoreReadsRequest {agent_id, rel_paths[], store_id?}`; the paths are the store's relative ones. */
+    @Serializable
+    private data class PresignReadsDto(val agentId: String, val relPaths: List<String>, val storeId: String)
+
+    @Serializable
+    private data class PresignReadsResponseDto(val instructions: List<ReadInstructionDto> = emptyList())
+
+    /** `AgentStoreReadInstruction {rel_path, url, expires_at_ms}`; the stamp is an int64, a string or a number in Connect JSON. */
+    @Serializable
+    private data class ReadInstructionDto(val relPath: String? = null, val url: String? = null, val expiresAtMs: JsonPrimitive? = null)
 
     @Serializable
     private class EmptyDto

@@ -9,10 +9,8 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
-import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
-import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -35,8 +33,8 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The Advanced card: the only way the setting comes on is through the warning, read and acknowledged, and the
- * options that need the mode are on the screen exactly while it is.
+ * The Extended mode card: the only way the setting comes on is through the warning, read and acknowledged, and the
+ * card is the one switch with nothing listed under it, whichever way it is.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -92,56 +90,37 @@ class ExtendedModeSettingsTest {
         compose.waitUntil(10_000) { !dialogShown() }
         assertThat(runBlocking { graph.extendedMode.acknowledgedAt.first() }).isNotNull()
         compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(ExtendedModeCopy.ACKNOWLEDGED_LABEL).assertIsDisplayed()
+        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOn()
     }
 
-    private fun optionsShown() = compose.onAllNodes(hasTestTag(ExtendedModeTags.PIN_SYNC)).fetchSemanticsNodes().isNotEmpty()
-
-    /** The switch inside the pin sync row, as TalkBack reads it. */
-    private fun pinSyncSwitch() = compose.onNode(isToggleable() and hasAnyAncestor(hasTestTag(ExtendedModeTags.PIN_SYNC)))
-
-    private fun pinSyncPreference() = runBlocking { graph.prefs.pinSyncEnabled.first() }
-
     @Test
-    fun `the options that need the mode are hidden while it is off and shown, under the note, while it is on`() {
-        // Off: no note, no pin sync switch, not a word about pins anywhere in the section.
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
-        compose.onAllNodes(hasTestTag(ExtendedModeTags.OPTIONS_NOTE)).assertCountEquals(0)
-        compose.onAllNodes(hasTestTag(ExtendedModeTags.PIN_SYNC)).assertCountEquals(0)
-        compose.onAllNodes(hasText(ExtendedModeCopy.PIN_SYNC_TITLE)).assertCountEquals(0)
+    fun `the section is the one switch, off or on, with nothing listed under it`() {
+        fun assertToggleAlone() {
+            // One switch in the section, and none of what used to sit under it: no acknowledgment date, no note, no
+            // pin sync option or its status — the pins follow the mode itself.
+            compose.onAllNodes(isToggleable()).assertCountEquals(1)
+            listOf("Warning acknowledged", "Sync pinned chats", "Last synced", "undocumented Cursor endpoints. They are in effect").forEach { removed ->
+                compose.onAllNodes(hasText(removed, substring = true)).assertCountEquals(0)
+            }
+        }
 
-        // The preference under the option is the user's whatever the mode says: switched off before the mode is on,
-        // the option appears switched off.
+        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
+        assertToggleAlone()
+
         runBlocking {
-            graph.prefs.setPinSyncEnabled(false)
             graph.extendedMode.acknowledge()
             graph.extendedMode.enable()
         }
-        compose.waitUntil(10_000) { optionsShown() }
-        compose.onNodeWithTag(ExtendedModeTags.OPTIONS_NOTE).assertIsDisplayed()
-        compose.onNodeWithText(ExtendedModeCopy.OPTIONS_NOTE).assertIsDisplayed()
-        compose.onNodeWithText(ExtendedModeCopy.PIN_SYNC_TITLE).assertIsDisplayed()
-        compose.onNodeWithText(ExtendedModeCopy.PIN_SYNC_SUBTITLE).assertIsDisplayed()
-        pinSyncSwitch().assertIsOff()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_ON)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOn()
+        assertToggleAlone()
 
-        // The row is the option: tapping it flips the preference.
-        compose.onNodeWithTag(ExtendedModeTags.PIN_SYNC).performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(isOn() and hasAnyAncestor(hasTestTag(ExtendedModeTags.PIN_SYNC))).fetchSemanticsNodes().isNotEmpty() }
-        assertThat(pinSyncPreference()).isTrue()
-
-        // Off again: the options leave the screen with the mode, and the preference stays as it was left.
-        compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
+        // Off again, from the row itself: the row is the switch.
+        compose.onNodeWithText(ExtendedModeCopy.SETTING_TITLE).performClick()
         compose.waitUntil(10_000) { !enabled() }
-        compose.waitUntil(10_000) { !optionsShown() }
-        compose.onAllNodes(hasTestTag(ExtendedModeTags.OPTIONS_NOTE)).assertCountEquals(0)
-        compose.onAllNodes(hasText(ExtendedModeCopy.PIN_SYNC_TITLE)).assertCountEquals(0)
-        compose.onNodeWithText(ExtendedModeCopy.SETTING_OFF).assertIsDisplayed()
-        assertThat(pinSyncPreference()).isTrue()
-
-        // On again: the option is back, switched the way it was left.
-        compose.onNodeWithTag(ExtendedModeTags.TOGGLE).performClick()
-        compose.waitUntil(10_000) { optionsShown() }
-        pinSyncSwitch().assertIsOn()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasText(ExtendedModeCopy.SETTING_OFF)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(isToggleable() and hasTestTag(ExtendedModeTags.TOGGLE)).assertIsOff()
+        assertToggleAlone()
     }
 
     @Test

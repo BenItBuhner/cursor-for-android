@@ -244,6 +244,12 @@ data class Agent(
     val modelDisplayName: String? = null,
     val modelId: String? = null,
     val modelParams: List<ModelParam> = emptyList(),
+    /**
+     * The model the chat runs on as the account's record names it (see [AccountModel]) — the word of the server,
+     * which outranks what this device remembers sending; null until the account's list has said (Extended mode),
+     * and always null in default mode, where nothing documented carries an agent's model.
+     */
+    val accountModel: AccountModel? = null,
     val durationMs: Long? = null,
     /**
      * Where the chat was started, as the account service has it (see [AgentSource]); null until the account's list
@@ -377,7 +383,14 @@ data class ModelOption(
     val variants: List<ModelVariant> = emptyList(),
     /** The `parameters` definitions from `GET /v1/models`: what each variant's `params` mean in words. */
     val parameters: List<ModelParameter> = emptyList(),
+    /** `aliases` from `GET /v1/models`: "Alternate IDs that resolve to the same model" (`composer-latest`, `composer`, …). */
+    val aliases: List<String> = emptyList(),
 ) {
+    /** True when [modelId] is this model's id or one of its aliases. */
+    fun answersTo(modelId: String): Boolean = id == modelId || modelId in aliases
+
+    /** The catalog's Auto row: the one Cursor's router picks the model for, named "Auto" (the desktop's `default`). */
+    val isAuto: Boolean get() = displayName.equals(AccountModel.AUTO_LABEL, ignoreCase = true) || id == AccountModel.AUTO_ID || AccountModel.AUTO_ID in aliases
     /** A parameter's name in words — "Effort", "Fast" — from the API's definition when it has one. */
     fun parameterName(parameterId: String): String =
         parameters.firstOrNull { it.id == parameterId }?.displayName?.takeIf { it.isNotBlank() } ?: humanize(parameterId)
@@ -531,6 +544,37 @@ data class ModelChoice(val model: ModelOption, val variant: ModelVariant?) {
 }
 
 /**
+ * The model a chat runs on as the account's record names it: `aiserver.v1.BackgroundComposer.requested_model`
+ * (`agent.v1.RequestedModel {model_id, parameters[{id, value}], max_mode}` — what the desktop, the web and the iOS
+ * app send when they start or follow up a chat; Cursor 3.20.21) or, on records from before it, `model_details
+ * {model_name, max_mode}`. The ids are the desktop's vocabulary, which `GET /v1/models` shares (`id` and `aliases`);
+ * Auto is `default` there (the desktop's own `modelNameDisplayLookup`: `"default"` → "Auto"). The documented API
+ * carries nothing of the kind — an agent record has no model, the v0 transcript has none, the SDK's `agent.model`
+ * is client memory — so only the account's list (Extended mode) fills this.
+ */
+@Serializable
+data class AccountModel(
+    val modelId: String,
+    val params: List<ModelParam> = emptyList(),
+    val maxMode: Boolean = false,
+) {
+    /** The desktop's `default`: Cursor's router picks the model. */
+    val isAuto: Boolean get() = modelId == AUTO_ID
+
+    /** What to call the model when the catalog cannot place [modelId]: "Auto" for `default`, else the id as it is. */
+    val fallbackLabel: String get() = if (isAuto) AUTO_LABEL else modelId
+
+    companion object {
+        const val AUTO_ID = "default"
+        const val AUTO_LABEL = "Auto"
+
+        /** [modelId] blank is no model; the account leaves the field out rather than empty, but a blank is read the same way. */
+        fun of(modelId: String?, params: List<ModelParam> = emptyList(), maxMode: Boolean = false): AccountModel? =
+            modelId?.trim()?.takeIf { it.isNotEmpty() }?.let { AccountModel(it, params, maxMode) }
+    }
+}
+
+/**
  * The picker entry a request with `model.id` [id] and `model.params` [params] was built from, or null when this
  * catalog no longer lists the model. The id decides: it names the model whatever has happened to its parameters
  * since, so the variant is the nearest one to [params] (see [ModelOption.variantNearest]) rather than an exact
@@ -540,6 +584,20 @@ fun List<ModelOption>.choiceFor(id: String, params: List<ModelParam>): ModelChoi
     val model = firstOrNull { it.id == id } ?: return null
     return ModelChoice(model, model.variantNearest(params))
 }
+
+/**
+ * The picker entry the account's record names (see [AccountModel]): the catalog row whose id — or one of whose
+ * aliases — is the record's `model_id`, and for `default` the Auto row; the variant is the nearest one to the
+ * record's parameters. Null when the catalog has no such row (a model it no longer lists, or a catalog without an
+ * Auto row): the record's own name then stands in for the label (see [AccountModel.fallbackLabel]).
+ */
+fun List<ModelOption>.choiceFor(model: AccountModel): ModelChoice? {
+    val option = firstOrNull { it.answersTo(model.modelId) } ?: (if (model.isAuto) autoOption() else null) ?: return null
+    return ModelChoice(option, option.variantNearest(model.params))
+}
+
+/** The catalog's Auto row (see [ModelOption.isAuto]), or null when this catalog offers none. */
+fun List<ModelOption>.autoOption(): ModelOption? = firstOrNull { it.isAuto }
 
 /**
  * The catalog row [id] names. A miss is null — never the first row. The live catalogue leads with Auto, and
@@ -579,4 +637,10 @@ fun List<ModelOption>.arrangedForPicker(pinnedIds: List<String>, selectedId: Str
 data class Repository(val url: String) {
     val slug: String get() = Agent.repoSlugOf(url) ?: url
     val shortName: String get() = slug.substringAfterLast('/')
+
+    /**
+     * True when [url] names this repository however it is spelled — with or without the scheme or `.git`, in any
+     * case: the fleet endpoints, the agent list and `GET /v1/repositories` do not spell a URL the same way.
+     */
+    fun isAt(url: String): Boolean = slug.equals(Repository(url).slug, ignoreCase = true)
 }

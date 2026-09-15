@@ -43,8 +43,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -73,9 +71,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: grouping, sort, the
- * Repo / Status / Git / Source / Environment filters, Read All, and the metadata toggles. Flat 40dp rows, 13sp,
- * desktop-size toggles.
+ * The "Chats" filter menu (the filter icon in the sidebar header) as a bottom sheet: the quick actions first (Read
+ * all, in a card of its own — see [ActionsSection]), then grouping, sort, the Repo / Status / Git / Source /
+ * Environment filters, and the metadata toggles. Flat 40dp rows, 13sp, desktop-size toggles.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -172,6 +170,9 @@ private fun LazyListScope.rows(content: @Composable ColumnScope.() -> Unit) = it
 
 @Composable
 private fun RootPage(prefs: ListPreferences, unreadCount: Int, viewModel: AgentsViewModel, onOpen: (FilterKind) -> Unit) {
+    // The quick actions lead: one card, above everything that merely arranges the list (see SheetActions.kt).
+    ActionsSection(listOf(readAllAction(unreadCount, viewModel::markAllRead)))
+
     SectionLabel("Grouping")
     PickerRow(CursorIcons.Layers, "Group by", GroupBy.entries.map { it.label }, prefs.groupBy.ordinal) { viewModel.setGroupBy(GroupBy.entries[it]) }
     PickerRow(CursorIcons.Filter, "Sort by", SortOrder.entries.map { it.label }, prefs.sortOrder.ordinal) { viewModel.setSortOrder(SortOrder.entries[it]) }
@@ -182,7 +183,6 @@ private fun RootPage(prefs: ListPreferences, unreadCount: Int, viewModel: Agents
     DrillRow(CursorIcons.GitBranch, "Git", prefs.summaryFor(FilterKind.Git)) { onOpen(FilterKind.Git) }
     DrillRow(CursorIcons.Globe, "Source", prefs.summaryFor(FilterKind.Source)) { onOpen(FilterKind.Source) }
     DrillRow(CursorIcons.Cloud, "Environment", prefs.summaryFor(FilterKind.Environment)) { onOpen(FilterKind.Environment) }
-    ReadAllRow(unreadCount = unreadCount, onClick = viewModel::markAllRead)
 
     SectionLabel("Metadata")
     ToggleRow(CursorIcons.Folder, "Workspace", prefs.showWorkspace, viewModel::setShowWorkspace)
@@ -227,24 +227,6 @@ private fun RowShell(
         }
         Text(label, style = CursorTheme.typography.base, color = labelColor, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         trailing()
-    }
-}
-
-/** Marks every loaded conversation read. Dims when nothing is unread. */
-@Composable
-private fun ReadAllRow(unreadCount: Int, onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val enabled = unreadCount > 0
-    RowShell(CursorIcons.CheckCheck, "Read All", onClick = onClick, enabled = enabled) {
-        if (enabled) {
-            Text(
-                unreadCount.toString(),
-                style = CursorTheme.typography.base,
-                color = colors.textTertiary,
-                maxLines = 1,
-                modifier = Modifier.semantics { contentDescription = "$unreadCount unread" },
-            )
-        }
     }
 }
 

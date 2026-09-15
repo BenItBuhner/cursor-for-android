@@ -51,6 +51,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.agents.AgentListUiState
@@ -79,6 +80,7 @@ import com.cursorforandroid.ui.components.pullRequestTint
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.share.ShareTarget
+import com.cursorforandroid.ui.compose.NewAgentUiState
 import com.cursorforandroid.ui.compose.NewAgentViewModel
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -151,14 +153,8 @@ fun HomeScreen(
             item("composer") {
                 Column(Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth()) {
                     SelectorRow {
-                        val selectedRepo = state.selectedRepo
-                        val repoLabel = when {
-                            state.noRepo -> "No repository"
-                            selectedRepo != null -> selectedRepo.shortName
-                            state.isLoadingRepos -> "Loading…"
-                            else -> "Repository"
-                        }
-                        SelectorChip(repoLabel, onClick = { repoSheet = true }, icon = CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
+                        // The source: a repository, or "Start from scratch" as the web composer names a chat without one.
+                        SelectorChip(state.repoLabel, onClick = { repoSheet = true }, icon = if (state.noRepo) CursorIcons.Cloud else CursorIcons.Repo, modifier = Modifier.weight(1f, fill = false))
                         if (!state.noRepo) {
                             // A blank ref leaves the starting point to the repository's default branch.
                             SelectorChip(state.ref.ifBlank { "default" }, onClick = { branchSheet = true }, icon = CursorIcons.GitBranch)
@@ -225,6 +221,8 @@ fun HomeScreen(
             onSelect = viewModel::selectRepo,
             onRefresh = viewModel::refreshRepositories,
             onDismiss = { repoSheet = false },
+            device = state.selectedDevice.takeUnless { it.isCloud },
+            deviceRepo = state.deviceRepository,
         )
     }
     if (branchSheet) {
@@ -406,6 +404,10 @@ private fun RepositorySheet(
     onSelect: (Repository?) -> Unit,
     onRefresh: () -> Unit,
     onDismiss: () -> Unit,
+    /** The machine or pool the next chat runs on, when it is not Cloud. */
+    device: DeviceTarget? = null,
+    /** The repository [device] is checked out at, when it reports one (see [NewAgentUiState.deviceRepository]). */
+    deviceRepo: Repository? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -426,10 +428,42 @@ private fun RepositorySheet(
         val recentVisible = recent.distinctBy { it.url }.filter(::matches)
         val recentSlugs = recent.map { it.slug.lowercase() }.toSet()
         val restVisible = repos.distinctBy { it.url }.filter { matches(it) && it.slug.lowercase() !in recentSlugs }
+        // The device's repository leads the list when the catalogue does not carry it (a checkout Cursor's GitHub
+        // app does not see), as does a selection the catalogue lacks: either must still show checked.
+        val listedUrls = (recent + repos).map { it.url }.toSet()
+        val unlisted = listOfNotNull(deviceRepo, selected?.takeIf { !noRepo }).distinctBy { it.url }.filter { it.url !in listedUrls && matches(it) }
         LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false), contentPadding = PaddingValues(bottom = 12.dp)) {
+            if (device != null && filter.isEmpty()) {
+                item("device-note") {
+                    Text(
+                        if (deviceRepo != null) {
+                            "${device.label} is checked out at ${deviceRepo.slug}. Cursor runs a machine only in a checkout of the requested repository; pick another only if the worker was started with a root for it."
+                        } else {
+                            "${device.label} reports no repository of its own (an any-repo worker): the one picked here is what the chat runs in."
+                        },
+                        style = type.small,
+                        color = colors.textQuaternary,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    )
+                }
+            }
             item("none") {
-                SheetRow(title = "No repository", subtitle = "Empty cloud VM", checked = noRepo, icon = CursorIcons.Cloud) { pick(null) }
+                // The web composer's source for a chat without a repository; on a machine or pool the worker's own checkout stands in.
+                SheetRow(
+                    title = NewAgentUiState.START_FROM_SCRATCH,
+                    subtitle = if (device != null) "No repository: the worker's own directory" else "No repository: an empty cloud VM",
+                    checked = noRepo,
+                    icon = if (device != null) deviceIcon(device) else CursorIcons.Cloud,
+                ) { pick(null) }
                 HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            }
+            items(unlisted, key = { "unlisted:${it.url}" }) { repo ->
+                SheetRow(
+                    title = repo.shortName,
+                    subtitle = if (deviceRepo?.url == repo.url) "Checked out on ${device?.label ?: "the device"}" else repo.slug.substringBeforeLast('/', ""),
+                    checked = !noRepo && repo.url == selected?.url,
+                    icon = CursorIcons.Repo,
+                ) { pick(repo) }
             }
             if (unavailable && repos.isEmpty()) {
                 item("unavailable") {

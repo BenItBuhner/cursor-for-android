@@ -107,6 +107,14 @@ fun Throwable.isTransientFailure(): Boolean {
 /** `409` codes that describe a state another attempt will find unchanged, or one the caller handles in its own way. */
 private val SETTLED_CONFLICTS = setOf("agent_busy", "agent_id_conflict", "agent_archived", "run_not_cancellable", "usage_limit_exceeded")
 
+/**
+ * True for a request that went out and got no answer this client could read: the server silent past the read
+ * timeout, the connection reset or closed mid-reply, the call's overall budget spent. Not an answer the server gave
+ * (an HTTP status, with or without the API's body), and not being offline — those say what happened; a lost reply
+ * says nothing about whether the server acted on the request, which is the caller's to find out.
+ */
+fun Throwable.isLostReply(): Boolean = this is IOException && this !is java.net.UnknownHostException && toCursorError() == null
+
 fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {
@@ -131,8 +139,12 @@ object CursorApiFactory {
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        // Bounds the whole call, retries included, so nothing can hang a screen for longer than this.
-        .callTimeout(90, TimeUnit.SECONDS)
+        // Bounds the whole call, retries included, so nothing can hang a screen for longer than this. Generous on
+        // purpose: `/v0/agents/{id}/conversation` has no paging and answers with every turn of a chat at once —
+        // megabytes for a chat of hundreds of turns — which a slow connection delivers over minutes while the read
+        // timeout above, sixty seconds of silence, still catches a connection that has died. At ninety seconds the
+        // long chats' transcripts failed on every open, and the failure read as the chat not loading at all.
+        .callTimeout(5, TimeUnit.MINUTES)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
         .addInterceptor(RetryInterceptor())
         .apply {

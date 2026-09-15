@@ -148,17 +148,17 @@ class AgentStoreRepository(
             }
         }
         val newest = files.sortedByDescending { it.entry.updatedAtMillis ?: 0L }.take(limit)
-        val pictures = newest.filter { it.isImage }.groupBy { it.store }
+        // A URL per picture, read as the chat asking; a presign that fails leaves that tile a file tile.
         val urls = HashMap<Pair<String, String>, String>()
-        pictures.forEach { (store, recent) ->
+        newest.filter { it.isImage }.forEach { recent ->
             val presigned = try {
-                source.presignReads(agentId, store.storeId, recent.map { it.entry.relativePath })
+                source.presignRead(agentId, recent.store.storeId, recent.entry.relativePath)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {
-                emptyMap()
+                null
             }
-            presigned.forEach { (path, url) -> urls[store.storeId to path] = url }
+            presigned?.url?.let { urls[recent.store.storeId to recent.entry.relativePath] = it }
         }
         return VmRead.Loaded(newest.map { recent -> recent.copy(thumbnailUrl = urls[recent.store.storeId to recent.entry.relativePath]) })
     }

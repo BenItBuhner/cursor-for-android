@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
+import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentEnvDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
 import com.cursorforandroid.data.api.dto.CreateAgentRequestDto
@@ -14,6 +15,7 @@ import com.cursorforandroid.data.api.dto.ModelRefDto
 import com.cursorforandroid.data.api.dto.RepoConfigDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
+import com.cursorforandroid.data.api.isLostReply
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
@@ -22,6 +24,7 @@ import com.cursorforandroid.data.local.CachedPlacement
 import com.cursorforandroid.data.local.CachedRecord
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
@@ -65,6 +68,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -140,9 +144,8 @@ data class LaunchRequest(
 
 /**
  * `env` on Create An Agent. The ordinary Cursor-hosted cloud is the API's default and goes unsaid, with or without a
- * repository: the reference wants both `repos` and `env` left out for a no-repo agent, and the `{ type: cloud }` once
- * sent in their place is what the server answered with a `400`. A named cloud environment, a team pool and a machine
- * always go out.
+ * repository: the reference wants `env` left out for a no-repo agent, and the `{ type: cloud }` once sent in its
+ * place is what the server answered with a `400`. A named cloud environment, a team pool and a machine always go out.
  */
 fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
     EnvType.POOL -> AgentEnvDto(type = "pool", name = apiName)
@@ -152,19 +155,47 @@ fun DeviceTarget.toEnvDto(): AgentEnvDto? = when (type) {
 
 /**
  * The Create An Agent body for this launch. A repository is the target and goes out as `repos[0]` with its starting
- * ref; without one the request names no target at all — no `repos`, no `env` beyond a pool, machine or named
- * environment (see [toEnvDto]) — and `autoCreatePR` stays out too (see [LaunchRequest.opensPullRequest]).
+ * ref. Without one, what goes out depends on where the chat runs, as the reference has it (`CreateAgentRequest.repos`:
+ * "Mutually exclusive with a named cloud environment. Omit both `repos` and `env` (or pass `repos: []`) to start a
+ * no-repo agent"; `AgentEnv.name`: "Omit `repos` with `type: pool` to target a repo-less pool"):
+ *  - the ordinary cloud — the web's "Start from scratch" — sends `repos: []` and no `env`. The explicit form is the
+ *    one that cannot be read as anything else: an absent `repos` is also what a request that means "whatever the
+ *    account's default repository is" looks like (the server's `repository_required` refusal offers "configure a
+ *    default repository" as the alternative to `repos[0].url`), and this app has no such default to fall back on;
+ *  - a named cloud environment sends `env` alone: the environment carries its repositories, and `repos` beside it
+ *    is refused;
+ *  - a pool or a machine sends `env` alone: the worker runs in its own checkout. The reference allows this for a
+ *    pool; for a machine the server has been seen to answer `400 repository_required`, which is then shown as it is.
+ * `autoCreatePR` stays out of every repository-less request (see [LaunchRequest.opensPullRequest]).
  */
-fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto = CreateAgentRequestDto(
-    prompt = PromptEncoding.toPromptDto(prompt, images),
-    agentId = agentId,
-    model = modelRef(modelId, modelParams),
-    name = name,
-    env = env.toEnvDto(),
-    repos = repoUrl?.let { listOf(RepoConfigDto(url = it, startingRef = ref?.ifBlank { null })) },
-    autoCreatePR = opensPullRequest.takeIf { it },
-    mcpServers = mcpServers.toInlineServers(),
-    mode = if (planMode) "plan" else null,
+fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
+    val envDto = env.toEnvDto()
+    return CreateAgentRequestDto(
+        prompt = PromptEncoding.toPromptDto(prompt, images),
+        agentId = agentId,
+        model = modelRef(modelId, modelParams),
+        name = name,
+        env = envDto,
+        repos = when {
+            repoUrl != null -> listOf(RepoConfigDto(url = repoUrl, startingRef = ref?.ifBlank { null }))
+            envDto == null -> emptyList()
+            else -> null
+        },
+        autoCreatePR = opensPullRequest.takeIf { it },
+        mcpServers = mcpServers.toInlineServers(),
+        mode = if (planMode) "plan" else null,
+    )
+}
+
+/**
+ * The launch's request went out and its answer never came back — the server silent past the read timeout, the
+ * connection dropped — and the chat is nowhere on the account either, as far as `GET /v1/agents/{id}` could tell in
+ * the moments after (see [AgentRepository.launch]). Worded for the composer, where the draft comes back with it.
+ */
+class LaunchUnansweredException(cause: Throwable) : IOException(
+    "Cursor didn't answer the request to start this chat, and no chat appeared on your account. " +
+        "Send it again to retry: a chat Cursor did create after all is picked up rather than started twice.",
+    cause,
 )
 
 /** The request's `model` field: the id with the variant's parameters, or null so the field is omitted. */
@@ -214,6 +245,9 @@ class AgentRepository(
     private val runningScanPages: Int = RUNNING_SCAN_PAGES,
     /** How many agents the running scan named that no page holds are fetched by id per pass. */
     private val maxMaterializedRunning: Int = MAX_MATERIALIZED_RUNNING,
+    /** How a launch whose reply was lost looks for its chat (see [launch]): reads of `GET /v1/agents/{id}`, and the wait between them. */
+    private val lostReplyProbes: Int = LOST_REPLY_PROBES,
+    private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
 ) {
     private val restoreMutex = Mutex()
 
@@ -1044,6 +1078,7 @@ class AgentRepository(
         hasPendingInteraction = hasPendingInteraction,
         scopeSignal = if (parent != null || isProject) LineageSignal.ACCOUNT_RECORD else null,
         record = record,
+        accountModel = model,
     )
 
     /**
@@ -1251,7 +1286,12 @@ class AgentRepository(
     /**
      * Creates the agent and its first run. When [LaunchRequest.agentId] is set and the server answers
      * `409 agent_id_conflict`, an earlier attempt already went through (its reply was lost to a timeout, a dropped
-     * connection or a cancel), so that agent is adopted instead of failing or creating a duplicate. A row
+     * connection or a cancel), so that agent is adopted instead of failing or creating a duplicate. The same id is
+     * what a launch whose own reply is lost — the server silent past the read timeout, the connection gone — is
+     * looked up by, on the spot: the chat is read by id a few times over the next moments and adopted when the
+     * server did create it (see [recoverLostReply]); only when it is nowhere does the launch fail, with
+     * [LaunchUnansweredException] saying so rather than a bare timeout. An answer the server gave — a `400` with
+     * its message, a `5xx` — is never waited on or asked about again: it fails the launch at once, as it is. A row
      * [beginLaunch] put in the list is replaced by the server's record, or removed when the request fails.
      * [saveImages] is off for a caller that staged the prompt's images itself and files them under the run.
      */
@@ -1264,9 +1304,13 @@ class AgentRepository(
                 // enqueued, on whichever thread makes it.
                 withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
             } catch (t: Throwable) {
-                if (request.agentId == null || t.toCursorError()?.code != AGENT_ID_CONFLICT) throw t
-                val existing = api.getAgent(request.agentId)
-                existing to existing.latestRunId?.let { runId -> runCatching { api.getRun(existing.id, runId) }.getOrNull() }
+                if (t is CancellationException) throw t
+                val id = request.agentId ?: throw t
+                when {
+                    t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id)
+                    t.isLostReply() -> recoverLostReply(api, id) ?: throw LaunchUnansweredException(t)
+                    else -> throw t
+                }
             }
             // The provisional row, when there is one, fills in what the server's record leaves blank — its name
             // above all, which the server may not have generated yet.
@@ -1292,6 +1336,35 @@ class AgentRepository(
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
         }
         return result
+    }
+
+    /** The agent an earlier attempt created under the client-minted [id], with its latest run when that can be read. */
+    private suspend fun adopt(api: CursorApi, id: String): Pair<AgentDto, RunDto?> {
+        val existing = api.getAgent(id)
+        return existing to existing.latestRunId?.let { runId -> runCatching { api.getRun(existing.id, runId) }.getOrNull() }
+    }
+
+    /**
+     * Looks for the chat a launch whose reply was lost may have created: `GET /v1/agents/{id}` under the id the
+     * request carried, up to [lostReplyProbes] times, [lostReplyProbeDelayMs] apart — the server may still be
+     * finishing what the request started when the first read is made, so a `404` is asked again in a moment. The
+     * agent as soon as a read returns it; null once the reads have run out, or the moment a read gets no readable
+     * answer either (the server out of reach: asking again would only hold the composer up), which is the caller's
+     * cue that no chat is known to have been created.
+     */
+    private suspend fun recoverLostReply(api: CursorApi, id: String): Pair<AgentDto, RunDto?>? {
+        repeat(lostReplyProbes) { attempt ->
+            if (attempt > 0) delay(lostReplyProbeDelayMs)
+            val found = try {
+                api.getAgent(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                if (t.toCursorError()?.httpCode == 404) null else return null
+            }
+            if (found != null) return found to found.latestRunId?.let { runId -> runCatching { api.getRun(found.id, runId) }.getOrNull() }
+        }
+        return null
     }
 
     /**
@@ -1325,15 +1398,26 @@ class AgentRepository(
             )
         }
         patch(agentId, startedIn) { current ->
-            // The old label would describe the old model, so without a new one the id stands in.
-            val switched = if (modelId != null) {
-                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
-            } else {
-                current
-            }
-            switched.copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
+            current.switchedTo(modelId, modelParams, modelDisplayName)
+                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
         }
         response.run
+    }
+
+    /**
+     * The row after a follow-up that switched the chat to [modelId] was accepted: the device's record of the model
+     * (the old label would describe the old model, so without a new one the id stands in) and, where the account's
+     * record had named a model, that word too — the server now holds this one, and the list's next read would only
+     * confirm it. A follow-up that sent no model changes nothing.
+     */
+    private fun Agent.switchedTo(modelId: String?, modelParams: List<ModelParam>, modelDisplayName: String?): Agent {
+        if (modelId == null) return this
+        return copy(
+            modelId = modelId,
+            modelParams = modelParams,
+            modelDisplayName = modelDisplayName ?: modelId,
+            accountModel = accountModel?.let { AccountModel(modelId, modelParams) },
+        )
     }
 
     /**
@@ -1356,12 +1440,8 @@ class AgentRepository(
         val stamp = Instant.ofEpochMilli(now).toString()
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
         patch(agentId, startedIn) { current ->
-            val switched = if (modelId != null) {
-                current.copy(modelId = modelId, modelParams = modelParams, modelDisplayName = modelDisplayName ?: modelId)
-            } else {
-                current
-            }
-            switched.copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
+            current.switchedTo(modelId, modelParams, modelDisplayName)
+                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
         }
         run
     }
@@ -1529,6 +1609,9 @@ class AgentRepository(
                 record = record,
                 source = snap.source ?: agent.source,
                 hasPendingInteraction = snap.hasPendingInteraction,
+                // The account's word on the model outranks what this device remembers sending; a record that names
+                // none leaves what an earlier record said.
+                accountModel = snap.model ?: agent.accountModel,
             )
             if (updated == agent) agent else updated.also { changed = true }
         }
@@ -1647,6 +1730,9 @@ class AgentRepository(
         /** A row that reads finished but was active this recently may still be going; its record settles it. */
         private const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
         private const val AGENT_ID_CONFLICT = "agent_id_conflict"
+        /** Reads of the chat by id after a launch's reply was lost, and the wait between them: about a quarter of a minute in all. */
+        const val LOST_REPLY_PROBES = 5
+        const val LOST_REPLY_PROBE_DELAY_MS = 3_000L
         /** Same cap as `POST /v1/agents` `name` and the official rename field. */
         private const val MAX_NAME_LENGTH = 100
         /** Why [rename] refuses with Extended mode off; the screens hide the action, this is for whatever still asks. */

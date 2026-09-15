@@ -18,6 +18,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -252,18 +253,18 @@ class PinRepositoryTest {
     }
 
     @Test
-    fun `the demo and the setting turned off keep pins on this device`() = runBlocking<Unit> {
-        prefs.setPinSyncEnabled(false)
+    fun `the demo and a mode without the pin sync keep pins on this device`() = runBlocking<Unit> {
+        // The account may be read but the pins may not follow it: the pins are subject to their own capability alone.
+        val readOnly = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, capabilities = { Capabilities.EXTENDED.copy(pinSync = false) })
         pinsApi.server += "bc-2"
-        pins.toggle("bc-1")
-        pins.sync()
+        readOnly.toggle("bc-1")
+        readOnly.sync()
         // The list is still read (it carries the pull request states), but nothing about pins goes either way.
         assertThat(pinnedIds()).containsExactly("bc-1")
         assertThat(pinsApi.listCalls).isEqualTo(1)
         assertThat(pinsApi.pinCalls).isEmpty()
-        assertThat(pins.state.value.active).isFalse()
+        assertThat(readOnly.state.value.active).isFalse()
 
-        prefs.setPinSyncEnabled(true)
         session.enterDemo()
         pins.toggle("bc-demo-0001")
         pins.sync()
@@ -307,14 +308,19 @@ class PinRepositoryTest {
         pinsApi.pullRequests["https://github.com/acme/app/pull/1"] = PullRequestState.Merged
         pinsApi.server += "bc-2"
         val handed = mutableListOf<AccountList>()
-        val repository = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, onList = { list, _ -> handed += list })
+        var pinSync = true
+        val repository = PinRepository(
+            session, prefs, agents, pinsApi, scope, now = { now },
+            onList = { list, _ -> handed += list },
+            capabilities = { Capabilities.EXTENDED.copy(pinSync = pinSync) },
+        )
 
         assertThat(repository.sync().isSuccess).isTrue()
         assertThat(handed.single().pullRequests).containsExactly("https://github.com/acme/app/pull/1", PullRequestState.Merged)
         assertThat(pinnedIds()).containsExactly("bc-2")
 
         // Pins off: the list is still read for its pull request states, but the pins stay as they are here.
-        prefs.setPinSyncEnabled(false)
+        pinSync = false
         pinsApi.server += "bc-3"
         assertThat(repository.sync().isSuccess).isTrue()
         assertThat(handed).hasSize(2)
@@ -323,24 +329,22 @@ class PinRepositoryTest {
     }
 
     @Test
-    fun `a failure that retrying cannot fix halts syncing until the setting is turned on again`() = runBlocking<Unit> {
+    fun `a failure that retrying cannot fix halts syncing until the repository is reset`() = runBlocking<Unit> {
         prefs.setPinsMigrated(true)
         val policy = object : PinsApi by pinsApi {
             override suspend fun list(): AccountList =
                 throw SessionUnavailableException("Device policy.", SessionUnavailableException.SIGN_IN_POLICY_VIOLATION)
         }
         var listCalls = 0
-        val secondList = CompletableDeferred<Unit>()
         val counting = object : PinsApi by policy {
             override suspend fun list(): AccountList {
                 listCalls++
-                if (listCalls == 2) secondList.complete(Unit)
                 return policy.list()
             }
         }
         val repository = PinRepository(session, prefs, agents, counting, scope, now = { now })
 
-        // The completed list fetch is what starts syncing (and watching the setting).
+        // The completed list fetch is what starts syncing.
         agents.refresh()
         repository.state.first { it.error != null }
         assertThat(repository.state.value.error).contains("Device policy.")
@@ -348,9 +352,10 @@ class PinRepositoryTest {
         assertThat(repository.sync().isSuccess).isTrue() // halted: nothing is asked
         assertThat(listCalls).isEqualTo(1)
 
-        prefs.setPinSyncEnabled(false)
-        prefs.setPinSyncEnabled(true)
-        secondList.await()
+        // A sign-in, or Extended mode switched off and on again, resets the repository; only then is the account asked again.
+        repository.reset()
+        assertThat(repository.sync().isSuccess).isFalse()
+        assertThat(listCalls).isEqualTo(2)
     }
 
     @Test
@@ -469,6 +474,10 @@ class PinRepositoryTest {
     @Test
     fun `a pin tapped for the previous account is never flipped into the next one's`() = runBlocking<Unit> {
         prefs.setPinsMigrated(true)
+        prefs.setExtendedMode(true)
+        // As in the graph, the tap reads whether the pins may follow the account from the preferences before it
+        // flips anything; that read is where the sign-out lands.
+        val pins = PinRepository(session, prefs, agents, pinsApi, scope, now = { now }, capabilities = { Capabilities.of(prefs.extendedMode.first()) })
         val reached = CompletableDeferred<Unit>()
         settings.readGate = CompletableDeferred()
         settings.readGateReached = reached

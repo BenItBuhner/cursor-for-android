@@ -56,6 +56,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
+import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
@@ -64,6 +65,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
@@ -232,9 +234,22 @@ fun ConversationScreen(
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
-    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
+    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
+    // opens in the document sheet; without the account it points at the Project on cursor.com.
     val lightbox = rememberLightboxState(agentId)
-    val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
+    val canReadStores = capabilities.projects && !isDemo
+    var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val markdownMedia = remember(agentId, lightbox, canReadStores) {
+        MarkdownMediaContext(
+            agentId, graph.media, lightbox,
+            canReadStores = canReadStores,
+            onOpenStorePath = { path ->
+                val target = storeRef(path, agentId)
+                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
+            },
+        )
+    }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -428,6 +443,15 @@ fun ConversationScreen(
                     items(rows.asReversed(), key = { it.key }, contentType = { it::class }) { row ->
                         TranscriptRowView(row, paneWidth)
                     }
+                    // Where the window's traces stand, when not every turn shown has its activity: the turns being
+                    // read or replayed, the ones whose logs Cursor no longer has, the ones that could not be read
+                    // this time (with a Retry). Above the oldest turn shown, where the missing activity would be
+                    // noticed; nothing when every turn is whole.
+                    if (items.isNotEmpty() && conversation.traceStatus.let { it.pending + it.expired + it.failed > 0 }) {
+                        item("traces") {
+                            TraceStatusRow(conversation.traceStatus, onRetry = viewModel::retryTraces, modifier = paneWidth)
+                        }
+                    }
                     // Past the oldest turn shown: the turns before it, being paged in, or a tap away when the
                     // reader's scroll did not reach far enough to ask for them.
                     if (hasOlder && items.isNotEmpty()) {
@@ -438,7 +462,11 @@ fun ConversationScreen(
                     if (!conversation.isLoading && items.isEmpty()) {
                         item("empty") {
                             Text(
-                                if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else conversation.error ?: "Nothing here yet.",
+                                when {
+                                    conversation.transcriptError != null -> "Couldn't load the transcript: ${conversation.transcriptError}"
+                                    conversation.transcriptUnavailable -> "The transcript isn't available for this chat."
+                                    else -> conversation.error ?: "Nothing here yet."
+                                },
                                 style = type.base,
                                 color = colors.textQuaternary,
                                 modifier = Modifier.padding(top = 32.dp),
@@ -479,14 +507,22 @@ fun ConversationScreen(
             }
         }
 
-        conversation.error?.takeIf { items.isNotEmpty() }?.let { err ->
+        // A fetch that did not go through, said under the transcript rather than swallowed: the load's failure, or —
+        // with the runs answering and the transcript not — the transcript's, with the way to ask again.
+        (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
             Row(
-                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp).testTag("load-error"),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(err, style = type.small, color = colors.red, maxLines = 2)
+                Text(err, style = type.small, color = colors.red, maxLines = 2, modifier = Modifier.weight(1f))
+                Text(
+                    "Retry",
+                    style = type.small,
+                    color = colors.textSecondary,
+                    modifier = Modifier.pressable(viewModel::reload, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp),
+                )
             }
         }
 
@@ -583,6 +619,11 @@ fun ConversationScreen(
     // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
     // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
     FigureLightbox(lightbox, graph.media, agentId)
+    openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->
+        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+            StoreDocumentSheet(ref, graph.storeFiles, onDismiss = { openStorePath = null })
+        }
+    }
 
     if (modelSheet) {
         ModelSheet(
@@ -600,9 +641,14 @@ fun ConversationScreen(
             onDismiss = { modelSheet = false },
             pinnedIds = picker.pinnedModelIds,
             onTogglePin = viewModel::togglePinnedModel,
-            // The chat's model has its own row only while the catalog cannot show it checked in the list: unknown
-            // (started elsewhere), or no longer offered. It reads as the label when there is one.
-            noModelRow = if (picker.current != null) null else NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using"),
+            // The chat's model has its own row only while the catalog cannot show it checked in the list: nothing
+            // reports it (a chat started elsewhere, in default mode — Auto is assumed and the row says so), or the
+            // catalog no longer offers it. Picking the row keeps whatever the chat has been using.
+            noModelRow = when {
+                picker.current != null -> null
+                picker.currentAssumed -> NoModelRow("Current model", "Auto, assumed: Cursor doesn't report this chat's model to the app. Follow-ups keep the model it has been using.")
+                else -> NoModelRow("Current model", picker.currentLabel ?: "Keep the model this chat has been using")
+            },
         )
     }
 
@@ -694,6 +740,44 @@ private const val BottomTolerancePx = 48
 
 /** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
 private const val OlderTurnsPrefetchRows = 3
+
+/**
+ * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
+ * of 4 turns…" while the logs are read or replayed; "Cursor no longer has the activity of 7 turns" once their logs
+ * have expired with no copy here; "Couldn't load the activity of 3 turns" with a Retry when the network failed.
+ * What used to be silent — text with no tool calls behind it, and no word why.
+ */
+@Composable
+internal fun TraceStatusRow(status: TraceStatus, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    fun turns(n: Int) = if (n == 1) "1 turn" else "$n turns"
+    Column(modifier.padding(vertical = 4.dp).testTag("trace-status"), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (status.pending > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SpinnerRing(size = 12.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Loading the activity of ${turns(status.pending)}…", style = type.small, color = colors.textQuaternary)
+            }
+        }
+        if (status.expired > 0) {
+            Text("Cursor no longer has the activity of ${turns(status.expired)}; their replies are shown.", style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = if (status.pending > 0) 4.dp else 0.dp))
+        }
+        if (status.failed > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = if (status.pending + status.expired > 0) 4.dp else 0.dp)) {
+                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(12.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Couldn't load the activity of ${turns(status.failed)}.", style = type.small, color = colors.red)
+                Text(
+                    "Retry",
+                    style = type.small,
+                    color = colors.textSecondary,
+                    modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("retry-traces"),
+                )
+            }
+        }
+    }
+}
 
 /**
  * The row past the oldest turn shown, while the chat has older ones: "Loading older…" while they are being paged in

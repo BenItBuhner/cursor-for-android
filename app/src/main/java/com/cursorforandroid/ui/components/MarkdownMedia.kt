@@ -51,6 +51,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -77,6 +79,7 @@ import com.cursorforandroid.R
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.CancellationException
@@ -85,8 +88,18 @@ import kotlin.math.sqrt
 /**
  * What [MarkdownText] needs to turn a media `src` into pixels: the agent whose artifacts the paths refer to, the
  * loader that fetches them, and where a tapped figure opens. Provided by the conversation screen; absent elsewhere.
+ *
+ * [canReadStores] says the account's store reads are on (Extended mode), so a `/cursor/stores/…` figure is fetched
+ * rather than stood in for; [onOpenStorePath] is where a tapped store link (or a store figure that cannot be shown)
+ * goes — the document sheet, or the Project on cursor.com when nothing here can read it.
  */
-class MarkdownMediaContext(val agentId: String?, val loader: MediaLoader, val lightbox: LightboxState)
+class MarkdownMediaContext(
+    val agentId: String?,
+    val loader: MediaLoader,
+    val lightbox: LightboxState,
+    val canReadStores: Boolean = false,
+    val onOpenStorePath: ((StorePath) -> Unit)? = null,
+)
 
 val LocalMarkdownMedia = staticCompositionLocalOf<MarkdownMediaContext?> { null }
 
@@ -165,6 +178,13 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
 
+    // A store figure nothing here can read (default mode, no account) is a card pointing at the Project on cursor.com,
+    // not a dead "isn't available"; Cursor's own client resolves the same path against the Project's context.
+    if (ref is MediaRef.Store && (media == null || !media.canReadStores)) {
+        StoreFileCard(ref, alt, CursorIcons.Image, modifier)
+        return
+    }
+
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxWidth = if (maxWidth.isFinite) maxWidth else FallbackWidth
         // A tile in a gallery is held to the height its caller gives it; a figure in a reply to the screen's share.
@@ -187,18 +207,23 @@ fun ImageBlock(src: String, alt: String?, modifier: Modifier = Modifier, heightC
                 ImageLoad.Ready(media.loader.image(ref, request.width, request.height).asImageBitmap())
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                ImageLoad.Failed("Couldn't load image", retryable = true)
+                ImageLoad.Failed(if (ref is MediaRef.Store) t.userMessage().takeIf { it.isNotBlank() } ?: "Couldn't load image" else "Couldn't load image", retryable = true)
             }
         }
 
         when (val s = state) {
             ImageLoad.Loading -> MediaPlaceholder(Modifier.fillMaxWidth().height(PlaceholderHeight), "Loading image")
-            is ImageLoad.Failed -> MediaErrorRow(
-                icon = CursorIcons.Image,
-                title = s.title,
-                detail = alt ?: ref.label,
-                onRetry = if (s.retryable) ({ attempt++ }) else null,
-            )
+            is ImageLoad.Failed -> if (ref is MediaRef.Store) {
+                // The store answered nothing for it: the card still opens the Project, and a tap on Retry asks again.
+                StoreFileCard(ref, alt, CursorIcons.Image, title = s.title, onRetry = { attempt++ })
+            } else {
+                MediaErrorRow(
+                    icon = CursorIcons.Image,
+                    title = s.title,
+                    detail = alt ?: ref.label,
+                    onRetry = if (s.retryable) ({ attempt++ }) else null,
+                )
+            }
             is ImageLoad.Ready -> Image(
                 bitmap = s.bitmap,
                 contentDescription = alt ?: "Image",
@@ -235,6 +260,10 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier, heig
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
 
+    if (ref is MediaRef.Store && (media == null || !media.canReadStores)) {
+        StoreFileCard(ref, null, CursorIcons.Video, modifier)
+        return
+    }
     if (loader == null || ref is MediaRef.Unavailable || ref is MediaRef.Inline) {
         MediaErrorRow(icon = CursorIcons.Video, title = "Video isn't available", detail = ref.label, onRetry = null, modifier = modifier)
         return
@@ -320,6 +349,60 @@ private fun MediaPlaceholder(modifier: Modifier, description: String) {
         contentAlignment = Alignment.Center,
     ) {
         SpinnerRing(size = 14.dp)
+    }
+}
+
+/**
+ * A file of a Project's context that cannot be drawn here — without the account's store reads (default mode), or
+ * because the store answered nothing for it — as a card naming the file, saying where it is, and opening the
+ * Project on cursor.com, where Cursor's own client shows it. Tapping the card is the way there; [onRetry] asks the
+ * store again when there is a store to ask.
+ */
+@Composable
+internal fun StoreFileCard(
+    ref: MediaRef.Store,
+    alt: String?,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    title: String? = null,
+    onRetry: (() -> Unit)? = null,
+) {
+    val colors = CursorTheme.colors
+    val shape = CursorTheme.shapes.lg
+    val media = LocalMarkdownMedia.current
+    val uriHandler = LocalUriHandler.current
+    val open: () -> Unit = {
+        val handler = media?.onOpenStorePath
+        if (handler != null) handler(ref.path) else runCatching { uriHandler.openUri(ref.webUrl) }
+    }
+    Row(
+        modifier
+            .fillMaxWidth()
+            .cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
+            .pressable(open, shape)
+            .semantics { contentDescription = "Open ${ref.label} on cursor.com" }
+            .testTag("store-file-card")
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title ?: (alt?.takeIf { it.isNotBlank() } ?: ref.label), style = CursorTheme.typography.base, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                if (title != null && !alt.isNullOrBlank()) "$alt · ${ref.path.text}" else ref.path.text,
+                style = CursorTheme.typography.code,
+                color = colors.textQuaternary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        if (onRetry != null) {
+            Text("Retry", style = CursorTheme.typography.small, color = colors.link, modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 4.dp, vertical = 2.dp))
+            Spacer(Modifier.width(4.dp))
+        }
+        Text("Open on cursor.com", style = CursorTheme.typography.small, color = colors.link)
     }
 }
 

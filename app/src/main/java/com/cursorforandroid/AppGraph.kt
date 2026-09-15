@@ -32,6 +32,7 @@ import com.cursorforandroid.data.api.MachineLookupApi
 import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
+import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
@@ -87,6 +88,7 @@ import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.WorkspaceRepository
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
+import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
@@ -300,7 +302,7 @@ class AppGraph(
         override suspend fun stores(): List<AgentStoreRef> = lazyProjectApi.value.stores()
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
-        override suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> = lazyProjectApi.value.presignReads(agentId, storeId, relativePaths)
+        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(requesterId, storeId, relativePath)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
@@ -519,7 +521,20 @@ class AppGraph(
     private val lazyArtifacts = lazy { ArtifactRepository(session) }
     val artifacts: ArtifactRepository get() = lazyArtifacts.value
 
-    private val lazyMedia = lazy { MediaLoader(app, CursorApiFactory.mediaClient(), artifacts) }
+    /** The files `/cursor/stores/…` paths in replies point at, read through the account's store reads (Extended mode). */
+    private val lazyMediaClient = lazy { CursorApiFactory.mediaClient() }
+    private val lazyStoreFiles = lazy {
+        StoreFileRepository(
+            api = { projectAccount },
+            capabilities = capabilities,
+            cache = caches.storeFiles,
+            blobs = File(app.cacheDir, "cursor/storefiles/blobs"),
+            http = lazyMediaClient.value,
+        )
+    }
+    val storeFiles: StoreFileRepository get() = lazyStoreFiles.value
+
+    private val lazyMedia = lazy { MediaLoader(app, lazyMediaClient.value, artifacts) { storeFiles } }
     val media: MediaLoader get() = lazyMedia.value
 
     private val lazyRunMonitor = lazy {
@@ -586,6 +601,7 @@ class AppGraph(
             if (lazyStores.isInitialized()) stores.reset()
             if (lazyRemote.isInitialized()) remote.reset()
             if (lazyArtifacts.isInitialized()) artifacts.resetAll()
+            if (lazyStoreFiles.isInitialized()) storeFiles.resetAll()
             media.clearCaches()
             attachments.clear()
             generatedMedia.clear()
@@ -675,6 +691,7 @@ class AppGraph(
             "launcher" to lazyLauncher,
             "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
+            "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
             "updates" to lazyUpdates,
@@ -684,7 +701,7 @@ class AppGraph(
     internal fun builtParts(): Set<String> = deferredParts.filterValues { it.isInitialized() }.keys
 
     /**
-     * The redacted account of where every chat was placed and by what (see [ProjectDiagnostics]): Settings › Advanced
+     * The redacted account of where every chat was placed and by what (see [ProjectDiagnostics]): Settings' debug sheet
      * exports it, so a Project's chat that still shows among the account's own can be traced to the signal that
      * missed. Ids are shortened to their tails; no names, prompts or tokens are in it.
      */
@@ -722,7 +739,6 @@ class AppGraph(
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
                 managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
-                glyphOf = com.cursorforandroid.ui.icons.ProjectIcons::glyphName,
             ),
         )
     }
@@ -756,6 +772,7 @@ class AppGraph(
                     )
                 },
                 placement = agentId?.let { agents.placementOf(it) },
+                load = agentId?.let { conversations.loadDiagnostics(it) },
             ),
         )
     }

@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.demo.DemoStores
@@ -53,8 +54,8 @@ class AgentStoreRepositoryTest {
             failure?.let { throw it }
             return "# $relativePath"
         }
-        override suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> =
-            relativePaths.associateWith { "https://presigned.example/$storeId/$it" }
+        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? =
+            PresignedStoreRead(relativePath, "https://presigned.example/$storeId/$relativePath", null)
     }
 
     private fun repo(capabilities: Capabilities = Capabilities.EXTENDED, demo: Boolean = false) =

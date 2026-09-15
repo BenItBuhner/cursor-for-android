@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.demo
 
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.AgentStoreKind
 import com.cursorforandroid.domain.AgentStoreRef
@@ -88,8 +89,8 @@ object DemoStores : AgentStoreApi {
     }
 
     /** Every picture the demo store lists resolves to the one bundled screenshot. */
-    override suspend fun presignReads(agentId: String, storeId: String, relativePaths: List<String>): Map<String, String> =
-        relativePaths.filter { it.endsWith(".png") }.associateWith { MediaLoader.ASSET_PREFIX + "demo/predictive_back_drawer.png" }
+    override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? =
+        if (relativePath.endsWith(".png")) PresignedStoreRead(relativePath, MediaLoader.ASSET_PREFIX + "demo/predictive_back_drawer.png", null) else null
 
     private fun filesOf(storeId: String): Map<String, DemoFile>? = when (storeId) {
         PROJECT_STORE_ID -> projectFiles

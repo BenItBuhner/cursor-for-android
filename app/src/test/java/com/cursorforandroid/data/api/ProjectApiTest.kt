@@ -267,6 +267,39 @@ class ProjectApiTest {
         assertThat(api.storeFor("bc-m")).isNull()
     }
 
+    /**
+     * `PresignAgentStoreReads {agent_id, rel_paths[], share_id?, store_id?}` → `{instructions: AgentStoreReadInstruction
+     * {rel_path, url, expires_at_ms}[]}`, the desktop's proto (aiserver.v1, read from its bundle): the bytes of a
+     * picture in the store come from the URL it hands out, asked for as the chat the path was read in.
+     */
+    @Test
+    fun `a store file's bytes are behind the URL PresignAgentStoreReads hands out for it`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"instructions":[
+                     {"relPath":"media/other.png","url":"https://files.cursor.sh/other?sig=1","expiresAtMs":"1700000900000"},
+                     {"relPath":"media/ui-parity/tab-landscape-icon-only-project.png","url":"https://files.cursor.sh/tab?sig=2","expiresAtMs":1700000900000}
+                   ]}""",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("""{"instructions":[]}"""))
+
+        val signed = api.presignRead("bc-worker", "st-proj", "media/ui-parity/tab-landscape-icon-only-project.png")!!
+        assertThat(signed.url).isEqualTo("https://files.cursor.sh/tab?sig=2")
+        assertThat(signed.relativePath).isEqualTo("media/ui-parity/tab-landscape-icon-only-project.png")
+        assertThat(signed.expiresAtMillis).isEqualTo(1_700_000_900_000L)
+        assertThat(api.presignRead("bc-worker", "st-proj", "media/missing.png")).isNull()
+
+        server.takeRequest()
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/PresignAgentStoreReads")
+        val body = request.json()
+        assertThat(body["agentId"]?.jsonPrimitive?.content).isEqualTo("bc-worker")
+        assertThat(body["storeId"]?.jsonPrimitive?.content).isEqualTo("st-proj")
+        assertThat(body["relPaths"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("media/ui-parity/tab-landscape-icon-only-project.png")
+    }
+
     @Test
     fun `steer outcomes are read as the account spells them`() {
         assertThat(SteerOutcome.parse("OUTCOME_QUEUED")).isEqualTo(SteerOutcome.QUEUED)

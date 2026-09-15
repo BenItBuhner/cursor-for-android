@@ -54,6 +54,12 @@ enum class DeviceSection { Cloud, Machines, Pools }
 /**
  * One row of the device picker: a [target] the create request can send, plus the words that explain it
  * (online / busy / last used). [online] is true for Cursor cloud and for workers the fleet endpoints currently list.
+ *
+ * [repoUrl] is the repository the device is checked out at: a machine's primary worker directory's git remote
+ * (`repoUrl`, else `repoOwner`/`repoName`, on `GET /v0/private-workers`), the repository a pool is tied to
+ * (`GET /v0/private-workers/pools`), or — for a device the fleet endpoints did not list — the repository of the
+ * newest chat that ran on it. Null for Cloud, for an any-repo worker or pool (the fleet docs: "Empty strings for
+ * any-repo workers"), and for a device nothing has said anything about.
  */
 data class DeviceOption(
     val target: DeviceTarget,
@@ -61,11 +67,23 @@ data class DeviceOption(
     val online: Boolean = false,
     val lastUsedAtMillis: Long = 0L,
     val section: DeviceSection,
+    val repoUrl: String? = null,
 ) {
     val key: String get() = keyOf(target)
 
     companion object {
         fun keyOf(target: DeviceTarget): String = "${target.type.name}:${target.apiName.orEmpty()}"
+
+        /**
+         * A GitHub URL from the fleet endpoints' repository fields: `repoUrl` when the worker or pool sent one, else
+         * `https://github.com/{repoOwner}/{repoName}`; null when both are absent or blank (an any-repo worker).
+         */
+        fun repositoryUrl(repoUrl: String?, repoOwner: String?, repoName: String?): String? {
+            repoUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+            val owner = repoOwner?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val name = repoName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            return "https://github.com/$owner/$name"
+        }
     }
 }
 
@@ -105,12 +123,14 @@ object KnownDevices {
             val key = DeviceOption.keyOf(target)
             val liveHit = liveByKey[key]
             if (liveHit != null) {
+                // The fleet row's word on the repository stands, any-repo included; the chat only dates the row.
                 if (agent.updatedAtMillis > liveHit.lastUsedAtMillis) {
                     liveByKey[key] = liveHit.copy(lastUsedAtMillis = agent.updatedAtMillis)
                 }
                 continue
             }
             val existing = harvested[key]
+            val repo = agent.repoUrl?.trim()?.takeIf { it.isNotEmpty() }
             if (existing == null || agent.updatedAtMillis > existing.lastUsedAtMillis) {
                 harvested[key] = DeviceOption(
                     target = target,
@@ -118,7 +138,12 @@ object KnownDevices {
                     online = false,
                     lastUsedAtMillis = agent.updatedAtMillis,
                     section = sectionOf(target),
+                    // The newest chat's repository is the best word on where an unlisted machine is checked out; a
+                    // newest chat that ran without one (an any-repo request) leaves an older chat's word standing.
+                    repoUrl = repo ?: existing?.repoUrl,
                 )
+            } else if (existing.repoUrl == null && repo != null) {
+                harvested[key] = existing.copy(repoUrl = repo)
             }
         }
         val selectedOption = selected.takeUnless { it.isCloud }?.let { target ->
@@ -137,6 +162,16 @@ object KnownDevices {
             )
         }
         return listOf(cloud) + listed(DeviceSection.Machines) + listed(DeviceSection.Pools)
+    }
+
+    /**
+     * The repository [target] is checked out at, as the picker's rows have it (see [DeviceOption.repoUrl]); null
+     * for Cloud, for an any-repo worker or pool, and for a device no row knows.
+     */
+    fun repositoryOf(devices: List<DeviceOption>, target: DeviceTarget): String? {
+        if (target.isCloud) return null
+        val key = DeviceOption.keyOf(target)
+        return devices.firstOrNull { it.key == key }?.repoUrl
     }
 
     /** A pool or machine the agent ran on; unnamed cloud rows are not a pickable device of their own. */

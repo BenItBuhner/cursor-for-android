@@ -220,6 +220,19 @@ sealed interface MediaRef {
         override val label: String get() = ArtifactPaths.fileName(path)
     }
 
+    /**
+     * A file of an Agent Store (`/cursor/stores/<mount>/…`, see [StorePath]): [ownerId] is the agent whose store it
+     * is — the mount's own, or the chat's for `self` — and [requesterId] the agent the read is made as, which is
+     * the chat's. Read through the account's store reads in Extended mode; without them a placeholder points at
+     * the Project on cursor.com.
+     */
+    data class Store(val ownerId: String, val relativePath: String, val requesterId: String) : MediaRef {
+        override val cacheKey: String get() = "store:$ownerId:$relativePath"
+        override val label: String get() = ArtifactPaths.fileName(relativePath)
+        val path: StorePath get() = StorePath(ownerId, relativePath)
+        val webUrl: String get() = StorePath.webUrl(ownerId)
+    }
+
     /** A `src` we cannot fetch: a repository-relative path, a VM path with no agent to ask, an unknown scheme. */
     data class Unavailable(val src: String) : MediaRef {
         override val cacheKey: String get() = "unavailable:$src"
@@ -237,6 +250,11 @@ sealed interface MediaRef {
             if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) return Remote(trimmed)
             // A bundled asset (the demo's pictures) is fetched by its URI, which the image loader resolves itself.
             if (trimmed.startsWith(ASSET_URI_PREFIX, ignoreCase = true)) return Remote(trimmed)
+            // A store path names the store to read from, whether written bare or behind a `file:` scheme.
+            StorePath.parse(trimmed)?.let { path ->
+                val owner = path.ownerId(agentId) ?: return Unavailable(trimmed)
+                return Store(owner, path.relativePath, requesterId = agentId ?: owner)
+            }
             // Both spellings `java.io.File.toURI()` (`file:/x`) and `Uri.fromFile` (`file:///x`) produce.
             if (trimmed.startsWith("file:", ignoreCase = true)) {
                 val path = runCatching { java.net.URI(trimmed).path }.getOrNull()?.takeIf { it.isNotBlank() } ?: return Unavailable(trimmed)

@@ -11,6 +11,7 @@ import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
 import com.cursorforandroid.data.repo.SlashScope
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
 import com.cursorforandroid.domain.DeviceOption
@@ -19,8 +20,10 @@ import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.KnownDevices
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.autoOption
 import com.cursorforandroid.domain.named
 import com.cursorforandroid.domain.RecentRepositories
 import com.cursorforandroid.domain.Repository
@@ -79,6 +82,17 @@ data class NewAgentUiState(
     val devices: List<DeviceOption> = listOf(KnownDevices.cloud),
     val isLoadingDevices: Boolean = false,
     /**
+     * The repository the selected device is checked out at (see [DeviceOption.repoUrl]): what the repository
+     * selector defaults to on a machine or pool, since Cursor runs a machine only in a checkout of the requested
+     * repository. Null on Cloud, on an any-repo worker or pool, and for a device nothing has said anything about.
+     */
+    val deviceRepoUrl: String? = null,
+    /**
+     * True while [selectedRepo] is the device's own ([deviceRepoUrl]) rather than a pick made here: a machine
+     * whose checkout changes moves the selection with it, and going back to Cloud leaves it behind.
+     */
+    val repoFollowsDevice: Boolean = false,
+    /**
      * True from the tap on Send until the chat is on screen — the moment it takes to pack the draft, not the time the
      * server takes to answer, which the composer no longer waits for.
      */
@@ -95,11 +109,33 @@ data class NewAgentUiState(
     val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
     /** The `/` catalog this composer needs: the repository's at its branch, or the repository-less one. */
     val commandScope: SlashScope get() = selectedRepo?.takeIf { !noRepo }?.let { SlashScope.Repo(it.url, ref.trim()) } ?: SlashScope.None
-    /** The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. */
-    val modelLabel: String get() = selectedModel?.displayName ?: "Model"
+    /**
+     * The chip's text: the model's name alone; its parameters show in the picker, under the model, not here. Never
+     * a bare "Model": until the catalog has answered, the chat would start on Auto — the configured default a
+     * request without a `model` gets — and that is what the chip says.
+     */
+    val modelLabel: String get() = selectedModel?.displayName ?: AccountModel.AUTO_LABEL
     val deviceLabel: String get() = selectedDevice.label
+    /**
+     * The source chip's text: the repository's short name, or — with none chosen — what the web composer calls the
+     * same choice, "Start from scratch"; "Repository" only while there is neither yet.
+     */
+    val repoLabel: String
+        get() = when {
+            noRepo -> START_FROM_SCRATCH
+            selectedRepo != null -> selectedRepo.shortName
+            isLoadingRepos -> "Loading…"
+            else -> "Repository"
+        }
+    /** The device's repository as a picker entry — the catalogue's own row for it when the catalogue lists it. */
+    val deviceRepository: Repository? get() = deviceRepoUrl?.let { url -> repositories.firstOrNull { it.isAt(url) } ?: Repository(url) }
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
     val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
+
+    companion object {
+        /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
+        const val START_FROM_SCRATCH = "Start from scratch"
+    }
 }
 
 class NewAgentViewModel(
@@ -128,7 +164,21 @@ class NewAgentViewModel(
 
     /** The last launch's choices, applied the first time the model list arrives (which may be after a retry). */
     private var defaults: ComposerDefaults? = null
-    private var modelSelectionResolved = false
+    /**
+     * A model was picked on this screen (or came back with a draft): the selection is settled, and a list arriving
+     * afterwards re-resolves it by id. Until then the selection is the default, and it moves with what it is derived
+     * from — the choice this device remembers, the account's newest chat — as either arrives (see [withModelSelection]).
+     */
+    private var modelPicked = false
+
+    /**
+     * The repository chosen on Cloud, kept while a machine or pool is selected: a device's repository is the
+     * device's own, and Cloud comes back to this one (across restarts, the repository last launched on Cloud).
+     */
+    private var cloudRepo: RepoChoice? = null
+
+    /** A repository selection as the composer holds it: the repository (or none) and the branch. */
+    private data class RepoChoice(val repoUrl: String?, val noRepo: Boolean, val ref: String)
 
     /**
      * Rotated once a draft has been handed over, so an identical prompt sent again on purpose gets its own agent. A
@@ -158,7 +208,9 @@ class NewAgentViewModel(
             // every later page, launch or finished run may teach the picker a branch.
             graph.agents.state.collect { s ->
                 agents = s.agents
-                _state.update { it.withPickerLists() }
+                // The account's records ride on the list too, and the newest chat's model is a new chat's default
+                // until something is picked here (see [withModelSelection]).
+                _state.update { it.withPickerLists().withModelSelection() }
             }
         }
         // Whichever composer is showing takes a failed launch's draft back: the one that sent it may be long gone.
@@ -168,9 +220,12 @@ class NewAgentViewModel(
             // written against are resolved by the loaders below, exactly as remembered ones are.
             val loaded = restore() ?: graph.prefs.composerDefaults.first()
             defaults = loaded
+            // Cloud comes back to the repository last launched there; before any launch on Cloud, to the last launch's.
+            cloudRepo = RepoChoice(loaded.cloudRepoUrl ?: loaded.repoUrl, noRepo = false, ref = if (loaded.cloudRepoUrl == null || loaded.cloudRepoUrl == loaded.repoUrl) loaded.ref.orEmpty() else "")
             // A blank ref is the repository's default branch; nothing here knows what it is called (see [NewAgentUiState.ref]).
+            // A machine restored from the last launch brings its repository with it once the device list says which.
             _state.update {
-                it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty(), selectedDevice = loaded.env, isLoadingDevices = true).withPickerLists()
+                it.copy(autoCreatePr = loaded.autoCreatePr, ref = loaded.ref.orEmpty(), selectedDevice = loaded.env, repoFollowsDevice = !loaded.env.isCloud, isLoadingDevices = true).withPickerLists()
             }
             // Both catalogs were saved by the previous session: they are adopted below before either network call
             // is made, and the fetches only revalidate them.
@@ -213,6 +268,7 @@ class NewAgentViewModel(
                 planMode = draft.planMode,
             ).withExclusiveModes()
         }
+        val saved = graph.prefs.composerDefaults.first()
         return ComposerDefaults(
             repoUrl = draft.repoUrl,
             ref = draft.ref,
@@ -221,7 +277,10 @@ class NewAgentViewModel(
             autoCreatePr = draft.autoCreatePr,
             modelChosen = draft.modelChosen,
             // The draft records what was typed, not where it would run: the device stays the last launch's.
-            env = graph.prefs.composerDefaults.first().env,
+            env = saved.env,
+            cloudRepoUrl = saved.cloudRepoUrl,
+            // A draft being restored is as fresh as now: its model stands over the account's newest chat's.
+            modelChosenAtMillis = if (draft.modelChosen) AppClock.now() else 0L,
         )
     }
 
@@ -246,7 +305,8 @@ class NewAgentViewModel(
                 ref = s.ref,
                 modelId = s.selectedModel?.id,
                 modelParams = s.selectedVariant?.params?.associate { it.id to it.value } ?: emptyMap(),
-                modelChosen = modelSelectionResolved,
+                // A model picked here comes back as the draft's; a default does not, and is derived afresh.
+                modelChosen = modelPicked,
                 autoCreatePr = s.autoCreatePr,
                 planMode = s.planMode,
                 nonce = launchNonce,
@@ -285,20 +345,100 @@ class NewAgentViewModel(
 
     private fun applyRepos(repos: List<Repository>, preferredUrl: String?) {
         _state.update { s ->
-            val selected = s.selectedRepo ?: repos.firstOrNull { it.url == preferredUrl } ?: repos.firstOrNull()
+            // A selection made before the catalogue arrived — a device's repository, typically — becomes the
+            // catalogue's own row for it, so the picker's check lands on the same entry.
+            val selected = s.selectedRepo?.let { current -> repos.firstOrNull { it.url == current.url } ?: repos.firstOrNull { it.isAt(current.url) } ?: current }
+                ?: repos.firstOrNull { it.url == preferredUrl }
+                ?: preferredUrl?.let { url -> repos.firstOrNull { it.isAt(url) } }
+                ?: repos.firstOrNull()
             s.copy(repositories = repos, selectedRepo = selected, reposUnavailable = false).withPickerLists()
         }
     }
 
-    private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withBranches().withRecentRepos().withDevices()
+    /** The devices first: the selected device may move the repository, and the branches are the repository's. */
+    private fun NewAgentUiState.withPickerLists(): NewAgentUiState = withDevices().withBranches().withRecentRepos()
 
     private fun NewAgentUiState.withBranches(): NewAgentUiState {
         val repo = selectedRepo?.takeIf { !noRepo } ?: return copy(branches = emptyList())
         return copy(branches = KnownBranches.forRepository(agents, repo.url))
     }
 
-    private fun NewAgentUiState.withDevices(): NewAgentUiState =
-        copy(devices = KnownDevices.compose(agents, liveDevices, selectedDevice))
+    /**
+     * The device list as the agent list and the fleet endpoints have it, and what it says about the selected device's
+     * repository: a machine or pool whose repository is (or becomes) known moves a device-driven selection onto it —
+     * the fleet's word arrives after the pick, and a restored machine's after the restart.
+     */
+    private fun NewAgentUiState.withDevices(): NewAgentUiState {
+        val listed = KnownDevices.compose(agents, liveDevices, selectedDevice)
+        val pinned = KnownDevices.repositoryOf(listed, selectedDevice)
+        val next = copy(devices = listed, deviceRepoUrl = pinned)
+        return if (pinned != null && repoFollowsDevice) next.following(pinned) else next
+    }
+
+    /**
+     * Puts the device's repository [url] in the selection, as a pick of it would (see [withRepo]), and marks the
+     * selection the device's. The catalogue's own row stands for it when the catalogue lists it.
+     */
+    private fun NewAgentUiState.following(url: String): NewAgentUiState {
+        val repo = repositories.firstOrNull { it.isAt(url) } ?: Repository(url)
+        val already = !noRepo && selectedRepo?.isAt(url) == true
+        return (if (already) this else withRepo(repo)).copy(repoFollowsDevice = true, deviceRepoUrl = url)
+    }
+
+    /**
+     * Where the next chat runs. A machine or pool brings its repository with it: the repository the worker is
+     * checked out at (see [DeviceOption.repoUrl]) becomes the selection and the branch list refreshes for it, since
+     * Cursor runs a machine only in a checkout of the requested repository (a request for another is refused, never
+     * run on the wrong checkout). Coming back to Cloud restores what was chosen there. A device that pins no
+     * repository — an any-repo pool, a machine nothing has described — keeps a pick made here, while a repository
+     * that was the previous device's goes back to the Cloud one.
+     */
+    fun selectDevice(device: DeviceTarget) {
+        val before = _state.value
+        // The same device again is no change: a repository picked over the device's stays picked.
+        if (device == before.selectedDevice) return
+        if (before.selectedDevice.isCloud) cloudRepo = before.repoChoice()
+        val cloudChoice = cloudRepo?.takeIf { device.isCloud }
+        _state.update { s ->
+            // On a machine or pool the repository is the device's to set — now, or when the fleet endpoints answer.
+            val next = s.copy(selectedDevice = device, repoFollowsDevice = !device.isCloud).withDevices()
+            when {
+                device.isCloud -> cloudChoice?.let { next.withRepoChoice(it) } ?: next
+                // The device pins a repository: [withDevices] has already moved the selection onto it.
+                next.deviceRepoUrl != null -> next
+                // The repository was the previous device's; it does not come along to one that pins none.
+                s.repoFollowsDevice -> cloudRepo?.let { next.withRepoChoice(it) } ?: next
+                else -> next
+            }.withBranches().withRecentRepos()
+        }
+    }
+
+    private fun NewAgentUiState.repoChoice(): RepoChoice = RepoChoice(selectedRepo?.takeIf { !noRepo }?.url, noRepo, ref)
+
+    /**
+     * The selection [choice] describes: its repository (the catalogue's row for it when listed) or none, and its
+     * branch. A choice that named nothing — Cloud left before any repository was on screen — changes nothing.
+     */
+    private fun NewAgentUiState.withRepoChoice(choice: RepoChoice): NewAgentUiState {
+        val restored = when {
+            choice.noRepo -> withRepo(null)
+            choice.repoUrl != null -> withRepo(repositories.firstOrNull { it.isAt(choice.repoUrl) } ?: Repository(choice.repoUrl))
+            else -> return this
+        }
+        return restored.copy(ref = choice.ref)
+    }
+
+    /**
+     * The selection with [repo] (null for no repository). Switching repositories keeps the branch only when the new
+     * one is known to have it; otherwise the choice belonged to the previous repository (a `cursor/…` branch,
+     * typically) and the agent starts from the default branch.
+     */
+    private fun NewAgentUiState.withRepo(repo: Repository?): NewAgentUiState {
+        val sameRepo = repo != null && !noRepo && repo.url == selectedRepo?.url
+        val next = copy(selectedRepo = repo, noRepo = repo == null).withBranches()
+        val keepRef = sameRepo || repo == null || ref.isBlank() || next.branches.any { it.name == ref.trim() }
+        return if (keepRef) next else next.copy(ref = "")
+    }
 
     private fun NewAgentUiState.withRecentRepos(): NewAgentUiState =
         copy(recentRepositories = RecentRepositories.partition(repositories, agents, AppClock.now()).recent)
@@ -317,31 +457,37 @@ class NewAgentViewModel(
     }
 
     /**
-     * Adopts a freshly loaded model list. A selection already made on this screen is re-resolved against the new
-     * instances; otherwise the last used model is restored — a variant is matched on its exact parameters, so a
-     * parameter-less variant is not swapped for the model's default one — and a user who has never picked anything
-     * (or who last launched with the old "Default" choice) starts on the first recommended model. A list that lacks
-     * the wanted model (a saved copy that predates it) leaves the choice unresolved, so the fresh list restores it.
-     * The first row is never stood in for a remembered id: on the live catalogue that row is Auto, which is what
-     * made every cold start look like the picker had reset.
+     * Adopts a freshly loaded model list and settles the selection on it (see [withModelSelection]). [fallbackIfMissing]
+     * is false for the saved copy of the catalog, which may predate the wanted model: the choice is then left
+     * unresolved for the fresh list to restore, rather than stood in for.
      */
-    private fun NewAgentUiState.withModels(models: List<ModelOption>, fallbackIfMissing: Boolean): NewAgentUiState {
-        val remembered = defaults
-        val (wantedId, wantedParams) = when {
-            modelSelectionResolved -> selectedModel?.id to selectedVariant?.params?.associate { it.id to it.value }
-            remembered?.modelChosen == true && remembered.modelId != null -> remembered.modelId to remembered.modelParams
-            else -> null to null
+    private fun NewAgentUiState.withModels(models: List<ModelOption>, fallbackIfMissing: Boolean): NewAgentUiState =
+        copy(models = models, isLoadingModels = false, modelsUnavailable = false).withModelSelection(settleOnAuto = fallbackIfMissing)
+
+    /**
+     * The selection against the current list. A pick made on this screen is re-resolved against the list's
+     * instances by id — its variant on its exact parameters, so a parameter-less variant is not swapped for the
+     * model's default one — and only a fresh list that no longer offers it moves it to Auto. Otherwise the default
+     * is derived, in order (see [ModelResolution.forNewChat]): the newer of the model this device last launched with
+     * or picked and the account's newest chat's model — what the desktop's picker would open on, in Extended mode,
+     * where the account's records carry it — then Auto. The first row is never stood in for a wanted id: on the live
+     * catalogue that row is Auto, which is what made every cold start look like the picker had reset.
+     */
+    private fun NewAgentUiState.withModelSelection(settleOnAuto: Boolean = true): NewAgentUiState {
+        if (models.isEmpty()) return this
+        val wanted = selectedModel?.takeIf { modelPicked }
+        if (wanted != null) {
+            val model = models.named(wanted.id) ?: if (settleOnAuto) models.autoOption() ?: models.firstOrNull() ?: return this else return this
+            val params = selectedVariant?.params?.associate { it.id to it.value }
+            val variant = params?.takeIf { model.id == wanted.id }?.let(model::variantWithParams) ?: model.defaultVariant
+            return copy(selectedModel = model, selectedVariant = variant)
         }
-        val exact = models.named(wantedId)
-        val model = when {
-            exact != null -> exact
-            wantedId == null -> models.firstOrNull()
-            fallbackIfMissing -> models.firstOrNull()
-            else -> selectedModel
+        val remembered = defaults?.takeIf { it.modelChosen && it.modelId != null }?.let {
+            ModelResolution.Candidate.Remembered(it.modelId!!, it.modelParams, it.modelChosenAtMillis)
         }
-        val variant = model?.let { m -> wantedParams?.let(m::variantWithParams) ?: m.defaultVariant }
-        modelSelectionResolved = wantedId == null || model?.id == wantedId
-        return copy(models = models, selectedModel = model, selectedVariant = variant, isLoadingModels = false, modelsUnavailable = false)
+        val candidates = listOfNotNull(remembered, ModelResolution.newestAccountModel(agents))
+        val resolved = ModelResolution.forNewChat(models, candidates, settleOnAuto) ?: return this
+        return copy(selectedModel = resolved.choice.model, selectedVariant = resolved.choice.variant)
     }
 
     fun setPrompt(value: String) {
@@ -367,22 +513,18 @@ class NewAgentViewModel(
     }
     fun reportError(message: String) = _state.update { it.copy(error = message) }
     /**
-     * Switching repositories keeps the branch only when the new one is known to have it; otherwise the choice
-     * belonged to the previous repository (a `cursor/…` branch, typically) and the agent starts from the default branch.
+     * A repository picked here (see [NewAgentUiState.withRepo] for the branch). On a machine or pool it is a pick
+     * over the device's own repository — allowed, since a worker may serve more roots than the one it reports
+     * (`--worker-dir` once per checkout) — and it stays until the device changes.
      */
-    fun selectRepo(repo: Repository?) = _state.update { s ->
-        val sameRepo = repo != null && !s.noRepo && repo.url == s.selectedRepo?.url
-        val next = s.copy(selectedRepo = repo, noRepo = repo == null).withPickerLists()
-        val keepRef = sameRepo || repo == null || s.ref.isBlank() || next.branches.any { it.name == s.ref.trim() }
-        if (keepRef) next else next.copy(ref = "")
-    }
+    fun selectRepo(repo: Repository?) = _state.update { s -> s.withRepo(repo).copy(repoFollowsDevice = false).withRecentRepos() }
     fun setRef(value: String) = _state.update { it.copy(ref = value) }
     fun selectModel(model: ModelOption?, variant: ModelVariant?) {
         // An explicit pick settles the selection: a list arriving afterwards re-resolves it, never the remembered one.
-        // There is no "Default" model; a null pick lands on the first catalog entry. The pick is written at once so
-        // opening the app again — which creates a new composer — opens on this model, not Auto.
-        modelSelectionResolved = true
-        val chosen = model ?: _state.value.models.firstOrNull()
+        // There is no "Default" model; a null pick lands on Auto (the first catalog entry, failing an Auto row). The
+        // pick is written at once so opening the app again — which creates a new composer — opens on this model.
+        modelPicked = true
+        val chosen = model ?: _state.value.models.let { it.autoOption() ?: it.firstOrNull() }
         val picked = variant ?: chosen?.defaultVariant
         _state.update { it.copy(selectedModel = chosen, selectedVariant = picked) }
         rememberModel(chosen?.id, picked)
@@ -392,8 +534,9 @@ class NewAgentViewModel(
     /** Writes the pick so the next composer — a new process, a new view model — opens on it. */
     private fun rememberModel(modelId: String?, variant: ModelVariant?) {
         val params = variant?.params?.associate { it.id to it.value } ?: emptyMap()
-        defaults = (defaults ?: emptyDefaults()).copy(modelId = modelId, modelParams = params, modelChosen = true)
-        viewModelScope.launch { graph.prefs.rememberModel(modelId, params) }
+        val now = AppClock.now()
+        defaults = (defaults ?: emptyDefaults()).copy(modelId = modelId, modelParams = params, modelChosen = true, modelChosenAtMillis = now)
+        viewModelScope.launch { graph.prefs.rememberModel(modelId, params, now) }
     }
 
     private fun emptyDefaults() = ComposerDefaults(
@@ -419,7 +562,6 @@ class NewAgentViewModel(
      */
     private fun NewAgentUiState.withExclusiveModes(): NewAgentUiState =
         if (planMode && SlashCommands.has(prompt, SlashCommands.MULTITASK)) copy(planMode = false) else this
-    fun selectDevice(device: DeviceTarget) = _state.update { it.copy(selectedDevice = device).withDevices() }
 
     fun refreshRepositories() = viewModelScope.launch {
         _state.update { it.copy(isLoadingRepos = true) }
@@ -436,9 +578,9 @@ class NewAgentViewModel(
     private suspend fun loadDevices() {
         _state.update { it.copy(isLoadingDevices = true) }
         liveDevices = graph.catalog.devices.value
-        _state.update { it.withDevices() }
+        _state.update { it.withPickerLists() }
         liveDevices = graph.catalog.loadDevices().getOrDefault(emptyList())
-        _state.update { it.copy(isLoadingDevices = false).withDevices() }
+        _state.update { it.copy(isLoadingDevices = false).withPickerLists() }
     }
 
     /**
@@ -481,14 +623,29 @@ class NewAgentViewModel(
             // The draft is on its way, whatever becomes of it: the next one gets its own id, and the choices this one
             // was made with are what the composer restores next time. Only once they are saved does it report itself free.
             launchNonce = LaunchIdempotency.newNonce()
+            val now = AppClock.now()
+            val params = request.modelParams.associate { p: ModelParam -> p.id to p.value }
             graph.prefs.setComposerDefaults(
                 repoUrl = request.repoUrl,
                 // Blank is a choice too (the repository's default branch), saved as such rather than removed.
                 ref = request.ref ?: "",
                 modelId = request.modelId,
-                params = request.modelParams.associate { p: ModelParam -> p.id to p.value },
+                params = params,
                 autoCreatePr = request.autoCreatePr,
                 env = request.env,
+                nowMillis = now,
+            )
+            // What this composer remembers is what the disk now says, so the next default is derived from the launch.
+            defaults = (defaults ?: emptyDefaults()).copy(
+                repoUrl = request.repoUrl,
+                ref = request.ref ?: "",
+                modelId = request.modelId,
+                modelParams = params,
+                autoCreatePr = request.autoCreatePr,
+                modelChosen = true,
+                env = request.env,
+                cloudRepoUrl = if (request.env.isCloud) request.repoUrl else defaults?.cloudRepoUrl,
+                modelChosenAtMillis = now,
             )
             _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
             // The draft is the launcher's now; what is kept on disk is whatever is written next.
@@ -516,7 +673,7 @@ class NewAgentViewModel(
         launchNonce = draft.failed.nonce
         // A model the list has, or a launch that sent none: the pick is settled, and a list arriving later
         // re-resolves it rather than the remembered one.
-        if (_state.value.resolvesModelOf(draft.failed.request)) modelSelectionResolved = true
+        if (_state.value.resolvesModelOf(draft.failed.request)) modelPicked = true
         _state.update { it.restored(draft) }
     }
 
@@ -530,6 +687,8 @@ class NewAgentViewModel(
         val repo = request.repoUrl?.let { url -> repositories.firstOrNull { it.url == url } }
         val model = modelFor(request)
         val modelResolved = resolvesModelOf(request)
+        // A launch that sent no model was going to run on Auto; that is what comes back checked.
+        val auto = models.autoOption() ?: models.firstOrNull()
         return copy(
             prompt = request.prompt,
             attachments = draft.attachments,
@@ -537,15 +696,17 @@ class NewAgentViewModel(
             noRepo = request.repoUrl == null,
             selectedRepo = repo ?: selectedRepo,
             ref = request.ref ?: "",
-            selectedModel = if (modelResolved) model ?: models.firstOrNull() else selectedModel,
+            selectedModel = if (modelResolved) model ?: auto else selectedModel,
             selectedVariant = when {
                 !modelResolved -> selectedVariant
                 model != null -> model.variantWithParams(request.modelParams.associate { it.id to it.value }) ?: model.defaultVariant
-                else -> models.firstOrNull()?.defaultVariant
+                else -> auto?.defaultVariant
             },
             autoCreatePr = request.autoCreatePr,
             planMode = request.planMode,
             selectedDevice = request.env,
+            // The draft's repository and device went out together: the repository is the draft's, whatever the device pins.
+            repoFollowsDevice = false,
         ).withExclusiveModes().withPickerLists()
     }
 

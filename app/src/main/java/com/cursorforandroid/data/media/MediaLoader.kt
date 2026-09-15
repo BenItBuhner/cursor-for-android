@@ -17,6 +17,7 @@ import coil3.size.Precision
 import coil3.size.Scale
 import coil3.toBitmap
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +40,11 @@ class MediaLoader(
     private val context: Context,
     okHttp: OkHttpClient,
     private val artifacts: ArtifactRepository,
+    /**
+     * The Agent Store reads behind `/cursor/stores/…` paths (Extended mode); null where no account is wired. Looked
+     * up per use, so that building the loader — which a sign-out does, to wipe Coil's disk cache — builds nothing else.
+     */
+    private val stores: () -> StoreFileRepository? = { null },
 ) {
     private val imageLoader: ImageLoader = ImageLoader.Builder(context)
         .components { add(OkHttpNetworkFetcherFactory(okHttp)) }
@@ -66,6 +72,7 @@ class MediaLoader(
     suspend fun playbackUrl(ref: MediaRef): String = when (ref) {
         is MediaRef.Remote -> ref.url
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+        is MediaRef.Store -> storeUrl(ref)
         is MediaRef.Local -> "file://${ref.path}"
         is MediaRef.Inline -> throw IOException("Embedded videos aren't supported.")
         is MediaRef.Unavailable -> throw IOException("This video isn't available.")
@@ -87,9 +94,16 @@ class MediaLoader(
         withContext(Dispatchers.IO) { imageLoader.diskCache?.clear() }
     }
 
+    private fun storeReads(): StoreFileRepository = stores() ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
+
+    private suspend fun storeUrl(ref: MediaRef.Store): String = storeReads().downloadUrl(ref)
+
     private suspend fun dataFor(ref: MediaRef): Any = when (ref) {
         is MediaRef.Remote -> ref.url
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
+        // Bytes, fetched and kept by the repository (its own disk cache, a dead URL asked for again), decoded like
+        // an inline image: the same path as a file of this device, and one the JVM test renderer can take.
+        is MediaRef.Store -> storeReads().readBytes(ref)
         // Read here rather than handed to Coil as a file: for a file Coil decodes through ImageDecoder, which the
         // JVM test renderer lacks, while bytes go through BitmapFactory like an inline image. The files are small.
         is MediaRef.Local -> withContext(Dispatchers.IO) {

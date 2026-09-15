@@ -167,59 +167,6 @@ class ProjectIconsScreenshotTest {
         capture("54_sidebar_project_icons")
     }
 
-    /**
-     * The 2026-09-15 fidelity audit's corrections, worn by Projects: the ids whose Lucide or Simple Icons look-alike
-     * read as a different object next to the desktop's glyph (a dartboard, a layered triangle, an owl, a runner, a
-     * crystal ball, a chest, "zZz", a film reel, a flag on a hill, a VR headset, a chess king, a bow tie, a swarm of
-     * agent pointers, a "1" in a circle, a moon with a Z, a remote control, a zipper) and Lucide's `book-open`,
-     * once mis-drawn from compact arc flags.
-     */
-    @Test
-    fun auditedIcons() {
-        val audited = listOf(
-            Triple("Murmur", "target", "cyan"), Triple("Funnel analytics", "chart-pyramid", "orange"), Triple("Night owl digest", "owl", "yellow"),
-            Triple("Sprint planning", "sprint", "green"), Triple("Forecasting", "crystal-ball", "purple"), Triple("Treasury", "treasure-chest", "brand"),
-            Triple("Sleep tracker", "zzz", "blue"), Triple("Video pipeline", "film-reel", "red"), Triple("Summit checklist", "flag-hill", "magenta"),
-            Triple("Headset firmware", "vr-headset", "default"), Triple("Chess engine", "chess-king", "cyan"), Triple("Formalwear shop", "bowtie", "purple"),
-            Triple("Agent swarm", "agents-swarm", "green"), Triple("Onboarding step one", "one-circle", "orange"), Triple("Night mode", "moon-z", "blue"),
-            Triple("Remote control", "remote-control", "yellow"), Triple("Archive packer", "zipper", "red"), Triple("Docs reader", "book-open", "brand"),
-        )
-        val state = AgentListUiState(
-            sections = listOf(
-                AgentSection(
-                    AgentListOrganizer.PROJECTS_KEY, "Projects",
-                    audited.mapIndexed { i, (name, icon, tone) -> project("audit-$i", name, icon, tone, workers = (i * 7) % 12 + 1) },
-                ),
-            ),
-            hasLoaded = true,
-            prefs = ListPreferences(),
-            nowMillis = NOW,
-        )
-        compose.setContent {
-            Scene {
-                Sidebar(
-                    state = state,
-                    user = CursorUser("key", "bennett@example.com", "Bennett", "Buhner", 1),
-                    isDemo = false,
-                    selectedAgentId = null,
-                    selectedDestination = null,
-                    onQueryChange = {},
-                    callbacks = SidebarCallbacks(
-                        onNewChat = {},
-                        onSettings = {},
-                        onCustomize = {},
-                        onToggleSidebar = {},
-                        onRefresh = {},
-                        rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
-                    ),
-                    extendedMode = true,
-                )
-            }
-        }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Docs reader").fetchSemanticsNodes().isNotEmpty() }
-        capture("56_project_icons_audit")
-    }
-
     @Test
     fun iconAndColourPicker() {
         compose.setContent {

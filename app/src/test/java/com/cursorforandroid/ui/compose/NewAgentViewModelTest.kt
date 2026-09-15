@@ -16,6 +16,7 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -221,24 +222,51 @@ class NewAgentViewModelTest {
         assertThat(vm.state.value.error).isNull()
     }
 
-    /** The chip names the model; the variant's parameters (here 1M context, max effort) are the picker's to show. */
+    /** Nothing picked here, nothing launched from here, no chat of the account's to read: the configured default, Auto. */
     @Test
-    fun `a fresh install starts on the first recommended model and its default variant`() {
+    fun `a fresh install with no chats to read starts on Auto, never on a bare Model chip`() {
         val vm = loaded()
+        assertThat(vm.state.value.selectedModel?.id).isEqualTo("auto-smart")
+        assertThat(vm.state.value.modelLabel).isEqualTo("Auto")
+        // Before the catalogue has answered the chip already says what the chat would start on.
+        assertThat(NewAgentUiState().modelLabel).isEqualTo("Auto")
+    }
+
+    /**
+     * With the account's chats on screen, a fresh install opens on the model of the account's newest chat — what the
+     * desktop's picker would show — resolved to the catalogue's entry and the variant nearest the record's parameters.
+     * The chip names the model; the variant's parameters (here 1M context, max effort) are the picker's to show.
+     */
+    @Test
+    fun `a fresh install starts on the account's newest chat's model`() {
+        val vm = loadedWithAgents()
+        // The newest chat of the account's own with a record is "Cli exploration" (bc-demo-0004): Claude Fable 5.1, 1M context, max effort.
         assertThat(vm.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
         assertThat(vm.state.value.selectedVariant?.displayName).isEqualTo("Claude Fable 5.1 1M Max")
         assertThat(vm.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
     }
 
+    /** The newer word wins: a pick made here after the account's newest chat stands; one made before it yields. */
     @Test
-    fun `a saved Default choice is restored as the first model`() {
+    fun `the device's last pick and the account's newest chat are weighed by recency`() = runBlocking<Unit> {
+        val gemini = loaded().state.value.models.first { it.id == "gemini-3.8-flash" }
+        graph.prefs.rememberModel(gemini.id, emptyMap(), nowMillis = AppClock.now())
+        assertThat(loadedWithAgents().state.value.selectedModel?.id).isEqualTo("gemini-3.8-flash")
+
+        // The same pick, dated from before the account's newest chat was started: the account's word is the newer one.
+        graph.prefs.rememberModel(gemini.id, emptyMap(), nowMillis = AppClock.now() - 3 * 60 * 60 * 1000L)
+        assertThat(loadedWithAgents().state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
+    }
+
+    @Test
+    fun `a saved Default choice is restored as Auto`() {
         val first = loaded()
         first.selectModel(null, null)
         first.launchAndWait()
 
         val second = loaded()
-        assertThat(second.state.value.selectedModel?.id).isEqualTo("claude-fable-5.1-thinking")
-        assertThat(second.state.value.modelLabel).isEqualTo("Claude Fable 5.1")
+        assertThat(second.state.value.selectedModel?.id).isEqualTo("auto-smart")
+        assertThat(second.state.value.modelLabel).isEqualTo("Auto")
     }
 
     @Test
@@ -520,5 +548,176 @@ class NewAgentViewModelTest {
         val second = loaded()
         assertThat(second.state.value.selectedDevice).isEqualTo(DeviceTarget.machine("bennett"))
         assertThat(second.state.value.deviceLabel).isEqualTo("bennett")
+    }
+
+    private val bennett = DeviceTarget.machine("bennett")
+    private val codexUrl = "https://github.com/bennett/codex-poly-bot"
+
+    /**
+     * The demo's machine "bennett" is checked out at bennett/codex-poly-bot (`GET /v0/private-workers`: `repoUrl`,
+     * `workspaceRootPath`). Picking it moves the repository there, refreshes the branch list for it and drops a branch
+     * the new repository has never seen, exactly as picking the repository by hand would.
+     */
+    @Test
+    fun `picking a machine moves the repository to its checkout and refreshes the branches`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.setRef("cursor/cli-exploration-9c1d")
+        assertThat(vm.state.value.branches.map { it.name }).contains("cursor/cli-exploration-9c1d")
+
+        vm.selectDevice(bennett)
+
+        val s = vm.state.value
+        assertThat(s.selectedDevice).isEqualTo(bennett)
+        assertThat(s.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+        assertThat(s.noRepo).isFalse()
+        assertThat(s.deviceRepoUrl).isEqualTo(codexUrl)
+        assertThat(s.deviceRepository?.slug).isEqualTo("bennett/codex-poly-bot")
+        assertThat(s.repoFollowsDevice).isTrue()
+        // The branch list is the new repository's, and the android branch did not come along.
+        assertThat(s.branches.map { it.name }).contains("main")
+        assertThat(s.branches.map { it.name }).doesNotContain("cursor/cli-exploration-9c1d")
+        assertThat(s.ref).isEmpty()
+        // The catalogue's own row stands for the machine's repository, so the picker shows it checked.
+        assertThat(s.selectedRepo).isEqualTo(vm.repo("codex-poly-bot"))
+    }
+
+    @Test
+    fun `going back to Cloud restores the repository and branch chosen there`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.setRef("cursor/cli-exploration-9c1d")
+        vm.selectDevice(bennett)
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+
+        vm.selectDevice(DeviceTarget.Cloud)
+
+        val s = vm.state.value
+        assertThat(s.selectedDevice).isEqualTo(DeviceTarget.Cloud)
+        assertThat(s.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(s.ref).isEqualTo("cursor/cli-exploration-9c1d")
+        assertThat(s.deviceRepoUrl).isNull()
+        assertThat(s.repoFollowsDevice).isFalse()
+        assertThat(s.branches.map { it.name }).contains("cursor/cli-exploration-9c1d")
+    }
+
+    /** No repository on Cloud is a choice too, and comes back as one. */
+    @Test
+    fun `Cloud without a repository comes back without one`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(null)
+        // The source chip names the choice the way the web composer does.
+        assertThat(vm.state.value.repoLabel).isEqualTo("Start from scratch")
+        vm.selectDevice(bennett)
+        assertThat(vm.state.value.noRepo).isFalse()
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+        assertThat(vm.state.value.repoLabel).isEqualTo("codex-poly-bot")
+
+        vm.selectDevice(DeviceTarget.Cloud)
+        assertThat(vm.state.value.noRepo).isTrue()
+        assertThat(vm.state.value.repoLabel).isEqualTo("Start from scratch")
+        assertThat(vm.state.value.branches).isEmpty()
+    }
+
+    /**
+     * A worker may serve more roots than the one it reports (`--worker-dir` once per checkout), so a repository picked
+     * over the machine's stays — through a re-pick of the same machine — until the device changes.
+     */
+    @Test
+    fun `a repository picked over the machine's stays until the device changes`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.selectDevice(bennett)
+        vm.selectRepo(vm.repo("visual-engine"))
+        assertThat(vm.state.value.repoFollowsDevice).isFalse()
+        // The machine's own repository is still named, for the picker to explain.
+        assertThat(vm.state.value.deviceRepoUrl).isEqualTo(codexUrl)
+
+        vm.selectDevice(bennett)
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("visual-engine")
+
+        // The demo's "gpu" pool pins no repository: a pick made here comes along to it...
+        vm.selectDevice(DeviceTarget.pool("gpu"))
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("visual-engine")
+        assertThat(vm.state.value.deviceRepoUrl).isNull()
+
+        // ...and Cloud still comes back to what was chosen on Cloud.
+        vm.selectDevice(DeviceTarget.Cloud)
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+    }
+
+    /** A machine's repository is the machine's: it does not travel to a device that pins none. */
+    @Test
+    fun `a device-driven repository goes back to Cloud's on a device that pins none`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.selectDevice(bennett)
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+
+        vm.selectDevice(DeviceTarget.pool("gpu"))
+
+        assertThat(vm.state.value.selectedRepo?.shortName).isEqualTo("cursor-for-android")
+        assertThat(vm.state.value.deviceRepoUrl).isNull()
+        // Still the device's to set: should the fleet name the pool's repository later, the selection follows it.
+        assertThat(vm.state.value.repoFollowsDevice).isTrue()
+    }
+
+    /**
+     * The machine's word lands after the pick: no chat has run on it (the list is empty) and the fleet endpoints have
+     * not answered yet, so the pick keeps the repository on screen — then moves it when `GET /v0/private-workers` says
+     * where the machine is checked out.
+     */
+    @Test
+    fun `a machine picked before the devices are listed takes its repository when they arrive`() = runBlocking {
+        val vm = NewAgentViewModel(graph, 400L)
+        // The launch defaults are on screen and the fleet fetch has started, but neither it nor the catalogue has answered.
+        withTimeout(10_000) { vm.state.first { it.isLoadingDevices } }
+        vm.selectDevice(bennett)
+        assertThat(vm.state.value.deviceRepoUrl).isNull()
+        assertThat(vm.state.value.repoFollowsDevice).isTrue()
+
+        withTimeout(10_000) { vm.state.first { !it.isLoadingDevices && !it.isLoadingRepos && it.models.isNotEmpty() } }
+
+        assertThat(vm.state.value.devices.first { it.target == bennett }.online).isTrue()
+        assertThat(vm.state.value.deviceRepoUrl).isEqualTo(codexUrl)
+        assertThat(vm.state.value.repoFollowsDevice).isTrue()
+        // The fleet's word came first, the catalogue after: the selection is the catalogue's own row for the repository.
+        assertThat(vm.state.value.selectedRepo).isEqualTo(vm.repo("codex-poly-bot"))
+    }
+
+    /**
+     * Across restarts: the last launch's device comes back with the repository it is checked out at, and Cloud comes
+     * back to the repository last launched on Cloud, not to the machine's.
+     */
+    @Test
+    fun `a restored machine brings its repository, and Cloud its own last one`() {
+        val onCloud = loadedWithAgents()
+        onCloud.selectRepo(onCloud.repo("visual-engine"))
+        onCloud.launchAndWait("On the cloud")
+
+        val onMachine = loadedWithAgents()
+        onMachine.selectDevice(bennett)
+        assertThat(onMachine.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+        onMachine.launchAndWait("On the machine")
+
+        val revived = loadedWithAgents()
+        assertThat(revived.state.value.selectedDevice).isEqualTo(bennett)
+        assertThat(revived.state.value.selectedRepo?.shortName).isEqualTo("codex-poly-bot")
+        assertThat(revived.state.value.repoFollowsDevice).isTrue()
+
+        revived.selectDevice(DeviceTarget.Cloud)
+        assertThat(revived.state.value.selectedRepo?.shortName).isEqualTo("visual-engine")
+    }
+
+    @Test
+    fun `a launch on a machine sends the machine's repository as the target`() {
+        val vm = loadedWithAgents()
+        vm.selectRepo(vm.repo("cursor-for-android"))
+        vm.selectDevice(bennett)
+        vm.launchAndWait("Scale the fleet")
+        val request = created.last()
+        assertThat(request.env?.type).isEqualTo("machine")
+        assertThat(request.env?.name).isEqualTo("bennett")
+        assertThat(request.repos?.single()?.url).isEqualTo(codexUrl)
     }
 }
