@@ -63,6 +63,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.agents.MenuItem
 import com.cursorforandroid.ui.agents.RenameChatDialog
 import com.cursorforandroid.ui.agents.SnoozeChatDialog
@@ -215,9 +216,22 @@ fun ConversationScreen(
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
-    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id.
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
+    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
+    // opens in the document sheet; without the account it points at the Project on cursor.com.
     val lightbox = rememberLightboxState(agentId)
-    val markdownMedia = remember(agentId, lightbox) { MarkdownMediaContext(agentId, graph.media, lightbox) }
+    val canReadStores = capabilities.projects && !isDemo
+    var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
+    val markdownMedia = remember(agentId, lightbox, canReadStores) {
+        MarkdownMediaContext(
+            agentId, graph.media, lightbox,
+            canReadStores = canReadStores,
+            onOpenStorePath = { path ->
+                val target = storeRef(path, agentId)
+                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
+            },
+        )
+    }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -541,6 +555,11 @@ fun ConversationScreen(
     // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
     // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
     FigureLightbox(lightbox, graph.media, agentId)
+    openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->
+        CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
+            StoreDocumentSheet(ref, graph.storeFiles, onDismiss = { openStorePath = null })
+        }
+    }
 
     if (modelSheet) {
         ModelSheet(

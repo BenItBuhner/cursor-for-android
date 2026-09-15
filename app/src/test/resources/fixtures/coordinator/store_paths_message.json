@@ -1,0 +1,7 @@
+{
+ "_source": "coordinator transcript (md-link from the 2026-09-11 turn, code span from the 2026-09-09 turn, verbatim); the image line as Bennett quoted it from a coordinator update; the recording is internal/reference/keyboard-jank-recording.mp4 of the same store",
+ "storeId": "bc-bae107cb-2562-40b2-b814-4f8eca874668",
+ "markdown": "The tabbed panel is in on both frames; the landscape one with the icon-only rail is here:\n\n![Tab layout, landscape, icon-only rail, Project view](/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/media/ui-parity/tab-landscape-icon-only-project.png)\n\nThe spec it follows is [`/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/execution-plan.md`](/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/execution-plan.md), and the readiness notes are in `/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/readiness-triage.md`. The full path, for the record: /cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/project-ui-parity-spec.md.\n\nThe keyboard recording Bennett sent is in the store too:\n\n<video src=\"/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/internal/reference/keyboard-jank-recording.mp4\"></video>\n\nMy own store keeps the board: ![The board after the merge](/cursor/stores/self/media/board.png)",
+ "imagePath": "/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/media/ui-parity/tab-landscape-icon-only-project.png",
+ "documentPath": "/cursor/stores/bc-bae107cb-2562-40b2-b814-4f8eca874668/docs/project-ui-parity-spec.md"
+}

@@ -31,6 +31,8 @@ class AppCaches(private val root: JsonDiskCache) {
     val catalog = CatalogCache(root.child("catalog"))
     val pullRequests = PullRequestCache(root.child("pullrequests"))
     val slashCommands = SlashCommandCache(root.child("slashcommands"))
+    /** Which store each Project's coordinator owns, and the context documents opened from a chat (see `StoreFileRepository`). */
+    val storeFiles: JsonDiskCache = root.child("storefiles")
 
     /**
      * Stops the caches accepting writes, before the work that feeds them is cancelled. A blocking write already in
