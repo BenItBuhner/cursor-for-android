@@ -209,8 +209,8 @@ class ConversationRepositoryTest {
         awaitUntil { prompts(fresh, id).isNotEmpty() }
         assertThat(fresh.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
         api.conversationGate!!.complete(Unit)
-        // The stream starts after the answer has been published and written back; wait for that, the last step.
-        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming }
+        // The run is followed as soon as the run list answers; the transcript's answer ends the load. Wait for both.
+        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming && !fresh.state(id).value.isLoading }
         assertThat(fresh.state(id).value.isLoading).isFalse()
         assertThat(prompts(fresh, id).map { it.text }).containsExactly("Do the thing")
         assertThat(fresh.state(id).value.error).isNull()

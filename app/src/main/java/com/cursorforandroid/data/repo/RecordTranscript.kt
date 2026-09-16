@@ -5,6 +5,9 @@ import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnTiming
 import com.cursorforandroid.data.local.TraceCache
+import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TimelineItem
 
 /**
@@ -31,6 +34,20 @@ class RecordTurn(
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
+
+    /**
+     * The record gave the turn's steps, not the prompt alone: a thought, a tool call or a reply is among the items.
+     * A record that keeps the prompts and files the bodies elsewhere leaves this false, and the run's log is read
+     * for the turn instead (see `ConversationRepository.recordTurnsNeedingReplay`).
+     */
+    val hasBody: Boolean get() = items.any { it is ActivityGroup || it is AssistantMessage }
+
+    /**
+     * The coordinator's word to the user, with its body, is among the turn's calls. A coordinator's turn the record
+     * holds without one — its narration there, its `SendMessage` in a shape the record did not give whole — is read
+     * from the run's log too, like a turn without a body (see `ConversationRepository.recordTurnsNeedingReplay`).
+     */
+    val hasUserMessage: Boolean by lazy { CoordinatorTranscript.hasUserMessage(items) }
 
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
