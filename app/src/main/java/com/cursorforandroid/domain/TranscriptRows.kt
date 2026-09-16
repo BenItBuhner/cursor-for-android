@@ -173,9 +173,9 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
 
 /**
  * What one line of an injected turn's row says, read off the notification: the glyph's kind, the subject — a
- * subagent's title, a pull request's number, a goal's objective — what happened to it, and who did it. "Subagent
- * completed · Hand & Arm Renders" reads as "Hand & Arm Renders · completed"; "GitHub notification · #64 · opened ·
- * BenItBuhner" as "#64 · opened · BenItBuhner".
+ * subagent's title, a pull request's number — what happened to it, and who did it. "Subagent completed · Hand & Arm
+ * Renders" reads as "Hand & Arm Renders · completed"; "GitHub notification · #64 · opened · BenItBuhner" as "#64 ·
+ * opened · BenItBuhner"; a goal's row keeps its event first, "Goal continued · <objective>".
  */
 data class EventLine(val source: Source, val subject: String, val verb: String?, val actor: String?) {
     /** What the row's glyph stands for, and what a group counts by. */
@@ -207,7 +207,9 @@ data class EventLine(val source: Source, val subject: String, val verb: String?,
                     if (parts.size >= 2) EventLine(Source.GitHub, parts[0], parts[1], parts.getOrNull(2))
                     else EventLine(Source.GitHub, summary ?: "Pull request", null, null)
                 }
-                notification.kind == SystemNotification.Kind.Goal -> EventLine(Source.Goal, summary ?: "Goal", title.substringAfter(' ', "").ifEmpty { null }?.lowercase(), null)
+                // A goal's row is the event — "Goal set", "Goal continued", "Goal completed" — with the objective beside it,
+                // dimmed: the objective is a sentence, not a name, and the event is what the reader scans for.
+                notification.kind == SystemNotification.Kind.Goal -> EventLine(Source.Goal, title, null, summary)
                 notification.kind == SystemNotification.Kind.Subagent || notification.kind == SystemNotification.Kind.Worker || notification.kind == SystemNotification.Kind.Task -> {
                     // "Subagent completed", "Worker failed", "Shell timed out": the noun is the glyph, the rest is the verb.
                     val source = when (notification.kind) {
@@ -248,8 +250,22 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
                 .joinToString(" \u00B7 ")
                 .ifEmpty { null }
             val times = events.mapNotNull { it.notification.timestampMillis }
-            val span = if (times.size >= 2) TimeFormat.duration(times.max() - times.min())?.takeIf { times.max() - times.min() >= 60_000L }?.let { "$it span" } else null
+            val span = if (times.size >= 2) spanLabel(times.max() - times.min()) else null
             return EventGroupSummary("$total ${if (total == 1) "event" else "events"}", kinds, span)
+        }
+
+        /** "2h span", "1h 59m span", "18m span"; nothing under a minute, which is not a span worth a word. */
+        private fun spanLabel(millis: Long): String? {
+            val minutes = millis / 60_000L
+            if (minutes < 1) return null
+            val hours = minutes / 60
+            val rest = minutes % 60
+            val label = when {
+                hours > 0 && rest > 0 -> "${hours}h ${rest}m"
+                hours > 0 -> "${hours}h"
+                else -> "${rest}m"
+            }
+            return "$label span"
         }
     }
 }

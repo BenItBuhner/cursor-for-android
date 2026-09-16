@@ -162,7 +162,10 @@ class EventGroupsTest {
         assertThat(EventLine.of(notice("3", "Subagent completed", "Hand & Arm Renders", SystemNotification.Kind.Subagent))).isEqualTo(EventLine(EventLine.Source.Subagent, "Hand & Arm Renders", "completed", null))
         assertThat(EventLine.of(notice("4", "Worker failed", "Usage events aggregation", SystemNotification.Kind.Worker))).isEqualTo(EventLine(EventLine.Source.Worker, "Usage events aggregation", "failed", null))
         assertThat(EventLine.of(notice("5", "Shell timed out", null, SystemNotification.Kind.Task))).isEqualTo(EventLine(EventLine.Source.Task, "Shell", "timed out", null))
-        assertThat(EventLine.of(notice("6", "Goal continued", "Build the limbs", SystemNotification.Kind.Goal))).isEqualTo(EventLine(EventLine.Source.Goal, "Build the limbs", "continued", null))
+        // A goal's row keeps the event first and the objective, a sentence, dimmed beside it.
+        assertThat(EventLine.of(notice("6", "Goal continued", "Build the limbs", SystemNotification.Kind.Goal))).isEqualTo(EventLine(EventLine.Source.Goal, "Goal continued", null, "Build the limbs"))
+        assertThat(EventLine.of(notice("6b", "Goal not set", "The account refused it.", SystemNotification.Kind.Goal)).text).isEqualTo("Goal not set · The account refused it.")
+        assertThat(EventLine.of(notice("6c", "Goal completed", null, SystemNotification.Kind.Goal)).text).isEqualTo("Goal completed")
         assertThat(EventLine.of(notice("7", "Timer notification", "Check the release every hour"))).isEqualTo(EventLine(EventLine.Source.Timer, "Timer", "Check the release every hour", null))
         assertThat(EventLine.of(notice("8", "Slack notification", "Bennett: ship it"))).isEqualTo(EventLine(EventLine.Source.Other, "Bennett: ship it", "Slack", null))
         assertThat(EventLine.of(notice("9", "System notification", "The user paused the goal."))).isEqualTo(EventLine(EventLine.Source.Other, "The user paused the goal.", null, null))

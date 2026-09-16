@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -90,22 +91,31 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
             Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(glyph(line.source), null, tint = tint, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(7.dp))
-                // The subject yields first: a long title ellipsizes rather than pushing the verb, the time or the chevron off the row.
-                Text(
-                    line.subject,
-                    style = type.base,
-                    color = colors.textSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { subjectCut = it.hasVisualOverflow },
+                // The subject and what follows it share the line: a long title yields to its verb, a long objective to
+                // its event, and neither pushes the count, the time or the chevron off the row.
+                SubjectAndTail(
                     modifier = Modifier.weight(1f, fill = false),
+                    subject = {
+                        Text(
+                            line.subject,
+                            style = type.base,
+                            color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            onTextLayout = { subjectCut = it.hasVisualOverflow },
+                        )
+                    },
+                    tail = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            line.verb?.let { verb ->
+                                Text(" \u00B7 $verb", style = type.base, color = colors.textTertiary, maxLines = 1)
+                            }
+                            line.actor?.let { actor ->
+                                Text(" \u00B7 $actor", style = type.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                            }
+                        }
+                    },
                 )
-                line.verb?.let { verb ->
-                    Text(" \u00B7 $verb", style = type.base, color = colors.textTertiary, maxLines = 1)
-                }
-                line.actor?.let { actor ->
-                    Text(" \u00B7 $actor", style = type.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.6f, fill = false))
-                }
                 if (count > 1) {
                     Spacer(Modifier.width(5.dp))
                     Text("\u00D7$count", style = type.small.copy(fontFeatureSettings = "tnum"), color = colors.textTertiary, modifier = Modifier.testTag("event-count"))
@@ -151,6 +161,29 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
         }
     }
 }
+
+/**
+ * The subject of a line and the tail after it, sharing the width the row gives them: the tail is measured for what
+ * it needs, the subject gets the rest — never less than [SUBJECT_SHARE] of the width, so a long tail (a goal's
+ * objective) cannot squeeze the subject to nothing — and the tail takes what remains, cut at its end.
+ */
+@Composable
+private fun SubjectAndTail(modifier: Modifier, subject: @Composable () -> Unit, tail: @Composable () -> Unit) {
+    Layout(content = { subject(); tail() }, modifier = modifier) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val tailNeed = measurables[1].maxIntrinsicWidth(constraints.maxHeight)
+        val subjectMax = maxOf(width - tailNeed, (width * SUBJECT_SHARE).toInt()).coerceIn(0, width)
+        val subjectPlaced = measurables[0].measure(constraints.copy(minWidth = 0, maxWidth = subjectMax))
+        val tailPlaced = measurables[1].measure(constraints.copy(minWidth = 0, maxWidth = (width - subjectPlaced.width).coerceAtLeast(0)))
+        val height = maxOf(subjectPlaced.height, tailPlaced.height)
+        layout(subjectPlaced.width + tailPlaced.width, height) {
+            subjectPlaced.placeRelative(0, (height - subjectPlaced.height) / 2)
+            tailPlaced.placeRelative(subjectPlaced.width, (height - tailPlaced.height) / 2)
+        }
+    }
+}
+
+private const val SUBJECT_SHARE = 0.55f
 
 /** The glyph a kind of event is drawn with. */
 private fun glyph(source: EventLine.Source): ImageVector = when (source) {
