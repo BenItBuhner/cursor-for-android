@@ -44,6 +44,8 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
+import com.cursorforandroid.ui.projects.ProjectEditorHost
+import com.cursorforandroid.ui.projects.ProjectEditorTarget
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.UpdateCopy
 import com.cursorforandroid.ui.share.ShareDestinationScreen
@@ -103,6 +105,8 @@ internal fun AppShell(
     val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var customizeOpen by remember { mutableStateOf(false) }
+    // The Project editor, opened from the Projects group's plus or a Project row's menu; kept up across a rotation.
+    var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
     val colors = CursorTheme.colors
 
     // The layout decision (see WindowPosture): the width class from the window, the rail's state from what the
@@ -256,6 +260,8 @@ internal fun AppShell(
         onRename = if (isDemo || extendedMode) ({ row, name -> agentsViewModel.rename(row.agent.id, name) }) else null,
         onSnooze = { row, until -> agentsViewModel.snooze(row.agent.id, until) },
         onUnsnooze = { agentsViewModel.unsnooze(it.agent.id) },
+        // Projects are the account's: their editor, like the rename, is offered with Extended mode (the demo edits its own rows).
+        onEditProject = if (isDemo || extendedMode) ({ row -> projectEditor = ProjectEditorTarget.Edit(row.agent.id) }) else null,
     )
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
@@ -290,6 +296,7 @@ internal fun AppShell(
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
+                onNewProject = if (isDemo || extendedMode) ({ closeDrawer(); projectEditor = ProjectEditorTarget.Create }) else null,
             ),
             modifier = modifier,
         )
@@ -381,6 +388,9 @@ internal fun AppShell(
 
     if (customizeOpen) {
         CustomizeSheet(viewModel = agentsViewModel, onDismiss = { customizeOpen = false })
+    }
+    projectEditor?.let { target ->
+        ProjectEditorHost(graph, target, onOpenAgent = ::openAgent, onDismiss = { projectEditor = null })
     }
 
     val shareOffer by graph.share.offer.collectAsStateWithLifecycle()

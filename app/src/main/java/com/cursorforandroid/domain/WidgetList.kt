@@ -57,6 +57,6 @@ object WidgetList {
             .filter { !it.isProjectScopedByEvidence }
             .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
-            .sortedByDescending { it.agent.updatedAtMillis }
+            .sortedByDescending { it.agent.listedAtMillis }
     }.take(MAX_ROWS)
 }

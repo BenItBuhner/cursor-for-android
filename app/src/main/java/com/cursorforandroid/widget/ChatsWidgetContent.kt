@@ -158,7 +158,7 @@ private fun AgentRowItem(row: AgentRow, prefs: ListPreferences, palette: WidgetP
             )
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
-                if (prefs.showRuntime) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                if (prefs.showRuntime) add(TimeFormat.relativeShort(agent.listedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(GlanceModifier.width(8.dp))

@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.RunStreamEvent
+import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -346,12 +347,29 @@ class LiveRunHub(
         val status = run.statusEnum()
         if (status.isActive) return Record.Running
         if (!status.isTerminal) return Record.Unrecognised
+        // A terminal record about a run the account still calls running, with activity newer than the record: the
+        // record is stale (a machine agent's, a list a poll behind its own stream) and does not end the turn here.
+        // The run stays followed; the account's next word, or a record as new as the row, settles it.
+        if (recordIsStale(entry, run)) return Record.Running
         if (!owns(entry, self)) return Record.Over
-        val result = RunStreamEvent.Result(run.id, status, run.result, run.durationMs, run.git)
+        val result = RunStreamEvent.Result(run.id, status, run.result, run.durationMs, run.git, fromRecord = true)
         entry.live.apply(result)
         // The record says when the run ended; that, not the moment this connection happened to read it, is the finish.
         finish(entry, self, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
         return Record.Over
+    }
+
+    /**
+     * True when [run]'s terminal record is older than the account's word on the same run: the row names this run,
+     * calls it running, and has been active since the record was written (by more than the slack a list and a record
+     * written at the same moment can differ by). Such a record cannot end the turn — only the account, or a record as
+     * new as the row, can. A row idle, naming another run, or no newer than the record leaves the record its word.
+     */
+    private fun recordIsStale(entry: Entry, run: RunDto): Boolean {
+        val row = agents.agent(entry.agentId) ?: return false
+        if (!row.isRunning || row.latestRunId != run.id) return false
+        val recordAt = parseIsoMillis(run.updatedAt).takeIf { it > 0 } ?: return false
+        return row.updatedAtMillis > recordAt + STALE_RUN_RECORD_SLACK_MS
     }
 
     /**
@@ -379,7 +397,7 @@ class LiveRunHub(
     /** Ends a run the server keeps describing in terms this build cannot read: the trace stands, the turn is over. */
     private fun settleUnrecognised(entry: Entry, self: Job?) {
         if (!owns(entry, self)) return
-        val result = RunStreamEvent.Result(entry.runId, RunStatus.UNKNOWN, text = null, durationMs = null, git = null)
+        val result = RunStreamEvent.Result(entry.runId, RunStatus.UNKNOWN, text = null, durationMs = null, git = null, fromRecord = true)
         entry.live.apply(result)
         finish(entry, self, result, historical = false, streamed = false)
     }
@@ -456,8 +474,7 @@ class LiveRunHub(
                     durationMs = result.durationMs ?: a.durationMs,
                     branches = result.git.toBranches().ifEmpty { a.branches },
                     summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
-                    updatedAtMillis = finishedAt,
-                )
+                ).touched(finishedAt)
             }
             _finishes.tryEmit(entry.state.value)
         }

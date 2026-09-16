@@ -147,6 +147,8 @@ fun AgentSummaryDto.toAgent(previous: Agent?): Agent {
         scopeSignal = previous?.scopeSignal,
         hasPendingInteraction = previous?.hasPendingInteraction ?: false,
         record = previous?.record,
+        // The record's time stays the record's: the public row's `updatedAt` never dates the chat once it has spoken.
+        activityAtMillis = previous?.activityAtMillis,
     )
 }
 
@@ -225,6 +227,7 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
         scopeSignal = previous?.scopeSignal,
         hasPendingInteraction = previous?.hasPendingInteraction ?: false,
         record = previous?.record,
+        activityAtMillis = previous?.activityAtMillis,
     )
 }
 

@@ -109,6 +109,60 @@ class CoordinatorRecordShapesTest {
         assertThat(HeadlessConversationApi.readToolCall(json.parseToJsonElement("""{"name":"SendMessage"}""").jsonObject)).isNull()
     }
 
+    /**
+     * The coordinator's tool bodies are the content, and the record can carry a call in more than one shape (see
+     * `record_coordinator_pages.json`, from Bennett's v0.3.21 chat whose updates went missing): `tool_call` pieces
+     * with `is_streaming` and a `raw_args` fragment each, joined until they read as JSON; `streamed_back_tool_call`
+     * with the whole; a call the record names by its model call id alone. A streamed call that never came whole says
+     * its body is missing rather than vanishing.
+     */
+    @Test
+    fun `a streamed call's pieces are joined, a streamed-back call is read, and one that never came whole says so`() = runBlocking<Unit> {
+        val message = "All four shards rendered and their PRs are merged (#157\u2013#163)."
+        val raw = """{"text":{"content":"$message"}}"""
+        val pieces = raw.chunked(17)
+        val record = buildString {
+            append("""{"responses":[{"humanMessage":{"text":"So where we at rn","agentMode":"AGENT_MODE_PROJECT"}},""")
+            pieces.forEachIndexed { index, piece ->
+                append("""{"toolCall":{"tool":"CLIENT_SIDE_TOOL_V2_SEND_TO_USER","toolCallId":"toolu_pieces","name":"SendMessage","rawArgs":${JsonPrimitive(piece)},"isStreaming":true,"isLastMessage":${index == pieces.lastIndex}}},""")
+            }
+            append("""{"finalToolResult":{"toolCallId":"toolu_pieces","result":{"toolCallId":"toolu_pieces"}}},""")
+            append("""{"streamedBackToolCall":{"tool":"CLIENT_SIDE_TOOL_V2_SEND_TO_USER","toolCallId":"toolu_back","name":"SendMessage","rawArgs":${JsonPrimitive("""{"text":{"content":"Streamed back."}}""")}}},""")
+            append("""{"finalToolResult":{"toolCallId":"toolu_back","result":{}}},""")
+            append("""{"toolCall":{"tool":"CLIENT_SIDE_TOOL_V2_UNSPECIFIED","modelCallId":"model_only","name":"createAgent","rawArgs":${JsonPrimitive("""{"title":"Render shard","message":"Render it."}""")}}},""")
+            append("""{"finalToolResult":{"toolCallId":"model_only","result":{"agentId":"bc-w"}}},""")
+            // Cut short: the first two pieces and no more.
+            pieces.take(2).forEach { piece -> append("""{"toolCall":{"tool":"CLIENT_SIDE_TOOL_V2_SEND_TO_USER","toolCallId":"toolu_cut","name":"SendMessage","rawArgs":${JsonPrimitive(piece)},"isStreaming":true}},""") }
+            append("""{"text":"","isMessageDone":true}],"totalResponses":${pieces.size + 8}}""")
+        }
+        server.enqueue(MockResponse().setBody("""{"accessToken":"s","refreshToken":"rt"}"""))
+        server.enqueue(MockResponse().setBody(record))
+        val page = api.fetch("bc-coord", startIndex = 0, limit = 100)
+
+        // Each piece is a step of the same call, its fragment kept as text; the streamed-back call is a step too.
+        val fragments = page.steps.filter { it.toolCall?.callId == "toolu_pieces" }.map { it.toolCall!! }
+        assertThat(fragments).hasSize(pieces.size)
+        assertThat(fragments.all { it.isStreaming && it.args == null && it.rawArgs != null }).isTrue()
+        assertThat(fragments.last().isLastMessage).isTrue()
+        val back = page.steps.single { it.toolCall?.callId == "toolu_back" }.toolCall!!
+        assertThat(back.isStreaming).isTrue()
+        assertThat(back.args!!.jsonObject.getValue("text").jsonObject.getValue("content").jsonPrimitive.content).isEqualTo("Streamed back.")
+        assertThat(page.steps.single { it.toolCall?.callId == "model_only" }.toolCall!!.name).isEqualTo("createAgent")
+
+        val turn = HeadlessTranscript.split(page.steps).single()
+        val calls = HeadlessTranscript.body(turn, "rec-0").filterIsInstance<ActivityGroup>().flatMap { it.calls }.associateBy { it.callId }
+        assertThat((calls.getValue("toolu_pieces").payload as ToolPayload.CoordinatorMessage)).isEqualTo(ToolPayload.CoordinatorMessage(message))
+        assertThat((calls.getValue("toolu_back").payload as ToolPayload.CoordinatorMessage).message).isEqualTo("Streamed back.")
+        assertThat(calls.getValue("model_only").payload).isInstanceOf(ToolPayload.WorkerAction::class.java)
+        assertThat(calls.getValue("model_only").kind).isEqualTo(ToolKind.Coordinator)
+        // The pieces that never came whole: the call stands, its body said to be missing, not nothing.
+        val cut = calls.getValue("toolu_cut")
+        assertThat((cut.payload as ToolPayload.CoordinatorMessage).missing).isTrue()
+        assertThat(cut.kind).isEqualTo(ToolKind.Coordinator)
+        // One step per call in the trace: the pieces did not multiply the row.
+        assertThat(calls.keys).containsExactly("toolu_pieces", "toolu_back", "model_only", "toolu_cut")
+    }
+
     @Test
     fun `the prompt's mode is read by name or by number`() {
         assertThat(HeadlessConversationApi.readProjectMode(JsonPrimitive("AGENT_MODE_PROJECT"))).isTrue()

@@ -125,7 +125,7 @@ object KnownDevices {
             if (liveHit != null) {
                 // The fleet row's word on the repository stands, any-repo included; the chat only dates the row.
                 if (agent.updatedAtMillis > liveHit.lastUsedAtMillis) {
-                    liveByKey[key] = liveHit.copy(lastUsedAtMillis = agent.updatedAtMillis)
+                    liveByKey[key] = liveHit.copy(lastUsedAtMillis = agent.listedAtMillis)
                 }
                 continue
             }

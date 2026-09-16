@@ -1,5 +1,9 @@
 package com.cursorforandroid.domain
 
+import com.cursorforandroid.util.AppClock
+import java.time.Instant
+import java.time.ZoneId
+
 /**
  * The redacted account of where every chat was placed, for a Project's chat that still shows among the account's
  * own. One line per row: the id's tail, the scope decided, which signal decided it (see [LineageSignal]), the parent's
@@ -47,6 +51,8 @@ object ProjectDiagnostics {
         val notificationPrefs: ProjectNotificationPrefs = ProjectNotificationPrefs.DEFAULT,
         /** Chats workers' records name as manager (information: the desktop makes no Project of a manager). */
         val managerCandidates: Set<String> = emptySet(),
+        /** The moment the report is for, in millis: what each row's time bucket is read against. */
+        val nowMillis: Long = AppClock.now(),
     )
 
     data class RootScanSummary(
@@ -185,7 +191,21 @@ object ProjectDiagnostics {
             )
             appendLine("    rule: ${AgentsWindowList.place(row, loaded, input.pinnedIds, archivedIds).rule}")
             appendLine("    record: ${row.record?.describe(::tail) ?: "not read" + (if (row.id in input.unresolvedRecords) " (asked; the account gave none)" else if (input.accountSession) " (fetch by id pending)" else " (default mode: the public API alone)")}")
+            appendLine("    time: ${timeOf(row, input)}")
         }
+    }
+
+    /**
+     * What the row is dated by and where it lands: the listed time (the desktop's `lastUpdatedAt`) and its bucket,
+     * the record's own activity (`lastMessageActivityAtMs ?? updatedAtMs`, the desktop's field) and the public
+     * API's `updatedAt`, so a chat sitting under Today can be read back to the field that put it there.
+     */
+    private fun timeOf(row: Agent, input: Input): String {
+        val now = input.nowMillis
+        fun iso(millis: Long) = if (millis > 0) Instant.ofEpochMilli(millis).toString() else "-"
+        val bucket = AgentsWindowList.timeBucket(row.listedAtMillis, now, ZoneId.systemDefault()).label
+        val by = if (row.activityAtMillis != null) "record" else "publicApi"
+        return "listed=${iso(row.listedAtMillis)} bucket=\"$bucket\" by=$by recordActivity=${row.activityAtMillis?.let(::iso) ?: "not read"} publicUpdated=${iso(row.updatedAtMillis)} created=${iso(row.createdAtMillis)}"
     }
 
     /** Which word gave the row its parent link or flag: the row's own signal, else the stamp on it, else the row's facts. */

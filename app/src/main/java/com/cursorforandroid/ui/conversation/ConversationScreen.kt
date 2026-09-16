@@ -359,6 +359,7 @@ fun ConversationScreen(
                         // panel showed them before the Project surface: the sections, reachable from here for any chat.
                         MenuItem("Chat details", CursorIcons.Layers) { menuOpen = false; panelActions.showSection(PanelSectionId.Header); scope.launch { panelState.open() } }
                         agent?.prUrl?.let { prUrl -> MenuItem("Open pull request", CursorIcons.GitPullRequest) { menuOpen = false; uriHandler.openUri(prUrl) } }
+                        MenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }

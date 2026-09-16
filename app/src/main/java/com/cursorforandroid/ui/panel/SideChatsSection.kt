@@ -80,7 +80,7 @@ private fun SideChatRow(chat: Agent, onOpen: () -> Unit, onOpenAsChat: () -> Uni
             chat.hasPendingInteraction -> "Needs input"
             else -> null
         },
-        chat.updatedAtMillis.takeIf { it > 0 }?.let(TimeFormat::relativeShort),
+        chat.listedAtMillis.takeIf { it > 0 }?.let(TimeFormat::relativeShort),
     ).joinToString(" · ").ifEmpty { null }
     PanelRow(
         title = chat.name,

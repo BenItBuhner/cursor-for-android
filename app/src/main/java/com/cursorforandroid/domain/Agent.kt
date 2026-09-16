@@ -226,6 +226,12 @@ data class Agent(
     val envName: String?,
     val url: String,
     val createdAtMillis: Long,
+    /**
+     * When the public API last saw the chat change: `GET /v1/agents` `updatedAt`, raised by the latest run's
+     * `updatedAt` and by this device's own sends within a grace (see `reconcileUpdatedAt`). It moves with anything
+     * the service does to the row — a status sweep, a pull-request check, a VM expiring — so it is not what the
+     * sidebar dates a chat by once the account's record has spoken (see [listedAtMillis]).
+     */
     val updatedAtMillis: Long,
     val latestRunId: String?,
     val repoUrl: String?,
@@ -286,7 +292,35 @@ data class Agent(
      * gave, which in Extended mode is fetched by id so the record can place it (see `AgentRepository`).
      */
     val record: RecordFields? = null,
+    /**
+     * When the chat was last active by the account's record — the field the desktop Agents Window sorts and buckets
+     * by (Cursor 3.20.21: the cloud agent's `updatedAt` is `lastMessageActivityAtMs ?? updatedAtMs`; the header's
+     * `lastUpdatedAt` is that, else `createdAt`; `rUm` orders by it and `f3v` buckets by it). Set from the record
+     * alone (see `AgentRepository`), verbatim — never raised to the public row's `updatedAt`, never to the time the
+     * app happened to refresh — and moved forward only by a message sent or finished on this device until the next
+     * record read says. Null until a record has been read: in default mode always, the public API having no such
+     * field.
+     */
+    val activityAtMillis: Long? = null,
 ) {
+    /**
+     * The time the sidebar lists the chat by — its section and its order (see `AgentListOrganizer`), its read
+     * marker, its relative-time label: the desktop's `lastUpdatedAt`. The record's word when it has been read, else
+     * the public API's [updatedAtMillis] (the one time the public API gives; it is what the desktop reads too when a
+     * record carries no message activity).
+     */
+    val listedAtMillis: Long get() = activityAtMillis ?: updatedAtMillis
+
+    /**
+     * A message sent to or finished by the chat on this device at [atMillis]: the chat is active now, whatever the
+     * record last said; the record's next read replaces the stamp with the account's own. Never moves the listed
+     * time backwards.
+     */
+    fun touched(atMillis: Long): Agent = copy(
+        updatedAtMillis = maxOf(updatedAtMillis, atMillis),
+        activityAtMillis = activityAtMillis?.let { maxOf(it, atMillis) },
+    )
+
     /**
      * Where the chat belongs (see [AgentScope]): the desktop's two predicates, in the desktop's order — a parent link
      * makes a child (`PJr`), the Project flag on a chat with none makes a root (`kf`), everything else is a chat of

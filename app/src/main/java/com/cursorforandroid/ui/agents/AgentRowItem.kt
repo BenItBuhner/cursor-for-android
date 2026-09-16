@@ -72,6 +72,8 @@ data class AgentRowActions(
     val onRename: ((AgentRow, String) -> Unit)?,
     val onSnooze: (AgentRow, Long) -> Unit,
     val onUnsnooze: (AgentRow) -> Unit,
+    /** Opens the Project editor (name, icon, colour) for a Project's row; null hides "Edit Project" (default mode). */
+    val onEditProject: ((AgentRow) -> Unit)? = null,
 )
 
 /**
@@ -152,7 +154,7 @@ fun AgentRowItem(
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
                 // A stand-in's last activity is not known until its row is fetched; the slot waits for it.
-                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.listedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
@@ -239,7 +241,9 @@ fun ChatOverflowMenu(
     val agent = row.agent
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, containerColor = CursorTheme.colors.elevated, shape = CursorTheme.shapes.lg) {
         MenuItem(if (row.isPinned) "Unpin" else "Pin", CursorIcons.Pin) { onDismiss(); actions.onTogglePin(row) }
-        if (actions.onRename != null) MenuItem("Rename", CursorIcons.Pencil) { onRename() }
+        val editProject = actions.onEditProject?.takeIf { agent.isProjectRoot }
+        if (editProject != null) MenuItem("Edit Project", CursorIcons.Pencil) { onDismiss(); editProject(row) }
+        if (actions.onRename != null && editProject == null) MenuItem("Rename", CursorIcons.Pencil) { onRename() }
         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { onDismiss(); uriHandler.openUri(agent.url) }
         MenuItem("Copy link", CursorIcons.Copy) { onDismiss(); clipboard.setText(AnnotatedString(agent.url)) }
         if (!agent.isArchived) {

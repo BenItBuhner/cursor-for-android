@@ -119,7 +119,7 @@ internal class ProjectActions(
 
 /**
  * The Project at a glance: its glyph in its colour, how many primaries are working or waiting on an answer, when it
- * last moved — and, in Extended mode, the pencil that opens the icon and colour editor.
+ * last moved — and, in Extended mode, the pencil that opens the Project editor (name, icon and colour).
  */
 @Composable
 private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppearance: (() -> Unit)?, enabled: Boolean) {
@@ -136,7 +136,7 @@ private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppea
         Column(Modifier.weight(1f)) {
             val detail = buildList {
                 add("${state.workers.size} ${if (state.workers.size == 1) "primary" else "primaries"}")
-                root?.let { add("updated ${TimeFormat.relativeShort(it.updatedAtMillis, nowMillis)}") }
+                root?.let { add("updated ${TimeFormat.relativeShort(it.listedAtMillis, nowMillis)}") }
             }
             Text(detail.joinToString(" \u00B7 "), style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (running > 0 || needsInput > 0) {
@@ -147,7 +147,7 @@ private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppea
             }
         }
         if (onEditAppearance != null) {
-            FlatIconButton(CursorIcons.Pencil, "Edit icon and colour", onClick = onEditAppearance, enabled = enabled, modifier = Modifier.testTag("project-appearance"))
+            FlatIconButton(CursorIcons.Pencil, "Edit Project", onClick = onEditAppearance, enabled = enabled, modifier = Modifier.testTag("project-appearance"))
         }
     }
 }
@@ -199,7 +199,7 @@ internal fun WorkerRow(
     val detail = buildList {
         worker.spawnKind?.let { add(it.label) }
         agent.branchName?.let { add(it) } ?: agent.repoShortName?.let { add(it) }
-        if (agent.updatedAtMillis > 0) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+        if (agent.listedAtMillis > 0) add(TimeFormat.relativeShort(agent.listedAtMillis, nowMillis))
     }.joinToString(" \u00B7 ")
     Row(
         Modifier
@@ -262,7 +262,7 @@ internal fun AgentLine(agent: Agent, local: LocalAgentState, nowMillis: Long, su
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(agent.name, style = type.rowMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(listOfNotNull(subtitle, TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis).takeIf { agent.updatedAtMillis > 0 }).joinToString(" \u00B7 "), style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(listOfNotNull(subtitle, TimeFormat.relativeShort(agent.listedAtMillis, nowMillis).takeIf { agent.listedAtMillis > 0 }).joinToString(" \u00B7 "), style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))
     }

@@ -4,8 +4,10 @@ import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnTiming
+import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TimelineItem
 
 /**
@@ -40,8 +42,15 @@ class RecordTurn(
      */
     val hasBody: Boolean get() = items.any { it is ActivityGroup || it is AssistantMessage }
 
+    /**
+     * The coordinator's word to the user, with its body, is among the turn's calls. A coordinator's turn the record
+     * holds without one — its narration there, its `SendMessage` in a shape the record did not give whole — is read
+     * from the run's log too, like a turn without a body (see `ConversationRepository.recordTurnsNeedingReplay`).
+     */
+    val hasUserMessage: Boolean by lazy { CoordinatorTranscript.hasUserMessage(items) }
+
     companion object {
-        const val TRACE_KEY_PREFIX = "record:"
+        const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
 
         fun traceKey(stepIndex: Int): String = "$TRACE_KEY_PREFIX$stepIndex"
     }
@@ -134,6 +143,15 @@ object RecordPager {
             pages++
         }
         return Raw(steps, end, total)
+    }
+
+    /**
+     * Whether the record has grown past [knownTotal] steps: one small read at the known end, which answers with the
+     * record's size (and the first of the new steps, which [tail] then reads in full). Cheap while nothing changes.
+     */
+    suspend fun grownPast(api: ConversationRecordApi, agentId: String, knownTotal: Int): Boolean {
+        val page = api.fetch(agentId, startIndex = knownTotal.coerceAtLeast(0), limit = 1)
+        return page.totalResponses > knownTotal || page.steps.isNotEmpty()
     }
 
     /** The steps before [firstStep], back until [wantTurns] + 1 more prompts are in hand or the record's start is reached. */

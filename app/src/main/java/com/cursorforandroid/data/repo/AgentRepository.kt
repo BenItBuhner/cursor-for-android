@@ -1057,7 +1057,7 @@ class AgentRepository(
     /** Rows asked for an account record that gave none or could not be asked, for the diagnostics. */
     fun unresolvedRecords(): Set<String> = recordUnresolved.keys.toSet()
 
-    /** A row stood in from an account record alone: the name and archive flag the record gives, nothing the public API would. */
+    /** A row stood in from an account record alone: the name, archive flag and times the record gives, nothing the public API would. */
     private fun ComposerSnapshot.toStandIn(): Agent = Agent(
         id = id,
         name = name?.trim()?.takeIf { it.isNotEmpty() } ?: "Chat",
@@ -1066,8 +1066,9 @@ class AgentRepository(
         envType = EnvType.UNKNOWN,
         envName = null,
         url = "https://cursor.com/agents/$id",
-        createdAtMillis = 0L,
-        updatedAtMillis = 0L,
+        createdAtMillis = createdAtMillis ?: 0L,
+        updatedAtMillis = listedAtMillis ?: 0L,
+        activityAtMillis = activityAtMillis,
         latestRunId = null,
         repoUrl = null,
         startingRef = null,
@@ -1399,7 +1400,8 @@ class AgentRepository(
         }
         patch(agentId, startedIn) { current ->
             current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = AppClock.now())
+                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE)
+                .touched(AppClock.now())
         }
         response.run
     }
@@ -1441,7 +1443,8 @@ class AgentRepository(
         val run = runId?.let { RunDto(id = it, agentId = agentId, status = RunStatus.CREATING.name, createdAt = stamp, updatedAt = stamp) }
         patch(agentId, startedIn) { current ->
             current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE, updatedAtMillis = now)
+                .copy(runStatus = RunStatus.CREATING, latestRunId = run?.id ?: current.latestRunId, lifecycle = AgentLifecycle.ACTIVE)
+                .touched(now)
         }
         run
     }
@@ -1612,6 +1615,10 @@ class AgentRepository(
                 // The account's word on the model outranks what this device remembers sending; a record that names
                 // none leaves what an earlier record said.
                 accountModel = snap.model ?: agent.accountModel,
+                // The record's own time, as the desktop dates the chat (`lastMessageActivityAtMs ?? updatedAtMs`),
+                // taken as it is: not raised to the public row's `updatedAt`, which the account bumps for its own
+                // reasons, nor to when this refresh ran. A record that dates nothing leaves what an earlier one said.
+                activityAtMillis = snap.activityAtMillis ?: agent.activityAtMillis,
             )
             if (updated == agent) agent else updated.also { changed = true }
         }

@@ -106,7 +106,7 @@ object AgentListOrganizer {
     fun isUnread(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): Boolean {
         if (agent.isArchived || agent.isRunning || local.isSnoozed(agent.id, nowMillis)) return false
         val marker = local.readMarkers[agent.id] ?: return true
-        return agent.updatedAtMillis > marker
+        return agent.listedAtMillis > marker
     }
 
     fun toRow(agent: Agent, local: LocalAgentState, nowMillis: Long = AppClock.now()): AgentRow = AgentRow(
@@ -197,7 +197,11 @@ object AgentListOrganizer {
             agent.summary?.contains(q, ignoreCase = true) == true
     }
 
-    fun recencyMillis(row: AgentRow): Long = row.snoozedAtMillis ?: row.agent.updatedAtMillis
+    /**
+     * The time a row is ordered and bucketed by: its snooze, else the desktop's `lastUpdatedAt` (see [Agent.listedAtMillis]) —
+     * the record's last message activity, never the public row's `updatedAt` once the record has been read.
+     */
+    fun recencyMillis(row: AgentRow): Long = row.snoozedAtMillis ?: row.agent.listedAtMillis
 
     /** The desktop's `rUm` for the default order: last activity descending, id ascending; the other orders are this app's. */
     fun sort(rows: List<AgentRow>, order: SortOrder): List<AgentRow> = when (order) {
@@ -362,7 +366,7 @@ object AgentListOrganizer {
      * rather than load for ever — and is as recent as its newest worker, so it sits where the Project will.
      */
     fun placeholder(projectId: String, workers: List<AgentRow>, nowMillis: Long = AppClock.now(), unavailable: Boolean = false): AgentRow {
-        val newest = workers.maxOfOrNull { it.agent.updatedAtMillis } ?: nowMillis
+        val newest = workers.maxOfOrNull { it.agent.listedAtMillis } ?: nowMillis
         val agent = Agent(
             id = projectId,
             name = if (unavailable) UNAVAILABLE_NAME else PLACEHOLDER_NAME,

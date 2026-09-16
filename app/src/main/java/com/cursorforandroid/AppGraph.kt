@@ -36,6 +36,7 @@ import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
+import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
 import com.cursorforandroid.data.api.PullRequestApi
@@ -79,6 +80,7 @@ import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
+import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.AgentStoreRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
@@ -450,6 +452,11 @@ class AppGraph(
     private val lazyStores = lazy { AgentStoreRepository(api = projectAccount, capabilities = capabilities, isDemo = { session.isDemo }, demo = DemoStores) }
     val stores: AgentStoreRepository get() = lazyStores.value
 
+    /** Creating a Project and editing its name and look, from the sidebar, the panel and the Project's own view (Extended mode). */
+    private val lazyProjectCreation = lazy { ConnectProjectCreationApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyProjectEditor = lazy { ProjectEditor(session, agents, projects, creation = { lazyProjectCreation.value }, capabilities = capabilities) }
+    val projectEditor: ProjectEditor get() = lazyProjectEditor.value
+
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value
 
@@ -486,6 +493,8 @@ class AppGraph(
             record = accountTranscript,
             capabilities = capabilities,
             images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) },
+            // A Remote Control chat's machine says which chat it is busy with (`GET /v0/private-workers`, `activeBcId`).
+            machineBusy = { agent -> remote.machineStatus(agent)?.getOrNull()?.let { it.activeAgentId == agent.id } },
         )
     }
 
