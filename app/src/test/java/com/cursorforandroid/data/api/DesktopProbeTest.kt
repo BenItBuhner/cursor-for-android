@@ -38,7 +38,8 @@ class DesktopProbeTest {
         val request = server.takeRequest()
         assertThat(request.getHeader("Upgrade")).isEqualTo("websocket")
         assertThat(request.getHeader("Origin")).isEqualTo("https://desktop.cursor-for-android.invalid")
-        assertThat(request.getHeader("Sec-WebSocket-Protocol")).isEqualTo("binary")
+        // The Agents Window's pod viewer names no subprotocol; neither does the probe.
+        assertThat(request.getHeader("Sec-WebSocket-Protocol")).isNull()
         assertThat(request.path).isEqualTo("/websockify?network_token=t")
     }
 

@@ -8,6 +8,7 @@ import android.graphics.Paint
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
@@ -34,13 +35,16 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.dto.DownloadArtifactResponseDto
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.DesktopSession
+import com.cursorforandroid.domain.DesktopTrace
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopScreen
+import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.FileView
 import com.cursorforandroid.ui.panel.PanelActions
 import com.cursorforandroid.ui.panel.PanelFixtures
@@ -286,19 +290,51 @@ class PanelScreenshotTest {
         capture("64_panel_side_chats")
     }
 
-    /** The desktop screen's chrome over the (empty, under Robolectric) noVNC canvas, in control. */
+    /** The desktop screen's chrome over the (empty, under Robolectric) noVNC canvas, in control, on its first step. */
     @Test
     fun desktopScreen() {
-        val session = DesktopSession("bc-demo", "wss://t-p-6080.c.cursorvm.com:443/websockify?network_token=x", viewOnly = false, port = 6080)
+        val trace = DesktopTrace("bc-demo")
+            .begin(DesktopTrace.GET_MACHINE, PanelFixtures.NOW).end(DesktopTrace.GET_MACHINE, PanelFixtures.NOW + 412, "pod pod-7f3a in us-east1 (desktop ticket)")
+            .begin("probe t-9-pod-7f3a-26058.us-east1.cursorvm.com", PanelFixtures.NOW + 412).end("probe t-9-pod-7f3a-26058.us-east1.cursorvm.com", PanelFixtures.NOW + 1_090, "handshake accepted")
+            .withEndpoint("t-9-pod-7f3a-26058.us-east1.cursorvm.com", 26058)
+        val session = DesktopSession("bc-demo", "wss://t-9-pod-7f3a-26058.us-east1.cursorvm.com:443/websockify?network_token=x", viewOnly = false, port = 26058, trace = trace)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Box(Modifier.fillMaxSize().testTag("scene")) {
-                    DesktopScreen(session, agentName = PanelFixtures.agent.name, onViewOnlyChange = {}, onReconnect = {}, onClose = {})
+                    DesktopScreen(DesktopState.Open(session), agentName = PanelFixtures.agent.name, onViewOnlyChange = {}, onRetry = {}, onFail = {}, onShare = {}, onClose = {})
                 }
             }
         }
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-connection")).fetchSemanticsNodes().isNotEmpty() }
         capture("53_panel_desktop_screen")
+    }
+
+    /**
+     * The viewer's two other states side by side: the steps while the machine is found and probed (left), and a
+     * failure at the socket handshake with the step, the reason, a retry and the diagnostics to share (right).
+     */
+    @Test
+    fun desktopViewerStates() {
+        val opening = DesktopTrace("bc-demo")
+            .begin(DesktopTrace.GET_MACHINE, PanelFixtures.NOW).end(DesktopTrace.GET_MACHINE, PanelFixtures.NOW + 412, "pod pod-7f3a in us-east1 (desktop ticket)")
+            .begin("probe t-9-pod-7f3a-26058.us-east1.cursorvm.com", PanelFixtures.NOW + 412)
+        val failed = opening
+            .end("probe t-9-pod-7f3a-26058.us-east1.cursorvm.com", PanelFixtures.NOW + 1_090, "handshake accepted")
+            .withEndpoint("t-9-pod-7f3a-26058.us-east1.cursorvm.com", 26058)
+            .begin(DesktopTrace.PAGE, PanelFixtures.NOW + 1_090).end(DesktopTrace.PAGE, PanelFixtures.NOW + 1_402, "loaded")
+            .begin(DesktopTrace.SCRIPT, PanelFixtures.NOW + 1_402).end(DesktopTrace.SCRIPT, PanelFixtures.NOW + 1_688, "noVNC loaded")
+            .begin(DesktopTrace.SOCKET, PanelFixtures.NOW + 1_688).end(DesktopTrace.SOCKET, PanelFixtures.NOW + 11_688, "The socket handshake did not complete within 10 seconds: the socket closed before the RFB handshake finished, or dropped", failed = true)
+        val failure = DesktopFailure.Unreachable("The socket handshake did not complete within 10 seconds: the socket closed before the RFB handshake finished, or dropped. The VM may have stopped, or the ticket may be refused.", failed)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                Row(Modifier.fillMaxSize().testTag("scene")) {
+                    DesktopScreen(DesktopState.Opening(opening), agentName = PanelFixtures.agent.name, onViewOnlyChange = {}, onRetry = {}, onFail = {}, onShare = {}, onClose = {}, modifier = Modifier.weight(1f).fillMaxHeight())
+                    DesktopScreen(DesktopState.Failed(failure), agentName = PanelFixtures.agent.name, onViewOnlyChange = {}, onRetry = {}, onFail = {}, onShare = {}, onClose = {}, modifier = Modifier.weight(1f).fillMaxHeight())
+                }
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("desktop-share-diagnostics")).fetchSemanticsNodes().isNotEmpty() }
+        capture("75_desktop_viewer_states")
     }
 
     /** Extended mode on a running chat: the Overview's run controls and the question the agent is waiting on, answerable. */
