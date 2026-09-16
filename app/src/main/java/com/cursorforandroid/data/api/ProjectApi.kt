@@ -184,7 +184,8 @@ class ProjectApi(
                 repoUrl = launch.repoUrl?.takeIf { it.isNotBlank() },
                 baseBranch = launch.baseBranch?.takeIf { it.isNotBlank() },
                 autoCreatePr = launch.autoCreatePr.takeIf { it && launch.repoUrl != null },
-                requestedModels = launch.modelId?.takeIf { it.isNotBlank() }?.let { listOf(RequestedModelDto(it)) },
+                // The account refuses a start that names no model; the desktop sends `default` (Auto) when none is chosen.
+                requestedModels = listOf(RequestedModelDto(launch.modelId?.trim()?.takeIf { it.isNotEmpty() } ?: "default")),
                 returnImmediately = true,
             ),
         )

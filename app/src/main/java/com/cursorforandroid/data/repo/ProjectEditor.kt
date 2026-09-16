@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ProjectCreationApi
 import com.cursorforandroid.data.api.ProjectDraft
 import com.cursorforandroid.data.api.RecordFields
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentSource
@@ -42,13 +43,13 @@ class ProjectEditor(
     /**
      * Creates the Project the desktop's way (see `ConnectProjectCreationApi`) and registers it at once. Returns the
      * new coordinator chat's id, for the caller to open. A blank [name] is the desktop's "New Project"; a null
-     * [appearance] is the desktop's random default pair (`zri(A_t)`). In demo mode the Project exists on this device
-     * only.
+     * [appearance] is the desktop's random default pair (`zri(A_t)`); a null [model] is Auto, the desktop's `default`
+     * — the account is always told a model. In demo mode the Project exists on this device only.
      */
-    suspend fun create(name: String, appearance: ProjectAppearance?, repoUrls: List<String>): Result<String> = runCatching {
-        val draft = ProjectDraft(name.trim().ifEmpty { DEFAULT_NAME }, appearance ?: defaultAppearance(), repoUrls.map { it.trim() }.filter { it.isNotEmpty() })
+    suspend fun create(name: String, appearance: ProjectAppearance?, repoUrls: List<String>, model: AccountModel? = null): Result<String> = runCatching {
+        val draft = ProjectDraft(name.trim().ifEmpty { DEFAULT_NAME }, appearance ?: defaultAppearance(), repoUrls.map { it.trim() }.filter { it.isNotEmpty() }, model = model)
         val record = if (session.isDemo) {
-            ComposerSnapshot(draft.projectId, name = draft.name, archived = false, isProject = true, projectAppearance = draft.appearance, source = AgentSource.API, status = RunStatus.CREATING, record = RecordFields(projectMetadata = "{}"), activityAtMillis = now(), createdAtMillis = now())
+            ComposerSnapshot(draft.projectId, name = draft.name, archived = false, isProject = true, projectAppearance = draft.appearance, source = AgentSource.API, status = RunStatus.CREATING, model = draft.model ?: AccountModel(AccountModel.AUTO_ID), record = RecordFields(projectMetadata = "{}"), activityAtMillis = now(), createdAtMillis = now())
         } else {
             if (!capabilities().projects) throw IllegalStateException(NEEDS_EXTENDED_MODE)
             creation().createProject(draft)
