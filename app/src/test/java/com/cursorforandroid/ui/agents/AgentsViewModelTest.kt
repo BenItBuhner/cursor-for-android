@@ -28,12 +28,12 @@ import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
+import com.cursorforandroid.util.MainDispatcherRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -47,6 +47,9 @@ import java.io.IOException
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35])
 class AgentsViewModelTest {
+
+    @get:Rule
+    val mainDispatcher = MainDispatcherRule { Dispatchers.Unconfined }
 
     private lateinit var graph: AppGraph
     private var now = 1_800_000_000_000L
@@ -94,7 +97,6 @@ class AgentsViewModelTest {
 
     @After
     fun tearDown() {
-        Dispatchers.resetMain()
         AppClock.nowMillis = System::currentTimeMillis
     }
 
@@ -112,7 +114,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `the recent list is the sidebar's rows newest first and follows its filters but not its search`() = runBlocking<Unit> {
-        Dispatchers.setMain(Dispatchers.Unconfined)
+        mainDispatcher.set(Dispatchers.Unconfined)
         val vm = AgentsViewModel(graph)
         val loaded = vm.loaded()
         assertThat(loaded.recentRows.map { it.agent.id }).isEqualTo(AgentListOrganizer.recentRows(loaded.sections).map { it.agent.id })
@@ -155,7 +157,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `read all marks every loaded conversation read`() = runBlocking<Unit> {
-        Dispatchers.setMain(Dispatchers.Unconfined)
+        mainDispatcher.set(Dispatchers.Unconfined)
         val vm = AgentsViewModel(graph)
         val loaded = vm.loaded()
         assertThat(loaded.unreadCount).isGreaterThan(0)
@@ -174,7 +176,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `relative ages are computed against a clock that keeps ticking while the data stands still`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
         val vm = AgentsViewModel(graph, clockTickMs = 20)
         advanceUntilIdle()
         val initial = vm.loaded()
@@ -190,7 +192,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `while on screen the list refreshes itself quietly once the last fetch is old enough`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
@@ -212,7 +214,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `polling backs off while the list cannot be fetched and picks its cadence up once it can`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
         listCallGate = CompletableDeferred()
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
@@ -242,12 +244,15 @@ class AgentsViewModelTest {
             blockListCall = null
             if (!listCallGate.isCompleted) listCallGate.complete(Unit)
             polling.cancel()
+            // What the cancel and the gate's release scheduled on the test's own dispatcher runs to its end here,
+            // rather than being reported as coroutines the test left behind.
+            advanceUntilIdle()
         }
     }
 
     @Test
     fun `each completed refresh re-reads the pull requests once their own interval has passed`() = runTest {
-        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
@@ -281,7 +286,7 @@ class AgentsViewModelTest {
 
     @Test
     fun `a delete the server refuses keeps the chat and its transcript, and says so`() = runBlocking<Unit> {
-        Dispatchers.setMain(Dispatchers.Unconfined)
+        mainDispatcher.set(Dispatchers.Unconfined)
         val vm = AgentsViewModel(graph)
         val id = vm.loaded().recentRows.first().agent.id
         graph.caches.conversations.write(CachedConversation(id, emptyList(), emptyList()))
