@@ -82,17 +82,15 @@ class StorePathTest {
         // In the coordinator's own chat: the Project's store by id, and `self` is the coordinator too.
         val inCoordinator = MediaRef.parse(imagePath, store) as MediaRef.Store
         assertThat(inCoordinator.ownerId).isEqualTo(store)
-        assertThat(inCoordinator.requesterId).isEqualTo(store)
         assertThat(inCoordinator.relativePath).isEqualTo("media/ui-parity/tab-landscape-icon-only-project.png")
         assertThat(inCoordinator.cacheKey).isEqualTo("store:$store:media/ui-parity/tab-landscape-icon-only-project.png")
         assertThat(inCoordinator.label).isEqualTo("tab-landscape-icon-only-project.png")
         assertThat(inCoordinator.webUrl).isEqualTo("https://cursor.com/agents/$store")
         val self = MediaRef.parse("/cursor/stores/self/media/board.png", store) as MediaRef.Store
         assertThat(self.ownerId).isEqualTo(store)
-        // In a worker's chat the Project's path still names the Project's store, read as the worker; `self` is the worker's.
+        // In a worker's chat the Project's path still names the Project's store; `self` is the worker's.
         val inWorker = MediaRef.parse(imagePath, "bc-worker") as MediaRef.Store
         assertThat(inWorker.ownerId).isEqualTo(store)
-        assertThat(inWorker.requesterId).isEqualTo("bc-worker")
         assertThat((MediaRef.parse("/cursor/stores/self/media/board.png", "bc-worker") as MediaRef.Store).ownerId).isEqualTo("bc-worker")
         // Outside a chat, or in a mount naming nobody, there is no store to read.
         assertThat(MediaRef.parse("/cursor/stores/self/media/board.png", null)).isInstanceOf(MediaRef.Unavailable::class.java)

@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.MediaRef
@@ -20,8 +21,9 @@ import java.io.IOException
  * Reads the files an agent's reply points into an Agent Store for (`/cursor/stores/<mount>/…`, see
  * [com.cursorforandroid.domain.StorePath]) through the account's store reads, Extended mode only: the store a
  * mount names is found once (`ListAgentStores`, by the owner's id as the store's source) and kept on disk; a
- * picture's bytes come through the presigned URL `PresignAgentStoreReads` hands out for a while (the URL cached
- * until shortly before it expires and asked for again when a fetch finds it dead) and are kept on disk, bounded,
+ * picture's bytes come through the presigned URL `PresignAgentStoreReads` hands out for a while — asked for by the
+ * store's id, or by the owner's the legacy way when no store is listed, never both (see [StoreReadTarget]); the URL
+ * cached until shortly before it expires and asked for again when a fetch finds it dead — and are kept on disk, bounded,
  * so a figure once drawn is drawn again without the network; a recording is played from its URL; a document's text
  * comes through `ReadAgentStoreFile`, the read the panel's Context browser makes, and is kept on disk too.
  *
@@ -81,20 +83,35 @@ class StoreFileRepository(
         }
     }
 
-    /** A URL the bytes of [ref] can be fetched from, good for at least [MIN_REMAINING_MS] more. */
+    /**
+     * A URL the bytes of [ref] can be fetched from, good for at least [MIN_REMAINING_MS] more. The read names the
+     * store by its id; only when the account lists no store for the owner, or cannot be asked, does it fall back to
+     * the legacy path and name the owner instead — never both, which the service refuses.
+     */
     suspend fun downloadUrl(ref: MediaRef.Store): String {
         if (!available()) throw IOException(NOT_AVAILABLE)
         val key = ref.cacheKey
         cachedUrl(key)?.let { return it }
         return locks[stripe(key)].withLock {
             cachedUrl(key)?.let { return@withLock it }
-            val storeId = storeId(ref.ownerId) ?: throw IOException(NO_STORE)
             val store = api() ?: throw IOException(NOT_AVAILABLE)
-            val signed = store.presignRead(ref.requesterId, storeId, ref.relativePath) ?: throw IOException(NO_FILE)
+            val signed = store.presignRead(readTarget(ref), ref.relativePath) ?: throw IOException(NO_FILE)
             val expiresAt = signed.expiresAtMillis?.takeIf { it > now() } ?: (now() + DEFAULT_TTL_MS)
             synchronized(urls) { urls[key] = SignedUrl(signed.url, expiresAt) }
             signed.url
         }
+    }
+
+    /** The store [ref] is read from: by id when the account names one, else the owner's, the legacy way. */
+    private suspend fun readTarget(ref: MediaRef.Store): StoreReadTarget {
+        val storeId = try {
+            storeId(ref.ownerId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            null
+        }
+        return storeId?.let { StoreReadTarget.Store(it) } ?: StoreReadTarget.Agent(ref.ownerId)
     }
 
     /** Forgets the URL of [ref]: a fetch found it dead before its time. */
