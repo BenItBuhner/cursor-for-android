@@ -48,6 +48,8 @@ sealed interface RunStreamEvent {
         val text: String?,
         val durationMs: Long?,
         val git: RunGitDto?,
+        /** Read off the run record after the stream stopped, rather than delivered by the stream itself (see `LiveRunHub.settleFromRecord`). */
+        val fromRecord: Boolean = false,
     ) : RunStreamEvent
     /**
      * The stream stopped before the run did. Always the last event of a pass. [resumeFrom] is the id of the last

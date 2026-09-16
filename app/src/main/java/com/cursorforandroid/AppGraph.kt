@@ -475,6 +475,8 @@ class AppGraph(
             record = accountTranscript,
             capabilities = capabilities,
             images = GeneratedImageStore { agentId, callId, bytes, mimeType -> generatedMedia.save(agentId, callId, bytes, mimeType) },
+            // A Remote Control chat's machine says which chat it is busy with (`GET /v0/private-workers`, `activeBcId`).
+            machineBusy = { agent -> remote.machineStatus(agent)?.getOrNull()?.let { it.activeAgentId == agent.id } },
         )
     }
 
