@@ -143,7 +143,7 @@ object TimelineBuilder {
     class LiveRun(
         private val runId: String,
         private val timed: Boolean = true,
-        /** When the run started, for the footer of a run whose outcome reports no duration of its own. */
+        /** When the run started, for the footer of a run the stream saw finish without reporting a duration. */
         private val startedAtMillis: Long? = null,
         /** Where the bytes of an image the agent generates are kept; without one only a small image is kept, inline. */
         private val images: GeneratedImageSink? = null,
@@ -378,9 +378,11 @@ object TimelineBuilder {
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
             if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
-            // The notification computes a duration from the run's own timestamps when the outcome carries none; the
-            // footer said nothing at all about the same run. Only for a run ending now: a replay's clock is not its.
-            val elapsed = startedAtMillis?.takeIf { timed && it > 0 }?.let { nowProvider() - it }?.takeIf { it > 0 }
+            // The duration is the outcome's own. Only a run the stream itself saw finish, watched from its start,
+            // gets the clock's word when the outcome carries none. Never an outcome read off a record, and never an
+            // end other than finished: "Cancelled after 30s" was this device's clock — from opening the stream to
+            // reading a stale record — read as the turn's.
+            val elapsed = startedAtMillis?.takeIf { timed && it > 0 && !event.fromRecord && event.status == RunStatus.FINISHED }?.let { nowProvider() - it }?.takeIf { it > 0 }
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
         }
 

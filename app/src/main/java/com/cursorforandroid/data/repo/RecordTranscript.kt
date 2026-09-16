@@ -145,6 +145,15 @@ object RecordPager {
         return Raw(steps, end, total)
     }
 
+    /**
+     * Whether the record has grown past [knownTotal] steps: one small read at the known end, which answers with the
+     * record's size (and the first of the new steps, which [tail] then reads in full). Cheap while nothing changes.
+     */
+    suspend fun grownPast(api: ConversationRecordApi, agentId: String, knownTotal: Int): Boolean {
+        val page = api.fetch(agentId, startIndex = knownTotal.coerceAtLeast(0), limit = 1)
+        return page.totalResponses > knownTotal || page.steps.isNotEmpty()
+    }
+
     /** The steps before [firstStep], back until [wantTurns] + 1 more prompts are in hand or the record's start is reached. */
     suspend fun before(api: ConversationRecordApi, agentId: String, firstStep: Int, wantTurns: Int, pageSize: Int = PAGE_SIZE): Raw {
         var steps = ArrayList<HeadlessStep>()

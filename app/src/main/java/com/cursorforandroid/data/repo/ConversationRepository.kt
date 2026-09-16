@@ -26,6 +26,7 @@ import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
@@ -192,6 +193,12 @@ class ConversationRepository(
     private val capabilities: suspend () -> Capabilities = { Capabilities.DOCUMENTED },
     /** Where the images the account's transcript carries are kept on the device, like the stream's (see [LiveRunHub]). */
     private val images: GeneratedImageStore? = null,
+    /**
+     * For a chat on one of the user's machines (`env.type: machine`): whether the machine reports the chat as the
+     * one it is busy with (`GET /v0/private-workers`, `activeBcId`) — the account's word on a Remote Control agent
+     * when the run records and the stream say nothing. Null when it cannot be told.
+     */
+    private val machineBusy: suspend (Agent) -> Boolean? = { null },
 ) {
     /**
      * A prompt sent from this device — the one that launched the chat, or a follow-up: its message and its run, a
@@ -348,6 +355,13 @@ class ConversationRepository(
         var streamJob: Job? = null
         var traceJob: Job? = null
         var loadJob: Job? = null
+        /**
+         * Keeps the chat followed while the account calls it running and no stream is open on a run of it: a turn the
+         * record ended while the account ran on (a steer's next run on its way), a chat with no run record or stream
+         * to be had (a machine agent's). Finds the next run and follows it, and meanwhile reads the record's tail
+         * (Extended mode) so the steps still arrive (see [keepFollowing]).
+         */
+        var keepFollowingJob: Job? = null
         /** The request creating this chat, from the moment its prompt is shown until the server has answered (see [launch]). */
         var launch: Deferred<Result<Launched>>? = null
         @Volatile var launching = false
@@ -406,6 +420,12 @@ class ConversationRepository(
 
         /** True while the account or the run records call the chat active (see [chatStatus]). */
         fun isChatRunning(): Boolean = chatStatus(latestRun())?.isActive == true
+
+        /** The account's word, without the run records: the row's status, or the account list's running set (Extended mode). */
+        fun rowSaysRunning(): Boolean {
+            val row = agents.agent(agentId)
+            return (row?.isRunning == true || agents.runningScan.value.accountIds?.contains(agentId) == true) && (cancelledRunId == null || row?.latestRunId != cancelledRunId)
+        }
 
         /** The row runs on a run other than [runId]: the account has moved past it (see [chatStatus]). */
         fun accountNamesNewerRun(runId: String): Boolean {
@@ -494,7 +514,9 @@ class ConversationRepository(
                 when {
                     // The trace the stream gave, whole: its own footer included.
                     complete != null -> { items += complete; continue }
-                    run != null && current?.runId == run.id -> { items += current.items; continue }
+                    // The story the stream tells so far — unless it has told nothing yet (a stream that will not
+                    // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
+                    run != null && current?.runId == run.id && current.items.isNotEmpty() -> { items += current.items; continue }
                     turn.hasBody -> items += turn.items
                     // The record has the turn without its steps: the run's log stands in when it has been replayed
                     // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
@@ -884,6 +906,8 @@ class ConversationRepository(
                 e.traceJob = null
                 e.runPagingJob?.cancel()
                 e.runPagingJob = null
+                e.keepFollowingJob?.cancel()
+                e.keepFollowingJob = null
                 e.loadingOlder = false
                 e.stopFollowing()
                 e.trimWindow()
@@ -939,6 +963,8 @@ class ConversationRepository(
         traceJob?.cancel()
         loadJob?.cancel()
         runPagingJob?.cancel()
+        keepFollowingJob?.cancel()
+        keepFollowingJob = null
         publish(
             mutate = {
                 messages = emptyList()
@@ -995,6 +1021,8 @@ class ConversationRepository(
             e.paused = true
             e.traceJob?.cancel()
             e.traceJob = null
+            e.keepFollowingJob?.cancel()
+            e.keepFollowingJob = null
             // The replays under way wait, with the ones not started yet, for the screen to come back.
             e.requeueInFlight()
             e.stopFollowing()
@@ -1327,6 +1355,8 @@ class ConversationRepository(
                         // longer — the transcript has the reply now, and the replay below brings the whole trace.
                         val followed = synchronized(e) { e.live?.runId }
                         if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
+                        // No run to stream while the account calls the chat running: kept followed (see [keepFollowing]).
+                        if (accountSaysRunning(e)) keepFollowing(e, endedRunId = null)
                     }
                     loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
                     if (pageOlder) pageOlderRuns(e, agentId)
@@ -1461,6 +1491,8 @@ class ConversationRepository(
             } else {
                 val followed = synchronized(e) { e.live?.runId }
                 if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
+                // No run to stream, and the account calls the chat running: the record is the source (see [keepFollowing]).
+                if (accountSaysRunning(e)) keepFollowing(e, endedRunId = null)
             }
             // The turns the record holds without their steps — or, in a coordinator's chat, without the coordinator's
             // word — get them from their runs' logs, newest first.
@@ -1483,6 +1515,105 @@ class ConversationRepository(
         agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
         persist(e, backend, tokens)
         true
+    }
+
+    /**
+     * The account's word that the chat runs, apart from any run record or stream: the row's status, the account
+     * list's running set (Extended mode), or — for a chat on one of the user's machines — the machine reporting the
+     * chat as the one it is busy with. Never a run this device itself cancelled.
+     */
+    private suspend fun accountSaysRunning(e: Entry): Boolean {
+        if (synchronized(e) { e.rowSaysRunning() }) return true
+        val row = agents.agent(e.agentId) ?: return false
+        if (row.envType != EnvType.MACHINE || row.isArchived) return false
+        if (synchronized(e) { e.cancelledRunId } != null && row.latestRunId == synchronized(e) { e.cancelledRunId }) return false
+        return runCatching { machineBusy(row) }.getOrNull() == true
+    }
+
+    /**
+     * Keeps the chat followed while the account calls it running and no stream is open on a run of it. Every few
+     * seconds, with the pause growing to [KEEP_FOLLOWING_MAX_MS]: the agent's record is read for its latest run
+     * (`GET /v1/agents/{id}`, then the run by id), and a run other than [endedRunId] that is active is merged into
+     * the list and followed — the steer's next run, the coordinator's next turn. Until there is one, and in Extended
+     * mode for as long as no stream says anything, the account's record is read for what the turn has added
+     * (`FetchBackgroundComposer` at the known end, the tail re-read when it grew), so the steps arrive from the one
+     * source there is: a machine agent whose run list and stream never answer still streams from its record. Ends
+     * when the account no longer calls the chat running (the chat's status then takes the records' word), when a
+     * stream is open and saying something, or when the screen leaves. Never ends the run itself: no timeout here
+     * makes a turn cancelled or finished.
+     */
+    private fun keepFollowing(e: Entry, endedRunId: String?) {
+        synchronized(e) {
+            if (e.keepFollowingJob?.isActive == true || e.attached == 0 || e.paused) return
+            e.keepFollowingJob = e.scope.launch {
+                var wait = KEEP_FOLLOWING_BASE_MS
+                var idleLooks = 0
+                while (isActive && synchronized(e) { e.attached > 0 && !e.paused }) {
+                    // The agent's record first: a newer run named there is followed, and the row it refreshes is what
+                    // the account's word below is read from.
+                    val followed = followNextRun(e, endedRunId)
+                    // A stream open and speaking is the source; this loop stands down for it.
+                    val streamSpeaking = synchronized(e) { e.streamJob?.isActive == true && (e.live?.items?.isNotEmpty() == true || (e.state.value.isStreaming && !e.state.value.isReconnecting && e.live == null)) }
+                    if (followed || streamSpeaking) return@launch
+                    if (!accountSaysRunning(e)) {
+                        // The account agrees the chat is idle — after a few looks, for a run that ended a moment ago:
+                        // the next run of a steer, of a coordinator's next turn, takes a beat to be named. Then the
+                        // records' word stands (see [Entry.chatStatus]).
+                        if (endedRunId == null || ++idleLooks >= KEEP_FOLLOWING_IDLE_LOOKS) {
+                            e.publish(transform = { copy(runStatus = e.chatStatus(e.latestRun(), streaming = false)) })
+                            return@launch
+                        }
+                    } else {
+                        idleLooks = 0
+                        readRecordGrowth(e)
+                        e.publish(transform = { if (runStatus?.isActive != true) copy(runStatus = RunStatus.RUNNING) else this })
+                    }
+                    delay(wait)
+                    wait = (wait * 2).coerceAtMost(KEEP_FOLLOWING_MAX_MS)
+                }
+            }
+        }
+    }
+
+    /**
+     * One look for a run of the chat other than [endedRunId] that is active: the agent's record (`GET /v1/agents/{id}`)
+     * names it; it is read by id, merged and followed. True when one was found and is followed now.
+     */
+    private suspend fun followNextRun(e: Entry, endedRunId: String?): Boolean {
+        val agentId = e.agentId
+        val api = session.current.api
+        // The agent's record, read for its latest run alone: the row is left as it is (a record a poll behind a
+        // finish the stream saw would otherwise put the spinner back on the finished run).
+        val detail = runCatching { api.getAgent(agentId) }.getOrElse { t -> if (t is CancellationException) throw t; null }
+        val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
+        val known = synchronized(e) { e.runById(latestId) }
+        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
+        if (!run.statusEnum().isActive) return false
+        var follow = false
+        e.publish(mutate = {
+            if (runs.none { it.id == run.id }) runs = listOf(run) + runs
+            else runs = runs.map { if (it.id == run.id) run else it }
+            follow = streamJob?.isActive != true || state.value.activeRunId != run.id
+        }, transform = { copy(activeRunId = run.id, runStatus = RunStatus.RUNNING) })
+        // The row learns the new run from it (see [Agent.withLatestRun]); its record's latest run id first, so the patch takes.
+        agents.patch(agentId) { it.copy(latestRunId = run.id).withLatestRun(run) }
+        if (follow) startStreaming(e, agentId, run)
+        return true
+    }
+
+    /** Extended mode: what the account's record has added since it was last read, shown as the turn's steps so far. */
+    private suspend fun readRecordGrowth(e: Entry) {
+        val api = record ?: return
+        val known = synchronized(e) { e.recordWindow } ?: return
+        if (session.isDemo || !capabilities().accountTranscript) return
+        val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; false }
+        if (!grown) return
+        val wantTurns = synchronized(e) { e.window }
+        val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
+        val sink = images?.forAgent(e.agentId)
+        val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+        e.publish(mutate = { if (recordWindow === known) recordWindow = built })
+        persistRecord(e, built, known, session.current, cacheTokens())
     }
 
     /** Widens the record's window by [WINDOW_RUNS] older turns (see [loadOlderNow]). */
@@ -2070,10 +2201,10 @@ class ConversationRepository(
                         val finishedAt = snapshot.finishedAtMillis ?: AppClock.now()
                         prefs.markRead(agentId, finishedAt)
                         recordFinish(e, run, snapshot, finishedAt)
-                        // The account has moved on to another run (a steer ended this one for the next, a
-                        // coordinator's next turn): the list is read again for it, and it is followed.
-                        val rowLatest = agents.agent(agentId)?.latestRunId
-                        if (rowLatest != null && rowLatest != run.id && !rowLatest.startsWith(LOCAL_RUN_PREFIX) && agents.agent(agentId)?.isRunning == true) revalidateNow(e, force = true)
+                        // The account may still call the chat running — another run named already, or the row running
+                        // on (a steer's next run on its way, a record a poll behind its own stream): the next run is
+                        // found and followed, and until it is the chat stays running, not dead (see [keepFollowing]).
+                        if (run.id != synchronized(e) { e.cancelledRunId }) keepFollowing(e, endedRunId = run.id)
                         // An outcome read from the run record after the stream broke lacks whatever happened in
                         // between; now that the run is over, its retained log is read whole — or, from the record,
                         // the record's tail, which has the finished turn.
@@ -2127,9 +2258,11 @@ class ConversationRepository(
                     // a run the account still calls running — a `/v1` record that says cancelled while the account
                     // runs on, or a steer that ended this run for the next — is not the chat's end.
                     runStatus = when {
-                        // The stream's terminal word is the run's. The chat still runs only when the account already
-                        // names another run (a steer ended this one for the next, a coordinator's next turn).
-                        snapshot.finished -> if (accountNamesNewerRun(run.id)) RunStatus.RUNNING else snapshot.status
+                        // The stream's terminal word is the run's. The chat still runs while the account calls it so
+                        // — another run named already, or the row running on (a steer's next run on its way, a
+                        // record a poll behind) — and [keepFollowing] finds the run to follow; this device's own
+                        // cancel is the one word that ends the chat at once.
+                        snapshot.finished -> if (run.id != cancelledRunId && (accountNamesNewerRun(run.id) || rowSaysRunning())) RunStatus.RUNNING else snapshot.status
                         snapshot.eventCount > 0 -> snapshot.status
                         else -> runStatus
                     },
@@ -2173,8 +2306,10 @@ class ConversationRepository(
                 recordFinishedRun(run, snapshot, finishedAt)
                 if (snapshot.hasTrace) traces = traces + (run.id to snapshot.items)
             },
-            // With no screen following it, the status would otherwise stay at the last thing the screen saw.
-            transform = { if (activeRunId == run.id) copy(runStatus = snapshot.status) else this },
+            // With no screen following it, the status would otherwise stay at the last thing the screen saw. The
+            // run's end is the run's; the chat's status is the freshest word there is (see [Entry.chatStatus]): an
+            // account running on past this run keeps the chat running.
+            transform = { if (activeRunId == run.id) copy(runStatus = if (run.id != e.cancelledRunId && (e.accountNamesNewerRun(run.id) || e.rowSaysRunning())) RunStatus.RUNNING else snapshot.status) else this },
         )
         persist(e, session.current)
         if (snapshot.hasTrace) writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt, snapshot.startedAtMillis), snapshot.items)
@@ -2192,9 +2327,9 @@ class ConversationRepository(
         val terminal = run.copy(
             status = snapshot.status.name,
             updatedAt = Instant.ofEpochMilli(finishedAt).toString(),
-            // What the run reports of itself, else how long it was actually watched for: the footer of a run whose
-            // outcome carries no duration would otherwise say nothing, about a run the notification timed.
-            durationMs = result?.durationMs ?: run.durationMs ?: (finishedAt - snapshot.startedAtMillis).takeIf { it > 0 },
+            // What the run reports of itself, or nothing: how long this device happened to watch is not the run's
+            // duration, and read as one ("Cancelled after 30s") it made a stale record look like the turn's end.
+            durationMs = result?.durationMs ?: run.durationMs,
             result = text.ifEmpty { run.result },
             git = result?.git ?: run.git,
         )
@@ -2636,6 +2771,11 @@ class ConversationRepository(
         const val MAX_RUN_PAGES = 8
         /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */
         const val PUBLISH_COALESCE_MS = 80L
+        /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
+        const val KEEP_FOLLOWING_BASE_MS = 2_000L
+        const val KEEP_FOLLOWING_MAX_MS = 15_000L
+        /** How many looks find the account idle after a run ended before the records' word is taken (see [keepFollowing]). */
+        const val KEEP_FOLLOWING_IDLE_LOOKS = 3
         /** How many of the newest runs a chat opens on, and by how many the window widens each time the reader scrolls up to its end. */
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
