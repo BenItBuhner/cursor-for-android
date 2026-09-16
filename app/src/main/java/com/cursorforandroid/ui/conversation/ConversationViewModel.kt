@@ -541,6 +541,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** The reader's Retry on the turns whose activity could not be read (see [TraceStatus.failed]). */
     fun retryTraces() = graph.conversations.retryTraces(agentId)
 
+    /**
+     * The redacted account of this chat's load, for the reader to share from the transcript when a load fails: the
+     * same block Settings › Advanced exports (see `TranscriptDiagnostics`) — window bounds, runs and their order,
+     * each turn's trace state, the live follow, the last errors; no message text.
+     */
+    suspend fun loadDiagnosticsReport(): String = graph.transcriptDiagnosticsReport(agentId)
+
     /** The screen is back in the foreground: pick the run back up and catch up on what it did while away. */
     fun resume() = graph.conversations.resume(agentId)
 

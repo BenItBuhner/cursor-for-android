@@ -40,6 +40,7 @@ import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.OlderTurnsRow
+import com.cursorforandroid.ui.conversation.LoadErrorRow
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TraceStatusRow
 import com.cursorforandroid.ui.conversation.TranscriptRowView
@@ -168,6 +169,46 @@ class PagedLoadingScreenshotTest {
                 }
             }
         }
+    }
+
+    /**
+     * The transcript loading the desktop's way (Extended mode): the record's newest turns on screen with their tool
+     * calls, the older ones a scroll away, and — the network having failed on a refresh — the failure said in the
+     * server's words under the transcript, with Retry and the load diagnostics one tap away.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun DesktopLoading(rows: List<TranscriptRow>) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
+        val lightbox = rememberLightboxState("bc-demo")
+        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        CursorTheme(mode = ThemeMode.Dark) {
+            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
+                Column(
+                    Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OlderTurnsRow(isLoading = true, onLoad = {})
+                    rows.forEach { TranscriptRowView(it) }
+                    LoadErrorRow(
+                        message = "Couldn't refresh the transcript: Cursor took too long to respond.",
+                        onRetry = {},
+                        onShareDiagnostics = {},
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun transcriptDesktopLoading() {
+        val rows = longChat()
+        compose.setContent { DesktopLoading(rows) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("share-diagnostics")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "70_transcript_desktop_loading.png").path, RoborazziOptions())
     }
 
     @Test

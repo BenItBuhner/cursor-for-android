@@ -410,16 +410,23 @@ fun ConversationScreen(
                     }
                     if (!conversation.isLoading && items.isEmpty()) {
                         item("empty") {
-                            Text(
-                                when {
-                                    conversation.transcriptError != null -> "Couldn't load the transcript: ${conversation.transcriptError}"
-                                    conversation.transcriptUnavailable -> "The transcript isn't available for this chat."
-                                    else -> conversation.error ?: "Nothing here yet."
-                                },
-                                style = type.base,
-                                color = colors.textQuaternary,
-                                modifier = Modifier.padding(top = 32.dp),
-                            )
+                            val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
+                            if (failure != null) {
+                                // Nothing loaded at all: the failure is the screen, with the same two ways out.
+                                LoadErrorRow(
+                                    message = failure,
+                                    onRetry = viewModel::reload,
+                                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                                    modifier = paneWidth.padding(top = 32.dp),
+                                )
+                            } else {
+                                Text(
+                                    if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
+                                    style = type.base,
+                                    color = colors.textQuaternary,
+                                    modifier = Modifier.padding(top = 32.dp),
+                                )
+                            }
                         }
                     }
                     if (conversation.isLoading && items.isEmpty()) {
@@ -456,23 +463,16 @@ fun ConversationScreen(
             }
         }
 
-        // A fetch that did not go through, said under the transcript rather than swallowed: the load's failure, or —
-        // with the runs answering and the transcript not — the transcript's, with the way to ask again.
+        // A fetch that did not go through, said under the transcript rather than swallowed, in the server's own words:
+        // the load's failure, or — with the runs answering and the transcript not — the transcript's, with the way to
+        // ask again and the load's diagnostics a tap away (the same redacted block Settings exports).
         (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
-            Row(
-                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp).testTag("load-error"),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(err, style = type.small, color = colors.red, maxLines = 2, modifier = Modifier.weight(1f))
-                Text(
-                    "Retry",
-                    style = type.small,
-                    color = colors.textSecondary,
-                    modifier = Modifier.pressable(viewModel::reload, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp),
-                )
-            }
+            LoadErrorRow(
+                message = err,
+                onRetry = viewModel::reload,
+                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
 
         val archived = agent?.isArchived == true
@@ -608,6 +608,38 @@ private const val BottomTolerancePx = 48
 
 /** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
 private const val OlderTurnsPrefetchRows = 3
+
+/**
+ * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the
+ * redacted load block (window bounds, runs and their order, each turn's trace state, the live follow, the last
+ * errors) handed to the share sheet, so a chat that would not load can be reported from where it failed.
+ */
+@Composable
+internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Column(modifier.testTag("load-error")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(message, style = type.small, color = colors.red, maxLines = 3, modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "Retry",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("load-retry"),
+            )
+            Text(
+                "Share diagnostics",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("share-diagnostics"),
+            )
+        }
+    }
+}
 
 /**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity

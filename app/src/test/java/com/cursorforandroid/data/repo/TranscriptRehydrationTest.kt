@@ -9,6 +9,7 @@ import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.HeadlessToolCall
 import com.cursorforandroid.data.api.HeadlessToolResult
+import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
@@ -113,6 +114,8 @@ class TranscriptRehydrationTest {
                 listOf(HeadlessStep(text = "Reply $t"))
         }
         val calls = java.util.concurrent.atomic.AtomicInteger()
+
+        override suspend fun state(agentId: String): RecordState = RecordState(steps.count { it.userMessage != null }, emptyList(), pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
 
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
             calls.incrementAndGet()
@@ -254,14 +257,18 @@ class TranscriptRehydrationTest {
         assertThat(lastGroup.calls.map { it.callId }).containsExactly("rec-25-1", "rec-25-2", "rec-25-3").inOrder()
         assertThat((lastGroup.calls.first().payload as ToolPayload.FileContent).content).isEqualTo("recorded 25/1")
         assertThat(record.calls.get()).isGreaterThan(0)
-        // Kept: the next open needs neither the log nor the account.
+        // Kept: the next open shows the turns from disk, and asks the record for its newest page alone (one read
+        // against the size it knows), never the logs.
         awaitUntil { traces.runIds("bc-old").size == 10 }
         val asked = record.calls.get()
+        val connections = streamer.connections.size
         extended.detach("bc-old")
         val again = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
         again.attach("bc-old")
         awaitUntil(60_000) { again.state("bc-old").value.toolCalls().size == 10 * callsPerRun }
+        awaitUntil { !again.state("bc-old").value.isLoading }
         delay(200)
-        assertThat(record.calls.get()).isEqualTo(asked)
+        assertThat(record.calls.get()).isAtMost(asked + 2)
+        assertThat(streamer.connections.size).isEqualTo(connections)
     }
 }

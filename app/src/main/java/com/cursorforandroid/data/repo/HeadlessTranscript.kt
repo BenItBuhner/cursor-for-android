@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.SseToolCallDto
 import com.cursorforandroid.domain.RunFooter
+import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
 import kotlinx.serialization.json.JsonElement
@@ -79,7 +80,25 @@ object HeadlessTranscript {
      * stream's `tool_call` events' are (see [ToolCallMapper]).
      */
     fun trace(turn: Turn, run: RunDto, images: GeneratedImageSink? = null): List<TimelineItem> {
-        val live = TimelineBuilder.LiveRun(run.id, timed = false, images = images)
+        val live = replay(turn, run.id, images)
+        live.apply(RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git))
+        // The accumulator's footer is what a stream's result event gives; the run's record is the authority here.
+        return live.snapshot().filterNot { it is RunFooter } + TimelineBuilder.footer(run)
+    }
+
+    /**
+     * The turn's trace without a footer, its items named after [key]: what the record says the agent did, closed as
+     * a finished turn (a reply the record ends on is complete, a call without its result stays as the record left
+     * it). The footer is the run's, or the timing's, to add when either is known (see [RecordTranscript]).
+     */
+    fun body(turn: Turn, key: String, images: GeneratedImageSink? = null): List<TimelineItem> {
+        val live = replay(turn, key, images)
+        live.apply(RunStreamEvent.Result(key, RunStatus.FINISHED, null, null, null))
+        return live.snapshot().filterNot { it is RunFooter }
+    }
+
+    private fun replay(turn: Turn, key: String, images: GeneratedImageSink?): TimelineBuilder.LiveRun {
+        val live = TimelineBuilder.LiveRun(key, timed = false, images = images)
         val calls = HashMap<String, Pair<String, JsonElement?>>()
         for (step in turn.steps) {
             when {
@@ -95,9 +114,7 @@ object HeadlessTranscript {
                 }
             }
         }
-        live.apply(RunStreamEvent.Result(run.id, run.statusEnum(), run.result, run.durationMs, run.git))
-        // The accumulator's footer is what a stream's result event gives; the run's record is the authority here.
-        return live.snapshot().filterNot { it is RunFooter } + TimelineBuilder.footer(run)
+        return live
     }
 
     private const val PAGE_SIZE = 200
