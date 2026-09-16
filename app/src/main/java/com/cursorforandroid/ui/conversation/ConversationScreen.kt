@@ -323,6 +323,10 @@ fun ConversationScreen(
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
+                        // The load's redacted account of this chat (see [TranscriptDiagnostics]), from any chat that
+                        // looks wrong — not only one that has failed outright: window bounds, runs and their order,
+                        // each turn's trace state, the live follow, the last errors; no message text.
+                        MenuItem("Share diagnostics", CursorIcons.Warning) { menuOpen = false; scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } }
                         // The agent's VM desktop (Extended mode): view it, or take control of it to try what it is
                         // building. A Remote Control chat's machine has no desktop to reach from here.
                         if (canOpenDesktop) {
