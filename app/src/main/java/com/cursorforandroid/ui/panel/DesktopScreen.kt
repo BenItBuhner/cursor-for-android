@@ -2,6 +2,8 @@ package com.cursorforandroid.ui.panel
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
@@ -363,7 +365,7 @@ internal class DesktopViewer(val session: DesktopSession, private val now: () ->
      * as well, so the steps move even if the JavaScript bridge never calls in.
      */
     suspend fun watch(onFail: (DesktopFailure) -> Unit) {
-        if (!await(STEP_TIMEOUT_MS) { pageLoaded || pageError != null || pageState != null }) {
+        if (!await(STEP_TIMEOUT_MS) { webView != null && (pageLoaded || pageError != null || pageState != null) }) {
             onFail(failure(DesktopTrace.PAGE, "The viewer page did not load within ${STEP_TIMEOUT_MS / 1000} seconds${pageError?.let { ": $it" } ?: ""}."))
             return
         }
@@ -378,7 +380,11 @@ internal class DesktopViewer(val session: DesktopSession, private val now: () ->
         }
         onScriptReady()
         onConnecting()
-        webView?.evaluateJavascript("window.cursorDesktop.connect(${jsString(session.url)}, ${session.viewOnly});", null)
+        val view = webView ?: run {
+            onFail(failure(DesktopTrace.SOCKET, "The viewer went away before the socket could be opened."))
+            return
+        }
+        view.evaluateJavascript("window.cursorDesktop.connect(${jsString(session.url)}, ${session.viewOnly});", null)
         if (!await(STEP_TIMEOUT_MS) { phase !is ViewerPhase.Connecting }) {
             val detail = pageState?.reason ?: lastPageDetail
             onFail(failure(DesktopTrace.SOCKET, "The socket handshake did not complete within ${STEP_TIMEOUT_MS / 1000} seconds${detail?.let { ": $it" } ?: ""}. The VM may have stopped, or the ticket may be refused."))
@@ -476,10 +482,19 @@ private fun DesktopWebView(viewer: DesktopViewer, modifier: Modifier = Modifier)
     AndroidView(factory = { webView }, modifier = modifier.testTag("desktop-webview"))
 }
 
-/** What the page calls back into: [onState] with noVNC's events, `ready` once its script is up. */
+/**
+ * What the page calls back into: [onState] with noVNC's events, `ready` once its script is up. The page calls on
+ * its own thread; the viewer's state is the composition's, so every call is handed to the main thread first.
+ */
 private class Bridge(private val viewer: DesktopViewer) {
+    private val main = Handler(Looper.getMainLooper())
+
     @JavascriptInterface
     fun onState(state: String, detail: String?) {
+        main.post { apply(state, detail) }
+    }
+
+    private fun apply(state: String, detail: String?) {
         val d = detail?.takeIf { it.isNotBlank() }
         viewer.lastPageDetail = d ?: viewer.lastPageDetail
         when (state) {
