@@ -801,6 +801,18 @@ class ConversationRepository(
                 record = if (window != null || e.recordEmpty || e.recordError != null) {
                     TranscriptLoadDiagnostics.RecordLine(window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError)
                 } else null,
+                status = run {
+                    val latest = e.latestRun()
+                    val row = agents.agent(agentId)
+                    TranscriptLoadDiagnostics.StatusLine(
+                        shown = e.state.value.runStatus?.name ?: "-",
+                        latestRun = latest?.let { e.statusOf(it).name } ?: "-",
+                        streaming = streaming,
+                        rowRunning = row?.isRunning == true,
+                        accountRunning = agents.runningScan.value.accountIds?.contains(agentId) == true,
+                        rowNewerThanRecordMs = if (row != null && latest != null) row.updatedAtMillis - parseIsoMillis(latest.updatedAt) else null,
+                    )
+                },
                 traceQueue = e.traceQueue.size,
                 traceInFlight = e.traceInFlight.size,
                 traceWorkerRunning = e.traceJob?.isActive == true,

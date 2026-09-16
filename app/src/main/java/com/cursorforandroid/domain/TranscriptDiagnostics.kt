@@ -51,7 +51,16 @@ data class TranscriptLoadDiagnostics(
     val source: String = "runs",
     /** The account's record as far as it was read, when the chat has been asked for it (Extended mode). */
     val record: RecordLine? = null,
+    /** The chat's status as shown, and the words it was reconciled from (see `ConversationRepository.Entry.chatStatus`). */
+    val status: StatusLine? = null,
 ) {
+    /**
+     * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
+     * on it; [rowRunning] the row's word; [accountRunning] the account list's running set's (Extended mode);
+     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older).
+     */
+    data class StatusLine(val shown: String, val latestRun: String, val streaming: Boolean, val rowRunning: Boolean, val accountRunning: Boolean, val rowNewerThanRecordMs: Long?)
+
     data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int)
 
     /**
@@ -153,6 +162,9 @@ object TranscriptDiagnostics {
         )
         load.record?.let { r ->
             appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
+        }
+        load.status?.let { st ->
+            appendLine("status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}")
         }
         val shown = load.runs.count { it.trace == "shown" }
         appendLine(
