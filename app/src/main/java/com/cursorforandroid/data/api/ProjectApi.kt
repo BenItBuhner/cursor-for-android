@@ -121,10 +121,21 @@ interface AgentStoreApi {
     suspend fun readFile(storeId: String, relativePath: String): String
 
     /**
-     * `PresignAgentStoreReads`: a URL the bytes of [relativePath] in [storeId] can be fetched from for a while, made
-     * as [requesterId] (the chat the path was read in). Null when the service answered with no instruction for it.
+     * `PresignAgentStoreReads`: a URL the bytes of [relativePath] in the store [target] names can be fetched from
+     * for a while. Null when the service answered with no instruction for it.
      */
-    suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead?
+    suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead?
+}
+
+/**
+ * Which store `PresignAgentStoreReads` is asked about. Its request carries `agent_id`, `share_id?` and `store_id?`,
+ * and the service wants exactly one of them ("Exactly one of share_id, store_id, or legacy agent_id is required"):
+ * the store by its id — what `ListAgentStores` names, and what the desktop mounts a Project's context by — or, the
+ * legacy path for when no store id is known, the agent whose store it is.
+ */
+sealed interface StoreReadTarget {
+    data class Store(val storeId: String) : StoreReadTarget
+    data class Agent(val agentId: String) : StoreReadTarget
 }
 
 /** `aiserver.v1.AgentStoreReadInstruction`: where a store file's bytes are, and until when. */
@@ -266,8 +277,13 @@ class ProjectApi(
     override suspend fun readFile(storeId: String, relativePath: String): String =
         call("ReadAgentStoreFile", ReadStoreFileDto(storeId, relativePath), ReadStoreFileDto.serializer(), ReadStoreFileResponseDto.serializer()).content
 
-    override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? {
-        val response = call("PresignAgentStoreReads", PresignReadsDto(requesterId, listOf(relativePath), storeId), PresignReadsDto.serializer(), PresignReadsResponseDto.serializer())
+    override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? {
+        // Exactly one identifier goes out: CursorJson leaves a null field off the wire.
+        val request = when (target) {
+            is StoreReadTarget.Store -> PresignReadsDto(relPaths = listOf(relativePath), storeId = target.storeId)
+            is StoreReadTarget.Agent -> PresignReadsDto(relPaths = listOf(relativePath), agentId = target.agentId)
+        }
+        val response = call("PresignAgentStoreReads", request, PresignReadsDto.serializer(), PresignReadsResponseDto.serializer())
         val instruction = response.instructions.firstOrNull { it.relPath == relativePath } ?: response.instructions.firstOrNull() ?: return null
         val url = instruction.url?.takeIf { it.isNotBlank() } ?: return null
         return PresignedStoreRead(instruction.relPath ?: relativePath, url, instruction.expiresAtMs?.longOrNull)
@@ -397,9 +413,9 @@ class ProjectApi(
     @Serializable
     private data class ReadStoreFileResponseDto(val content: String = "")
 
-    /** `PresignAgentStoreReadsRequest {agent_id, rel_paths[], store_id?}`; the paths are the store's relative ones. */
+    /** `PresignAgentStoreReadsRequest {agent_id, rel_paths[], share_id?, store_id?}`, one identifier set; the paths are the store's relative ones. */
     @Serializable
-    private data class PresignReadsDto(val agentId: String, val relPaths: List<String>, val storeId: String)
+    private data class PresignReadsDto(val agentId: String? = null, val relPaths: List<String>, val storeId: String? = null)
 
     @Serializable
     private data class PresignReadsResponseDto(val instructions: List<ReadInstructionDto> = emptyList())

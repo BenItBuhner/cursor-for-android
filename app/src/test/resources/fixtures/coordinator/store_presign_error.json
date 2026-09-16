@@ -1,0 +1,5 @@
+{
+ "_source": "the account service's answer to PresignAgentStoreReads sent with both agent_id and store_id (#148), as v0.3.19 showed it verbatim on Bennett's device in the store figure's card (internal/reference/store-image-presign-error.jpg, 2026-09-16); Connect JSON error body, the code as Connect spells an argument error",
+ "httpCode": 400,
+ "body": {"code": "invalid_argument", "message": "Exactly one of share_id, store_id, or legacy agent_id is required."}
+}

@@ -7,6 +7,7 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.ProjectActionsApi
@@ -102,7 +103,7 @@ class ProjectRepositoryTest {
         override suspend fun storeFor(sourceId: String): String? { calls += "store:$sourceId"; return storeId }
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> { calls += "entries:$storeId:$relativePath"; return entries[relativePath].orEmpty() }
         override suspend fun readFile(storeId: String, relativePath: String): String { calls += "read:$storeId:$relativePath"; return "# $relativePath" }
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? { calls += "presign:$storeId:$relativePath"; return PresignedStoreRead(relativePath, "https://files.example/$storeId/$relativePath", null) }
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? { calls += "presign:$target:$relativePath"; return PresignedStoreRead(relativePath, "https://files.example/$relativePath", null) }
     }
 
     private val api = FakeCursorApi()
