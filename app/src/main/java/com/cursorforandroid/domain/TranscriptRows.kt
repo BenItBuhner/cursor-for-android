@@ -170,8 +170,9 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
                 if (durations.isEmpty()) last else last.copy(durationMs = durations.sum())
             }
             val action = when {
-                footer != null -> footerLabel(footer)
+                // Still being written: whatever earlier runs closed inside it, the stretch is working.
                 stretch.live -> "Working"
+                footer != null -> footerLabel(footer)
                 else -> counts.firstOrNull() ?: failure ?: "Worked"
             }
             val rest = if (footer != null || stretch.live) counts else counts.drop(1)
@@ -375,12 +376,15 @@ object TranscriptRows {
         return openNewestGroup(rows)
     }
 
-    /** The newest stretch is the one still being written, unless its run has already closed with a footer. */
+    /**
+     * The newest stretch is the one still being written, unless its run has already closed with a footer. An
+     * earlier run's footer inside it — a silent turn's, before the injected turn now running — is not the end of it.
+     */
     private fun markLive(rows: MutableList<TranscriptRow>) {
         val last = rows.indexOfLast { it is TranscriptRow.Stretch }
         if (last < 0) return
         val stretch = rows[last] as TranscriptRow.Stretch
-        if (stretch.entries.any { it is TranscriptRow.Entry.Footer }) return
+        if (stretch.entries.lastOrNull() is TranscriptRow.Entry.Footer) return
         if (rows.subList(last + 1, rows.size).any { it !is TranscriptRow.Media && it !is TranscriptRow.Question }) return
         rows[last] = stretch.copy(live = true)
     }

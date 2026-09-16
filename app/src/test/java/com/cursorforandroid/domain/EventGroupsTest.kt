@@ -161,6 +161,15 @@ class EventGroupsTest {
         assertThat(working.live).isTrue()
         assertThat(working.summary.text).isEqualTo("Working · 3 events · 1 file")
         assertThat(working.listed.map { it::class.simpleName }).containsExactly("Events", "Call").inOrder()
+        // An earlier turn's footer inside the stretch does not close it: the injected turn after it is still running.
+        val afterFooter = TranscriptRows.of(listOf(a, RunFooter("f1", "run-1", RunStatus.FINISHED, 9_000, emptyList()), b, ActivityGroup("g2", listOf(ToolCall("r2", "read_file", ToolKind.Read, "running", "B.kt")))), coordinatorMode = true, runActive = true)
+        val still = afterFooter.single() as TranscriptRow.Stretch
+        assertThat(still.live).isTrue()
+        assertThat(still.summary.text).isEqualTo("Working · 2 events · 1 file")
+        // Closed with its footer: nothing is being written, however active the row says the chat is.
+        val closed = TranscriptRows.of(listOf(a, RunFooter("f1", "run-1", RunStatus.FINISHED, 9_000, emptyList()), b, RunFooter("f2", "run-2", RunStatus.FINISHED, 3_000, emptyList())), coordinatorMode = true, runActive = true)
+        assertThat((closed.single() as TranscriptRow.Stretch).live).isFalse()
+        assertThat((closed.single() as TranscriptRow.Stretch).summary.text).isEqualTo("Worked 12s · 2 events")
     }
 
     @Test
