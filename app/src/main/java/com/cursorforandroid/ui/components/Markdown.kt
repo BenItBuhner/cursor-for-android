@@ -1,7 +1,12 @@
 package com.cursorforandroid.ui.components
 
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,15 +22,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.semantics.contentDescription
@@ -34,6 +49,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -42,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
@@ -51,6 +68,8 @@ import com.cursorforandroid.domain.MediaMarkup
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.JetBrainsMono
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 
 object InlineMarkdown {
     private val schemeRegex = Regex("[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -67,6 +86,17 @@ object InlineMarkdown {
 
     /** Inline HTML agents write in place of markdown, mapped onto the style its markdown equivalent gets. */
     private enum class Tag { Bold, Italic, Code, Strike, Underline, Subscript, Superscript, Mark, Transparent }
+
+    /** The annotation an inline code span is rendered under; its item is the code itself, without the padding spaces. */
+    const val CODE_SPAN = "code"
+
+    /** The inline code span of [annotated] that [offset] falls in, if any. */
+    fun codeSpanAt(annotated: AnnotatedString, offset: Int): String? =
+        annotated.getStringAnnotations(CODE_SPAN, 0, annotated.length).firstOrNull { offset >= it.start && offset < it.end }?.item
+
+    /** Whether [offset] of [annotated] is a link: a code span that opens like one keeps its tap and is not claimed. */
+    fun isLinkAt(annotated: AnnotatedString, offset: Int): Boolean =
+        annotated.getLinkAnnotations(0, annotated.length).any { offset >= it.start && offset < it.end }
 
     private val tags = mapOf(
         "b" to Tag.Bold, "strong" to Tag.Bold, "summary" to Tag.Bold,
@@ -178,6 +208,8 @@ object InlineMarkdown {
             // A code span that is a store path, the way a coordinator names a document, opens like a link and reads like code.
             val store = if (!insideLink) StorePath.parse(code)?.text else null
             val listener = store?.let { target -> p.onLinkClick?.let { click -> LinkInteractionListener { click(target) } } }
+            // The span carries its own text, so a press-and-hold on it can copy the code and not the padding around it.
+            pushStringAnnotation(CODE_SPAN, code)
             if (store != null && listener != null) {
                 // Code in the link colour: what a `[`path`](path)` link reads as, so both spellings look the same.
                 val style = p.link.style?.let { p.code.merge(it) } ?: p.code
@@ -185,6 +217,7 @@ object InlineMarkdown {
             } else {
                 withStyle(p.code) { append(" $code ") }
             }
+            pop()
         }
         while (i < n) {
             val c = text[i]
@@ -663,21 +696,106 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
             onLinkClick = openLink,
         )
     }
-    Text(text = annotated, style = style.copy(color = color), modifier = modifier)
+    // Press and hold on an inline code span copies it, as the block's button does its code. The text and its layout
+    // are kept in a plain holder read at press time, so a paragraph still arriving — a new string every delta —
+    // neither recomposes nor restarts the gesture for it.
+    val copy = rememberCopyCode()
+    val paragraph = remember { ParagraphHolder() }
+    paragraph.annotated = annotated
+    Text(
+        text = annotated,
+        style = style.copy(color = color),
+        onTextLayout = { paragraph.layout = it },
+        modifier = modifier.copyInlineCodeOnLongPress(paragraph, copy),
+    )
 }
 
+/** A paragraph as it stands: its text, written as it is composed, and its layout, written as it lays out. */
+private class ParagraphHolder {
+    var annotated: AnnotatedString? = null
+    var layout: TextLayoutResult? = null
+}
+
+/**
+ * Copies an inline code span that is pressed and held, the way cursor.com's chat does. The press is claimed in the
+ * initial pass, and only when it lands on a code span that is not also a link: the message's own press-and-hold
+ * menu (a parent, which waits for an unclaimed press) then stays shut, while the paragraph's links — and a code span
+ * that opens a document — keep their taps. A plain tap on code does nothing, as before. Once the hold has copied, the
+ * rest of the gesture is swallowed so the release is not read as a tap by whatever sits under the finger.
+ */
+private fun Modifier.copyInlineCodeOnLongPress(paragraph: ParagraphHolder, onCopy: (String) -> Unit): Modifier =
+    pointerInput(paragraph) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val annotated = paragraph.annotated ?: return@awaitEachGesture
+            val result = paragraph.layout ?: return@awaitEachGesture
+            val position = down.position
+            val line = result.getLineForVerticalPosition(position.y)
+            // Off the end of a line the nearest offset is still a character; a press there is not on the code.
+            if (position.x < result.getLineLeft(line) || position.x > result.getLineRight(line)) return@awaitEachGesture
+            val offset = result.getOffsetForPosition(position)
+            if (InlineMarkdown.isLinkAt(annotated, offset)) return@awaitEachGesture
+            val code = InlineMarkdown.codeSpanAt(annotated, offset) ?: return@awaitEachGesture
+            down.consume()
+            val released = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                waitForUpOrCancellation(PointerEventPass.Initial) ?: Cancelled
+            }
+            if (released != null) return@awaitEachGesture
+            onCopy(code)
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.forEach { it.consume() }
+            } while (event.changes.any { it.pressed })
+        }
+    }
+
+/** What [waitForUpOrCancellation] returning null stands for, so it can be told from the hold running out of time. */
+private object Cancelled
+
+/**
+ * Copies code to the clipboard with a tick and the confirmation the message menu gives: the system's own overlay
+ * on Android 13+, a toast before that.
+ */
+@Composable
+internal fun rememberCopyCode(): (String) -> Unit {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    return remember(context, clipboard, haptics) {
+        { code: String ->
+            clipboard.setText(AnnotatedString(code))
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+/**
+ * A fenced code block as cursor.com/agents draws one: a strip along the top with the language on the left and a
+ * copy button on the right, then the code. The strip sits outside the code's horizontal scroll, so it stays put
+ * while long lines are dragged under it, and the button copies the block's raw text — never what happens to be
+ * on screen. A block still arriving keeps its instance across deltas (the renderer keys blocks by position), so
+ * the strip, the scroll and a "Copied" tick all outlive the text changing under them.
+ */
 @Composable
 fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     CursorCard(modifier = modifier.fillMaxWidth(), shape = CursorTheme.shapes.lg, fill = colors.canvas, border = colors.strokeSubtle) {
-        if (!language.isNullOrBlank()) {
+        Row(
+            Modifier.fillMaxWidth().height(CodeHeaderHeight).padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                language,
+                language.orEmpty(),
                 style = CursorTheme.typography.tiny,
                 color = colors.textQuaternary,
-                modifier = Modifier.padding(start = 12.dp, top = 8.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            CopyCodeButton(code)
         }
+        HairlineDivider()
         Text(
             code,
             style = CursorTheme.typography.codeBlock,
@@ -688,3 +806,30 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
         )
     }
 }
+
+/** The strip's copy button: the copy glyph, a tick for a moment after it has copied. */
+@Composable
+private fun CopyCodeButton(code: String) {
+    val copy = rememberCopyCode()
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(CopiedTickMillis)
+            copied = false
+        }
+    }
+    FlatIconButton(
+        icon = if (copied) CursorIcons.Check else CursorIcons.Copy,
+        contentDescription = if (copied) "Copied" else "Copy code",
+        onClick = {
+            copy(code)
+            copied = true
+        },
+        size = 24.dp,
+        iconSize = 14.dp,
+        tint = if (copied) CursorTheme.colors.green else CursorTheme.colors.iconTertiary,
+    )
+}
+
+private val CodeHeaderHeight = 30.dp
+private const val CopiedTickMillis = 1_500L
