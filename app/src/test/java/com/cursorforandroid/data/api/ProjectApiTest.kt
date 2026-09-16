@@ -138,6 +138,12 @@ class ProjectApiTest {
         assertThat(start["autoCreatePr"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(start["returnImmediately"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(start["requestedModels"]?.jsonArray?.single()?.jsonObject?.get("modelId")?.jsonPrimitive?.content).isEqualTo("claude-4")
+
+        // No model picked: the account refuses a start that names none, so the desktop's `default` (Auto) goes out.
+        server.enqueue(MockResponse().setBody("""{"composer":{"bcId":"bc-auto","managerAgentId":"bc-m"}}"""))
+        api.createWorker("bc-m", WorkerLaunch(prompt = "Write the docs", workerId = "bc-auto"))
+        val auto = server.takeRequest().json()["startRequest"]!!.jsonObject
+        assertThat(auto["requestedModels"]?.jsonArray?.single()?.jsonObject?.get("modelId")?.jsonPrimitive?.content).isEqualTo("default")
     }
 
     @Test

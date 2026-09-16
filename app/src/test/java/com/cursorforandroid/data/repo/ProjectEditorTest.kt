@@ -19,11 +19,13 @@ import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.LocalAgentState
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SteerOutcome
@@ -143,6 +145,8 @@ class ProjectEditorTest {
         assertThat(draft.projectId).isEqualTo(id)
         assertThat(draft.name).isEqualTo("Billing launch")
         assertThat(draft.repoUrls).containsExactly("https://github.com/acme/billing")
+        // No model picked: the draft names none, and the request names Auto (see ProjectCreationApiTest).
+        assertThat(draft.model).isNull()
 
         assertThat(agents.knownRoots.value.map { it.id }).contains(id)
         assertThat(agents.knownRoots.value.first { it.id == id }.name).isEqualTo("Billing launch")
@@ -159,6 +163,15 @@ class ProjectEditorTest {
         agents.refresh()
         assertThat(agents.agent(id)!!.isProjectRoot).isTrue()
         assertThat(projectRows(agents)).contains(id)
+    }
+
+    @Test
+    fun `the model picked in the sheet reaches the start request`() = runBlocking<Unit> {
+        val agents = agents()
+        agents.refresh()
+        val model = AccountModel("gpt-5.6", listOf(ModelParam("effort", "high")))
+        editor(agents).create("Tuned", ProjectAppearance("flag", "green"), emptyList(), model).getOrThrow()
+        assertThat(creation.drafts.single().model).isEqualTo(model)
     }
 
     @Test

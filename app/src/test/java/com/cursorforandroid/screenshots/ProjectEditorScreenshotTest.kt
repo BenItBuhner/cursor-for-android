@@ -18,6 +18,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.ModelChoice
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.projects.ProjectEditorSheet
@@ -73,6 +77,10 @@ class ProjectEditorScreenshotTest {
         Repository("https://github.com/acme/mobile"),
     )
 
+    private val auto = ModelOption("default", "Auto")
+    private val sonnet = ModelOption("claude-4.5-sonnet", "Claude 4.5 Sonnet", variants = listOf(ModelVariant("Default", emptyList(), isDefault = true), ModelVariant("High effort", listOf(ModelParam("effort", "high")), isDefault = false)))
+    private val models = listOf(auto, sonnet, ModelOption("gpt-5.6", "GPT-5.6"))
+
     @Test
     fun createProjectSheet() {
         compose.setContent {
@@ -89,6 +97,9 @@ class ProjectEditorScreenshotTest {
                     onRefreshRepositories = {},
                     onConfirm = {},
                     onDismiss = {},
+                    models = models,
+                    // The composer's default: the model this device last launched with, as the row opens on it.
+                    defaultModel = ModelChoice(sonnet, sonnet.variants.last()),
                 )
             }
         }

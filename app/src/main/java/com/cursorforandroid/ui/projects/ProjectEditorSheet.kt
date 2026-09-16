@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +39,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.domain.AccountModel
+import com.cursorforandroid.domain.ModelChoice
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.components.CursorButton
@@ -48,12 +54,14 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.home.SheetRow
 import com.cursorforandroid.ui.home.SheetSearchField
 import com.cursorforandroid.ui.icons.ProjectIcons
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ProjectPalette
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /** What the Project editor is opened for; a `Serializable`, so `rememberSaveable` keeps it up across a rotation. */
@@ -65,8 +73,15 @@ sealed interface ProjectEditorTarget : java.io.Serializable {
     data class Edit(val projectId: String) : ProjectEditorTarget
 }
 
-/** What the sheet hands back on confirm: the name as typed, the look if one was chosen, the repositories picked. */
-data class ProjectEditorResult(val name: String, val appearance: ProjectAppearance?, val repoUrls: List<String>)
+/**
+ * What the sheet hands back on confirm: the name as typed, the look if one was chosen, the repositories picked, and
+ * the model the coordinator runs on — the picker's choice, else what the sheet opened on; null only when no model
+ * list was there to choose from, which the account reads as Auto.
+ */
+data class ProjectEditorResult(val name: String, val appearance: ProjectAppearance?, val repoUrls: List<String>, val model: ModelChoice? = null) {
+    /** The choice as the account is told it: the model's id, the variant's parameters; Auto is the desktop's `default`. */
+    val accountModel: AccountModel? get() = model?.let { AccountModel(if (it.model.isAuto) AccountModel.AUTO_ID else it.model.id, it.params) }
+}
 
 /**
  * The editor bound to the graph: the account's repositories for the picker, the Project's row for the fields, and
@@ -77,10 +92,15 @@ data class ProjectEditorResult(val name: String, val appearance: ProjectAppearan
 fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent: (String) -> Unit, onDismiss: () -> Unit) {
     val list by graph.agents.state.collectAsStateWithLifecycle()
     val repositories by graph.catalog.repositories.collectAsStateWithLifecycle()
+    val models by graph.catalog.models.collectAsStateWithLifecycle()
+    val pinnedModelIds by graph.prefs.pinnedModelIds.collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var reposLoading by remember { mutableStateOf(false) }
+    var modelsLoading by remember { mutableStateOf(false) }
+    var modelsUnavailable by remember { mutableStateOf(false) }
+    var remembered by remember { mutableStateOf<ModelResolution.Candidate.Remembered?>(null) }
     val project = (target as? ProjectEditorTarget.Edit)?.let { edit -> list.agents.firstOrNull { it.id == edit.projectId } }
     // The catalog's repositories, read once the sheet opens for a new Project; a refresh re-reads them.
     fun loadRepositories(force: Boolean) {
@@ -94,7 +114,31 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
             }
         }
     }
-    LaunchedEffect(target) { loadRepositories(force = false) }
+    // The model list, and what this device last launched with or picked, for the model the sheet opens on.
+    fun loadModels(force: Boolean) {
+        if (target !is ProjectEditorTarget.Create) return
+        scope.launch {
+            modelsLoading = true
+            try {
+                modelsUnavailable = graph.catalog.loadModels(force).isFailure && graph.catalog.models.value.isEmpty()
+            } finally {
+                modelsLoading = false
+            }
+        }
+    }
+    LaunchedEffect(target) {
+        loadRepositories(force = false)
+        loadModels(force = false)
+        if (target is ProjectEditorTarget.Create) {
+            val defaults = graph.prefs.composerDefaults.first()
+            remembered = defaults.takeIf { it.modelChosen && it.modelId != null }?.let { ModelResolution.Candidate.Remembered(it.modelId!!, it.modelParams, it.modelChosenAtMillis) }
+        }
+    }
+    // The composer's resolution (see [ModelResolution.forNewChat]): the newer of the model this device last used
+    // and the account's newest chat's model, else Auto — the row the desktop's dialog opens its Model picker on.
+    val defaultModel = remember(models, remembered, list.agents) {
+        ModelResolution.forNewChat(models, listOfNotNull(remembered, ModelResolution.newestAccountModel(list.agents)), settleOnAuto = true)?.choice
+    }
     ProjectEditorSheet(
         target = target,
         initialName = project?.name?.takeIf { target is ProjectEditorTarget.Edit }.orEmpty(),
@@ -102,6 +146,13 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
         repositories = repositories,
         ownedRepoUrls = listOfNotNull(project?.repoUrl),
         repositoriesLoading = reposLoading,
+        models = models,
+        defaultModel = defaultModel,
+        modelsLoading = modelsLoading,
+        modelsUnavailable = modelsUnavailable,
+        pinnedModelIds = pinnedModelIds,
+        onTogglePinnedModel = { id -> scope.launch { graph.prefs.togglePinnedModel(id) } },
+        onRetryModels = { loadModels(force = true) },
         busy = busy,
         error = error,
         onRefreshRepositories = { loadRepositories(force = true) },
@@ -110,18 +161,37 @@ fun ProjectEditorHost(graph: AppGraph, target: ProjectEditorTarget, onOpenAgent:
             error = null
             scope.launch {
                 val outcome = when (target) {
-                    ProjectEditorTarget.Create -> graph.projectEditor.create(result.name, result.appearance, result.repoUrls).map { id -> { onOpenAgent(id) } }
-                    is ProjectEditorTarget.Edit -> graph.projectEditor.update(target.projectId, result.name, result.appearance).map { { } }
+                    ProjectEditorTarget.Create -> graph.projectEditor.create(result.name, result.appearance, result.repoUrls, result.accountModel).map { id ->
+                        // A model picked here is the model this device last picked, as the composer would remember it.
+                        result.model?.takeIf { it != defaultModel }?.let { choice -> graph.prefs.rememberModel(choice.model.id, choice.params.associate { it.id to it.value }) }
+                        val open: () -> Unit = { onOpenAgent(id) }
+                        open
+                    }
+                    is ProjectEditorTarget.Edit -> graph.projectEditor.update(target.projectId, result.name, result.appearance).map { val nothing: () -> Unit = {}; nothing }
                 }
                 busy = false
                 outcome.fold(
                     onSuccess = { then -> onDismiss(); then() },
-                    onFailure = { error = it.message ?: "Cursor didn't answer." },
+                    onFailure = { error = refusalText(it) },
                 )
             }
         },
         onDismiss = onDismiss,
     )
+}
+
+/**
+ * The account's refusal, in the account's words: the Connect error's message as the server sent it, with its code
+ * and status when it gave them, so a refusal such as "At least one model details is required" can be read back to
+ * what the server checked. Anything else is the exception's own message.
+ */
+internal fun refusalText(failure: Throwable): String = when (failure) {
+    is ConnectRpcException -> buildString {
+        append(failure.message?.takeIf { it.isNotBlank() } ?: "Cursor refused the request.")
+        val detail = listOfNotNull(failure.code?.takeIf { it.isNotBlank() }, "HTTP ${failure.httpCode}".takeIf { failure.httpCode != 200 })
+        if (detail.isNotEmpty()) append(" (Cursor: ").append(detail.joinToString(", ")).append(')')
+    }
+    else -> failure.message?.takeIf { it.isNotBlank() } ?: "Cursor didn't answer."
 }
 
 /**
@@ -145,6 +215,14 @@ fun ProjectEditorSheet(
     onRefreshRepositories: () -> Unit,
     onConfirm: (ProjectEditorResult) -> Unit,
     onDismiss: () -> Unit,
+    /** The catalog for the Model section of a new Project, and the model it opens on (see [ProjectEditorHost]). */
+    models: List<ModelOption> = emptyList(),
+    defaultModel: ModelChoice? = null,
+    modelsLoading: Boolean = false,
+    modelsUnavailable: Boolean = false,
+    pinnedModelIds: List<String> = emptyList(),
+    onTogglePinnedModel: (String) -> Unit = {},
+    onRetryModels: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -157,6 +235,10 @@ fun ProjectEditorSheet(
     var pickingIcon by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var repoFilter by rememberSaveable { mutableStateOf("") }
+    // The model: the picker's choice once one is made, else what the sheet opened on (which can settle late, as the list loads).
+    var pickedModel by remember { mutableStateOf<ModelChoice?>(null) }
+    var modelSheetOpen by rememberSaveable { mutableStateOf(false) }
+    val model = pickedModel ?: defaultModel
     // An ArrayList, which the saved state can hold; the repositories picked, in the order picked (the first is primary).
     var picked by rememberSaveable { mutableStateOf(ArrayList(ownedRepoUrls)) }
     val tone = colors.projectTone(colorId)
@@ -228,6 +310,26 @@ fun ProjectEditorSheet(
                         }
                     }
                 }
+                if (creating) {
+                    // The desktop dialog's Model picker: what the coordinator runs on, opened on the composer's default.
+                    item("model-header") {
+                        Text("Model", style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 2.dp))
+                    }
+                    item("model") {
+                        val label = when {
+                            model != null -> model.label
+                            modelsLoading -> "Loading models\u2026"
+                            modelsUnavailable -> "Couldn't load the model list \u00B7 Auto"
+                            else -> AccountModel.AUTO_LABEL
+                        }
+                        val variant = model?.variant?.takeIf { !it.isDefault && model.model.variants.size > 1 }?.displayName
+                        Box(Modifier.fillMaxWidth().testTag("project-model")) {
+                            SheetRow(title = label, subtitle = variant ?: if (model?.model?.isAuto != false) "Cursor picks the model for each task" else null, checked = false, icon = CursorIcons.Sparkle) {
+                                modelSheetOpen = true
+                            }
+                        }
+                    }
+                }
                 item("repos-header") {
                     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 10.dp, top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (creating) "Repositories" else "Repositories · set when the Project was created", style = type.small, color = colors.textTertiary, modifier = Modifier.weight(1f))
@@ -286,7 +388,20 @@ fun ProjectEditorSheet(
             }
         }
         HairlineDivider(Modifier.padding(horizontal = 20.dp))
-        error?.let { Text(it, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp).testTag("project-editor-error")) }
+        error?.let {
+            // The account's words, whole: what it refused and why, not a line to squint at.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp).background(colors.red.copy(alpha = 0.1f), CursorTheme.shapes.base).border(CursorDimens.hairline, colors.red.copy(alpha = 0.4f), CursorTheme.shapes.base).padding(10.dp).testTag("project-editor-error"),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(if (creating) "Cursor didn't create the Project" else "Cursor didn't save the Project", style = type.baseMedium, color = colors.textPrimary)
+                    Text(it, style = type.small, color = colors.textSecondary)
+                }
+            }
+        }
         Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (chosen) "${ProjectIcons.label(icon ?: "")} \u00B7 ${ProjectPalette.label(colorId)}" else "Icon and colour: chosen for you unless you pick",
@@ -302,10 +417,28 @@ fun ProjectEditorSheet(
                     if (creating) "Create" else "Save",
                     primary = true,
                     enabled = creating || name.isNotBlank() || chosen,
-                    onClick = { onConfirm(ProjectEditorResult(name, if (chosen && icon != null) ProjectAppearance(icon!!, colorId) else null, picked)) },
+                    onClick = { onConfirm(ProjectEditorResult(name, if (chosen && icon != null) ProjectAppearance(icon!!, colorId) else null, picked, model)) },
                 )
             }
         }
+    }
+    if (modelSheetOpen) {
+        ModelSheet(
+            models = models,
+            selectedModel = model?.model,
+            selectedVariant = model?.variant,
+            planMode = false,
+            autoCreatePr = false,
+            loading = modelsLoading,
+            unavailable = modelsUnavailable,
+            onPlanMode = null,
+            onAutoCreatePr = null,
+            onRetry = onRetryModels,
+            onSelect = { chosenModel, chosenVariant -> if (chosenModel != null) pickedModel = ModelChoice(chosenModel, chosenVariant) },
+            onDismiss = { modelSheetOpen = false },
+            pinnedIds = pinnedModelIds,
+            onTogglePin = onTogglePinnedModel,
+        )
     }
 }
 
