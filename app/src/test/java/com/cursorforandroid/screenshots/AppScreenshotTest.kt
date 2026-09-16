@@ -366,8 +366,9 @@ class AppScreenshotTest {
             items.count { it is RunFooter } == 4 && items.count { it is ActivityGroup } == 4
         }
         compose.waitForIdle()
-        compose.onNodeWithText("Goal continued").performClick()
-        waitForText("In the Verity photoreal engine")
+        // The goal's row reads "Goal continued" with the objective beside it; a tap opens the objective in full beneath.
+        compose.onAllNodesWithText("Goal continued").onFirst().performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText("In the Verity photoreal engine", substring = true)).fetchSemanticsNodes().size >= 2 }
         compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Goal continued"))
         compose.waitForIdle()
         capture("23_conversation_notifications")
