@@ -80,6 +80,6 @@ fun TranscriptDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null)
 
 object TranscriptDiagnosticsCopy {
     const val TITLE = "Export transcript diagnostics"
-    const val SUBTITLE = "The last opened chat's items and tool calls — names, kinds and argument keys, no text — and whether it reads as a Project coordinator's. Send it if a coordinator's updates still show wrong."
+    const val SUBTITLE = "The last opened chat's items and tool calls — names, kinds and argument keys, no text — whether it reads as a Project coordinator's, and the shape of the account's record for its newest turns. Send it if a coordinator's updates still show wrong."
     const val TAG = "transcript-diagnostics"
 }

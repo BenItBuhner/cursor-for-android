@@ -254,20 +254,83 @@ class RecordCoordinatorTest {
     }
 
     @Test
-    fun `Reload transcript throws the chat's copies away and reads the record again`() = runBlocking<Unit> {
+    fun `a message read leniently out of a record's cut pieces is shown as recovered, then replaced by the run's own copy while the log lasts`() = runBlocking<Unit> {
+        val whole = """{"text":{"content":"PR #215 is merged and the release is cut."}}"""
+        // The record has the first two pieces of the streamed call and never the rest.
+        served = listOf(
+            buildJsonObject { put("humanMessage", buildJsonObject { put("text", "Where do we stand?"); put("agentMode", "AGENT_MODE_PROJECT") }) },
+            buildJsonObject { put("text", "Told Bennett.") },
+            buildJsonObject { put("toolCall", buildJsonObject { put("toolCallId", "c1"); put("name", "SendMessage"); put("rawArgs", whole.take(30)); put("isStreaming", true) }) },
+            buildJsonObject { put("toolCall", buildJsonObject { put("toolCallId", "c1"); put("name", "SendMessage"); put("rawArgs", whole.substring(30, 46)); put("isStreaming", true) }) },
+            buildJsonObject { put("text", ""); put("isMessageDone", true) },
+        )
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", Triple("run-1", "Where do we stand?", "Told Bennett."), firstRunAt = Instant.ofEpochMilli(now - 3_600_000L).toString())
+        agents.refresh()
+        // Without a log to read, the recovered body is what there is.
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { conversations.state(agentId).value.messages().isNotEmpty() }
+        awaitUntil { streamer.connections.contains("run-1") }
+        val recovered = conversations.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.mapNotNull { it.payload as? ToolPayload.CoordinatorMessage }.single()
+        assertThat(recovered).isEqualTo(ToolPayload.CoordinatorMessage("PR #215 is merged and the", recovered = true))
+        assertThat(conversations.state(agentId).value.rows().filterIsInstance<TranscriptRow.Message>()).hasSize(1)
+        conversations.detach(agentId)
+
+        // The log still has the call whole: the turn is asked for it, and the whole replaces the recovered reading.
+        streamer.reset("run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.ToolCall(SseToolCallDto("c1", "SendMessage", ToolCall.STATUS_COMPLETED, buildJsonObject { put("text", buildJsonObject { put("content", "PR #215 is merged and the release is cut.") }) })))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Told Bennett."))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Told Bennett.", 12_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        val again = repository()
+        again.attach(agentId)
+        awaitUntil { again.state(agentId).value.messages().any { it.endsWith("release is cut.") } }
+        val payload = again.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.mapNotNull { it.payload as? ToolPayload.CoordinatorMessage }.single()
+        assertThat(payload).isEqualTo(ToolPayload.CoordinatorMessage("PR #215 is merged and the release is cut."))
+    }
+
+    @Test
+    fun `Reload transcript throws the chat's copies away and reads the record again, past every cache`() = runBlocking<Unit> {
         seedRuns(turnStarts.size)
         val conversations = repository()
         conversations.attach(agentId)
         awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.messages().isNotEmpty() }
         awaitUntil { traces.runIds(agentId).any { it.startsWith(TraceCache.RECORD_KEY_PREFIX) } && cache.read(agentId) != null }
+        val shown = conversations.state(agentId).value.messages()
+        assertThat(shown).hasSize(2)
+        assertThat(shown.last()).startsWith("The phone worker has the Fold8")
         val before = fetches.get()
 
+        // The record changes under the same indices — the newest turn's update now reads differently — with the
+        // turn's step count unchanged, so a copy reused from memory or from the v5 files would keep the old words.
+        served = served.map { response ->
+            val back = response["streamedBackToolCall"]?.jsonObject ?: return@map response
+            if (back["toolCallId"]?.jsonPrimitive?.content != "toolu_send_03") return@map response
+            buildJsonObject {
+                put("streamedBackToolCall", buildJsonObject {
+                    back.forEach { (k, v) -> if (k != "rawArgs") put(k, v) }
+                    put("rawArgs", """{"text":{"content":"Reloaded: the phone worker has the Fold8 pair on its list."}}""")
+                })
+            }
+        }
         conversations.reloadTranscript(agentId)
         awaitUntil { conversations.state(agentId).value.items.isEmpty() || fetches.get() > before }
         awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.messages().isNotEmpty() && fetches.get() > before }
-        assertThat(conversations.state(agentId).value.messages()).hasSize(2)
-        // Read again, not restored: the record was asked for afresh.
+        awaitUntil { conversations.state(agentId).value.messages().any { it.startsWith("Reloaded:") } }
+        val reloaded = conversations.state(agentId).value.messages()
+        assertThat(reloaded).hasSize(2)
+        assertThat(reloaded.last()).isEqualTo("Reloaded: the phone worker has the Fold8 pair on its list.")
+        assertThat(reloaded.none { it.startsWith("The phone worker has the Fold8") }).isTrue()
+        // Read again, not restored: the record was asked for afresh, and the turn's file on disk is the new copy.
         assertThat(fetches.get()).isGreaterThan(before)
+        awaitUntil {
+            val files = traces.read(agentId)
+            files.keys.any { it.startsWith(TraceCache.RECORD_KEY_PREFIX) } && files.values.flatMap { it.items }.filterIsInstance<ActivityGroup>().flatMap { it.calls }
+                .any { (CoordinatorTranscript.reinterpret(it).payload as? ToolPayload.CoordinatorMessage)?.message?.startsWith("Reloaded:") == true }
+        }
     }
 
     @Test

@@ -49,11 +49,14 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("  assistant chars=34")
         assertThat(report).contains("  activity steps=6 coordination=true grouped=false")
         assertThat(report).contains("    thinking chars=35")
-        assertThat(report).contains("    tool sendToAgent · Coordinator · completed · worker_action(messaged,workers=1,reported=false) · args=[toolCallId,agentId,message,delivery,title] · linked=1 · truncated=-")
-        assertThat(report).contains("    tool SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=-")
-        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(${secret.length} chars) · args=[text] · linked=0 · truncated=-")
-        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=args")
-        assertThat(report).contains("    tool edit · Edit · completed · - · args=[path] · linked=0 · truncated=-")
+        assertThat(report).contains("    tool sendToAgent · Coordinator · completed · worker_action(messaged,workers=1,reported=false) · args=[toolCallId,agentId,message,delivery,title] · linked=1 · truncated=- · id=c1")
+        assertThat(report).contains("    tool SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=- · id=c2")
+        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(${secret.length} chars) · args=[text] · linked=0 · truncated=- · id=c3")
+        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=args · id=c4")
+        assertThat(report).contains("    tool edit · Edit · completed · - · args=[path] · linked=0 · truncated=- · id=c5")
+        // A body read leniently out of a record says so; a long id is cut to its tail.
+        val recovered = ToolCall("toolu_01SendPieces", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("The phone worker has the Fold8", recovered = true), argKeys = listOf("text"))
+        assertThat(TranscriptDiagnostics.describe(recovered)).isEqualTo("SendMessage · Coordinator · completed · coordinator_message(30 chars,recovered) · args=[text] · linked=0 · truncated=- · id=…Pieces")
         assertThat(report).contains("  footer status=FINISHED duration=81000 branches=0")
         // Nothing the user or the coordinator wrote, and no whole id.
         assertThat(report).doesNotContain("hunter2")
@@ -87,6 +90,16 @@ class TranscriptDiagnosticsTest {
             lastError = null, transcriptError = "Cursor took too long to respond. https://api.cursor.com/v0/agents/bc-1234/conversation", transcriptUnavailable = false,
             source = "record", record = TranscriptLoadDiagnostics.RecordLine(total = 8_320, firstStep = 8_060, turnsLoaded = 10, turnCount = 320, stateRead = true, empty = false, error = null),
             status = TranscriptLoadDiagnostics.StatusLine(shown = "RUNNING", latestRun = "CANCELLED", streaming = false, rowRunning = false, accountRunning = true, rowNewerThanRecordMs = 600_000L),
+            shapes = listOf(
+                TurnShape(
+                    stepIndex = 8_301, prompt = "user", projectMode = true,
+                    steps = listOf(
+                        StepShape(8_301, "human_message", "{humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT}}"),
+                        StepShape(8_302, "tool_call[id=toolCallId name=name args=piece]", "{toolCall:{toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true}}"),
+                    ),
+                    calls = listOf(CallShape("…Pieces", "SendMessage", steps = 3, args = "recovered(repaired,3)", result = true)),
+                ),
+            ),
         )
         val report = TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input("0.3.15", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668", agent = null, state = TranscriptDiagnostics.State(items), load = load),
@@ -101,6 +114,12 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("live: run=…un-160 following=true stream=events:3,status:RUNNING,reconnecting:false,expired:false,finished:false,items:2")
         assertThat(report).contains("errors: last=- transcript=\"Cursor took too long to respond. <url>\" transcriptUnavailable=false")
         assertThat(report).doesNotContain("bc-1234")
+        // The shape dump: the newest turns step by step, then their calls.
+        assertThat(report).contains("shapes: newest 1 turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
+        assertThat(report).contains("turn@8301 steps=2 prompt=user project=true calls=1")
+        assertThat(report).contains("  8301 human_message {humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT}}")
+        assertThat(report).contains("  8302 tool_call[id=toolCallId name=name args=piece] {toolCall:{toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true}}")
+        assertThat(report).contains("  call …Pieces SendMessage steps=3 args=recovered(repaired,3) result=true")
     }
 
     @Test

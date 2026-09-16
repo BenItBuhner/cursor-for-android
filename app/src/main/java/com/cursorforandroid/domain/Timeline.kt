@@ -423,7 +423,18 @@ data class NoticeCard(
     val title: String,
     val subtitle: String? = null,
     val tone: NoticeTone = NoticeTone.Neutral,
-) : TimelineItem
+) : TimelineItem {
+    /**
+     * The bare notice builds before 0.3.26 wrote for every cancelled run, still in the traces they left on disk. A
+     * cancel is the user's doing — their next message, their stop — and the footer says so quietly; the notice is
+     * not drawn (see `TranscriptRows`).
+     */
+    val isLegacyCancelNotice: Boolean get() = title == RUN_CANCELLED && subtitle == null
+
+    companion object {
+        const val RUN_CANCELLED = "Run cancelled"
+    }
+}
 
 enum class NoticeTone { Neutral, Success, Warning, Error }
 
@@ -474,7 +485,12 @@ data class SystemNotification(
     val hasDetails: Boolean get() = !body.isNullOrBlank() || !narration.isNullOrBlank()
 }
 
-/** Terminal marker for a run: status, duration and pushed branches. */
+/**
+ * Terminal marker for a run: status, duration and pushed branches. [endedAtMillis] is when the run ended as far as
+ * its record says (`updatedAt` of a run that is over), when the footer was built from the record; a footer the
+ * stream built carries none. It is what tells a run the user's next message interrupted from one they stopped and
+ * came back to (see `TranscriptRows`).
+ */
 @Serializable
 @SerialName("footer")
 data class RunFooter(
@@ -483,6 +499,7 @@ data class RunFooter(
     val status: RunStatus,
     val durationMs: Long?,
     val branches: List<GitBranch>,
+    val endedAtMillis: Long? = null,
 ) : TimelineItem
 
 /**
