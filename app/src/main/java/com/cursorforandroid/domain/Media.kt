@@ -222,11 +222,10 @@ sealed interface MediaRef {
 
     /**
      * A file of an Agent Store (`/cursor/stores/<mount>/…`, see [StorePath]): [ownerId] is the agent whose store it
-     * is — the mount's own, or the chat's for `self` — and [requesterId] the agent the read is made as, which is
-     * the chat's. Read through the account's store reads in Extended mode; without them a placeholder points at
-     * the Project on cursor.com.
+     * is — the mount's own, or the chat's for `self`. Read through the account's store reads in Extended mode;
+     * without them a placeholder points at the Project on cursor.com.
      */
-    data class Store(val ownerId: String, val relativePath: String, val requesterId: String) : MediaRef {
+    data class Store(val ownerId: String, val relativePath: String) : MediaRef {
         override val cacheKey: String get() = "store:$ownerId:$relativePath"
         override val label: String get() = ArtifactPaths.fileName(relativePath)
         val path: StorePath get() = StorePath(ownerId, relativePath)
@@ -249,7 +248,7 @@ sealed interface MediaRef {
             // A store path names the store to read from, whether written bare or behind a `file:` scheme.
             StorePath.parse(trimmed)?.let { path ->
                 val owner = path.ownerId(agentId) ?: return Unavailable(trimmed)
-                return Store(owner, path.relativePath, requesterId = agentId ?: owner)
+                return Store(owner, path.relativePath)
             }
             // Both spellings `java.io.File.toURI()` (`file:/x`) and `Uri.fromFile` (`file:///x`) produce.
             if (trimmed.startsWith("file:", ignoreCase = true)) {

@@ -59,6 +59,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.TranscriptRows
+import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
@@ -267,28 +268,20 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
-    // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
-    // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
-    val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
-    (panel.desktop as? DesktopState.Open)?.let { open ->
-        DesktopDialog(
-            session = open.session,
-            agentName = agent?.name,
-            onViewOnlyChange = panelActions::setDesktopViewOnly,
-            onReconnect = { panelActions.openDesktop(open.session.viewOnly) },
-            onClose = panelActions::closeDesktop,
-        )
-    }
-    LaunchedEffect(panel.desktop) {
-        when (val desktop = panel.desktop) {
-            DesktopState.Opening -> viewModel.showMessage("Finding the agent's desktop…")
-            is DesktopState.Failed -> {
-                viewModel.showMessage(desktop.failure.message)
-                panelActions.closeDesktop()
-            }
-            else -> Unit
-        }
-    }
+    // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
+    // that have one to show — the Agents Window's rule, a cloud composer, narrowed to the chats GetMachine would not
+    // refuse (DesktopEligibility). It opens over the whole screen for the whole of the way there: the steps while the
+    // machine is found, the failing step with a retry and the diagnostics to share, then the viewer.
+    val canOpenDesktop = capabilities.remoteDesktop && !isDemo && DesktopEligibility.canOpen(agent)
+    DesktopDialog(
+        state = panel.desktop,
+        agentName = agent?.name,
+        onViewOnlyChange = panelActions::setDesktopViewOnly,
+        onRetry = { viewOnly -> panelActions.openDesktop(viewOnly) },
+        onFail = panelActions::failDesktop,
+        onShare = panelActions::shareText,
+        onClose = panelActions::closeDesktop,
+    )
 
     SidePanel(
         state = panelState,

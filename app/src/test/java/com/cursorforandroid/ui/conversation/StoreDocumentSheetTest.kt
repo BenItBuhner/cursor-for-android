@@ -14,6 +14,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
@@ -59,7 +60,7 @@ class StoreDocumentSheetTest {
             failing?.let { throw it }
             return text
         }
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = null
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = null
     }
 
     private val api = Store()
@@ -118,7 +119,7 @@ class StoreDocumentSheetTest {
         compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("store-document-source")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("worker=bc-1\nbranch=main").assertIsDisplayed()
         compose.onAllNodes(hasTestTag("store-preview")).fetchSemanticsNodes().let { assertThat(it).isEmpty() }
-        assertThat(storeRef(StorePath.parse("/cursor/stores/self/internal/state.txt")!!, "bc-worker")).isEqualTo(MediaRef.Store("bc-worker", "internal/state.txt", "bc-worker"))
+        assertThat(storeRef(StorePath.parse("/cursor/stores/self/internal/state.txt")!!, "bc-worker")).isEqualTo(MediaRef.Store("bc-worker", "internal/state.txt"))
         assertThat(storeRef(StorePath.parse("/cursor/stores/user/notes.md")!!, "bc-worker")).isNull()
         assertThat(api.reads).containsExactly("st-proj:internal/state.txt")
     }

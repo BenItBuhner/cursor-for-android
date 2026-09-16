@@ -37,11 +37,14 @@ import com.cursorforandroid.ui.conversation.TranscriptRowView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import com.google.common.truth.Truth.assertThat
 import okio.Buffer
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +69,17 @@ class CoordinatorTranscriptScreenshotTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
+
+    /** The injected turn's row says how long ago it was; pinned at two days after it so the frame reads the same every run. */
+    @Before
+    fun pinClock() {
+        AppClock.nowMillis = { 1_789_340_700_000L + 2 * 24 * 3_600_000L + 3_600_000L }
+    }
+
+    @After
+    fun unpinClock() {
+        AppClock.nowMillis = System::currentTimeMillis
+    }
 
     @OptIn(ExperimentalRoborazziApi::class)
     private fun capture(name: String) {
