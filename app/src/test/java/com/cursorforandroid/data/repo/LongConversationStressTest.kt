@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
@@ -39,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
@@ -123,6 +125,8 @@ class LongConversationStressTest {
         val failures = AtomicInteger(0)
         @Volatile var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         @Volatile var empty = false
+        /** The record keeps the prompts and files the bodies elsewhere: every step but a prompt comes back blank. */
+        @Volatile var promptsOnly = false
         val requests = java.util.concurrent.CopyOnWriteArrayList<Pair<Int, Int>>()
 
         fun stepAt(index: Int): HeadlessStep {
@@ -130,6 +134,7 @@ class LongConversationStressTest {
             val k = index % perTurn
             return when {
                 k == 0 -> HeadlessStep(userMessage = "Prompt $t")
+                promptsOnly -> HeadlessStep()
                 k == perTurn - 1 -> HeadlessStep(text = "Reply $t")
                 k % 2 == 1 -> HeadlessStep(toolCall = HeadlessToolCall("rec-$t-${(k + 1) / 2}", "read_file", buildJsonObject { put("path", JsonPrimitive("app/src/File${(k + 1) / 2}.kt")) }))
                 else -> HeadlessStep(toolResult = HeadlessToolResult("rec-$t-${k / 2}", buildJsonObject { put("content", JsonPrimitive("r".repeat(payloadChars))) }))
@@ -461,7 +466,9 @@ class LongConversationStressTest {
         assertThat(state.activeRunId).isEqualTo("run-$runs")
         assertThat(state.hasOlder).isTrue()
         assertThat(state.traceStatus).isEqualTo(TraceStatus(shown = 10))
-        assertThat((state.rows().last() as? TranscriptRow.Stretch)?.live).isTrue()
+        // The live run's first events land (a burst is one publication, a beat later) and its stretch reads as working.
+        awaitUntil { conversations.state(agentId).value.toolCalls().any { it.callId == "run-$runs-c1" } }
+        assertThat((conversations.state(agentId).value.rows().last() as? TranscriptRow.Stretch)?.live).isTrue()
         // No run log was replayed for the page: the record is the source. Only the live run's stream was opened.
         assertThat(streamer.connections.distinct()).containsExactly("run-$runs")
         val diagnostics = conversations.loadDiagnostics(agentId)!!
@@ -654,6 +661,151 @@ class LongConversationStressTest {
         assertThat(settled.footers().last()).isEqualTo(runId)
         assertThat(settled.toolCalls().any { it.callId == "$runId-c1" }).isTrue()
         assertThat(conversations.loadDiagnostics(agentId)!!.record!!.turnCount).isEqualTo(runs + 1)
+    }
+
+    /**
+     * The false "cancelled" of 0.3.21: the account runs on (the row says so, with the newest word), the record's last
+     * turn is in progress, and the `/v1` record of the run — on disk from an earlier visit and on the server — says
+     * cancelled. The freshest word wins: the chat reads as running, the newest turn wears no "Cancelled" footer and no
+     * "Run cancelled" notice, and its steps from the record are on screen.
+     */
+    @Test
+    fun `extended - a running account beats a cancelled run record, cached or served`() = runBlocking<Unit> {
+        api.ascendingRuns = false
+        seed()
+        val live = "run-$runs"
+        // The server's run record lags the account and calls the run cancelled; the row (the account) runs on, newer.
+        api.runs[live] = api.runs.getValue(live).copy(status = "CANCELLED", updatedAt = Instant.ofEpochMilli(now - 600_000L).toString())
+        api.agents[agentId] = api.agents.getValue(agentId).copy(status = "ACTIVE", latestRunId = live, updatedAt = Instant.ofEpochMilli(now).toString())
+        // The account's word (the running set the account list keeps in Extended mode): running, with the row's
+        // activity newer than the run record; the row's own run-level status stays the record's, as it does there.
+        api.v0[agentId] = api.v0.getValue(agentId).copy(status = "RUNNING")
+        agents.refresh()
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot(agentId, name = "Long chat", archived = false, status = RunStatus.RUNNING)))
+        awaitUntil { agentId in agents.runningScan.value.all }
+        // And the copy on disk from an earlier visit says the same of the run.
+        val record = record()
+        cache.write(
+            com.cursorforandroid.data.local.CachedConversation(
+                agentId = agentId,
+                messages = emptyList(),
+                runs = api.runs.values.filter { it.agentId == agentId }.sortedByDescending { it.createdAt }.take(20),
+                agentUpdatedAtMillis = 1L,
+                runsComplete = false,
+                olderRunsCursor = "run-300",
+                window = 10,
+            ),
+        )
+        val conversations = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        conversations.attach(agentId)
+        // From the disk copy already: running, not cancelled.
+        awaitUntil { conversations.state(agentId).value.items.isNotEmpty() || conversations.state(agentId).value.runStatus != null }
+        assertThat(conversations.state(agentId).value.runStatus).isNotEqualTo(RunStatus.CANCELLED)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.prompts().size == 10 }
+        val state = conversations.state(agentId).value
+        assertThat(state.runStatus).isEqualTo(RunStatus.RUNNING)
+        assertThat(state.footers()).doesNotContain(live)
+        assertThat(state.footers()).hasSize(9)
+        assertThat(state.items.filterIsInstance<com.cursorforandroid.domain.NoticeCard>()).isEmpty()
+        // The newest turn's steps so far, from the record.
+        assertThat(state.toolCalls().any { it.callId == "rec-$runs-1" }).isTrue()
+        assertThat(state.toolCalls().map { it.callId }).containsAtLeastElementsIn(recordCalls(runs - 9, runs - 1))
+        assertThat(conversations.loadDiagnostics(agentId)!!.runs.last().status).isEqualTo("CANCELLED")
+    }
+
+    /**
+     * A record that keeps the prompts and files the bodies elsewhere (0.3.21's outright failure: prompts and nothing
+     * else): the prompts render at once, the steps of each turn come from its run's log — progressively, newest first
+     * — and a turn whose log is gone says so itself. Never an empty transcript.
+     */
+    @Test
+    fun `extended - a record without bodies renders prompts at once and each turn's steps from its log, or says why not`() = runBlocking<Unit> {
+        api.ascendingRuns = false
+        seed()
+        val record = record().apply { promptsOnly = true }
+        val conversations = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        conversations.attach(agentId)
+        awaitUntil { conversations.state(agentId).value.prompts().size == 10 }
+        awaitUntil { conversations.state(agentId).value.isStreaming }
+        // The newest page: every finished turn's twelve calls, from the logs the server still has.
+        awaitUntil(60_000) { conversations.state(agentId).value.toolCalls().count { !it.isRunning } >= 9 * callsPerRun }
+        val page = conversations.state(agentId).value
+        assertThat(page.toolCalls().map { it.callId }).containsAtLeastElementsIn(((runs - 9) until runs).flatMap { r -> (1..callsPerRun).map { "run-$r-c$it" } })
+        assertThat(page.footers()).containsExactly(*((runs - 9) until runs).map { "run-$it" }.toTypedArray()).inOrder()
+        awaitUntil { conversations.state(agentId).value.traceStatus == TraceStatus(shown = 10) }
+        assertThat(page.items.filterIsInstance<com.cursorforandroid.domain.NoticeCard>()).isEmpty()
+
+        // Older turns: the ones whose logs expired say so, one notice each; the rest have their steps.
+        conversations.loadOlder(agentId)
+        awaitUntil(60_000) {
+            val s = conversations.state(agentId).value
+            s.prompts().size == 20 && !s.isLoadingOlder && s.traceStatus.pending == 0
+        }
+        val widened = conversations.state(agentId).value
+        val expiredTurns = (runs - 19) until (runs - retained)
+        assertThat(widened.traceStatus.expired).isEqualTo(expiredTurns.count())
+        val notices = widened.items.filterIsInstance<com.cursorforandroid.domain.NoticeCard>()
+        assertThat(notices).hasSize(expiredTurns.count())
+        assertThat(notices.all { it.title == "This turn's activity is no longer available" }).isTrue()
+        assertThat(widened.toolCalls().map { it.callId }).containsAtLeastElementsIn(((runs - retained) until runs).flatMap { r -> (1..callsPerRun).map { "run-$r-c$it" } })
+        // On a restart the replayed steps are on screen from disk with the record's prompts, before the network answers.
+        awaitUntil { traces.runIds(agentId).any { it.startsWith("run-") } }
+        conversations.detach(agentId)
+        record.gate = kotlinx.coroutines.CompletableDeferred()
+        api.runsGate = kotlinx.coroutines.CompletableDeferred()
+        val next = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        next.attach(agentId)
+        awaitUntil(5_000) { next.state(agentId).value.toolCalls().count { !it.isRunning } >= 9 * callsPerRun }
+        assertThat(next.state(agentId).value.prompts().size).isAtLeast(10)
+        record.gate!!.complete(Unit)
+        api.runsGate!!.complete(Unit)
+        awaitUntil { !next.state(agentId).value.isLoading }
+    }
+
+    /**
+     * Catching up is quiet: opening the chat and paging older turns publish the transcript a handful of times, not
+     * once per item; the rows already shown keep their ids when older pages insert above them, so the list stays
+     * anchored where the reader is; a burst of the live run's deltas lands as one publication or two.
+     */
+    @Test
+    fun `extended - pages land as single publications, shown rows keep their ids, live bursts coalesce`() = runBlocking<Unit> {
+        api.ascendingRuns = false
+        seed()
+        val record = record()
+        val conversations = repository(hub(), record = record, capabilities = Capabilities.EXTENDED)
+        val publications = java.util.concurrent.CopyOnWriteArrayList<List<String>>()
+        val collector = scope.launch {
+            conversations.state(agentId).collect { s -> publications += s.items.map { it.id } }
+        }
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.isStreaming && conversations.state(agentId).value.footers().size == 9 }
+        delay(300)
+        val opening = publications.distinct()
+        println("STRESS publications on open: ${opening.size}")
+        // Cache miss: the record, the runs (with the state), the live run's first events — a handful, not per item.
+        assertThat(opening.size).isAtMost(8)
+        val shownBefore = conversations.state(agentId).value.items.map { it.id }
+
+        publications.clear()
+        conversations.loadOlder(agentId)
+        awaitUntil(60_000) { conversations.state(agentId).value.prompts().size == 20 && !conversations.state(agentId).value.isLoadingOlder }
+        delay(300)
+        val paging = publications.distinct().filter { it.size > shownBefore.size }
+        println("STRESS publications while paging older: ${paging.size}")
+        assertThat(paging.size).isAtMost(3)
+        val after = conversations.state(agentId).value.items.map { it.id }
+        // Every row that was on screen is still there, in the same order, under the same id: the older page went above.
+        assertThat(after.filter { it in shownBefore.toSet() }).containsExactlyElementsIn(shownBefore).inOrder()
+        assertThat(after.takeLast(shownBefore.size)).containsExactlyElementsIn(shownBefore).inOrder()
+
+        publications.clear()
+        val live = "run-$runs"
+        repeat(40) { streamer.emit(live, RunStreamEvent.Assistant("word $it ")) }
+        awaitUntil { conversations.state(agentId).value.items.filterIsInstance<com.cursorforandroid.domain.AssistantMessage>().any { it.markdown.contains("word 39") } }
+        delay(300)
+        println("STRESS publications for 40 deltas: ${publications.distinct().size}")
+        assertThat(publications.distinct().size).isAtMost(6)
+        collector.cancel()
     }
 
     /**

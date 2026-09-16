@@ -230,6 +230,9 @@ fun AgentDto.mergeInto(previous: Agent?, latestRun: RunDto?): Agent {
 
 fun RunDto.statusEnum(): RunStatus = RunStatus.parse(status)
 
+/** How much newer than a terminal run record a running row must be for the record not to end it (see [withLatestRun]). */
+const val STALE_RUN_RECORD_SLACK_MS = 5_000L
+
 /**
  * Folds a run the caller has just read from the server into the row, when it is the row's latest run (or the row
  * does not know its latest run yet). Runs are the authority on execution state, so the status is taken as is —
@@ -239,8 +242,18 @@ fun RunDto.statusEnum(): RunStatus = RunStatus.parse(status)
  */
 fun Agent.withLatestRun(run: RunDto): Agent {
     if (latestRunId != null && latestRunId != run.id) return this
+    val status = run.statusEnum()
+    // A terminal record written before the row's own activity does not end a running row: the account has moved on
+    // since — a steer's next run, a coordinator's next turn — and the run the list names next is the one to settle
+    // it. A record as new as the row (a turn that just ended, the list lagging its finish) still ends the spinner.
+    if (status.isTerminal && isRunning && updatedAtMillis > parseIsoMillis(run.updatedAt) + STALE_RUN_RECORD_SLACK_MS) {
+        return copy(
+            branches = run.git.toBranches().ifEmpty { branches },
+            summary = run.result?.takeIf { it.isNotBlank() } ?: summary,
+        )
+    }
     return copy(
-        runStatus = run.statusEnum(),
+        runStatus = status,
         latestRunId = run.id,
         branches = run.git.toBranches().ifEmpty { branches },
         summary = run.result?.takeIf { it.isNotBlank() } ?: summary,

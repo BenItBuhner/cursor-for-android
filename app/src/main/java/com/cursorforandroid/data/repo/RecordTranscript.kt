@@ -4,6 +4,8 @@ import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnTiming
+import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.TimelineItem
 
 /**
@@ -30,6 +32,13 @@ class RecordTurn(
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
+
+    /**
+     * The record gave the turn's steps, not the prompt alone: a thought, a tool call or a reply is among the items.
+     * A record that keeps the prompts and files the bodies elsewhere leaves this false, and the run's log is read
+     * for the turn instead (see `ConversationRepository.recordTurnsNeedingReplay`).
+     */
+    val hasBody: Boolean get() = items.any { it is ActivityGroup || it is AssistantMessage }
 
     companion object {
         const val TRACE_KEY_PREFIX = "record:"
