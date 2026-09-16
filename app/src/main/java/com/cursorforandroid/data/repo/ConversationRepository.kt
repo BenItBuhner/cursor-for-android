@@ -393,6 +393,15 @@ class ConversationRepository(
         }
 
         /**
+         * [run]'s record as this device knows it: the run it cancelled reads cancelled, whatever a record written
+         * before the cancel says. What the agent's row is patched from (see `Agent.withLatestRun`): a load whose run
+         * page was read before the Stop, landing after it, put the row back to running for the very run this device
+         * had stopped — after the run's own end had already settled it, so nothing settled it again until the
+         * follow-up queue's busy recheck, twenty seconds on.
+         */
+        fun known(run: RunDto): RunDto = if (statusOf(run) == run.statusEnum()) run else run.copy(status = RunStatus.CANCELLED.name)
+
+        /**
          * The chat's status as the screen shows it, the freshest word first. A run being streamed is running,
          * whatever any record says of it. Next the agent's row: when the account calls the chat running and its
          * word is at least as new as the latest run record's, the chat is running — a record that says cancelled
@@ -1341,17 +1350,20 @@ class ConversationRepository(
                 }
                 // The latest run is the row's execution state (a turn that ended in an error is only visible here),
                 // so the sidebar reflects it right away. The full agent record then enriches the row (repo, PR,
-                // duration); it never holds up the transcript, and reuses this run, saving a round-trip.
-                latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
-                launch { agents.loadDetail(agentId, latest) }
+                // duration); it never holds up the transcript, and reuses this run, saving a round-trip. As this
+                // device knows the run (see [Entry.known]): a record read before a Stop does not put the row back to running.
+                val knownLatest = latest?.let { e.known(it) }
+                knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+                launch { agents.loadDetail(agentId, knownLatest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
                     persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
                         // Already followed when the runs rendered ahead of the transcript (see [publishRunsFirst]): the
-                        // stream is not opened a second time for the same run.
-                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
+                        // stream is not opened a second time for the same run. And only while it is still the chat's
+                        // latest: a follow-up accepted since (the persist above is a suspension) is followed already.
+                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
                     } else {
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
@@ -1396,9 +1408,9 @@ class ConversationRepository(
             // Still loading: the transcript is on its way. The screen shows what there is meanwhile.
             transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest)) },
         )
-        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(e.known(run)) } }
         val active = latest?.takeIf { it.statusEnum().isActive }
-        if (active != null) startStreaming(e, agentId, active)
+        if (active != null) startStreaming(e, agentId, active, unlessMovedOn = true)
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
     }
 
@@ -1486,11 +1498,12 @@ class ConversationRepository(
                     copy(activeRunId = latest?.id, runStatus = if (following) runStatus else e.chatStatus(latest), isStreaming = following && isStreaming, isReconnecting = following && isReconnecting)
                 },
             )
-            latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
-            launch { agents.loadDetail(agentId, latest) }
+            val knownLatest = latest?.let { e.known(it) }
+            knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+            launch { agents.loadDetail(agentId, knownLatest) }
             val active = latest?.takeIf { it.statusEnum().isActive }
             if (active != null) {
-                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
+                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
             } else {
                 val followed = synchronized(e) { e.live?.runId }
                 if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
@@ -1591,7 +1604,8 @@ class ConversationRepository(
         val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
         val known = synchronized(e) { e.runById(latestId) }
         val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
-        if (!run.statusEnum().isActive) return false
+        // Active as this device knows it: the run it stopped is not the next one to follow, whatever its record says yet.
+        if (!e.statusOf(run).isActive) return false
         var follow = false
         e.publish(mutate = {
             if (runs.none { it.id == run.id }) runs = listOf(run) + runs
@@ -2188,8 +2202,13 @@ class ConversationRepository(
         return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 
-    private fun startStreaming(e: Entry, agentId: String, run: RunDto) {
-        e.streamJob?.cancel()
+    /**
+     * Follows [run]: its stream's snapshots become the chat's live turn (see [Entry.applyLive]). [unlessMovedOn] is
+     * for a run a load read as the chat's latest: it is followed only while it still is — a follow-up sent from here
+     * while the load was in flight is the newer run, already followed, and a load landing after it must not put the
+     * chat back on the turn it had moved past (which showed a cancelled run, not streaming, over a follow-up under way).
+     */
+    private fun startStreaming(e: Entry, agentId: String, run: RunDto, unlessMovedOn: Boolean = false) {
         // Started only once it is the entry's follower, so not even its first snapshot can be taken for a stale one.
         val job = e.scope.launch(start = CoroutineStart.LAZY) {
             val self = currentCoroutineContext()[Job]
@@ -2218,6 +2237,9 @@ class ConversationRepository(
                 }
         }
         val following = synchronized(e) {
+            // The chat has moved past this run since the load read it: the follow it has stands.
+            if (unlessMovedOn && e.latestRun()?.id != run.id) return@synchronized false
+            e.streamJob?.cancel()
             // The last screen may have left, or the one still attached been covered, while the load that got here
             // was wrapping up: then nobody is looking, and the next attach or resume decides afresh.
             if (e.attached == 0 || e.paused) return@synchronized false
@@ -2722,8 +2744,8 @@ class ConversationRepository(
                     val latest = page.items.maxByOrNull { parseIsoMillis(it.createdAt) }
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
-                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(run) } }
                     val e = entry(agent.id)
+                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(e.known(run)) } }
                     // A screen that opened it in the meantime owns the entry now.
                     if (e.attached == 0 && e.streamJob == null) {
                         e.publish(

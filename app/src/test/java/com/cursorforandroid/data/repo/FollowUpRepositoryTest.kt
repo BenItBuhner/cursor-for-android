@@ -471,12 +471,22 @@ class FollowUpRepositoryTest {
      * that predates the cancel — the run still running — and starts following that run. That used to put the chat
      * back to running for the very run this device had stopped, and a follow-up (a steer's, or the queue's) then
      * waited on a stream that would report nothing for it: the intermittent 20 s timeout in the sign-out test here.
+     *
+     * Two orderings of the same load flaked this case afterwards, both fixed in the repository rather than waited
+     * out here. The load's run page, read before the Stop, patched the row back to running for the stopped run
+     * after the run's own end had settled it — the hub reports an end once — so the queue waited its whole busy
+     * recheck (20 s) for a row nothing would settle (`Entry.known`: a record of the run this device cancelled reads
+     * cancelled). And the load's follow of its stale latest run landed after a follow-up accepted meanwhile had
+     * started the new run's follow, displacing it: the chat sat on the cancelled run, not streaming, over a
+     * follow-up under way (`startStreaming(unlessMovedOn)`: a load's run is followed only while it is still the
+     * chat's latest).
      */
     @Test
     fun `a follow-up queued after a Stop is not held by a load that re-follows the stopped run`() = runBlocking<Unit> {
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
         api.conversationGate = CompletableDeferred()
+        val detailsBefore = api.getAgentCalls
         conversations.attach("bc-1")
         awaitUntil { api.conversationCalls == 1 }
         assertThat(conversations.cancelRun("bc-1", "run-1").isSuccess).isTrue()
@@ -485,17 +495,30 @@ class FollowUpRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && it.activeRunId == "run-1" } }
         // The word from this device stands: the run was stopped, and starting to follow it says nothing to the contrary.
         assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.CANCELLED)
+        // Nor does the load's own patch of the row from that record (it precedes the detail read it launches): the
+        // row stays idle for the run this device stopped, so nothing queued waits on it.
+        awaitUntil { !conversations.state("bc-1").value.isLoading && api.getAgentCalls > detailsBefore }
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.CANCELLED)
 
-        // The row took the record's word meanwhile, as it does for any run read; the run's own end corrects it, and a
-        // message queued now goes out then — not held on by a chat that would have gone on saying running for it.
         val followUps = repository()
         followUps.enqueue("bc-1", "Now")
-        awaitUntil { streamer.connections.contains("run-1") }
+        // The stopped run's stream reports its end. Whether the message went out before that (the row was idle from
+        // the Stop on) or on it, it goes out now — never after the queue's busy recheck.
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.CANCELLED, "", 5_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { sent() == listOf("Now") }
+        awaitUntil(5_000) { sent() == listOf("Now") }
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
-        assertThat(conversations.state("bc-1").value.let { it.isStreaming && it.activeRunId != "run-1" }).isTrue()
+        // The chat is on the new run by the time the queue moves on — its follow started before the send was answered
+        // — and stays there: the load's late follow of the stopped run does not displace it.
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.activeRunId).isEqualTo("run-followup-1")
+        assertThat(settled.isStreaming).isTrue()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.RUNNING)
+        delay(200)
+        val later = conversations.state("bc-1").value
+        assertThat(later.activeRunId).isEqualTo("run-followup-1")
+        assertThat(later.isStreaming).isTrue()
     }
 
     @Test
