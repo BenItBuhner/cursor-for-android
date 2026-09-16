@@ -167,9 +167,9 @@ data class DesktopStep(
 }
 
 /**
- * What happened on the way to the desktop, for the failure view and for "Share desktop diagnostics": the steps in
- * order with their timings and outcomes, the host and port tried, the status codes — and nothing that could open
- * the desktop for someone else (no token, no query string). [line] renders it for the share sheet.
+ * What happened on the way to the desktop, for the failure view and for its "Share diagnostics": the steps in order
+ * with their timings and outcomes, the host and port tried, the status codes — and nothing that could open the
+ * desktop for someone else (no token, no query string). [report] renders it for the share sheet.
  */
 data class DesktopTrace(
     val agentId: String,
