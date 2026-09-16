@@ -406,6 +406,13 @@ class ConversationRepository(
 
         /** True while the account or the run records call the chat active (see [chatStatus]). */
         fun isChatRunning(): Boolean = chatStatus(latestRun())?.isActive == true
+
+        /** The row runs on a run other than [runId]: the account has moved past it (see [chatStatus]). */
+        fun accountNamesNewerRun(runId: String): Boolean {
+            val row = agents.agent(agentId) ?: return false
+            val rowLatest = row.latestRunId ?: return false
+            return row.isRunning && rowLatest != runId && !rowLatest.startsWith(LOCAL_RUN_PREFIX)
+        }
         /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
         var reportedWorkers: Set<String>? = null
         /** When the items were last rebuilt and published (monotonic millis), and the trailing publish a burst is waiting on (see [publishCoalesced]). */
@@ -2099,7 +2106,9 @@ class ConversationRepository(
                     // a run the account still calls running — a `/v1` record that says cancelled while the account
                     // runs on, or a steer that ended this run for the next — is not the chat's end.
                     runStatus = when {
-                        snapshot.finished -> chatStatus(run, streaming = false) ?: snapshot.status
+                        // The stream's terminal word is the run's. The chat still runs only when the account already
+                        // names another run (a steer ended this one for the next, a coordinator's next turn).
+                        snapshot.finished -> if (accountNamesNewerRun(run.id)) RunStatus.RUNNING else snapshot.status
                         snapshot.eventCount > 0 -> snapshot.status
                         else -> runStatus
                     },

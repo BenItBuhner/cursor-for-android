@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -90,7 +91,14 @@ class PreferencesStore(
      * write produced is recorded for the flows (see [SettingsFile.written]).
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
-        runCatching { file.writes.withLock { file.written.value = file.store.edit(transform) }; true }.getOrElse { t ->
+        runCatching {
+            // The lock is taken and given back on the store's own threads, never held across a hop back to the
+            // caller's. A caller on the main thread would otherwise hold it from the store's answer until the main
+            // looper got round to resuming it — and while the looper is busy (a frame, a test idling it its own
+            // way) every other writer, on any thread, waits behind a lock nobody is using.
+            withContext(Dispatchers.IO) { file.writes.withLock { file.written.value = file.store.edit(transform) } }
+            true
+        }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
             false
@@ -663,6 +671,7 @@ private class SettingsFile(val store: DataStore<Preferences>) {
 
     companion object {
         private val files = ConcurrentHashMap<String, SettingsFile>()
+
 
         fun of(context: Context): SettingsFile {
             val path = context.applicationContext.preferencesDataStoreFile("cursor_settings")
