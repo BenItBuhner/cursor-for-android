@@ -941,6 +941,22 @@ class ConversationRepository(
     }
 
     /**
+     * Throws away everything kept for the chat — in memory and on disk: its transcript, its traces, the record's
+     * window — and reads it again from the server, for a chat that shows less than it should because a copy an
+     * earlier build wrote is standing in the way. The disk goes first, so what the new read writes is not swept away under it.
+     */
+    fun reloadTranscript(agentId: String) {
+        val e = entry(agentId)
+        e.emptyInPlace()
+        diskIndex[agentId] = ABSENT
+        e.loadJob = e.scope.launch {
+            cache?.remove(agentId)
+            traceCache?.remove(agentId)
+            load(e, agentId)
+        }
+    }
+
+    /**
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
@@ -1289,6 +1305,8 @@ class ConversationRepository(
                 val followed = synchronized(e) { e.live?.runId }
                 if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
             }
+            // A coordinator's turns the record shows without its word: their logs, while they last, have it.
+            e.overlayRuns().takeIf { it.isNotEmpty() }?.let { loadTraces(e, agentId, it, overlay = true) }
         } else if (rawWindow == null) {
             // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
         }
@@ -1347,6 +1365,28 @@ class ConversationRepository(
 
     /** The runs the window renders right now, newest last. */
     private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { if (recordWindow != null) emptyList() else layout().let { it.paired + it.standing } }
+
+    /**
+     * In a coordinator's chat read from the record: the finished runs whose turn the record shows without one word
+     * from the coordinator to the user — no `SendMessage` among its calls — although the run may well have had one.
+     * The record has been seen to carry a coordinator's message in shapes this app did not read (a call streamed
+     * back piece by piece); the run's own log, while it lasts, has the call whole, and its trace stands in for the
+     * record's turn once replayed (see [Entry.recordItems]). Turns paired with no run, or whose log is known gone,
+     * are left as the record has them.
+     */
+    private fun Entry.overlayRuns(): List<RunDto> = synchronized(this) {
+        val window = recordWindow ?: return@synchronized emptyList()
+        if (!projectMode) return@synchronized emptyList()
+        val trailingIds = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+        val paired = allRuns().filter { it.id !in trailingIds }
+        val offset = paired.size - window.turns.size
+        window.turns.withIndex().mapNotNull { (i, turn) ->
+            val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
+            if (!run.statusEnum().isTerminal || run.id in traces || run.id in expiredRuns || run.id in failedTraces) return@mapNotNull null
+            if (CoordinatorTranscript.hasUserMessage(turn.items)) return@mapNotNull null
+            run
+        }
+    }
 
     /**
      * Folds the newest page of the run list into [Entry.runs], which hold the chat's newest runs and, behind them, as
@@ -1693,10 +1733,11 @@ class ConversationRepository(
      * followed finished, and the runs it had not reached stayed text-only until the next fetch. A paused entry keeps
      * its queue for [resume]; a detached one drops it.
      */
-    private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>) {
+    private fun loadTraces(e: Entry, agentId: String, finishedRuns: List<RunDto>, overlay: Boolean = false) {
         synchronized(e) {
-            // From the record, every turn's trace is the record's: the run logs are not replayed.
-            if (e.recordWindow != null) return
+            // From the record, every turn's trace is the record's: the run logs are not replayed — except for the
+            // turns the record shows without the coordinator's word (see [overlayRuns]), whose logs are asked while they last.
+            if (e.recordWindow != null && !overlay) return
             finishedRuns
                 .filter { (it.id !in e.traces || it.id in e.staleTraces) && it.id !in e.traceQueue && it.id !in e.traceInFlight && it.id !in e.expiredRuns && parseIsoMillis(it.createdAt) >= e.expiredBefore }
                 .sortedByDescending { parseIsoMillis(it.createdAt) }
@@ -1795,7 +1836,7 @@ class ConversationRepository(
                     }
                 }
                 // The runs whose logs are gone: in Extended mode the account's own transcript still has their turns.
-                val gone = synchronized(e) { pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
+                val gone = synchronized(e) { if (e.recordWindow != null) emptyList() else pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
                 if (gone.isNotEmpty()) fillFromRecord(e, agentId, gone, tokens)
             } finally {
                 // Runs this pass did not get to (paused half-way) wait on the queue for the next one — unless a pause

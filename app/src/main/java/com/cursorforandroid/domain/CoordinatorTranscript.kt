@@ -34,6 +34,12 @@ object CoordinatorTranscript {
     /** The chat is a coordinator's by its content: one of the coordinator's tools among its calls, in any turn shown. */
     fun hasCoordinatorContent(items: List<TimelineItem>): Boolean = calls(items).any(::isCoordinatorCall)
 
+    /** True when [items] hold the coordinator's word to the user with its body — a `SendMessage` call, however an earlier build filed it, whose text this copy has. */
+    fun hasUserMessage(items: List<TimelineItem>): Boolean = calls(items).any { call ->
+        val read = reinterpret(call)
+        isUserMessageCall(read) && (read.payload as? ToolPayload.CoordinatorMessage)?.missing != true
+    }
+
     /** The distinct names of the calls that make [hasCoordinatorContent] true, in order of first appearance: the evidence. */
     fun evidence(items: List<TimelineItem>): List<String> = calls(items).filter(::isCoordinatorCall).map { it.name }.distinct().toList()
 

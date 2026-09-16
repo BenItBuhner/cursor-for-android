@@ -535,6 +535,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     fun reload() = graph.conversations.reload(agentId)
 
+    /** Clears this chat's cached transcript and traces and fetches it again (see `ConversationRepository.reloadTranscript`). */
+    fun reloadTranscript() = graph.conversations.reloadTranscript(agentId)
+
     /** The reader neared the oldest turn shown: the turns before it are paged in (see [ConversationState.hasOlder]). */
     fun loadOlder() = graph.conversations.loadOlder(agentId)
 

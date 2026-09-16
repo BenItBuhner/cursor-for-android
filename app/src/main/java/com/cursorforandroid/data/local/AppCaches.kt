@@ -295,10 +295,18 @@ class TraceCache(
         val found = LinkedHashMap<String, CachedTrace>()
         for (runId in runIds.distinct()) {
             if (runId == INDEX_KEY || !files.has(runId)) continue
-            files.read(runId, CachedTrace.serializer(), READABLE_VERSIONS)?.value?.let { found[runId] = it }
+            files.read(runId, CachedTrace.serializer(), readableVersions(runId))?.value?.let { found[runId] = it }
         }
         return found
     }
+
+    /**
+     * Which builds' files stand for [key]. A run's trace is read across builds: its items only gain fields, and what
+     * an earlier build misread is set right at render time. A record turn (`record:<step>`) is not: it is rebuilt
+     * from the record's steps, and a build that reads more of them — a coordinator's streamed message, from 5 — must
+     * not keep showing a turn an earlier build read less of.
+     */
+    private fun readableVersions(key: String): Iterable<Int> = if (key.startsWith(RECORD_KEY_PREFIX)) RECORD_READABLE_VERSIONS else READABLE_VERSIONS
 
     /** The runs the agent has a trace for, from the index. */
     suspend fun runIds(agentId: String): Set<String> {
@@ -351,7 +359,7 @@ class TraceCache(
     private suspend fun rebuildIndex(agentId: String): CachedTraceIndex {
         val files = agentCache(agentId)
         val entries = files.keys().filter { it != INDEX_KEY }.mapNotNull { runId ->
-            files.read(runId, CachedTrace.serializer(), READABLE_VERSIONS)?.value?.let { CachedTraceIndex.Entry(runId, it.createdAtMillis, files.size(runId)) }
+            files.read(runId, CachedTrace.serializer(), readableVersions(runId))?.value?.let { CachedTraceIndex.Entry(runId, it.createdAtMillis, files.size(runId)) }
         }
         return CachedTraceIndex(entries)
     }
@@ -395,21 +403,27 @@ class TraceCache(
         cache.clear()
     }
 
-    private companion object {
+    companion object {
         /**
          * Per-run files. 2 and 3 were the whole-file store's shapes (2: tool calls carry their Cursor-worded summary,
          * server and stats, and subagents are tool calls; 3: a call keeps the clipped output it opens onto instead
-         * of the raw payload it was read from); 4 is the same [CachedTrace], one file per run.
+         * of the raw payload it was read from); 4 is the same [CachedTrace], one file per run; 5 reads a record
+         * turn's tool calls whole (streamed and streamed-back ones included), so record turns written before it are
+         * rebuilt (see [readableVersions]).
          */
-        const val VERSION = 4
+        const val VERSION = 5
         /** A trace written by any build since the per-run layout is read; the items only ever gain fields with defaults. */
-        val READABLE_VERSIONS = 4..VERSION
-        val LEGACY_VERSIONS = listOf(2, 3)
-        const val INDEX_KEY = "_index"
-        const val INDEX_VERSION = 1
-        const val MAX_AGENTS = 200
+        private val READABLE_VERSIONS = 4..VERSION
+        /** A record turn written by a build that read the record as this one does. */
+        private val RECORD_READABLE_VERSIONS = 5..VERSION
+        /** The key prefix of a record turn's file (see `RecordTurn.traceKey`). */
+        const val RECORD_KEY_PREFIX = "record:"
+        private val LEGACY_VERSIONS = listOf(2, 3)
+        private const val INDEX_KEY = "_index"
+        private const val INDEX_VERSION = 1
+        private const val MAX_AGENTS = 200
         /** As deep as a chat can be paged: past this the oldest go, so a chat that never stops cannot fill the disk. */
-        const val MAX_RUNS_PER_AGENT = 400
+        private const val MAX_RUNS_PER_AGENT = 400
 
         /**
          * One agent's traces at most. A tool call's payload is clipped to 40 000 characters, so this is room for some

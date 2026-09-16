@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnTiming
+import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.TimelineItem
 
 /**
@@ -32,7 +33,7 @@ class RecordTurn(
     val traceKey: String get() = traceKey(stepIndex)
 
     companion object {
-        const val TRACE_KEY_PREFIX = "record:"
+        const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
 
         fun traceKey(stepIndex: Int): String = "$TRACE_KEY_PREFIX$stepIndex"
     }

@@ -10,8 +10,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
@@ -56,10 +59,11 @@ import java.io.File
 
 /**
  * The wall of eighteen injected turns Bennett's coordinator chat showed as eighteen rows (see [CoordinatorFixtures],
- * `event_wall.json`), between two of the coordinator's updates and before two newer events: one line for the wall —
- * "18 events · 11 GitHub · 7 subagents · 1h 59m span" — and the newest pair open on its own; then the same wall
- * opened, every event a compact row of subject, verb, actor and age, the repeat counted once. Written to
- * `screenshots/` beside the walkthrough and compared pixel for pixel in CI.
+ * `event_wall.json`), between two of the coordinator's updates and before two newer events: everything between two
+ * messages one stretch — "Worked 38s · 18 events" — with the wall behind one line of its own inside it ("18 events ·
+ * 11 GitHub · 7 subagents · 1h 59m span"); then the stretch and the wall opened, every event a compact row of
+ * subject, verb, actor and age, the repeat counted once. Written to `screenshots/` beside the walkthrough and
+ * compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -131,27 +135,39 @@ class CoordinatorEventGroupsScreenshotTest {
         compose.waitForIdle()
     }
 
+    /** The runs of events behind one line, inside the stretches, in order. */
+    private fun groups(rows: List<TranscriptRow>): List<TranscriptRow.Events> =
+        rows.filterIsInstance<TranscriptRow.Stretch>().flatMap { stretch -> stretch.entries.filterIsInstance<TranscriptRow.Entry.Events>().map { it.group } }
+
     @Test
     fun coordinatorEventGroups() {
         val rows = rows()
-        val groups = rows.filterIsInstance<TranscriptRow.Events>()
+        // Between two of the coordinator's messages, one stretch: the footer of the turn that spoke and the wall behind its line.
+        val stretches = rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }
+        assertThat(stretches.map { it.summary.text }).containsExactly("Worked 38s · 18 events", "Worked 38s · 2 events").inOrder()
+        assertThat(rows.none { it is TranscriptRow.Event || it is TranscriptRow.Events }).isTrue()
+        val groups = groups(rows)
         assertThat(groups).hasSize(2)
         assertThat(groups[0].summary.text).isEqualTo("18 events · 11 GitHub · 7 subagents · 1h 59m span")
         assertThat(groups[0].startsOpen).isFalse()
         assertThat(groups[1].summary.text).isEqualTo("2 events · 1 GitHub · 1 subagent · 18m span")
         assertThat(groups[1].startsOpen).isTrue()
         show(rows)
-        // The wall closed, the newest pair open: two rows of the twenty on screen.
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 2 }
+        // Both stretches closed: nothing of the twenty events on screen but the two lines that count them.
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("stretch")).fetchSemanticsNodes().size == 2 }
+        compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
         capture("72_coordinator_event_groups")
     }
 
     @Test
     fun coordinatorEventGroupsOpened() {
         show(rows())
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 2 }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("stretch")).fetchSemanticsNodes().size == 2 }
+        // The wall's stretch opened: the group's own line inside it, closed; then the group opened: every event a row.
+        compose.onAllNodesWithText("Worked 38s").onFirst().performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("event-group")).fetchSemanticsNodes().size == 1 }
         compose.onNodeWithContentDescription("Show events").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 19 }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 17 }
         capture("73_coordinator_event_groups_open")
     }
 }

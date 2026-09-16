@@ -320,6 +320,7 @@ fun ConversationScreen(
                         // The public API has no rename; the demo renames its in-memory row, Extended mode the account's.
                         if (isDemo || extendedMode) MenuItem("Rename", CursorIcons.Pencil) { menuOpen = false; renameOpen = true }
                         MenuItem("Refresh", CursorIcons.Refresh) { menuOpen = false; viewModel.reload() }
+                        MenuItem("Reload transcript", CursorIcons.Refresh) { menuOpen = false; viewModel.reloadTranscript() }
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }

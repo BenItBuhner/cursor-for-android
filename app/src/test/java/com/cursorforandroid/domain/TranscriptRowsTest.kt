@@ -38,11 +38,9 @@ class TranscriptRowsTest {
     fun `a coordinator's turn is its messages, its worker's card, and one stretch between each pair of them`() {
         val rows = TranscriptRows.of(coordinatorItems(), coordinatorMode = true)
         assertThat(kinds(rows)).containsExactly(
-            // The injected turn's row, its remark folded under it; its run's footer stands alone.
-            "event:Land merge train and prep release · completed",
-            "single:run-inject",
-            // The coordinator's first note, its thought and its message to the worker, before its first update.
-            "stretch:1 agent · 1 thought · 1 note",
+            // The injected turn (its remark folded under its line), its run's footer, and the coordinator's first
+            // note, thought and message to the worker: everything before the first update, one stretch.
+            "stretch:Worked 41s · 1 event · 1 agent · 1 thought",
             "message:c2",
             // Its edit and its second note, before the next updates.
             "stretch:1 edit · 1 note",
@@ -60,9 +58,14 @@ class TranscriptRowsTest {
         assertThat(closing.listed.map { it.key }).containsExactly("activity-run-coord-001-3:c10").inOrder()
         assertThat(closing.summary.busy).isFalse()
         assertThat(closing.summary.lineStats).isNull()
-        val edits = rows[4] as TranscriptRow.Stretch
+        val edits = rows[2] as TranscriptRow.Stretch
         assertThat(edits.summary.lineStats).isEqualTo("+2 -1")
         assertThat(edits.entries.map { it::class.simpleName }).containsExactly("Call", "Note").inOrder()
+        // The opening stretch: the event's line first, then the footer (carried by the summary, not listed), the note, the thought, the call.
+        val opening = rows[0] as TranscriptRow.Stretch
+        assertThat(opening.entries.map { it::class.simpleName }).containsExactly("Event", "Footer", "Note", "Thought", "Call").inOrder()
+        assertThat(opening.listed.map { it::class.simpleName }).containsExactly("Event", "Note", "Thought", "Call").inOrder()
+        assertThat((opening.entries.first() as TranscriptRow.Entry.Event).row.notification.narration).startsWith("Noted;")
         // Keys are stable and unique.
         assertThat(rows.map { it.key }).containsNoDuplicates()
         assertThat(rows.map { it.key }).isEqualTo(TranscriptRows.of(coordinatorItems(), coordinatorMode = true).map { it.key })

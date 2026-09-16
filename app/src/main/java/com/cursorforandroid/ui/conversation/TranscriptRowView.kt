@@ -46,10 +46,11 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
 }
 
 /**
- * Everything the agent did between two messages behind one line — "Worked 1m 48s · 4 edits · 1 thought", shimmering
+ * Everything the agent did between two messages behind one line — "Worked 4m · 148 events · 3 edits", shimmering
  * "Working" while the run still writes — that opens onto the sequence verbatim and in order: each thought as dimmed
  * prose, each tool call as the line it always was (opening onto its command, diff or output as before), each of a
- * coordinator's working notes as dimmed markdown. A stretch of one step is that step, drawn as it would be alone.
+ * coordinator's working notes as dimmed markdown, each injected turn as its line and a run of them behind one
+ * ([EventGroupView]). A stretch of one step is that step, drawn as it would be alone; a note never is.
  */
 @Composable
 internal fun StretchView(stretch: TranscriptRow.Stretch, modifier: Modifier = Modifier) {
@@ -86,6 +87,8 @@ private fun EntryView(entry: TranscriptRow.Entry) {
         is TranscriptRow.Entry.Note -> NoteText(entry)
         is TranscriptRow.Entry.Footer -> RunFooterView(entry.footer)
         is TranscriptRow.Entry.Line -> SummaryLine(entry.row.label, entry.row.value)
+        is TranscriptRow.Entry.Event -> EventRow(entry.row.notification, entry.row.count, Modifier.padding(vertical = 2.dp))
+        is TranscriptRow.Entry.Events -> EventGroupView(entry.group, Modifier.padding(vertical = 2.dp))
     }
 }
 
@@ -114,6 +117,9 @@ private fun SingleEntry(entry: TranscriptRow.Entry, modifier: Modifier) {
         is TranscriptRow.Entry.Note -> BackgroundMessage(entry.message, modifier)
         is TranscriptRow.Entry.Footer -> RunFooterView(entry.footer, modifier)
         is TranscriptRow.Entry.Line -> SummaryLine(entry.row.label, entry.row.value, modifier)
+        is TranscriptRow.Entry.Event -> EventRow(entry.row.notification, entry.row.count, modifier)
+        // Never alone: a run of events is behind the stretch's own summary (see [TranscriptRow.Stretch.single]).
+        is TranscriptRow.Entry.Events -> EventGroupView(entry.group, modifier)
     }
 }
 
