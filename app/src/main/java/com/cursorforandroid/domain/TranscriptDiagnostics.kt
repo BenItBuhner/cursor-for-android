@@ -4,8 +4,10 @@ package com.cursorforandroid.domain
  * The redacted account of one chat's transcript as this build reads it, for a coordinator's chat that still shows
  * its notes as messages or its messages as bare rows. One line per item — its kind, and for a tool call the tool's
  * name, the kind it is filed under, its status, what payload was read off it and the names of its argument keys —
- * plus the decision that reads the chat as a coordinator's and what made it. No text of any message, prompt, note,
- * report or argument is in it, and ids are cut to their tails, so it can be sent as it is.
+ * plus the decision that reads the chat as a coordinator's and what made it, and, in Extended mode, the shape of the
+ * account's record for the chat's newest turns: every step's keys and value types and the parser branch that took
+ * it (see [TurnShape]). No text of any message, prompt, note, report or argument is in it, and ids are cut to their
+ * tails, so it can be sent as it is.
  */
 /** The order the server listed a chat's runs in, as the load read it off the first page (see `ConversationRepository.newestRuns`). */
 enum class RunOrder { NEWEST_FIRST, OLDEST_FIRST }

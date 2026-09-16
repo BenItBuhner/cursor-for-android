@@ -185,7 +185,9 @@ object HeadlessTranscript {
                 // A piece that repeats what came before, with more, is the whole so far; anything else is the next piece.
                 if (piece.startsWith(pieces)) pieces.setLength(0)
                 pieces.append(piece)
-                if (args == null) runCatching { CursorJson.parseToJsonElement(pieces.toString()) }.getOrNull()?.let { args = it; joinedFrom = pieceCount }
+                // Joined pieces are the arguments once they read as a JSON object — an object, since the lenient
+                // parser would take a bare word of prose for a string.
+                if (args == null) runCatching { CursorJson.parseToJsonElement(pieces.toString()) }.getOrNull()?.takeIf { it is JsonObject }?.let { args = it; joinedFrom = pieceCount }
             }
         }
 

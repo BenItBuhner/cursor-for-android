@@ -61,6 +61,13 @@ class RecordShapesTest {
         fun branch(text: String): String = HeadlessConversationApi.parseStep(json.parseToJsonElement(text).jsonObject, 7).shape!!.branch
         assertThat(branch("""{"userMessage":{"text":"Hi"}}""")).isEqualTo("user_message")
         assertThat(branch("""{"humanMessage":{"text":"Hi","agentMode":"AGENT_MODE_PROJECT"}}""")).isEqualTo("human_message")
+        assertThat(branch("""{"humanMessage":{"text":"Hi","type":"MESSAGE_TYPE_HUMAN"}}""")).isEqualTo("human_message")
+        // A ConversationMessage typed as the model's is its text, not a prompt.
+        assertThat(branch("""{"humanMessage":{"text":"Told Bennett.","type":"MESSAGE_TYPE_AI"}}""")).isEqualTo("human_message(ai)")
+        val ai = HeadlessConversationApi.parseStep(json.parseToJsonElement("""{"humanMessage":{"text":"Told Bennett.","type":2}}""").jsonObject, 1)
+        assertThat(ai.text).isEqualTo("Told Bennett.")
+        assertThat(ai.userMessage).isNull()
+        assertThat(ai.shape!!.keys).isEqualTo("{humanMessage:{text:str(13),type:num}}")
         assertThat(branch("""{"text":"Told Bennett."}""")).isEqualTo("text")
         assertThat(branch("""{"thinking":{"text":"Hm."}}""")).isEqualTo("thinking")
         assertThat(branch("""{"toolCall":{"toolCallId":"t","name":"SendMessage","rawArgs":"{\"text\":{\"content\":\"hi\"}}"}}""")).isEqualTo("tool_call[id=toolCallId name=name args=json]")

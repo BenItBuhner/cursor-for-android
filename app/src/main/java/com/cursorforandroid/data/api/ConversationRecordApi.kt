@@ -199,6 +199,8 @@ class HeadlessConversationApi(
         /** The step this response is, with the name of the branch that read it (see [StepShape.branch]); a blank step for one nothing reads. */
         fun read(): Pair<HeadlessStep, String> = when {
             userMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = userMessage.text) to "user_message"
+            // A `ConversationMessage` typed as the model's is its text, not a prompt, whatever member carries it.
+            humanMessage?.text?.isNotBlank() == true && humanMessage.isAssistant -> HeadlessStep(text = humanMessage.text) to "human_message(ai)"
             humanMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = humanMessage.text, projectMode = humanMessage.isProjectMode) to "human_message"
             toolCall != null -> readToolCall(toolCall).let { call -> (call?.let { HeadlessStep(toolCall = it) } ?: HeadlessStep()) to "tool_call[${call?.source ?: DROPPED}]" }
             streamedBackToolCall != null -> readToolCall(streamedBackToolCall).let { call -> (call?.let { HeadlessStep(toolCall = it.copy(isStreaming = true)) } ?: HeadlessStep()) to "streamed_back_tool_call[${call?.source ?: DROPPED}]" }
@@ -223,10 +225,14 @@ class HeadlessConversationApi(
     @Serializable
     private data class UserMessageDto(val text: String? = null)
 
-    /** `ConversationMessage`, of which the text and the mode are read: `agent_mode` is an enum, by name or by number. */
+    /**
+     * `ConversationMessage`, of which the text, the mode and the type are read: `agent_mode` and `type`
+     * (`MessageType`: HUMAN 1, AI 2) are enums, by name or by number.
+     */
     @Serializable
-    private data class HumanMessageDto(val text: String? = null, val agentMode: JsonElement? = null) {
+    private data class HumanMessageDto(val text: String? = null, val agentMode: JsonElement? = null, val type: JsonElement? = null) {
         val isProjectMode: Boolean get() = readProjectMode(agentMode)
+        val isAssistant: Boolean get() = readAssistantType(type)
     }
 
     @Serializable
@@ -260,6 +266,16 @@ class HeadlessConversationApi(
             primitive.intOrNull?.let { return it == AGENT_MODE_PROJECT }
             return primitive.contentOrNull?.uppercase()?.let { it == "PROJECT" || it.endsWith("_PROJECT") } == true
         }
+
+        /** `ConversationMessage.MessageType.MESSAGE_TYPE_AI` (2): the message is the model's, by name or by number. */
+        internal fun readAssistantType(type: JsonElement?): Boolean {
+            val primitive = type as? JsonPrimitive ?: return false
+            primitive.intOrNull?.let { return it == MESSAGE_TYPE_AI }
+            return primitive.contentOrNull?.uppercase()?.let { it == "AI" || it.endsWith("_AI") } == true
+        }
+
+        /** `ConversationMessage.MessageType.MESSAGE_TYPE_AI`. */
+        internal const val MESSAGE_TYPE_AI = 2
 
         /**
          * `aiserver.v1.ClientSideToolV2Call` as this app reads it: the id, the tool's name and its arguments.
