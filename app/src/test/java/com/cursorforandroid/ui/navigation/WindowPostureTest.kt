@@ -70,4 +70,31 @@ class WindowPostureTest {
         // A pane dragged wide enough to starve the content turns the panel into a sheet.
         assertThat(WindowPosture(WidthClass.Expanded, 700, rail = RailState.Hidden, panelWidthDp = 350).panelAsPane).isFalse()
     }
+
+    @Test
+    fun `the sidebar's width is clamped to its bounds and to the content's floor`() {
+        assertThat(WindowPosture.clampSidebarWidth(100, 1497)).isEqualTo(WindowPosture.SIDEBAR_MIN_DP)
+        assertThat(WindowPosture.clampSidebarWidth(900, 1497)).isEqualTo(WindowPosture.SIDEBAR_MAX_DP)
+        assertThat(WindowPosture.clampSidebarWidth(278, 1497)).isEqualTo(278)
+        // A medium window: the sidebar may not push the content under its floor (600 − 380 = 220).
+        assertThat(WindowPosture.clampSidebarWidth(400, 600)).isEqualTo(220)
+        assertThat(WindowPosture.clampSidebarWidth(400, 560)).isEqualTo(WindowPosture.SIDEBAR_MIN_DP)
+        assertThat(WindowPosture.SIDEBAR_HIDE_BELOW_DP).isLessThan(WindowPosture.SIDEBAR_MIN_DP)
+    }
+
+    @Test
+    fun `a wider sidebar takes the pane's room, and the panel becomes a sheet before they could overlap`() {
+        // Tab landscape: a pane beside the sidebar at any width it can be dragged to.
+        assertThat(WindowPosture(WidthClass.Expanded, 1497, rail = RailState.Expanded, sidebarWidthDp = 400).railWidthDp).isEqualTo(400)
+        assertThat(WindowPosture(WidthClass.Expanded, 1497, rail = RailState.Expanded, sidebarWidthDp = 400).panelAsPane).isTrue()
+        // 1200 dp: 1200 − 400 − 360 = 440 fits; at 1000 dp the same sidebar leaves 240 — a sheet — and 240 dp of sidebar gives the pane back.
+        assertThat(WindowPosture(WidthClass.Expanded, 1200, rail = RailState.Expanded, sidebarWidthDp = 400).panelAsPane).isTrue()
+        assertThat(WindowPosture(WidthClass.Expanded, 1000, rail = RailState.Expanded, sidebarWidthDp = 400).panelAsPane).isFalse()
+        assertThat(WindowPosture(WidthClass.Expanded, 1000, rail = RailState.Expanded, sidebarWidthDp = 240).panelAsPane).isTrue()
+        // Hidden, the width does not count; a compact window has no sidebar column whatever was dragged.
+        assertThat(WindowPosture(WidthClass.Expanded, 1000, rail = RailState.Hidden, sidebarWidthDp = 400).railWidthDp).isEqualTo(0)
+        assertThat(WindowPosture(WidthClass.Compact, 411, rail = RailState.Expanded, sidebarWidthDp = 400).railWidthDp).isEqualTo(0)
+        // The default posture is the web's resting width.
+        assertThat(WindowPosture(WidthClass.Expanded, 1497, rail = RailState.Expanded).railWidthDp).isEqualTo(278)
+    }
 }

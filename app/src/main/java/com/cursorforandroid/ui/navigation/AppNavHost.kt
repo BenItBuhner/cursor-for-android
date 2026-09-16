@@ -117,6 +117,10 @@ internal fun AppShell(
         railChoice = railChoice + (widthClass.name to state.name)
         scope.launch { graph.prefs.setRailState(widthClass.name, state.name) }
     }
+    // The sidebar's width the same way, per width class: the drag moves it live (the composition's copy), the
+    // finger lifting writes it down.
+    val savedSidebarWidths by graph.prefs.sidebarWidths.collectAsStateWithLifecycle(initialValue = emptyMap())
+    var sidebarWidthChoice by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
     val savedPanelWidth by graph.prefs.panelWidthDp.collectAsStateWithLifecycle(initialValue = null)
     var panelWidthChoice by rememberSaveable { mutableStateOf<Int?>(null) }
     val posture = WindowPosture(
@@ -125,11 +129,23 @@ internal fun AppShell(
         compactHeight = windowHeightDp < WindowPosture.COMPACT_HEIGHT_MAX_DP,
         rail = rail,
         panelWidthDp = panelWidthChoice ?: savedPanelWidth ?: WindowPosture.PANEL_DEFAULT_DP,
+        sidebarWidthDp = sidebarWidthChoice[widthClass.name] ?: savedSidebarWidths[widthClass.name] ?: WindowPosture.SIDEBAR_DEFAULT_DP,
     )
     fun setPanelWidth(widthDp: Int) {
         val clamped = WindowPosture.clampPanelWidth(widthDp, windowWidthDp)
         panelWidthChoice = clamped
         scope.launch { graph.prefs.setPanelWidthDp(clamped) }
+    }
+    fun setSidebarWidth(widthDp: Int, commit: Boolean) {
+        val clamped = WindowPosture.clampSidebarWidth(widthDp, windowWidthDp)
+        sidebarWidthChoice = sidebarWidthChoice + (widthClass.name to clamped)
+        if (commit) scope.launch { graph.prefs.setSidebarWidthDp(widthClass.name, clamped) }
+    }
+    // A drag that snapped the sidebar shut lifted on no width worth keeping: the composition's copy goes back to
+    // what was written down, so the sidebar returns at the width it had before the drag.
+    fun hideSidebarFromDrag() {
+        sidebarWidthChoice = sidebarWidthChoice - widthClass.name
+        setRail(RailState.Hidden)
     }
 
     fun closeDrawer() {
@@ -338,7 +354,14 @@ internal fun AppShell(
     CompositionLocalProvider(LocalWindowPosture provides posture) {
     if (wide) {
         Row(Modifier.fillMaxSize().background(colors.canvas)) {
-            SidebarRail(state = rail) {
+            SidebarRail(
+                state = rail,
+                width = posture.expandedRailWidthDp.dp,
+                onResize = { widthDp -> setSidebarWidth(widthDp, commit = false) },
+                onResizeEnd = { widthDp -> setSidebarWidth(widthDp, commit = true) },
+                // Dragged under the minimum, the sidebar snaps shut, as the web's does; its width stays for its return.
+                onHide = ::hideSidebarFromDrag,
+            ) {
                 sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
             }
             detailHost(Modifier.weight(1f).fillMaxHeight(), pane)

@@ -42,13 +42,14 @@ enum class WidthClass {
 }
 
 /**
- * The shell's layout decision for one window: its width class, the rail's state, the panel's width, and from those
- * whether the right panel fits beside the content as a pane or goes over it as a sheet. Computed by the shell from
- * the window size class and what the reader chose, read by the screens through [LocalWindowPosture].
+ * The shell's layout decision for one window: its width class, the rail's state and width, the panel's width, and
+ * from those whether the right panel fits beside the content as a pane or goes over it as a sheet. Computed by the
+ * shell from the window size class and what the reader chose, read by the screens through [LocalWindowPosture].
  *
  * The rule for the pane: the content column must keep [CONTENT_MIN_DP] beside the rail and the panel; where it
- * cannot — a foldable's inner display with the sidebar showing, a phone on its side — the panel is a sheet, as on a
- * phone. A compact window is always the drawer-and-sheet layout, whatever the rail state saved for wider ones.
+ * cannot — a foldable's inner display with the sidebar showing, a phone on its side, a sidebar dragged wide — the
+ * panel is a sheet, as on a phone. A compact window is always the drawer-and-sheet layout, whatever was saved for
+ * wider ones.
  */
 data class WindowPosture(
     val widthClass: WidthClass,
@@ -57,6 +58,8 @@ data class WindowPosture(
     val compactHeight: Boolean = false,
     val rail: RailState = RailState.Hidden,
     val panelWidthDp: Int = PANEL_DEFAULT_DP,
+    /** The sidebar's width as the reader dragged it; held to [clampSidebarWidth] when laid out. */
+    val sidebarWidthDp: Int = SIDEBAR_DEFAULT_DP,
 ) {
     /** A column for the rail rather than the drawer. */
     val wide: Boolean get() = widthClass != WidthClass.Compact
@@ -64,9 +67,12 @@ data class WindowPosture(
     /** The rail's state as laid out: a compact window has no rail (the drawer stands in), whatever was saved. */
     val effectiveRail: RailState get() = if (wide) rail else RailState.Hidden
 
+    /** The sidebar's width as laid out: what was dragged, within the window's bounds. */
+    val expandedRailWidthDp: Int get() = clampSidebarWidth(sidebarWidthDp, windowWidthDp)
+
     val railWidthDp: Int
         get() = when (effectiveRail) {
-            RailState.Expanded -> RAIL_EXPANDED_DP
+            RailState.Expanded -> expandedRailWidthDp
             RailState.Hidden -> 0
         }
 
@@ -77,7 +83,18 @@ data class WindowPosture(
     val panelAsPane: Boolean get() = wide && windowWidthDp - railWidthDp - paneWidthDp >= CONTENT_MIN_DP
 
     companion object {
-        const val RAIL_EXPANDED_DP = 278
+        /** The web's sidebar at rest: 278px. */
+        const val SIDEBAR_DEFAULT_DP = 278
+        const val RAIL_EXPANDED_DP = SIDEBAR_DEFAULT_DP
+        /**
+         * The drag's bounds. cursor.com's sidebar cannot be measured from the captures (its script is behind a bot
+         * wall); 200–400 is the range its column reads well in — a row's glyph, title and trailing metadata at the
+         * narrow end, the widest Project name at the wide end — and is where its handle stops in use.
+         */
+        const val SIDEBAR_MIN_DP = 200
+        const val SIDEBAR_MAX_DP = 400
+        /** Dragged narrower than this, the sidebar snaps to hidden rather than stopping at its minimum, as the web's does. */
+        const val SIDEBAR_HIDE_BELOW_DP = 160
         const val PANEL_MIN_DP = 320
         /** The web's Project panel is 800px wide on a 1859px window; a pane can grow to that where the window allows (see [clampPanelWidth]). */
         const val PANEL_MAX_DP = 800
@@ -87,6 +104,9 @@ data class WindowPosture(
 
         /** [width] held to `[PANEL_MIN_DP, min(PANEL_MAX_DP, window / 2)]`. */
         fun clampPanelWidth(width: Int, windowWidthDp: Int): Int = width.coerceIn(PANEL_MIN_DP, maxOf(PANEL_MIN_DP, minOf(PANEL_MAX_DP, windowWidthDp / 2)))
+
+        /** [width] held to `[SIDEBAR_MIN_DP, min(SIDEBAR_MAX_DP, window − CONTENT_MIN_DP)]`: the content keeps its floor beside the sidebar alone. */
+        fun clampSidebarWidth(width: Int, windowWidthDp: Int): Int = width.coerceIn(SIDEBAR_MIN_DP, maxOf(SIDEBAR_MIN_DP, minOf(SIDEBAR_MAX_DP, windowWidthDp - CONTENT_MIN_DP)))
 
         /** The rail a window of [widthClass] opens with before the reader has chosen: the web's sidebar on any wide window. */
         fun defaultRail(widthClass: WidthClass): RailState = if (widthClass == WidthClass.Compact) RailState.Hidden else RailState.Expanded

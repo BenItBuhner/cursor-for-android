@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasStateDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -35,6 +36,7 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.navigation.AppShell
 import com.cursorforandroid.ui.navigation.RailState
 import com.cursorforandroid.ui.navigation.WidthClass
+import com.cursorforandroid.ui.navigation.WindowPosture
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -121,13 +123,15 @@ class UiParityGalleryTest {
     }
 
     /** Boots the demo shell at [width] × [height] on the coordinator's chat, with the rail in [rail] for this width class. */
-    private fun launch(width: Int, height: Int, rail: RailState) {
+    private fun launch(width: Int, height: Int, rail: RailState, sidebarWidthDp: Int? = null) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
         widthClass = WidthClass.of(width)
         runBlocking {
             graph.session.enterDemo()
             if (widthClass != WidthClass.Compact) graph.prefs.setRailState(widthClass.name, rail.name)
+            // The sidebar's width as if dragged there earlier: the shell reads it back for this width class.
+            if (sidebarWidthDp != null && widthClass != WidthClass.Compact) graph.prefs.setSidebarWidthDp(widthClass.name, sidebarWidthDp)
             // The chat is open in every frame, so its Project reads as read whatever the demo's rows do meanwhile.
             graph.prefs.markRead(DemoData.PROJECT_ID, FIXED_NOW + 365L * 24 * 60 * 60_000L)
         }
@@ -309,6 +313,26 @@ class UiParityGalleryTest {
     @Test
     @Config(sdk = [35], qualifiers = "w1497dp-h936dp-land-night-280dpi")
     fun tabLandscape() = wideGallery("tab-landscape", 1497, 936)
+
+    /** The sidebar dragged to its narrowest, the Project tab open beside it as a pane. */
+    @Test
+    @Config(sdk = [35], qualifiers = "w1497dp-h936dp-land-night-280dpi")
+    fun tabLandscapeSidebarNarrow() {
+        launch(1497, 936, RailState.Expanded, sidebarWidthDp = WindowPosture.SIDEBAR_MIN_DP)
+        compose.waitUntil(20_000) { compose.onAllNodes(hasStateDescription("${WindowPosture.SIDEBAR_MIN_DP} dp")).fetchSemanticsNodes().isNotEmpty() }
+        panelState("project")
+        capture("tab-landscape-narrow-project")
+    }
+
+    /** The sidebar dragged to its widest, the Project tab still a pane beside it (1497 − 400 − 360 leaves 737 for the chat). */
+    @Test
+    @Config(sdk = [35], qualifiers = "w1497dp-h936dp-land-night-280dpi")
+    fun tabLandscapeSidebarWide() {
+        launch(1497, 936, RailState.Expanded, sidebarWidthDp = WindowPosture.SIDEBAR_MAX_DP)
+        compose.waitUntil(20_000) { compose.onAllNodes(hasStateDescription("${WindowPosture.SIDEBAR_MAX_DP} dp")).fetchSemanticsNodes().isNotEmpty() }
+        panelState("project")
+        capture("tab-landscape-wide-project")
+    }
 
     private companion object {
         val PANELS = listOf("closed", "project", "doc")

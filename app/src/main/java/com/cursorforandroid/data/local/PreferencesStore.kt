@@ -149,6 +149,8 @@ class PreferencesStore(
         val crashReports = booleanPreferencesKey("crash_reports")
         val railMedium = stringPreferencesKey("layout_rail_medium")
         val railExpanded = stringPreferencesKey("layout_rail_expanded")
+        val sidebarWidthMedium = intPreferencesKey("layout_sidebar_width_medium")
+        val sidebarWidthExpanded = intPreferencesKey("layout_sidebar_width_expanded")
         val panelWidthDp = intPreferencesKey("layout_panel_width_dp")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
     }
@@ -198,6 +200,21 @@ class PreferencesStore(
         when (widthClass) {
             "Medium" -> p[Keys.railMedium] = state
             "Expanded" -> p[Keys.railExpanded] = state
+        }
+    }
+
+    /** The sidebar's width by width class name ("Medium", "Expanded"), as the reader dragged it; absent until dragged. */
+    val sidebarWidths: Flow<Map<String, Int>> = data.map { p ->
+        buildMap {
+            p[Keys.sidebarWidthMedium]?.let { put("Medium", it) }
+            p[Keys.sidebarWidthExpanded]?.let { put("Expanded", it) }
+        }
+    }
+
+    suspend fun setSidebarWidthDp(widthClass: String, widthDp: Int) = edit { p ->
+        when (widthClass) {
+            "Medium" -> p[Keys.sidebarWidthMedium] = widthDp
+            "Expanded" -> p[Keys.sidebarWidthExpanded] = widthDp
         }
     }
 
