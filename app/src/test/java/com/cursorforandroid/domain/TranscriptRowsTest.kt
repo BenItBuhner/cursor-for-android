@@ -176,4 +176,65 @@ class TranscriptRowsTest {
         val coordinator = TranscriptRows.of(items, coordinatorMode = true)
         assertThat(kinds(coordinator)).containsExactly("item:UserMessage", "stretch:Failed after 12s · 1 file · 1 note", "item:NoticeCard").inOrder()
     }
+
+    /**
+     * Bennett's v0.3.25 frame (internal/reference/coordinator-0.3.25-no-replies-cancelled.jpg): a run cancelled
+     * because he wrote again is not an error. The stretch says "interrupted" at the end of its line, the footer's
+     * verb stays "Worked", and the warning row earlier builds drew for it is not drawn — not from a fresh replay,
+     * and not from the notice a build before this one left in the trace on disk.
+     */
+    @Test
+    fun `a run the user's next message cut short reads as interrupted, quietly, and never as a warning`() {
+        val t = 1_789_600_000_000L
+        val items = listOf(
+            UserMessage("u1", "So where we at rn", t),
+            AssistantMessage("a1", "Checking the workers."),
+            ActivityGroup("g1", listOf(ToolCall("s1", "getAgentStatus", ToolKind.Coordinator, "interrupted", "2 agents"))),
+            RunFooter("f1", "run-1", RunStatus.CANCELLED, 694_000, emptyList(), endedAtMillis = t + 700_000),
+            // The next message came seconds after the cancel: it is what cancelled the run.
+            UserMessage("u2", "I'm in it for all products and renders, by the way.", t + 702_000),
+            // A trace a build before this one wrote: the notice ahead of the footer, in the order finish() added them.
+            NoticeCard("n-legacy", NoticeCard.RUN_CANCELLED, null, NoticeTone.Warning),
+            RunFooter("f2", "run-2", RunStatus.CANCELLED, 167_000, emptyList(), endedAtMillis = t + 900_000),
+            // And the other way about, should one ever land after the footer: it stands between nothing.
+            NoticeCard("n-legacy-2", NoticeCard.RUN_CANCELLED, null, NoticeTone.Warning),
+            UserMessage("u3", "Also make the Fold8 shots.", t + 901_000),
+            RunFooter("f3", "run-3", RunStatus.FINISHED, 440_000, emptyList()),
+        )
+        val rows = TranscriptRows.of(items, coordinatorMode = true)
+        assertThat(kinds(rows)).containsExactly(
+            "item:UserMessage",
+            "stretch:Worked 11m 34s · 1 note · 1 step · interrupted",
+            "item:UserMessage",
+            // The notice a previous build wrote is gone; the footer alone is the stretch, and reads as interrupted.
+            "single:f2",
+            "item:UserMessage",
+            "single:f3",
+        ).inOrder()
+        val lone = (rows[3] as TranscriptRow.Stretch).single as TranscriptRow.Entry.Footer
+        assertThat(lone.interrupted).isTrue()
+        assertThat(StretchSummary.footerLabel(lone.footer, interrupted = true)).isEqualTo("Worked 2m 47s")
+        assertThat(StretchSummary.footerLabel(lone.footer)).isEqualTo("Cancelled after 2m 47s")
+        assertThat(TranscriptRows.interruptedFooters(items)).containsExactly("f1", "f2")
+    }
+
+    @Test
+    fun `a cancel the user came back from later, or one Cursor's own turn followed, is a cancel and not an interruption`() {
+        val t = 1_789_600_000_000L
+        val stopped = RunFooter("f1", "run-1", RunStatus.CANCELLED, 30_000, emptyList(), endedAtMillis = t)
+        // Written to again an hour later: the run was stopped, not interrupted.
+        val later = listOf(UserMessage("u1", "Go.", t - 30_000), stopped, UserMessage("u2", "Now do this instead.", t + 3_600_000))
+        assertThat(TranscriptRows.interruptedFooters(later)).isEmpty()
+        assertThat(kinds(TranscriptRows.of(later, coordinatorMode = true))[1]).isEqualTo("single:f1")
+        val row = (TranscriptRows.of(later, coordinatorMode = true)[1] as TranscriptRow.Stretch).single as TranscriptRow.Entry.Footer
+        assertThat(row.interrupted).isFalse()
+        // Followed by a turn Cursor injected, not the user's: nothing says the user cut it short.
+        val injected = SystemNotifications.parse("m-inject", CoordinatorFixtures.injectedTurn("subagent_completion_necessary_follow_up"), t + 5_000)!!
+        assertThat(TranscriptRows.interruptedFooters(listOf(UserMessage("u1", "Go.", t - 30_000), stopped) + injected.items)).isEmpty()
+        // Without times on either side the next message is taken as the cause: the two records are written together.
+        val untimed = listOf(UserMessage("u1", "Go."), RunFooter("f1", "run-1", RunStatus.CANCELLED, 30_000, emptyList()), UserMessage("u2", "And this."))
+        assertThat(TranscriptRows.interruptedFooters(untimed)).containsExactly("f1")
+        // A run that ended any other way is never one.
+        assertThat(TranscriptRows.interruptedFooters(listOf(RunFooter("f1", "run-1", RunStatus.ERROR, 30_000, emptyList()), UserMessage("u2", "And this.")))).isEmpty()
+    }
 }

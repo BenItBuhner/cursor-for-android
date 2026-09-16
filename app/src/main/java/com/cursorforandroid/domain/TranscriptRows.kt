@@ -105,7 +105,12 @@ sealed interface TranscriptRow {
             override val key: String get() = message.id
         }
 
-        data class Footer(val footer: RunFooter) : Entry {
+        /**
+         * A run's footer. [interrupted] when the run was cancelled by the user's next message (see
+         * [TranscriptRows.interruptedFooters]): the summary then reads "Worked 11m 34s · … · interrupted" — the
+         * turn ended because the reader wrote again, which is not a failure and gets no warning.
+         */
+        data class Footer(val footer: RunFooter, val interrupted: Boolean = false) : Entry {
             override val key: String get() = footer.id
         }
 
@@ -164,27 +169,35 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
             )
             val failure = if (failed > 0) "$failed failed" else null
             // A stretch spanning several runs — silent turns one after another — worked for all their time together.
-            val footers = stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer }
-            val footer = footers.lastOrNull()?.let { last ->
+            val footerEntries = stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>()
+            val footers = footerEntries.map { it.footer }
+            val last = footerEntries.lastOrNull()
+            val footer = last?.footer?.let { f ->
                 val durations = footers.mapNotNull { it.durationMs }
-                if (durations.isEmpty()) last else last.copy(durationMs = durations.sum())
+                if (durations.isEmpty()) f else f.copy(durationMs = durations.sum())
             }
             val action = when {
                 // Still being written: whatever earlier runs closed inside it, the stretch is working.
                 stretch.live -> "Working"
-                footer != null -> footerLabel(footer)
+                footer != null -> footerLabel(footer, interrupted = last?.interrupted == true)
                 else -> counts.firstOrNull() ?: failure ?: "Worked"
             }
             val rest = if (footer != null || stretch.live) counts else counts.drop(1)
-            val details = (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure })).joinToString(" \u00B7 ").ifEmpty { null }
+            // The reader's next message cut the run short: said at the end of the line, quietly, never as a warning.
+            val interrupted = INTERRUPTED.takeIf { !stretch.live && footerEntries.any { it.interrupted } }
+            val details = (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted)).joinToString(" \u00B7 ").ifEmpty { null }
             return StretchSummary(action, details, work.lineStats, busy = stretch.live)
         }
 
-        /** The footer's own line: "Worked 1m 48s", "Failed after 2m 3s", "Cancelled", "Expired". */
-        fun footerLabel(footer: RunFooter): String {
+        /**
+         * The footer's own line: "Worked 1m 48s", "Failed after 2m 3s", "Cancelled", "Expired". A run the reader's
+         * next message cut short ([interrupted]) worked until then: "Worked 11m 34s", the interruption being the
+         * summary's last word (see [of]) rather than the verb.
+         */
+        fun footerLabel(footer: RunFooter, interrupted: Boolean = false): String {
             val ending = when (footer.status) {
                 RunStatus.ERROR -> "Failed"
-                RunStatus.CANCELLED -> "Cancelled"
+                RunStatus.CANCELLED -> if (interrupted) null else "Cancelled"
                 RunStatus.EXPIRED -> "Expired"
                 else -> null
             }
@@ -194,6 +207,9 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
                 else -> ending ?: "Worked"
             }
         }
+
+        /** The summary's word for a run the reader's next message cut short. */
+        const val INTERRUPTED = "interrupted"
 
         private fun plural(count: Int, one: String, many: String = "${one}s"): String? =
             if (count <= 0) null else "$count ${if (count == 1) one else many}"
@@ -315,6 +331,7 @@ object TranscriptRows {
         // What follows the stretch as rows of its own once it closes: its pictures, then the question it waits on.
         val media = ArrayList<TranscriptRow>()
         val questions = ArrayList<TranscriptRow>()
+        val interrupted = interruptedFooters(items)
 
         fun flush() {
             if (open.isNotEmpty()) {
@@ -329,7 +346,12 @@ object TranscriptRows {
 
         for (item in items) {
             when (item) {
-                is UserMessage, is NoticeCard -> {
+                // A cancel is not an error: the notice earlier builds wrote for it is not drawn (the footer says it, quietly).
+                is NoticeCard -> if (!item.isLegacyCancelNotice) {
+                    flush()
+                    rows += TranscriptRow.Item(item)
+                }
+                is UserMessage -> {
                     flush()
                     rows += TranscriptRow.Item(item)
                 }
@@ -342,7 +364,7 @@ object TranscriptRows {
                     rows += TranscriptRow.Item(item)
                 }
                 // The footer closes its run, not the stretch: a silent turn and the next read as one until a message.
-                is RunFooter -> open += TranscriptRow.Entry.Footer(item)
+                is RunFooter -> open += TranscriptRow.Entry.Footer(item, interrupted = item.id in interrupted)
                 is SummaryRow -> open += TranscriptRow.Entry.Line(item)
                 is ActivityGroup -> {
                     val pictures = ArrayList<ToolCall>()
@@ -375,6 +397,33 @@ object TranscriptRows {
         if (runActive) markLive(rows)
         return openNewestGroup(rows)
     }
+
+    /**
+     * The footers of the runs the reader's next message cut short: a run that ended cancelled and is followed at
+     * once by a prompt of the user's — in Cursor, a message sent to a chat mid-turn cancels the turn under way and
+     * starts the next on the message — within [INTERRUPTION_WINDOW_MS] of the run's end when both times are known
+     * (a run stopped and written to again an hour later was stopped, not interrupted). A turn Cursor injected after
+     * a cancelled run does not make it one; neither does a run that ended any other way.
+     */
+    fun interruptedFooters(items: List<TimelineItem>): Set<String> {
+        var found: MutableSet<String>? = null
+        for (i in items.indices) {
+            val footer = items[i] as? RunFooter ?: continue
+            if (footer.status != RunStatus.CANCELLED) continue
+            // The notice an earlier build wrote for the cancel is not part of the sequence.
+            var j = i + 1
+            while ((items.getOrNull(j) as? NoticeCard)?.isLegacyCancelNotice == true) j++
+            val next = items.getOrNull(j) as? UserMessage ?: continue
+            val ended = footer.endedAtMillis
+            val sent = next.timestampMillis
+            if (ended != null && sent != null && sent - ended > INTERRUPTION_WINDOW_MS) continue
+            (found ?: HashSet<String>().also { found = it }) += footer.id
+        }
+        return found ?: emptySet()
+    }
+
+    /** How long after a run's end the next prompt still counts as the message that ended it: the two records are written seconds apart. */
+    const val INTERRUPTION_WINDOW_MS = 10 * 60_000L
 
     /**
      * The newest stretch is the one still being written, unless its run has already closed with a footer. An

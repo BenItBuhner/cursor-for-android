@@ -162,11 +162,13 @@ sealed interface ToolPayload {
      * [missing] marks a message whose body this copy of the turn does not have: the stream left the arguments out
      * for size (`tool_call.truncated.args`), or the turn was kept by a build that did not read the tool and dropped
      * the arguments with the rest (see `CoordinatorTranscript.reinterpret`). The row then says so rather than
-     * standing bare, and the turn is asked for again where it can be.
+     * standing bare, and the turn is asked for again where it can be. [recovered] marks a body read leniently out of
+     * arguments that did not parse — the pieces of a streamed call the record never completed (see
+     * `MessageRecovery`) — which the row shows with a word that it may not be the whole message.
      */
     @Serializable
     @SerialName("coordinator_message")
-    data class CoordinatorMessage(val message: String, val missing: Boolean = false) : ToolPayload
+    data class CoordinatorMessage(val message: String, val missing: Boolean = false, val recovered: Boolean = false) : ToolPayload
 
     /**
      * The agent filing or moving the chat's goal (`agent.v1.CreateGoalToolCall` / `UpdateGoalToolCall`; see [Goal]).

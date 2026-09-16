@@ -595,7 +595,9 @@ class TimelineBuilderTest {
         assertThat(interrupted.none { it.isRunning }).isTrue()
         assertThat(interrupted.map { it.status }).containsExactly(ToolCall.STATUS_INTERRUPTED, ToolCall.STATUS_INTERRUPTED)
         assertThat(interrupted.map { it.action }).containsExactly("Ran", "Completed task").inOrder()
-        assertThat(cut.snapshot().filterIsInstance<NoticeCard>().single().title).isEqualTo("Run cancelled")
+        // A cancel is the user's doing, not a failure: no notice, the footer says how the run ended.
+        assertThat(cut.snapshot().filterIsInstance<NoticeCard>()).isEmpty()
+        assertThat((cut.snapshot().last() as RunFooter).status).isEqualTo(RunStatus.CANCELLED)
     }
 
     @Test

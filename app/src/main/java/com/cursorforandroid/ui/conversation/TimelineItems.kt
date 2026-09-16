@@ -71,6 +71,7 @@ import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.StretchSummary
 import com.cursorforandroid.domain.SummaryRow
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.ThinkingBlock
@@ -611,21 +612,24 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
 }
 
 @Composable
-internal fun RunFooterView(item: RunFooter, modifier: Modifier = Modifier) {
+internal fun RunFooterView(item: RunFooter, modifier: Modifier = Modifier, interrupted: Boolean = false) {
     val ending = when (item.status) {
         RunStatus.ERROR -> "Failed"
-        RunStatus.CANCELLED -> "Cancelled"
+        // The reader's next message cut the run short: it worked until then, and the line says so quietly at its end.
+        RunStatus.CANCELLED -> if (interrupted) null else "Cancelled"
         RunStatus.EXPIRED -> "Expired"
         else -> null
     }
     val duration = TimeFormat.duration(item.durationMs)
+    val note = StretchSummary.INTERRUPTED.takeIf { interrupted }
     // Duration and status only. The header already names the branch and owns the pull-request button; repeating
     // either as a pill under every reply is just noise. A status this build cannot read says nothing worth
     // printing either; the footer's presence is the point. The "after" belongs to the duration, so a run the
     // API returned without one is left saying just how it ended.
     when {
-        duration != null -> SummaryLine(ending?.let { "$it after" } ?: "Worked", duration, modifier)
-        ending != null -> SummaryLine(ending, "", modifier)
+        duration != null -> SummaryLine(ending?.let { "$it after" } ?: "Worked", listOfNotNull(duration, note).joinToString(" \u00B7 "), modifier)
+        ending != null -> SummaryLine(ending, note.orEmpty(), modifier)
+        note != null -> SummaryLine("Worked", note, modifier)
     }
 }
 

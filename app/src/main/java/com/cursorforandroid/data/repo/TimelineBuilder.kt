@@ -125,6 +125,8 @@ object TimelineBuilder {
         status = run.statusEnum(),
         durationMs = run.durationMs,
         branches = run.git.toBranches(),
+        // A run that is over was last written to when it ended; a run still going has no end yet.
+        endedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 && run.statusEnum().isTerminal },
     )
 
     /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording and for what is not kept. */
@@ -373,17 +375,20 @@ object TimelineBuilder {
             val finalText = event.text?.trim().orEmpty()
             placeFinalReply(finalText)
             if (event.status == RunStatus.ERROR) {
-                // The record has no reason of its own for a failed run; the stream's last error is the only account.
+                // A failure is the server's: the reason is the final text, else the last error the stream (or the
+                // account's record, see HeadlessTranscript) gave; the notice carries it. A cancel is the user's —
+                // their next message, their stop — and gets no notice: the footer says so, quietly (see TranscriptRows).
                 val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
-            if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             // The duration is the outcome's own. Only a run the stream itself saw finish, watched from its start,
             // gets the clock's word when the outcome carries none. Never an outcome read off a record, and never an
             // end other than finished: "Cancelled after 30s" was this device's clock — from opening the stream to
             // reading a stale record — read as the turn's.
             val elapsed = startedAtMillis?.takeIf { timed && it > 0 && !event.fromRecord && event.status == RunStatus.FINISHED }?.let { nowProvider() - it }?.takeIf { it > 0 }
-            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
+            // When the run ended: now, for a run the stream itself saw end; unknown for an outcome read off a record.
+            val endedAt = if (!event.fromRecord && timed) nowProvider() else null
+            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches(), endedAtMillis = endedAt)
         }
 
         /**

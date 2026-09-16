@@ -53,6 +53,12 @@ data class TranscriptLoadDiagnostics(
     val record: RecordLine? = null,
     /** The chat's status as shown, and the words it was reconciled from (see `ConversationRepository.Entry.chatStatus`). */
     val status: StatusLine? = null,
+    /**
+     * The record's newest turns as this session read them, step by step — keys and value types, the parser branch
+     * that took each step, how each call's arguments came together — and never a value (see [TurnShape]). What says
+     * whether a coordinator's messages are in the record at all, and in what shape, when they are not on screen.
+     */
+    val shapes: List<TurnShape> = emptyList(),
 ) {
     /**
      * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
@@ -176,7 +182,28 @@ object TranscriptDiagnostics {
                 (load.liveStream?.let { " stream=events:${it.events},status:${it.status},reconnecting:${it.reconnecting},expired:${it.expired},finished:${it.finished},items:${it.items}" } ?: " stream=none"),
         )
         appendLine("errors: last=${load.lastError?.let { "\"${redact(it)}\"" } ?: "-"} transcript=${load.transcriptError?.let { "\"${redact(it)}\"" } ?: "-"} transcriptUnavailable=${load.transcriptUnavailable}")
+        if (load.shapes.isNotEmpty()) describe(load.shapes)
     }
+
+    /**
+     * The shape dump: the record's newest turns, one line per step — its index, the parser branch that consumed it,
+     * its keys with their value types (see `RecordShapes` for the grammar) — then one line per tool call with how the
+     * replay resolved it. Nothing anyone wrote is in it: strings are lengths, ids are tails, and the only values shown
+     * are enum-like tokens under the keys that name a kind of thing (the tool's name above all).
+     */
+    private fun StringBuilder.describe(shapes: List<TurnShape>) {
+        appendLine()
+        appendLine("shapes: newest ${shapes.size} turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
+        for (turn in shapes) {
+            appendLine("turn@${turn.stepIndex} steps=${turn.steps.size} prompt=${turn.prompt} project=${turn.projectMode} calls=${turn.calls.size}")
+            turn.steps.take(MAX_SHAPE_STEPS).forEach { step -> appendLine("  ${step.index} ${step.branch} ${step.keys}") }
+            if (turn.steps.size > MAX_SHAPE_STEPS) appendLine("  … +${turn.steps.size - MAX_SHAPE_STEPS} more steps")
+            turn.calls.forEach { call -> appendLine("  call ${call.idTail} ${call.name.ifBlank { "<blank>" }} steps=${call.steps} args=${call.args} result=${call.result}") }
+        }
+    }
+
+    /** Step lines per turn in the shape dump; a turn with more says how many were left out. */
+    const val MAX_SHAPE_STEPS = 160
 
     private fun StringBuilder.describe(item: TimelineItem) {
         when (item) {
@@ -201,13 +228,13 @@ object TranscriptDiagnostics {
         }
     }
 
-    /** One tool call, its content left out: `SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[text] · linked=0 · truncated=-`. */
+    /** One tool call, its content left out: `SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[text] · linked=0 · truncated=- · id=…SendA`. */
     fun describe(call: ToolCall): String {
         val read = GoalTranscript.reinterpret(CoordinatorTranscript.reinterpret(call))
         val kind = if (read.kind != call.kind) "${call.kind.name}→${read.kind.name}" else call.kind.name
         val payload = when (val p = read.payload) {
             null -> "-"
-            is ToolPayload.CoordinatorMessage -> "coordinator_message" + (if (p.missing) "(missing)" else "(${p.message.length} chars)")
+            is ToolPayload.CoordinatorMessage -> "coordinator_message" + (if (p.missing) "(missing)" else "(${p.message.length} chars${if (p.recovered) ",recovered" else ""})")
             is ToolPayload.GoalChange -> "goal(${p.action.name.lowercase()}" + (p.status?.let { ",$it" } ?: "") + (if (p.missing) ",missing" else "") + (if (p.error != null) ",error" else "") + ")"
             is ToolPayload.WorkerAction -> "worker_action(${p.kind.name.lowercase()},workers=${p.workers.size},reported=${p.reported})"
             is ToolPayload.FileDiff -> "diff"
@@ -218,7 +245,8 @@ object TranscriptDiagnostics {
             is ToolPayload.Question -> "question(${p.questions.size},answered=${p.isAnswered})"
         }
         val truncated = call.truncated?.let { t -> listOfNotNull("args".takeIf { t.args }, "result".takeIf { t.result }).joinToString("+") } ?: "-"
-        return "${call.name.ifBlank { "<blank>" }} · $kind · ${call.status}${if (call.isError) "(error)" else ""} · $payload · args=[${call.argKeys.joinToString(",")}] · linked=${call.linkedAgentIds.size} · truncated=$truncated"
+        // The id's tail joins the line to the shape dump's call line for the same call.
+        return "${call.name.ifBlank { "<blank>" }} · $kind · ${call.status}${if (call.isError) "(error)" else ""} · $payload · args=[${call.argKeys.joinToString(",")}] · linked=${call.linkedAgentIds.size} · truncated=$truncated · id=${ProjectDiagnostics.tail(call.callId)}"
     }
 
     /** An error message keeps its words but not any id, URL or quoted text it might carry. */

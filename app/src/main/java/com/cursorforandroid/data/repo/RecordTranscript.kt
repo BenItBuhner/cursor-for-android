@@ -9,6 +9,7 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.TurnShape
 
 /**
  * The account's own record of a chat (`FetchBackgroundComposer`, see [ConversationRecordApi]) as the conversation
@@ -31,6 +32,12 @@ class RecordTurn(
     val projectMode: Boolean,
     /** The turn's trace — thoughts, tool calls with their payloads, the reply — without a footer, which the run or the timing gives. */
     val items: List<TimelineItem>,
+    /**
+     * The turn's steps and calls as they came, keys and value types only, for the transcript diagnostics: kept for
+     * the record's newest turns as read this session (see [RecordTranscript.SHAPE_TURNS]); null for the rest and for
+     * a turn restored from disk.
+     */
+    val shape: TurnShape? = null,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
@@ -48,6 +55,13 @@ class RecordTurn(
      * from the run's log too, like a turn without a body (see `ConversationRepository.recordTurnsNeedingReplay`).
      */
     val hasUserMessage: Boolean by lazy { CoordinatorTranscript.hasUserMessage(items) }
+
+    /**
+     * The coordinator's word to the user is among the turn's calls with a body read leniently out of arguments the
+     * record did not give whole (see `MessageRecovery`): shown as recovered, and read from the run's log too while
+     * that lasts, since the log has the message as it was sent.
+     */
+    val hasRecoveredMessage: Boolean by lazy { CoordinatorTranscript.hasRecoveredMessage(items) }
 
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
@@ -201,16 +215,22 @@ object RecordTranscript {
             firstStep = kept.first().second
         }
         val reuse = previous?.turns?.associateBy { it.stepIndex }
-        val turns = kept.map { cutTurn ->
+        val turns = kept.mapIndexed { i, cutTurn ->
             val turn = cutTurn.first
             val stepIndex = cutTurn.second
             val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
             val old = reuse?.get(stepIndex)
             val items = if (old != null && old.stepCount == count && old.prompt == turn.prompt) old.items else build(turn, RecordTurn.traceKey(stepIndex))
-            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items)
+            // The newest turns' shapes, from the steps as they were just read — reused items or not: the shapes are
+            // the diagnostics' account of the record as this read found it.
+            val shape = if (i >= kept.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape)
         }
         return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now)
     }
+
+    /** How many of the record's newest turns keep their shapes for the transcript diagnostics. */
+    const val SHAPE_TURNS = 6
 
     /**
      * [older] (the steps before [window]) joined onto it: the window's leading steps complete the last turn of the

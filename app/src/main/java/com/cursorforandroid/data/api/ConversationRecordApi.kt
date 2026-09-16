@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.StepShape
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -13,8 +14,9 @@ import kotlinx.serialization.json.longOrNull
 
 /**
  * One step of the account's own copy of a chat's transcript (`HeadlessAgenticComposerResponse`), in the corner this
- * app reads: a prompt, a stretch of reply text, a thought, a tool call, or a tool call's result. Every field but the
- * one the step carries is null.
+ * app reads: a prompt, a stretch of reply text, a thought, a tool call, a tool call's result, or the error the turn
+ * ended in. Every field but the one the step carries is null. [shape] is the step as it came, keys and value types
+ * only, for the transcript diagnostics (see [StepShape]).
  */
 data class HeadlessStep(
     val userMessage: String? = null,
@@ -22,11 +24,14 @@ data class HeadlessStep(
     val thinking: String? = null,
     val toolCall: HeadlessToolCall? = null,
     val toolResult: HeadlessToolResult? = null,
+    /** The server's account of why the turn failed (`HeadlessAgenticComposerResponse.error.message`). */
+    val error: String? = null,
     /**
      * The prompt was sent in Project mode (`ConversationMessage.agent_mode = AGENT_MODE_PROJECT`): the chat is a
      * Project's coordinator, whatever else its transcript carries. Only a prompt step says so.
      */
     val projectMode: Boolean = false,
+    val shape: StepShape? = null,
 )
 
 /**
@@ -34,6 +39,8 @@ data class HeadlessStep(
  * call the model streamed — a coordinator's `SendMessage`, whose text the desktop shows as it is written — is
  * recorded as several responses for the same id, each with a piece of the arguments: [rawArgs] carries a piece that
  * is not JSON on its own, for `HeadlessTranscript` to join with the rest; [isLastMessage] marks the last of them.
+ * [source] says where the id, the name and the arguments were read from (`id=toolCallId name=name args=json`), for
+ * the diagnostics.
  */
 data class HeadlessToolCall(
     val callId: String,
@@ -42,6 +49,7 @@ data class HeadlessToolCall(
     val rawArgs: String? = null,
     val isStreaming: Boolean = false,
     val isLastMessage: Boolean = false,
+    val source: String = "",
 )
 
 /** What a tool call came back with, as JSON, by the call's id. */
@@ -94,17 +102,18 @@ class HeadlessConversationApi(
 ) : ConversationRecordApi {
 
     override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
+        val from = startIndex.coerceAtLeast(0)
         val response = rpc.unaryWithSession(
             SERVICE,
             "FetchBackgroundComposer",
             tokens,
-            FetchRequestDto(bcId = agentId, startIndex = startIndex.coerceAtLeast(0), limit = limit.coerceAtLeast(1)),
+            FetchRequestDto(bcId = agentId, startIndex = from, limit = limit.coerceAtLeast(1)),
             FetchRequestDto.serializer(),
             FetchResponseDto.serializer(),
         )
         // One step per response, a blank one for a response this app reads nothing from (a status, a done marker):
         // the record is paged by index, and a page's steps must line up with the indices it was asked for.
-        return HeadlessPage(response.responses.map { it.toStep() ?: HeadlessStep() }, startIndex.coerceAtLeast(0), response.totalResponses ?: response.responses.size)
+        return HeadlessPage(response.responses.mapIndexed { i, json -> parseStep(json, from + i) }, from, response.totalResponses ?: response.responses.size)
     }
 
     override suspend fun state(agentId: String): RecordState {
@@ -158,9 +167,10 @@ class HeadlessConversationApi(
     @Serializable
     private data class TimingDto(val durationMs: JsonElement? = null, val timestampMs: JsonElement? = null)
 
+    /** The page as it came: each response kept as JSON, so its shape can be described whatever keys it carries (see [parseStep]). */
     @Serializable
     private data class FetchResponseDto(
-        val responses: List<ResponseDto> = emptyList(),
+        val responses: List<JsonObject> = emptyList(),
         val totalResponses: Int? = null,
     )
 
@@ -168,8 +178,9 @@ class HeadlessConversationApi(
      * The oneof-ish shape of `HeadlessAgenticComposerResponse`, each field present on the steps of its kind. A tool
      * call arrives as `tool_call` (`ClientSideToolV2Call`) or, for a call the runner streamed back piece by piece, as
      * `streamed_back_tool_call` (`StreamedBackToolCall {tool, tool_call_id, name, raw_args, …}`): both name the call
-     * and carry its arguments, and both are steps of the call. Everything else with a tool call's id but nothing of
-     * its own — a status, a done marker — is a blank step.
+     * and carry its arguments, and both are steps of the call. `error` is the server's word on a turn that failed.
+     * Everything else with a tool call's id but nothing of its own — a `status`, an `is_message_done` marker — is a
+     * blank step.
      */
     @Serializable
     private data class ResponseDto(
@@ -181,21 +192,33 @@ class HeadlessConversationApi(
         val userMessage: UserMessageDto? = null,
         val humanMessage: HumanMessageDto? = null,
         val thinking: ThinkingDto? = null,
+        val error: ErrorDto? = null,
+        val status: JsonElement? = null,
+        val isMessageDone: Boolean? = null,
     ) {
-        fun toStep(): HeadlessStep? = when {
-            userMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = userMessage.text)
-            humanMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = humanMessage.text, projectMode = humanMessage.isProjectMode)
-            toolCall != null -> readToolCall(toolCall)?.let { HeadlessStep(toolCall = it) }
-            streamedBackToolCall != null -> readToolCall(streamedBackToolCall)?.let { HeadlessStep(toolCall = it.copy(isStreaming = true)) }
-            finalToolResult != null && finalToolResult.toolCallId.isNotBlank() -> HeadlessStep(toolResult = HeadlessToolResult(finalToolResult.toolCallId, finalToolResult.result))
-            thinking?.text?.isNotEmpty() == true -> HeadlessStep(thinking = thinking.text)
-            !text.isNullOrEmpty() -> HeadlessStep(text = text)
-            else -> null
+        /** The step this response is, with the name of the branch that read it (see [StepShape.branch]); a blank step for one nothing reads. */
+        fun read(): Pair<HeadlessStep, String> = when {
+            userMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = userMessage.text) to "user_message"
+            humanMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = humanMessage.text, projectMode = humanMessage.isProjectMode) to "human_message"
+            toolCall != null -> readToolCall(toolCall).let { call -> (call?.let { HeadlessStep(toolCall = it) } ?: HeadlessStep()) to "tool_call[${call?.source ?: DROPPED}]" }
+            streamedBackToolCall != null -> readToolCall(streamedBackToolCall).let { call -> (call?.let { HeadlessStep(toolCall = it.copy(isStreaming = true)) } ?: HeadlessStep()) to "streamed_back_tool_call[${call?.source ?: DROPPED}]" }
+            finalToolResult != null && finalToolResult.toolCallId.isNotBlank() -> HeadlessStep(toolResult = HeadlessToolResult(finalToolResult.toolCallId, finalToolResult.result)) to "final_tool_result"
+            finalToolResult != null -> HeadlessStep() to "final_tool_result[$DROPPED]"
+            thinking?.text?.isNotEmpty() == true -> HeadlessStep(thinking = thinking.text) to "thinking"
+            error?.message?.isNotBlank() == true -> HeadlessStep(error = error.message) to "error"
+            !text.isNullOrEmpty() -> HeadlessStep(text = text) to "text"
+            status != null -> HeadlessStep() to "blank(status)"
+            isMessageDone == true -> HeadlessStep() to "blank(message_done)"
+            else -> HeadlessStep() to "blank"
         }
     }
 
     @Serializable
     private data class ToolResultDto(val toolCallId: String = "", val result: JsonElement? = null)
+
+    /** `HeadlessAgenticComposerResponse.Error {message, error_details}`: the message is the reason the turn failed, in the server's words. */
+    @Serializable
+    private data class ErrorDto(val message: String? = null)
 
     @Serializable
     private data class UserMessageDto(val text: String? = null)
@@ -218,6 +241,20 @@ class HeadlessConversationApi(
         /** `ClientSideToolV2.SEND_TO_USER` (65), the one coordinator tool the legacy enum names. */
         private const val CLIENT_SIDE_TOOL_SEND_TO_USER = 65
 
+        /** The branch's word for a call or result step nothing could be read from: it carried no id of any kind. */
+        internal const val DROPPED = "dropped:no-id"
+
+        /**
+         * One response of the record as this app reads it, with its shape kept beside it: the typed reading of the
+         * fields this build knows, and the keys and value types of everything the response carried, known or not
+         * (see [RecordShapes]). [index] is the step's place in the record.
+         */
+        internal fun parseStep(json: JsonObject, index: Int): HeadlessStep {
+            val (step, branch) = runCatching { CursorJson.decodeFromJsonElement(ResponseDto.serializer(), json).read() }
+                .getOrElse { HeadlessStep() to "blank(unreadable)" }
+            return step.copy(shape = StepShape(index, branch, RecordShapes.describe(json)))
+        }
+
         internal fun readProjectMode(mode: JsonElement?): Boolean {
             val primitive = mode as? JsonPrimitive ?: return false
             primitive.intOrNull?.let { return it == AGENT_MODE_PROJECT }
@@ -235,16 +272,29 @@ class HeadlessConversationApi(
          */
         internal fun readToolCall(call: JsonObject): HeadlessToolCall? {
             // The call's id, or the model's id for it when the record carries no other: what its result names it by.
-            val id = call.string("toolCallId") ?: call.string("modelCallId") ?: return null
+            val idSource = when {
+                call.string("toolCallId") != null -> "toolCallId"
+                call.string("modelCallId") != null -> "modelCallId"
+                else -> return null
+            }
+            val id = call.string(idSource)!!
             val params = call.entries.firstOrNull { (key, value) -> (key.endsWith("Params") || key.endsWith("Stream")) && value is JsonObject }
+            var nameSource = "name"
             val name = call.string("name")
-                ?: toolEnumName(call["tool"])
-                ?: params?.key?.removeSuffix("Params")?.removeSuffix("Stream")?.let(::snakeCase)
-                ?: ""
+                ?: toolEnumName(call["tool"])?.also { nameSource = "tool" }
+                ?: params?.key?.removeSuffix("Params")?.removeSuffix("Stream")?.let(::snakeCase)?.also { nameSource = "params" }
+                ?: "".also { nameSource = "blank" }
             val raw = call.string("rawArgs")
             // Arguments that are not JSON on their own are a piece of a streamed call's, kept as text to be joined.
             val parsed = raw?.let { text -> runCatching { CursorJson.parseToJsonElement(text) }.getOrNull()?.takeIf { it is JsonObject } }
-            val args = parsed ?: params?.takeIf { it.key.endsWith("Params") }?.value
+            val typed = params?.takeIf { it.key.endsWith("Params") }?.value
+            val args = parsed ?: typed
+            val argsSource = when {
+                parsed != null -> "json"
+                typed != null -> "params"
+                raw != null -> "piece"
+                else -> "none"
+            }
             return HeadlessToolCall(
                 id,
                 name,
@@ -252,6 +302,7 @@ class HeadlessConversationApi(
                 rawArgs = raw?.takeIf { parsed == null },
                 isStreaming = call.boolean("isStreaming"),
                 isLastMessage = call.boolean("isLastMessage"),
+                source = "id=$idSource name=$nameSource args=$argsSource",
             )
         }
 

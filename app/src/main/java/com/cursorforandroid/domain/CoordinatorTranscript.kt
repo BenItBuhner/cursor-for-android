@@ -40,6 +40,12 @@ object CoordinatorTranscript {
         isUserMessageCall(read) && (read.payload as? ToolPayload.CoordinatorMessage)?.missing != true
     }
 
+    /**
+     * True when [items] hold a coordinator's message whose body was read leniently out of arguments that did not
+     * parse (see `MessageRecovery`): shown, but worth replacing with the run's own copy while its log lasts.
+     */
+    fun hasRecoveredMessage(items: List<TimelineItem>): Boolean = calls(items).any { (it.payload as? ToolPayload.CoordinatorMessage)?.recovered == true }
+
     /** The distinct names of the calls that make [hasCoordinatorContent] true, in order of first appearance: the evidence. */
     fun evidence(items: List<TimelineItem>): List<String> = calls(items).filter(::isCoordinatorCall).map { it.name }.distinct().toList()
 

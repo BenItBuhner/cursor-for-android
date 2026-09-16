@@ -571,8 +571,9 @@ class ConversationRepository(
             return window.turns.withIndex().mapNotNull { (i, turn) ->
                 val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
                 // Without a body; or, in a coordinator's chat, with a body but without the coordinator's word to the
-                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has it whole.
-                val wanting = !turn.hasBody || (projectMode && !turn.hasUserMessage)
+                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has
+                // it whole — or with that word read leniently out of pieces (see `MessageRecovery`), which the log has as sent.
+                val wanting = !turn.hasBody || (projectMode && (!turn.hasUserMessage || turn.hasRecoveredMessage))
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }
@@ -834,6 +835,8 @@ class ConversationRepository(
                 record = if (window != null || e.recordEmpty || e.recordError != null) {
                     TranscriptLoadDiagnostics.RecordLine(window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError)
                 } else null,
+                // The newest turns' steps and calls as the record gave them this session, keys and value types only.
+                shapes = window?.turns?.mapNotNull { it.shape }.orEmpty(),
                 status = run {
                     val latest = e.latestRun()
                     val row = agents.agent(agentId)
