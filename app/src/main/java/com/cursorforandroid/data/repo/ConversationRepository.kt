@@ -432,7 +432,8 @@ class ConversationRepository(
             val paired = ordered.filter { it.id !in trailingIds }
             val offset = paired.size - window.turns.size
             val current = live
-            val chatRunning = latestRun()?.let { statusOf(it).isActive } == true
+            // Running by the run list's word, or the row's while the list has not answered: the newest turn is under way.
+            val chatRunning = latestRun()?.let { statusOf(it).isActive } ?: (agents.agent(agentId)?.isRunning == true)
             val items = ArrayList<TimelineItem>()
             for ((i, turn) in window.turns.withIndex()) {
                 val run = paired.getOrNull(offset + i)
@@ -1024,6 +1025,9 @@ class ConversationRepository(
         return CoordinatorLineage.createdWorkerIds(items) to workers
     }
 
+    /** True while a stream is open on [runId] for this entry. */
+    private fun Entry.isFollowing(runId: String): Boolean = synchronized(this) { streamJob?.isActive == true && state.value.activeRunId == runId }
+
     /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */
     private fun Entry.stopFollowing() {
         streamJob?.cancel()
@@ -1118,13 +1122,15 @@ class ConversationRepository(
                             pageOlder = !runsComplete && olderRunsCursor != null
                         },
                         transform = {
+                            // A stream already open on the latest run (the runs rendered ahead of the transcript) keeps its word.
+                            val following = e.streamJob?.isActive == true && activeRunId == latest?.id
                             copy(
                                 isLoading = false,
                                 error = null,
                                 activeRunId = latest?.id,
-                                runStatus = latest?.let { e.statusOf(it) },
-                                isStreaming = false,
-                                isReconnecting = false,
+                                runStatus = if (following) runStatus else latest?.let { e.statusOf(it) },
+                                isStreaming = following && isStreaming,
+                                isReconnecting = following && isReconnecting,
                                 transcriptUnavailable = unavailable,
                                 transcriptError = transcriptIssue,
                             )
@@ -1143,7 +1149,9 @@ class ConversationRepository(
                     persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
-                        startStreaming(e, agentId, active)
+                        // Already followed when the runs rendered ahead of the transcript (see [publishRunsFirst]): the
+                        // stream is not opened a second time for the same run.
+                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
                     } else {
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
