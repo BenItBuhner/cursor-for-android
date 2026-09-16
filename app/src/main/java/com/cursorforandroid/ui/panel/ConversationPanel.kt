@@ -40,6 +40,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Artifact
+import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 import com.cursorforandroid.ui.components.CursorIcons
@@ -277,6 +278,7 @@ fun rememberPanelActions(
             override fun loadMachine(force: Boolean) = viewModel.loadMachine(force)
             override fun openDesktop(viewOnly: Boolean) = viewModel.openDesktop(viewOnly)
             override fun setDesktopViewOnly(viewOnly: Boolean) = viewModel.setDesktopViewOnly(viewOnly)
+            override fun failDesktop(failure: DesktopFailure) = viewModel.failDesktop(failure)
             override fun closeDesktop() = viewModel.closeDesktop()
             override fun createPullRequest() = viewModel.createPullRequest()
 

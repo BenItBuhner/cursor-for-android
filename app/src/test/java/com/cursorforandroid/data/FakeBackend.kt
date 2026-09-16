@@ -112,6 +112,8 @@ open class FakeCursorApi : CursorApi {
     val runsHiddenFromList: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** When set, every run-list page after the first waits for it before answering, so a chat's list stays incomplete. */
     @Volatile var runsLaterPagesGate: CompletableDeferred<Unit>? = null
+    /** Held while any page of the run list is on its way. */
+    @Volatile var runsGate: CompletableDeferred<Unit>? = null
     @Volatile var failModels: Throwable? = null
     @Volatile var failRepositories: Throwable? = null
     /** When set, the v0 list waits for it before answering. */
@@ -273,6 +275,7 @@ open class FakeCursorApi : CursorApi {
     override suspend fun listRuns(id: String, limit: Int, cursor: String?): ListRunsResponseDto {
         listRunsCalls++
         failListRuns?.let { throw it }
+        runsGate?.await()
         // Newest first and paged, as the reference documents `ListRunsResponse.items`: with fewer runs than the limit
         // that is one page and no cursor.
         val all = runs.values.filter { it.agentId == id && it.id !in runsHiddenFromList }.sortedWith(compareByDescending<RunDto> { it.createdAt }.thenByDescending { it.id })

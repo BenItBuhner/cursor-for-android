@@ -30,15 +30,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 @Serializable
 private data class CachedUser(
@@ -54,26 +60,45 @@ private data class CachedUser(
 class PreferencesStore(
     context: Context,
     /** Injectable for tests only: a store whose writes fail, so a lost write can be told from one that landed. */
-    private val store: DataStore<Preferences> = settingsStore(context),
+    store: DataStore<Preferences>? = null,
 ) {
 
     /**
-     * What every flow below reads. A settings file that cannot be read even after being replaced degrades to
-     * defaults rather than throwing into whatever is collecting — a Compose screen, or the session restore the
-     * splash screen waits on.
+     * The settings file this process holds: one per file, shared by every [PreferencesStore] built on it (see
+     * [SettingsFile]). A second `DataStore` on the same file is what DataStore forbids — it throws on its first
+     * read or write, and whatever was in flight (a chat's read marker on open, then its load) dies with it.
      */
-    private val data: Flow<Preferences> = store.data.catch { t ->
-        if (t !is IOException) throw t
-        Log.w(TAG, "Settings could not be read; using defaults", t)
-        emit(emptyPreferences())
-    }
+    private val file: SettingsFile = store?.let { SettingsFile(it) } ?: SettingsFile.of(context)
+
+    /**
+     * What every flow below reads: the store's flow, with this process's own writes preferred (see
+     * [SettingsFile.written]). A settings file that cannot be read even after being replaced degrades to defaults
+     * rather than throwing into whatever is collecting — a Compose screen, or the session restore the splash screen
+     * waits on.
+     */
+    private val data: Flow<Preferences> = combine(
+        file.store.data.catch { t ->
+            if (t !is IOException) throw t
+            Log.w(TAG, "Settings could not be read; using defaults", t)
+            emit(emptyPreferences())
+        },
+        file.written,
+    ) { fromStore, mine -> mine ?: fromStore }.distinctUntilChanged()
 
     /**
      * A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. False when
-     * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so.
+     * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so. What a
+     * write produced is recorded for the flows (see [SettingsFile.written]).
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
-        runCatching { store.edit(transform); true }.getOrElse { t ->
+        runCatching {
+            // The lock is taken and given back on the store's own threads, never held across a hop back to the
+            // caller's. A caller on the main thread would otherwise hold it from the store's answer until the main
+            // looper got round to resuming it — and while the looper is busy (a frame, a test idling it its own
+            // way) every other writer, on any thread, waits behind a lock nobody is using.
+            withContext(Dispatchers.IO) { file.writes.withLock { file.written.value = file.store.edit(transform) } }
+            true
+        }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
             false
@@ -125,6 +150,7 @@ class PreferencesStore(
         val railMedium = stringPreferencesKey("layout_rail_medium")
         val railExpanded = stringPreferencesKey("layout_rail_expanded")
         val panelWidthDp = intPreferencesKey("layout_panel_width_dp")
+        val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -138,6 +164,7 @@ class PreferencesStore(
         Keys.pinned,
         Keys.readMarkers,
         Keys.launchedHere,
+        Keys.modeChoicePending,
     )
 
     /**
@@ -247,6 +274,20 @@ class PreferencesStore(
         if (pending) p[Keys.extendedModeNoticePending] = true else p.remove(Keys.extendedModeNoticePending)
     }
 
+    // ---- first run (account-level: owed by a sign-in, settled by the choice screen, gone with the account) ------
+
+    /**
+     * True while the account signed in on this device has yet to choose between SDK only and Extended mode (see
+     * `data/repo/Onboarding.kt`). Set by a sign-in through the sign-in screen and never by a restored session, so an
+     * install that already had an account when the choice arrived is not asked; cleared with the rest of the account.
+     */
+    val modeChoicePending: Flow<Boolean> = accountData.map { it[Keys.modeChoicePending] ?: false }
+
+    suspend fun setModeChoicePending(pending: Boolean): Boolean {
+        beginSession()
+        return edit { p -> if (pending) p[Keys.modeChoicePending] = true else p.remove(Keys.modeChoicePending) }
+    }
+
     /**
      * Makes the pins this device's own, for when the account can no longer be asked about them: the changes still
      * waiting for the server are folded into the pinned set (they were applied to it when tapped; this only settles
@@ -292,15 +333,17 @@ class PreferencesStore(
     suspend fun setPinnedIds(agentIds: Set<String>) = edit { it[Keys.pinned] = agentIds }
 
     /** Model ids the user pinned in the picker, most recently pinned first, so they stay at the top of the list. */
-    val pinnedModelIds: Flow<List<String>> = store.data.map { p ->
+    val pinnedModelIds: Flow<List<String>> = data.map { p ->
         p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
     }
 
     /** Pins [modelId] to the front of the list, or drops it when it is already pinned. */
-    suspend fun togglePinnedModel(modelId: String) = store.edit { p ->
-        val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
-        val next = if (modelId in current) current - modelId else listOf(modelId) + current
-        if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+    suspend fun togglePinnedModel(modelId: String) {
+        edit { p ->
+            val current = p[Keys.pinnedModels]?.let { runCatching { CursorJson.decodeFromString(ListSerializer(String.serializer()), it) }.getOrNull() } ?: emptyList()
+            val next = if (modelId in current) current - modelId else listOf(modelId) + current
+            if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
+        }
     }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
@@ -630,10 +673,49 @@ class PreferencesStore(
     }
 }
 
-private fun settingsStore(context: Context): DataStore<Preferences> = PreferenceDataStoreFactory.create(
-    // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read for the rest of
-    // the install's life; everything here is device-local and re-derivable, so it starts over instead.
-    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-    scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-    produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
-)
+/**
+ * The settings file as this process holds it: the `DataStore`, and beside it what this process last wrote and the
+ * lock the writes take. One per file for the process's lifetime, whichever `PreferencesStore` — the app's graph, a
+ * widget's, a test's — is built on it: DataStore allows a single instance per file and throws "There are multiple
+ * DataStores active for the same file" at the second one's first use, which is what a screen driven by a graph of
+ * its own saw while the application's own graph held the file.
+ */
+private class SettingsFile(val store: DataStore<Preferences>) {
+    /**
+     * The settings as this process last wrote them, published beside the store's own flow. DataStore 1.1's `data`
+     * can drop the push of an update to a collector whose collection raced the write (b/431787506, fixed upstream
+     * only from 1.3.0-alpha03): the collector keeps the value it had while a fresh read returns the new one. Every
+     * write goes through `PreferencesStore.edit`, which records the settings it produced, and the flows prefer that
+     * record to the store's — so a pin, a read marker or a toggle written by this process reaches every collector,
+     * always. Nothing else writes the file: the store is this process's alone.
+     */
+    val written = MutableStateFlow<Preferences?>(null)
+
+    /**
+     * Serialises the writes with the recording of what they produced: the store orders the writes on its own, but two
+     * callers finishing out of order would otherwise record an older snapshot over a newer one and hold every flow
+     * at the older until the next write.
+     */
+    val writes = Mutex()
+
+    companion object {
+        private val files = ConcurrentHashMap<String, SettingsFile>()
+
+
+        fun of(context: Context): SettingsFile {
+            val path = context.applicationContext.preferencesDataStoreFile("cursor_settings")
+            return files.computeIfAbsent(path.absolutePath) {
+                SettingsFile(
+                    PreferenceDataStoreFactory.create(
+                        // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read
+                        // for the rest of the install's life; everything here is device-local and re-derivable, so it
+                        // starts over instead.
+                        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+                        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+                        produceFile = { path },
+                    ),
+                )
+            }
+        }
+    }
+}

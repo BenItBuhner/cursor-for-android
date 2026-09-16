@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
@@ -43,12 +45,16 @@ class StoreFileRepositoryTest {
         var text = "# Project UI parity\n\nThe tabbed panel."
         /** Presigned URLs point at the local server when the test serves bytes, at a made-up host otherwise. */
         var serve = false
-        override suspend fun storeFor(sourceId: String): String? { calls += "store:$sourceId"; return storeId }
+        override suspend fun storeFor(sourceId: String): String? { calls += "store:$sourceId"; storeFailure?.let { throw it }; return storeId }
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = emptyList()
         override suspend fun readFile(storeId: String, relativePath: String): String { calls += "read:$storeId:$relativePath"; return text }
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? {
-            calls += "presign:$requesterId:$storeId:$relativePath"
-            val url = if (serve) server.url("/signed/$relativePath?n=${calls.size}").toString() else "https://files.cursor.sh/$storeId/$relativePath?n=${calls.size}"
+        /** What each presign named: `store:<id>` or `agent:<id>`, one of them. */
+        val targets = mutableListOf<StoreReadTarget>()
+        var storeFailure: Throwable? = null
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? {
+            calls += "presign:$relativePath"
+            targets += target
+            val url = if (serve) server.url("/signed/$relativePath?n=${calls.size}").toString() else "https://files.cursor.sh/$relativePath?n=${calls.size}"
             return PresignedStoreRead(relativePath, url, expiresAt)
         }
     }
@@ -102,12 +108,12 @@ class StoreFileRepositoryTest {
         assertThat(server.takeRequest().path).endsWith("?n=2")
         assertThat(server.takeRequest().path).endsWith("?n=3")
 
-        val other = MediaRef.Store(store, "media/other.png", store)
+        val other = MediaRef.Store(store, "media/other.png")
         server.enqueue(MockResponse().setResponseCode(500))
         val failure = assertThrows(IOException::class.java) { runBlocking { files.readBytes(other) } }
         assertThat(failure).hasMessageThat().contains("500")
         // Twice dead is gone.
-        val gone = MediaRef.Store(store, "media/gone.png", store)
+        val gone = MediaRef.Store(store, "media/gone.png")
         server.enqueue(MockResponse().setResponseCode(404))
         server.enqueue(MockResponse().setResponseCode(404))
         assertThat(assertThrows(IOException::class.java) { runBlocking { files.readBytes(gone) } }).hasMessageThat().isEqualTo(StoreFileRepository.NO_FILE)
@@ -117,7 +123,7 @@ class StoreFileRepositoryTest {
     fun `the files kept are bounded, the least recently drawn going first`() = runBlocking<Unit> {
         api.serve = true
         val files = repository(maxBlobBytes = 25)
-        val refs = (1..3).map { MediaRef.Store(store, "media/$it.png", store) }
+        val refs = (1..3).map { MediaRef.Store(store, "media/$it.png") }
         for (ref in refs) {
             server.enqueue(MockResponse().setBody(Buffer().write(ByteArray(10) { 1 })))
             files.readBytes(ref)
@@ -134,13 +140,15 @@ class StoreFileRepositoryTest {
     }
 
     @Test
-    fun `a picture's bytes are behind the presigned URL, asked for as the chat and kept until it is about to expire`() = runBlocking<Unit> {
+    fun `a picture's bytes are behind the presigned URL, asked for by the store's id and kept until it is about to expire`() = runBlocking<Unit> {
         api.expiresAt = now + 15 * 60_000L
         val files = repository()
         val url = files.downloadUrl(image)
-        assertThat(url).startsWith("https://files.cursor.sh/st-proj/media/ui-parity/tab-landscape-icon-only-project.png")
+        assertThat(url).startsWith("https://files.cursor.sh/media/ui-parity/tab-landscape-icon-only-project.png")
         assertThat(files.downloadUrl(image)).isEqualTo(url)
-        assertThat(api.calls).containsExactly("store:$store", "presign:bc-worker:st-proj:media/ui-parity/tab-landscape-icon-only-project.png").inOrder()
+        assertThat(api.calls).containsExactly("store:$store", "presign:media/ui-parity/tab-landscape-icon-only-project.png").inOrder()
+        // Named by the store's id alone — never the owner as well, which the service refuses.
+        assertThat(api.targets).containsExactly(StoreReadTarget.Store("st-proj"))
 
         // A minute before it expires it is not handed out again; a fresh one is asked for.
         now += 14 * 60_000L + 1
@@ -166,19 +174,37 @@ class StoreFileRepositoryTest {
     }
 
     @Test
-    fun `a Project with no store says so, is not asked about on every figure, and is asked again later`() = runBlocking<Unit> {
+    fun `a Project the account lists no store for is read the legacy way, by its owner alone, and asked about again later`() = runBlocking<Unit> {
         api.storeId = null
         val files = repository()
-        val failure = assertThrows(IOException::class.java) { runBlocking { files.downloadUrl(image) } }
-        assertThat(failure).hasMessageThat().isEqualTo(StoreFileRepository.NO_STORE)
-        assertThrows(IOException::class.java) { runBlocking { files.readText(document) } }
+        assertThat(files.downloadUrl(image)).startsWith("https://files.cursor.sh/media/ui-parity/tab-landscape-icon-only-project.png")
+        assertThat(api.targets).containsExactly(StoreReadTarget.Agent(store))
+        // A document has no legacy path: ReadAgentStoreFile names a store or nothing.
+        assertThat(assertThrows(IOException::class.java) { runBlocking { files.readText(document) } }).hasMessageThat().isEqualTo(StoreFileRepository.NO_STORE)
+        // The miss was remembered: one listing for both reads.
         assertThat(api.calls.count { it.startsWith("store:") }).isEqualTo(1)
-        assertThat(api.calls.none { it.startsWith("presign:") || it.startsWith("read:") }).isTrue()
 
         now += 7 * 60 * 60_000L
         api.storeId = "st-proj"
         assertThat(repository(cache = cache()).storeId(store)).isEqualTo("st-proj")
         assertThat(api.calls.count { it.startsWith("store:") }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a store listing that cannot be had falls back to the owner, and the service's own refusal is passed on as said`() = runBlocking<Unit> {
+        api.storeFailure = IOException("The account is not reachable.")
+        val files = repository()
+        assertThat(files.downloadUrl(image)).contains("tab-landscape-icon-only-project.png")
+        assertThat(api.targets).containsExactly(StoreReadTarget.Agent(store))
+
+        // What the service says of a read it refuses is what the figure's card shows: its words, not a translation.
+        val refused = object : AgentStoreApi by api {
+            override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? =
+                throw ConnectRpcException(400, "invalid_argument", "Exactly one of share_id, store_id, or legacy agent_id is required.")
+        }
+        val other = MediaRef.Store(store, "media/other.png")
+        val failure = assertThrows(ConnectRpcException::class.java) { runBlocking { repository(api = refused).downloadUrl(other) } }
+        assertThat(failure).hasMessageThat().isEqualTo("Exactly one of share_id, store_id, or legacy agent_id is required.")
     }
 
     @Test

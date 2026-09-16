@@ -47,10 +47,12 @@ class MachineApiTest {
         assertThat(pod.cluster).isEqualTo("us-east1")
         assertThat(pod.token).isEqualTo("tok.abc")
         assertThat(pod.ticketMinted).isFalse()
+        // The Agents Window's order (vm-websocket-url.js, use-vnc-connection-with-fallback.react.js): 26058, then 6080.
         assertThat(pod.candidateUrls()).containsExactly(
-            "wss://t-9-pod-1-6080.us-east1.cursorvm.com:443/websockify?network_token=tok.abc&resume_lower_s=900&resume_upper_s=18000",
             "wss://t-9-pod-1-26058.us-east1.cursorvm.com:443/websockify?network_token=tok.abc&resume_lower_s=900&resume_upper_s=18000",
+            "wss://t-9-pod-1-6080.us-east1.cursorvm.com:443/websockify?network_token=tok.abc&resume_lower_s=900&resume_upper_s=18000",
         ).inOrder()
+        assertThat(pod.host(26058)).isEqualTo("t-9-pod-1-26058.us-east1.cursorvm.com")
         // The token never reaches a log line.
         assertThat(pod.toString()).doesNotContain("tok.abc")
         server.takeRequest()

@@ -173,7 +173,30 @@ data class CachedConversation(
     val olderRunsCursor: String? = null,
     /** How many of the newest runs were rendered when this was written; the next open starts on the same window. Zero: the default. */
     val window: Int = 0,
+    /** The window of the account's record that was open (Extended mode, see `RecordWindow`); null when the chat was read from `/v0` and `/v1` alone. */
+    val record: CachedRecordWindow? = null,
 )
+
+/**
+ * The account's record of the chat as far as it was read: the record's size, where the loaded steps begin, and each
+ * loaded turn's place, prompt and mode. The turns' items are files of their own (`TraceCache`, keyed
+ * `record:<stepIndex>`), read back for the turns of the window and never all at once.
+ */
+@Serializable
+data class CachedRecordWindow(
+    val total: Int,
+    val firstStep: Int,
+    val turnCount: Int = 0,
+    val turns: List<CachedRecordTurn> = emptyList(),
+    /** Each turn's timing as the account gave it, by whole-chat turn index, when it was read. */
+    val timings: List<CachedTurnTiming> = emptyList(),
+)
+
+@Serializable
+data class CachedRecordTurn(val stepIndex: Int, val stepCount: Int, val prompt: String? = null, val projectMode: Boolean = false)
+
+@Serializable
+data class CachedTurnTiming(val durationMs: Long? = null, val timestampMs: Long? = null)
 
 class ConversationCache(private val cache: JsonDiskCache, private val maxEntries: Int = MAX_ENTRIES) {
     suspend fun read(agentId: String): JsonDiskCache.Entry<CachedConversation>? =

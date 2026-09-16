@@ -209,8 +209,8 @@ class ConversationRepositoryTest {
         awaitUntil { prompts(fresh, id).isNotEmpty() }
         assertThat(fresh.state(id).value.runStatus).isEqualTo(RunStatus.CREATING)
         api.conversationGate!!.complete(Unit)
-        // The stream starts after the answer has been published and written back; wait for that, the last step.
-        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming }
+        // The run is followed as soon as the run list answers; the transcript's answer ends the load. Wait for both.
+        awaitUntil { api.conversationCalls == 1 && fresh.state(id).value.isStreaming && !fresh.state(id).value.isLoading }
         assertThat(fresh.state(id).value.isLoading).isFalse()
         assertThat(prompts(fresh, id).map { it.text }).containsExactly("Do the thing")
         assertThat(fresh.state(id).value.error).isNull()
@@ -1199,11 +1199,14 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Done)
 
         val conversations = repository()
+        // Both answers held: the runs render before the transcript, and would follow the run, while a screen can see them.
         api.conversationGate = CompletableDeferred()
+        api.runsGate = CompletableDeferred()
         conversations.attach("bc-1")
         awaitUntil { api.conversationCalls == 1 }
         conversations.pause("bc-1")
         api.conversationGate!!.complete(Unit)
+        api.runsGate!!.complete(Unit)
 
         // The inputs the load fetched are still worth having; the stream and the replay are not started for them.
         awaitUntil { conversations.state("bc-1").value.items.any { it is UserMessage } }

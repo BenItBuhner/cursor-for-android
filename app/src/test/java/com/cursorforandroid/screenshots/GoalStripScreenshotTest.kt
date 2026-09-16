@@ -41,6 +41,7 @@ import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureScreenRoboImage
@@ -48,6 +49,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Buffer
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -82,6 +85,17 @@ class GoalStripScreenshotTest {
     private val objective = GoalFixtures.shape("createGoal", "args", "toJson").jsonObject.getValue("objective").jsonPrimitive.content
     private val t0 = 1_789_380_000_000L
     private val now = t0 + 4_512_000L
+
+    /** The rows say how long ago each turn was; pinned to the fixture's clock so they read the same on every run. */
+    @Before
+    fun pinClock() {
+        AppClock.nowMillis = { now }
+    }
+
+    @After
+    fun unpinClock() {
+        AppClock.nowMillis = System::currentTimeMillis
+    }
 
     private fun replay(fixture: String, runId: String): List<TimelineItem> {
         val source = Buffer().writeUtf8(GoalFixtures.text(fixture))

@@ -47,8 +47,27 @@ data class TranscriptLoadDiagnostics(
     val lastError: String?,
     val transcriptError: String?,
     val transcriptUnavailable: Boolean,
+    /** Where the transcript comes from: `record` (the account's own record, Extended mode) or `runs` (`/v0` text over `/v1` runs). */
+    val source: String = "runs",
+    /** The account's record as far as it was read, when the chat has been asked for it (Extended mode). */
+    val record: RecordLine? = null,
+    /** The chat's status as shown, and the words it was reconciled from (see `ConversationRepository.Entry.chatStatus`). */
+    val status: StatusLine? = null,
 ) {
+    /**
+     * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
+     * on it; [rowRunning] the row's word; [accountRunning] the account list's running set's (Extended mode);
+     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older).
+     */
+    data class StatusLine(val shown: String, val latestRun: String, val streaming: Boolean, val rowRunning: Boolean, val accountRunning: Boolean, val rowNewerThanRecordMs: Long?)
+
     data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int)
+
+    /**
+     * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
+     * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
+     */
+    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?)
 
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)
 }
@@ -137,10 +156,16 @@ object TranscriptDiagnostics {
      */
     private fun StringBuilder.describe(load: TranscriptLoadDiagnostics) {
         appendLine(
-            "load: attached=${load.attached} paused=${load.paused} fetched=${load.fetched} fetchedAt=${load.fetchedAtIso ?: "-"} messages=${load.messages} prompts=${load.prompts}" +
+            "load: source=${load.source} attached=${load.attached} paused=${load.paused} fetched=${load.fetched} fetchedAt=${load.fetchedAtIso ?: "-"} messages=${load.messages} prompts=${load.prompts}" +
                 " runs=${load.runsLoaded} complete=${load.runsComplete} olderCursor=${load.hasOlderCursor} order=${load.runOrder?.name ?: "-"} latestById=${load.latestFetchedById}" +
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
+        load.record?.let { r ->
+            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
+        }
+        load.status?.let { st ->
+            appendLine("status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}")
+        }
         val shown = load.runs.count { it.trace == "shown" }
         appendLine(
             "traces: shown=$shown of ${load.runs.count { it.trace != "live" }} queue=${load.traceQueue} inFlight=${load.traceInFlight} worker=${load.traceWorkerRunning} expiredRuns=${load.expiredRuns} expiredBefore=${load.expiredBeforeIso ?: "-"} failed=${load.failedTraces}",

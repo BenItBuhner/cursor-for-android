@@ -61,7 +61,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.TranscriptRows
-import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
@@ -92,7 +92,6 @@ import com.cursorforandroid.ui.navigation.LocalWindowPosture
 import com.cursorforandroid.ui.navigation.WindowPosture
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
-import com.cursorforandroid.ui.panel.DesktopState
 import com.cursorforandroid.ui.panel.LocalPanelGraph
 import com.cursorforandroid.ui.panel.PanelPane
 import com.cursorforandroid.ui.panel.PanelSectionId
@@ -285,9 +284,11 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
-    // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC); it opens over
-    // the whole screen, panel or no panel, and what went wrong on the way is said on the snackbar.
-    val canOpenDesktop = capabilities.remoteDesktop && !isDemo && agent?.let { it.envType != EnvType.MACHINE && !it.isArchived } == true
+    // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
+    // that have one to show — the Agents Window's rule, a cloud composer, narrowed to the chats GetMachine would not
+    // refuse (DesktopEligibility). It opens over the whole screen for the whole of the way there: the steps while the
+    // machine is found, the failing step with a retry and the diagnostics to share, then the viewer.
+    val canOpenDesktop = capabilities.remoteDesktop && !isDemo && DesktopEligibility.canOpen(agent)
     // The pills above the composer, from what the screen and the panel already hold: the workers under this chat by
     // the list's rows, the transcript's subscriptions, the changes as the panel's Changes section would count them.
     val pills = remember(agentList.agents, agentId, coordinatorMode, conversation.items, panel.pullRequest, panel.diff, panel.content, canOpenDesktop) {
@@ -298,25 +299,15 @@ fun ConversationScreen(
             canOpenDesktop = canOpenDesktop,
         )
     }
-    (panel.desktop as? DesktopState.Open)?.let { open ->
-        DesktopDialog(
-            session = open.session,
-            agentName = agent?.name,
-            onViewOnlyChange = panelActions::setDesktopViewOnly,
-            onReconnect = { panelActions.openDesktop(open.session.viewOnly) },
-            onClose = panelActions::closeDesktop,
-        )
-    }
-    LaunchedEffect(panel.desktop) {
-        when (val desktop = panel.desktop) {
-            DesktopState.Opening -> viewModel.showMessage("Finding the agent's desktop…")
-            is DesktopState.Failed -> {
-                viewModel.showMessage(desktop.failure.message)
-                panelActions.closeDesktop()
-            }
-            else -> Unit
-        }
-    }
+    DesktopDialog(
+        state = panel.desktop,
+        agentName = agent?.name,
+        onViewOnlyChange = panelActions::setDesktopViewOnly,
+        onRetry = { viewOnly -> panelActions.openDesktop(viewOnly) },
+        onFail = panelActions::failDesktop,
+        onShare = panelActions::shareText,
+        onClose = panelActions::closeDesktop,
+    )
 
     // The panel's expand control: a pane grows to the most the window allows, a sheet to the window's width.
     var panelExpanded by rememberSaveable { mutableStateOf(false) }
@@ -378,6 +369,10 @@ fun ConversationScreen(
                         MenuItem("Open on cursor.com", CursorIcons.ExternalLink) { menuOpen = false; agent?.url?.let(uriHandler::openUri) }
                         MenuItem("Copy link", CursorIcons.Copy) { menuOpen = false; agent?.url?.let { clipboard.setText(AnnotatedString(it)) } }
                         MenuItem("Share…", CursorIcons.Link) { menuOpen = false; panelActions.shareText(agent?.url ?: CursorEndpoints.webUrl(agentId)) }
+                        // The load's redacted account of this chat (see [TranscriptDiagnostics]), from any chat that
+                        // looks wrong — not only one that has failed outright: window bounds, runs and their order,
+                        // each turn's trace state, the live follow, the last errors; no message text.
+                        MenuItem("Share diagnostics", CursorIcons.Warning) { menuOpen = false; scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } }
                         // The agent's VM desktop (Extended mode): view it, or take control of it to try what it is
                         // building. A Remote Control chat's machine has no desktop to reach from here.
                         if (canOpenDesktop) {
@@ -461,16 +456,23 @@ fun ConversationScreen(
                     }
                     if (!conversation.isLoading && items.isEmpty()) {
                         item("empty") {
-                            Text(
-                                when {
-                                    conversation.transcriptError != null -> "Couldn't load the transcript: ${conversation.transcriptError}"
-                                    conversation.transcriptUnavailable -> "The transcript isn't available for this chat."
-                                    else -> conversation.error ?: "Nothing here yet."
-                                },
-                                style = type.base,
-                                color = colors.textQuaternary,
-                                modifier = Modifier.padding(top = 32.dp),
-                            )
+                            val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
+                            if (failure != null) {
+                                // Nothing loaded at all: the failure is the screen, with the same two ways out.
+                                LoadErrorRow(
+                                    message = failure,
+                                    onRetry = viewModel::reload,
+                                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                                    modifier = paneWidth.padding(top = 32.dp),
+                                )
+                            } else {
+                                Text(
+                                    if (conversation.transcriptUnavailable) "The transcript isn't available for this chat." else "Nothing here yet.",
+                                    style = type.base,
+                                    color = colors.textQuaternary,
+                                    modifier = Modifier.padding(top = 32.dp),
+                                )
+                            }
                         }
                     }
                     if (conversation.isLoading && items.isEmpty()) {
@@ -507,23 +509,16 @@ fun ConversationScreen(
             }
         }
 
-        // A fetch that did not go through, said under the transcript rather than swallowed: the load's failure, or —
-        // with the runs answering and the transcript not — the transcript's, with the way to ask again.
+        // A fetch that did not go through, said under the transcript rather than swallowed, in the server's own words:
+        // the load's failure, or — with the runs answering and the transcript not — the transcript's, with the way to
+        // ask again and the load's diagnostics a tap away (the same redacted block Settings exports).
         (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
-            Row(
-                Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp).testTag("load-error"),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(err, style = type.small, color = colors.red, maxLines = 2, modifier = Modifier.weight(1f))
-                Text(
-                    "Retry",
-                    style = type.small,
-                    color = colors.textSecondary,
-                    modifier = Modifier.pressable(viewModel::reload, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp),
-                )
-            }
+            LoadErrorRow(
+                message = err,
+                onRetry = viewModel::reload,
+                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
 
         val archived = agent?.isArchived == true
@@ -740,6 +735,38 @@ private const val BottomTolerancePx = 48
 
 /** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
 private const val OlderTurnsPrefetchRows = 3
+
+/**
+ * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the
+ * redacted load block (window bounds, runs and their order, each turn's trace state, the live follow, the last
+ * errors) handed to the share sheet, so a chat that would not load can be reported from where it failed.
+ */
+@Composable
+internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Column(modifier.testTag("load-error")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(message, style = type.small, color = colors.red, maxLines = 3, modifier = Modifier.weight(1f))
+        }
+        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "Retry",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("load-retry"),
+            )
+            Text(
+                "Share diagnostics",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("share-diagnostics"),
+            )
+        }
+    }
+}
 
 /**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity

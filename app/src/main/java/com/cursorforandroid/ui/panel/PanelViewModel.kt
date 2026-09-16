@@ -21,6 +21,7 @@ import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.DesktopSession
+import com.cursorforandroid.domain.DesktopTrace
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.MachineStatus
 import com.cursorforandroid.domain.ConversationControls
@@ -105,17 +106,18 @@ data class WorkspaceBrowserState(
     val isAtRoot: Boolean get() = path.isEmpty()
 }
 
-/** The agent's desktop, as the Remote section and the WebView behind it see it. */
+/** The agent's desktop, as the viewer over the chat sees it: every state but [Idle] is on screen. */
 sealed interface DesktopState {
     data object Idle : DesktopState
 
-    /** `GetMachine` and the probe are out. */
-    data object Opening : DesktopState
+    /** `GetMachine` and the probe are out; [trace] names the step under way. */
+    data class Opening(val trace: DesktopTrace, val viewOnly: Boolean = true) : DesktopState
 
     /** A websockify URL answered; the WebView is up on it. */
     data class Open(val session: DesktopSession) : DesktopState
 
-    data class Failed(val failure: DesktopFailure) : DesktopState
+    /** A step before the viewer failed; the viewer shows which, with the trace, a retry and the diagnostics to share. */
+    data class Failed(val failure: DesktopFailure, val viewOnly: Boolean = true) : DesktopState
 }
 
 /**
@@ -710,13 +712,20 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
         val current = agent.value ?: return
         if (desktop.value is DesktopState.Opening) return
         desktopJob?.cancel()
-        desktop.value = DesktopState.Opening
+        desktop.value = DesktopState.Opening(DesktopTrace(agentId), viewOnly)
         desktopJob = viewModelScope.launch {
-            desktop.value = when (val opened = graph.remote.openDesktop(current, viewOnly)) {
+            val opened = graph.remote.openDesktop(current, viewOnly, progress = { trace -> desktop.update { if (it is DesktopState.Opening) it.copy(trace = trace) else it } })
+            desktop.value = when (opened) {
                 is DesktopOpen.Opened -> DesktopState.Open(opened.session)
-                is DesktopOpen.Failed -> DesktopState.Failed(opened.failure)
+                is DesktopOpen.Failed -> DesktopState.Failed(opened.failure, viewOnly)
             }
         }
+    }
+
+    /** The viewer's own failure — the page, its script, the socket or the first frame — with what it recorded. */
+    fun failDesktop(failure: DesktopFailure) {
+        val viewOnly = (desktop.value as? DesktopState.Open)?.session?.viewOnly ?: true
+        desktop.value = DesktopState.Failed(failure, viewOnly)
     }
 
     fun setDesktopViewOnly(viewOnly: Boolean) {

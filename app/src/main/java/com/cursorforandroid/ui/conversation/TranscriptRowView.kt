@@ -24,8 +24,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
 
 /**
  * One row of the transcript (see [TranscriptRow]): the messages as themselves, a coordinator's update as a reply, a
- * worker's card, a step's pictures, the question a run waits on — and everything else between two messages as one
- * [StretchView].
+ * worker's card, a step's pictures, the question a run waits on, an injected turn as its line and a run of silent
+ * ones behind one ([EventGroupView]) — and everything else between two messages as one [StretchView].
  */
 @Composable
 fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
@@ -40,6 +40,8 @@ fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
             PendingQuestionCard(row.call, modifier, onOpenInBrowser = agentId?.let { id -> { uriHandler.openUri(CursorEndpoints.webUrl(id)) } })
         }
         is TranscriptRow.Stretch -> StretchView(row, modifier)
+        is TranscriptRow.Event -> EventRow(row.notification, row.count, modifier)
+        is TranscriptRow.Events -> EventGroupView(row, modifier)
     }
 }
 

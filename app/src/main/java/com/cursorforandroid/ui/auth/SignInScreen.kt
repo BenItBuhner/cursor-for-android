@@ -63,9 +63,15 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
+/** The words that say what this app is, on the first screen a new install shows; one line, quoted by the tests. */
+object SignInCopy {
+    const val UNOFFICIAL = "Unofficial client for Cursor Cloud Agents; not affiliated with Anysphere, Inc."
+}
+
 /**
  * Sign-in: the Cursor account is the default — one tap opens cursor.com to approve, and the app comes back signed
- * in — with a pasted API key folded away underneath for service accounts and teams that restrict user keys.
+ * in — with a pasted API key folded away underneath for service accounts and teams that restrict user keys. It says
+ * what the app is before it asks for anything: an unofficial client, in the one line under the title.
  */
 @Composable
 fun SignInScreen(graph: AppGraph) {
@@ -97,6 +103,8 @@ fun SignInScreen(graph: AppGraph) {
             Text("Sign in", style = type.pageTitle, color = colors.textPrimary)
             Spacer(Modifier.height(6.dp))
             Text("Use your Cursor account to see and run your cloud agents.", style = type.base, color = colors.textSecondary)
+            Spacer(Modifier.height(6.dp))
+            Text(SignInCopy.UNOFFICIAL, style = type.small, color = colors.textTertiary)
             signedOutReason?.let {
                 Spacer(Modifier.height(14.dp))
                 ErrorLine(it)
@@ -149,8 +157,7 @@ fun SignInScreen(graph: AppGraph) {
             Spacer(Modifier.height(20.dp))
             Text(
                 "Signing in with Cursor creates an API key for this app, named after this phone, that you can revoke any time at " +
-                    "cursor.com/dashboard/api. Keys are stored encrypted on this device and only sent to Cursor. " +
-                    "Unofficial client, not affiliated with Anysphere.",
+                    "cursor.com/dashboard/api. Keys are stored encrypted on this device and only sent to Cursor.",
                 style = type.small,
                 color = colors.textQuaternary,
             )

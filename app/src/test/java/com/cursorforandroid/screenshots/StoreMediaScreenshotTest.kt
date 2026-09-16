@@ -22,6 +22,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
@@ -96,7 +97,7 @@ class StoreMediaScreenshotTest {
         override suspend fun storeFor(sourceId: String): String? = "st-proj".takeIf { sourceId == store }
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = emptyList()
         override suspend fun readFile(storeId: String, relativePath: String): String = "# $relativePath"
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String) =
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String) =
             PresignedStoreRead(relativePath, server.url("/signed/$relativePath").toString(), null)
     }
 

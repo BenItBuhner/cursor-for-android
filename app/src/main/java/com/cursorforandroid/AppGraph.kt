@@ -15,6 +15,7 @@ import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
@@ -33,6 +34,7 @@ import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
@@ -75,6 +77,7 @@ import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.GeneratedImageStore
 import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
+import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.AgentStoreRepository
@@ -139,6 +142,11 @@ class AppGraph(
      * (a refused delete, a list endpoint that fails) without any of the account's real network.
      */
     demo: CursorBackend? = null,
+    /**
+     * Injectable for tests only: a stand-in for the account's backend, so a sign-in with a key can be driven end to
+     * end — the sign-in screen, the first-run flow behind it — against a scripted `/v1/me` rather than the real host.
+     */
+    real: CursorBackend? = null,
 ) {
     private val app = context.applicationContext
 
@@ -173,7 +181,7 @@ class AppGraph(
         val client = CursorApiFactory.okHttp { keyStore.apiKey() }
         CursorApiFactory.retrofit(client) to SseRunStreamer(CursorApiFactory.sseClient(client), { keyStore.apiKey() })
     }
-    private val realBackend = CursorBackend(isDemo = false, parts = realParts)
+    private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
     private val demoParts = lazy { DemoBackendFactory.create() }
     private val demoBackend = demo ?: CursorBackend(isDemo = true, parts = demoParts)
@@ -196,6 +204,12 @@ class AppGraph(
         },
     )
     private val capabilities: suspend () -> Capabilities = { extendedMode.capabilities() }
+
+    /**
+     * The first run's mode choice — SDK only or Extended mode — owed by a sign-in through the sign-in screen and
+     * settled by the choice screen; see [Onboarding]. Cheap: it holds the preferences and the setting above.
+     */
+    val onboarding = Onboarding(prefs, extendedMode)
 
     /** For api2 (the account's login and its Connect RPCs): no API-key interceptor, so only what each call sets goes out. */
     private val lazyAccountClient = lazy { CursorApiFactory.loginClient() }
@@ -267,6 +281,7 @@ class AppGraph(
             probe = DesktopProbe(client = { lazyAccountClient.value }, origin = DesktopPage.ORIGIN),
             capabilities = capabilities,
             isDemo = { session.isDemo },
+            appVersion = BuildConfig.VERSION_NAME,
         )
     }
     val remote: RemoteRepository get() = lazyRemote.value
@@ -302,7 +317,7 @@ class AppGraph(
         override suspend fun stores(): List<AgentStoreRef> = lazyProjectApi.value.stores()
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(requesterId, storeId, relativePath)
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(target, relativePath)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
@@ -476,6 +491,7 @@ class AppGraph(
 
     private val accountTranscript = object : ConversationRecordApi {
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
+        override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
@@ -571,8 +587,12 @@ class AppGraph(
     val updates: UpdateManager get() = lazyUpdates.value
 
     init {
+        // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
+        session.onSignedIn = { onboarding.signedIn() }
         // Whether the user signs out or the key is rejected, nothing of the account stays on disk.
         session.onSignedOut = {
+            // The choice the account owed goes with it (its stored flag is among the session keys cleared below).
+            onboarding.signedOut()
             // Cancelling a write does not stop it: the caches are closed first so nothing this account still has in
             // flight can land after the wipe below re-creates the directories it deleted.
             caches.invalidate()
@@ -748,8 +768,8 @@ class AppGraph(
      * item kinds, tool names with their argument key names, the payload read off each call, and the decision that
      * reads the chat as a coordinator's. No message, prompt or argument text is in it.
      */
-    suspend fun transcriptDiagnosticsReport(): String {
-        val agentId = if (lazyConversations.isInitialized()) conversations.lastOpenedAgentId.value else null
+    suspend fun transcriptDiagnosticsReport(forAgentId: String? = null): String {
+        val agentId = forAgentId ?: if (lazyConversations.isInitialized()) conversations.lastOpenedAgentId.value else null
         val state = agentId?.let { conversations.state(it).value }
         return TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input(

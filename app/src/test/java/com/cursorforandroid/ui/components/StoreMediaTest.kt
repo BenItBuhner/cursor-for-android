@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.components
 
 import android.content.Context
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.test.assertCountEquals
@@ -16,7 +17,9 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.api.AgentStoreApi
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
@@ -28,6 +31,8 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -65,8 +70,8 @@ class StoreMediaTest {
         override suspend fun storeFor(sourceId: String): String? = "st-proj".takeIf { sourceId == store }
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = emptyList()
         override suspend fun readFile(storeId: String, relativePath: String): String = "# $relativePath"
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead {
-            presigned += "$requesterId:$storeId:$relativePath"
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead {
+            presigned += "$target:$relativePath"
             return PresignedStoreRead(relativePath, server.url("/signed/$relativePath").toString(), null)
         }
     }
@@ -100,7 +105,7 @@ class StoreMediaTest {
         }
         compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Tab layout, landscape, icon-only rail, Project view")).fetchSemanticsNodes().size == 1 }
         compose.onAllNodes(hasTestTag("store-file-card")).assertCountEquals(0)
-        assertThat(wire.presigned).containsExactly("$store:st-proj:media/ui-parity/tab-landscape-icon-only-project.png")
+        assertThat(wire.presigned).containsExactly("Store(storeId=st-proj):media/ui-parity/tab-landscape-icon-only-project.png")
         assertThat(server.takeRequest().path).isEqualTo("/signed/media/ui-parity/tab-landscape-icon-only-project.png")
     }
 
@@ -149,25 +154,35 @@ class StoreMediaTest {
         assertThat(sent.map { it.text }).containsExactly("/cursor/stores/$store/media/board.png")
     }
 
+    /** The service's own words for a read it refuses (`store_presign_error.json`, what v0.3.19 showed) are the card's title, with a Retry. */
     @Test
-    fun `a store the account lists nothing for is still a card, with a retry`() {
+    fun `a read the store refuses is still a card, saying what the service said, with a retry`() {
+        val fixture = CoordinatorFixtures.json("store_presign_error.json")
+        val message = fixture.getValue("body").jsonObject.getValue("message").jsonPrimitive.content
+        val refusing = object : AgentStoreApi by wire {
+            override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead =
+                throw ConnectRpcException(fixture.getValue("httpCode").jsonPrimitive.int, "invalid_argument", message)
+        }
         val opened = mutableListOf<String>()
         val uriHandler = object : UriHandler { override fun openUri(uri: String) { opened += uri } }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val lightbox = rememberLightboxState("bc-other")
+                val context = ApplicationProvider.getApplicationContext<Context>()
+                val files = StoreFileRepository(api = { refusing }, capabilities = { Capabilities.EXTENDED })
+                val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) { files } }
+                val lightbox = rememberLightboxState(store)
                 CompositionLocalProvider(
                     LocalUriHandler provides uriHandler,
-                    LocalMarkdownMedia provides MarkdownMediaContext("bc-other", loader(Capabilities.EXTENDED), lightbox, canReadStores = true),
+                    LocalMarkdownMedia provides MarkdownMediaContext(store, loader, lightbox, canReadStores = true),
                 ) {
-                    MarkdownText("![Board](/cursor/stores/bc-other/media/board.png)")
+                    MarkdownText(markdown.lines().first { it.startsWith("![") })
                 }
             }
         }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("store-file-card")).fetchSemanticsNodes().size == 1 }
-        compose.onNodeWithText(StoreFileRepository.NO_STORE).assertIsDisplayed()
+        compose.onNodeWithText(message).assertIsDisplayed()
         compose.onNodeWithText("Retry").assertIsDisplayed()
-        compose.onNodeWithText(StoreFileRepository.NO_STORE).performClick()
-        assertThat(opened).containsExactly("https://cursor.com/agents/bc-other")
+        compose.onNodeWithText(message).performClick()
+        assertThat(opened).containsExactly("https://cursor.com/agents/$store")
     }
 }

@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.domain.AgentStoreKind
@@ -12,10 +13,10 @@ import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.ContextStores
 import com.cursorforandroid.domain.RecentContextFile
 import com.cursorforandroid.util.AppClock
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.io.IOException
 
 /**
  * The Agent Stores a chat's panel browses — the Project's Context and the user's own store — as the web's "Project"
@@ -148,11 +149,11 @@ class AgentStoreRepository(
             }
         }
         val newest = files.sortedByDescending { it.entry.updatedAtMillis ?: 0L }.take(limit)
-        // A URL per picture, read as the chat asking; a presign that fails leaves that tile a file tile.
+        // A URL per picture, asked of the store by its id; a presign that fails leaves that tile a file tile.
         val urls = HashMap<Pair<String, String>, String>()
         newest.filter { it.isImage }.forEach { recent ->
             val presigned = try {
-                source.presignRead(agentId, recent.store.storeId, recent.entry.relativePath)
+                source.presignRead(StoreReadTarget.Store(recent.store.storeId), recent.entry.relativePath)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {

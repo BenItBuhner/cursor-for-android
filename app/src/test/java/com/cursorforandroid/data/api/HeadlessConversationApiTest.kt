@@ -55,7 +55,8 @@ class HeadlessConversationApiTest {
 
         assertThat(page.totalResponses).isEqualTo(42)
         assertThat(page.startIndex).isEqualTo(34)
-        assertThat(page.steps.map { it.userMessage }).containsExactly("Add a README", null, null, null, null, null, "Thanks").inOrder()
+        // One step per response, the status a blank one: the page's steps line up with the indices asked for.
+        assertThat(page.steps.map { it.userMessage }).containsExactly("Add a README", null, null, null, null, null, null, "Thanks").inOrder()
         assertThat(page.steps[1].thinking).isEqualTo("Looking around.")
         assertThat(page.steps[2].toolCall!!.callId).isEqualTo("call-1")
         assertThat(page.steps[2].toolCall!!.name).isEqualTo("read_file")

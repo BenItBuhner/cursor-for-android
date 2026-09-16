@@ -15,6 +15,7 @@ import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.MachineReference
 import com.cursorforandroid.domain.MachineStatus
+import com.cursorforandroid.domain.MachineUnavailableReason
 import com.cursorforandroid.domain.RunStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -59,7 +60,7 @@ class RemoteRepositoryTest {
     fun tearDown() = server.shutdown()
 
     /** A pod whose desktop URLs point at the fake server: the port sits in the path so the dispatcher can tell them apart. */
-    private fun pod() = MachineReference.Pod(podId = "pod", tenantId = "t", cluster = "c", token = "tok")
+    private fun pod() = MachineReference.Pod(podId = "pod", tenantId = "t", cluster = "c", token = "s3cr3t")
 
     private fun repo(capabilities: Capabilities = Capabilities.EXTENDED, demo: Boolean = false): RemoteRepository = RemoteRepository(
         workers = { workersCalls++; workers() },
@@ -156,42 +157,72 @@ class RemoteRepositoryTest {
     @Test
     fun `with the capability off the desktop is refused without a call, and the demo has none`() = runBlocking<Unit> {
         val off = repo(Capabilities.DOCUMENTED).openDesktop(agent()) as DesktopOpen.Failed
-        assertThat(off.failure).isEqualTo(DesktopFailure.NotAvailable(RemoteRepository.NEEDS_EXTENDED_MODE))
+        assertThat(off.failure).isInstanceOf(DesktopFailure.NotAvailable::class.java)
+        assertThat(off.failure.message).isEqualTo(RemoteRepository.NEEDS_EXTENDED_MODE)
+        assertThat(off.failure.retryable).isFalse()
         val demo = repo(demo = true).openDesktop(agent()) as DesktopOpen.Failed
-        assertThat(demo.failure).isEqualTo(DesktopFailure.NotAvailable(RemoteRepository.NOT_IN_DEMO))
+        assertThat(demo.failure.message).isEqualTo(RemoteRepository.NOT_IN_DEMO)
         assertThat(machineCalls).isEqualTo(0)
         assertThat(server.requestCount).isEqualTo(0)
     }
 
     @Test
-    fun `the first port that accepts the handshake becomes the session, view only unless asked`() = runBlocking<Unit> {
-        open += "/6080"
-        val opened = repo().openDesktop(agent()) as DesktopOpen.Opened
+    fun `the Agents Window's default port is tried first and becomes the session, view only unless asked, the steps traced`() = runBlocking<Unit> {
+        open += "/26058"
+        val steps = mutableListOf<String>()
+        val opened = repo().openDesktop(agent(), progress = { trace -> steps += trace.steps.joinToString("|") { "${it.name}=${it.outcome ?: "…"}" } }) as DesktopOpen.Opened
 
         assertThat(opened.session.agentId).isEqualTo("bc-1")
-        assertThat(opened.session.port).isEqualTo(6080)
+        assertThat(opened.session.port).isEqualTo(26058)
         assertThat(opened.session.viewOnly).isTrue()
-        assertThat(opened.session.url).startsWith("wss://t-pod-6080.c.cursorvm.com:443/websockify?network_token=tok")
-        assertThat(opened.session.toString()).doesNotContain("tok")
+        assertThat(opened.session.url).isEqualTo("wss://t-pod-26058.c.cursorvm.com:443/websockify?network_token=s3cr3t&resume_lower_s=900&resume_upper_s=18000")
+        assertThat(opened.session.toString()).doesNotContain("s3cr3t")
+        // One handshake: the default port answered, so the fallback was never asked.
         assertThat(server.requestCount).isEqualTo(1)
+        // The trace: GetMachine, then the probe of the host; the report names the host and port and never the token.
+        val trace = opened.session.trace
+        assertThat(trace.steps.map { it.name }).containsExactly("GetMachine", "probe t-pod-26058.c.cursorvm.com").inOrder()
+        assertThat(trace.steps.all { !it.isRunning && !it.failed }).isTrue()
+        assertThat(trace.host).isEqualTo("t-pod-26058.c.cursorvm.com")
+        assertThat(trace.port).isEqualTo(26058)
+        assertThat(trace.report()).contains("endpoint: t-pod-26058.c.cursorvm.com:26058")
+        assertThat(trace.report()).doesNotContain("s3cr3t")
+        assertThat(trace.report()).doesNotContain("network_token")
+        assertThat(steps.first()).isEqualTo("GetMachine=…")
+        assertThat(steps.last()).endsWith("probe t-pod-26058.c.cursorvm.com=handshake accepted")
 
         val control = repo().openDesktop(agent(), viewOnly = false) as DesktopOpen.Opened
         assertThat(control.session.viewOnly).isFalse()
     }
 
     @Test
-    fun `when the noVNC port refuses, the second display path is tried before giving up`() = runBlocking<Unit> {
-        open += "/26058"
+    fun `when the default port refuses, the fallback port is tried before giving up, and the refusal is in the trace`() = runBlocking<Unit> {
+        open += "/6080"
         val opened = repo().openDesktop(agent()) as DesktopOpen.Opened
-        assertThat(opened.session.port).isEqualTo(26058)
+        assertThat(opened.session.port).isEqualTo(6080)
         assertThat(server.requestCount).isEqualTo(2)
+        val probes = opened.session.trace.steps.filter { it.name.startsWith("probe") }
+        assertThat(probes.map { it.outcome }).containsExactly("HTTP 404", "handshake accepted").inOrder()
+        assertThat(probes.first().failed).isTrue()
     }
 
     @Test
-    fun `no port answering is unreachable, worded by whether the chat is running`() = runBlocking<Unit> {
+    fun `the probe sends the Agents Window's handshake - the page's origin and no subprotocol`() = runBlocking<Unit> {
+        open += "/26058"
+        repo().openDesktop(agent())
+        val request = server.takeRequest()
+        assertThat(request.getHeader("Upgrade")).isEqualTo("websocket")
+        assertThat(request.getHeader("Sec-WebSocket-Protocol")).isNull()
+    }
+
+    @Test
+    fun `no port answering is unreachable and retryable, worded by whether the chat is running`() = runBlocking<Unit> {
         val running = repo().openDesktop(agent(running = true)) as DesktopOpen.Failed
         assertThat(running.failure).isInstanceOf(DesktopFailure.Unreachable::class.java)
+        assertThat(running.failure.retryable).isTrue()
         assertThat(running.failure.message).contains("would not open a session")
+        assertThat(running.failure.message).contains("26058 or 6080")
+        assertThat(running.failure.trace.lastFailed?.name).isEqualTo("probe t-pod-6080.c.cursorvm.com")
         val finished = repo().openDesktop(agent(running = false)) as DesktopOpen.Failed
         assertThat(finished.failure.message).contains("would not open a session")
     }
@@ -202,6 +233,7 @@ class RemoteRepositoryTest {
         val reasoned = repo().openDesktop(agent(EnvType.MACHINE, "studio")) as DesktopOpen.Failed
         assertThat(reasoned.failure).isInstanceOf(DesktopFailure.NoDesktop::class.java)
         assertThat(reasoned.failure.message).contains("desktop sharing is off")
+        assertThat(reasoned.failure.trace.steps.single().outcome).isEqualTo("worker w-1")
 
         machine = { MachineReference.Worker("w-1", available = true, controlAllowed = true) }
         val relay = repo().openDesktop(agent(EnvType.MACHINE, "studio")) as DesktopOpen.Failed
@@ -214,10 +246,49 @@ class RemoteRepositoryTest {
     }
 
     @Test
-    fun `GetMachine's refusals are named - an endpoint that moved, a VM that is not running, a session that could not start`() = runBlocking<Unit> {
+    fun `GetMachine's reasons are read the Agents Window's way - expired, on the coordinator, not provisioned, preparing`() = runBlocking<Unit> {
+        machine = { throw ConnectRpcException(200, "failed_precondition", "cursorServerUrlReason=AGENT_ARCHIVED: no machine") }
+        val archived = repo().openDesktop(agent()) as DesktopOpen.Failed
+        assertThat(archived.failure).isInstanceOf(DesktopFailure.NoDesktop::class.java)
+        assertThat((archived.failure as DesktopFailure.NoDesktop).reason).isEqualTo(MachineUnavailableReason.AGENT_ARCHIVED)
+        assertThat(archived.failure.retryable).isFalse()
+        assertThat(archived.failure.trace.lastFailed?.outcome).isEqualTo("AGENT_ARCHIVED")
+
+        machine = { throw ConnectRpcException(200, "failed_precondition", "cursorServerUrlReason=WORKSPACE_ON_COORDINATOR") }
+        val onCoordinator = repo().openDesktop(agent()) as DesktopOpen.Failed
+        assertThat(onCoordinator.failure.message).contains("coordinator's machine")
+        assertThat(onCoordinator.failure.retryable).isFalse()
+
+        // No VM: final for a finished chat (a coordinator never has one), worth another try while the chat runs.
+        machine = { throw ConnectRpcException(200, "failed_precondition", "cursorServerUrlReason=MACHINE_NOT_PROVISIONED") }
+        val noVm = repo().openDesktop(agent(running = false)) as DesktopOpen.Failed
+        assertThat(noVm.failure.message).contains("Project coordinator")
+        assertThat(noVm.failure.retryable).isFalse()
+        val starting = repo().openDesktop(agent(running = true)) as DesktopOpen.Failed
+        assertThat(starting.failure.retryable).isTrue()
+
+        machine = { throw ConnectRpcException(200, "unavailable", "cursorServerUrlReason=EXEC_DAEMON_NOT_READY") }
+        val preparing = repo().openDesktop(agent()) as DesktopOpen.Failed
+        assertThat(preparing.failure).isInstanceOf(DesktopFailure.Preparing::class.java)
+        assertThat(preparing.failure.retryable).isTrue()
+        assertThat(preparing.failure.message).contains("EXEC_DAEMON_NOT_READY")
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `GetMachine's other refusals are named - an endpoint that moved, forbidden, a VM that is not running, no session`() = runBlocking<Unit> {
         machine = { throw ConnectRpcException(404, "unimplemented", "Error") }
         val moved = repo().openDesktop(agent()) as DesktopOpen.Failed
-        assertThat(moved.failure).isEqualTo(DesktopFailure.Refused(RemoteRepository.ENDPOINT_CHANGED, endpointChanged = true))
+        assertThat(moved.failure).isInstanceOf(DesktopFailure.Refused::class.java)
+        assertThat(moved.failure.message).isEqualTo(RemoteRepository.ENDPOINT_CHANGED)
+        assertThat((moved.failure as DesktopFailure.Refused).endpointChanged).isTrue()
+        assertThat(moved.failure.retryable).isFalse()
+        assertThat(moved.failure.trace.lastFailed?.outcome).isEqualTo("HTTP 404 unimplemented")
+
+        machine = { throw ConnectRpcException(403, "permission_denied", "Error") }
+        val forbidden = repo().openDesktop(agent()) as DesktopOpen.Failed
+        assertThat(forbidden.failure.message).contains("not authorized")
+        assertThat(forbidden.failure.retryable).isFalse()
 
         machine = { throw ConnectRpcException(200, "failed_precondition", "pod is hibernated") }
         val asleep = repo().openDesktop(agent()) as DesktopOpen.Failed
@@ -226,6 +297,7 @@ class RemoteRepositoryTest {
 
         machine = { throw SessionUnavailableException("off", SessionUnavailableException.EXTENDED_MODE_OFF) }
         val off = repo().openDesktop(agent()) as DesktopOpen.Failed
-        assertThat(off.failure).isEqualTo(DesktopFailure.NotAvailable(RemoteRepository.NEEDS_EXTENDED_MODE))
+        assertThat(off.failure).isInstanceOf(DesktopFailure.NotAvailable::class.java)
+        assertThat(off.failure.message).isEqualTo(RemoteRepository.NEEDS_EXTENDED_MODE)
     }
 }

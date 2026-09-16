@@ -6,6 +6,7 @@ import com.cursorforandroid.domain.AgentDiffFile
 import com.cursorforandroid.domain.AgentStoreRef
 import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
 
@@ -88,6 +89,8 @@ interface PanelActions {
     /** The agent's desktop (`GetMachine`, then noVNC in a WebView), viewing or in control. */
     fun openDesktop(viewOnly: Boolean = true)
     fun setDesktopViewOnly(viewOnly: Boolean)
+    /** The viewer itself failed (its page, its script, the socket, the first frame): what it recorded, for the failure view. */
+    fun failDesktop(failure: DesktopFailure)
     fun closeDesktop()
     /** Opens the agent's pull request from here (`MakePRBackgroundComposer`). */
     fun createPullRequest()
@@ -159,6 +162,7 @@ interface PanelActions {
             override fun loadMachine(force: Boolean) = Unit
             override fun openDesktop(viewOnly: Boolean) = Unit
             override fun setDesktopViewOnly(viewOnly: Boolean) = Unit
+            override fun failDesktop(failure: DesktopFailure) = Unit
             override fun closeDesktop() = Unit
             override fun createPullRequest() = Unit
             override fun answerQuestion(callId: String, answers: List<ToolPayload.Question.Answer>) = Unit

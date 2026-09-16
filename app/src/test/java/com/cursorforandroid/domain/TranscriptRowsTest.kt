@@ -29,6 +29,8 @@ class TranscriptRowsTest {
             is TranscriptRow.Media -> "media"
             is TranscriptRow.Question -> "question:${row.call.callId}"
             is TranscriptRow.Stretch -> if (row.single != null) "single:${row.single!!.key}" else "stretch:${row.summary.text}"
+            is TranscriptRow.Event -> "event:${row.line.text}" + if (row.count > 1) " ×${row.count}" else ""
+            is TranscriptRow.Events -> "events:${row.summary.text}"
         }
     }
 
@@ -37,7 +39,7 @@ class TranscriptRowsTest {
         val rows = TranscriptRows.of(coordinatorItems(), coordinatorMode = true)
         assertThat(kinds(rows)).containsExactly(
             // The injected turn's row, its remark folded under it; its run's footer stands alone.
-            "item:SystemNotification",
+            "event:Land merge train and prep release · completed",
             "single:run-inject",
             // The coordinator's first note, its thought and its message to the worker, before its first update.
             "stretch:1 agent · 1 thought · 1 note",

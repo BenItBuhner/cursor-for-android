@@ -26,6 +26,8 @@ import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.NoticeCard
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ThinkingBlock
@@ -40,6 +42,7 @@ import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.OlderTurnsRow
+import com.cursorforandroid.ui.conversation.LoadErrorRow
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TraceStatusRow
 import com.cursorforandroid.ui.conversation.TranscriptRowView
@@ -168,6 +171,91 @@ class PagedLoadingScreenshotTest {
                 }
             }
         }
+    }
+
+    /**
+     * The transcript loading the desktop's way (Extended mode): the record's newest turns on screen with their tool
+     * calls, the older ones a scroll away, and — the network having failed on a refresh — the failure said in the
+     * server's words under the transcript, with Retry and the load diagnostics one tap away.
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun DesktopLoading(rows: List<TranscriptRow>) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
+        val lightbox = rememberLightboxState("bc-demo")
+        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        CursorTheme(mode = ThemeMode.Dark) {
+            CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
+                Column(
+                    Modifier.fillMaxWidth().background(CursorTheme.colors.canvas).padding(16.dp).testTag("scene"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    OlderTurnsRow(isLoading = true, onLoad = {})
+                    rows.forEach { TranscriptRowView(it) }
+                    LoadErrorRow(
+                        message = "Couldn't refresh the transcript: Cursor took too long to respond.",
+                        onRetry = {},
+                        onShareDiagnostics = {},
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * The live status reconciled: an older turn whose log is gone says so in a card of its own, the turn before the
+     * newest is finished, and the newest turn — whose `/v1` record still said cancelled while the account ran on —
+     * reads as working, its stretch live, with no footer and no "Run cancelled".
+     */
+    private fun liveStatusRows(): List<TranscriptRow> {
+        fun call(id: String, kind: ToolKind, name: String, summary: String, detail: String?, status: String = ToolCall.STATUS_COMPLETED) =
+            ToolCall(id, name, kind, status, summary, detail = detail)
+        val items = listOf(
+            UserMessage("u317", "Audit the settings store for a second instance on the same file.", timestampMillis = 1_736_942_400_000),
+            NoticeCard("rec-body-8200", "This turn's activity is no longer available", "Cursor no longer has its log; the reply is shown when the record has it.", NoticeTone.Neutral),
+            RunFooter("rec-footer-8200", "run-317", RunStatus.FINISHED, 96_000, emptyList()),
+            UserMessage("u318", "Reconcile the run status: stream, then the account's word, then the run record.", timestampMillis = 1_736_946_000_000),
+            ActivityGroup(
+                "g318",
+                listOf(
+                    ThinkingBlock("The row's activity is newer than the record; the record is an older turn's.", durationSeconds = 4),
+                    call("r1", ToolKind.Read, "read_file", "ConversationRepository.kt", "app/src/main/java/com/cursorforandroid/data/repo/ConversationRepository.kt"),
+                    call("e1", ToolKind.Edit, "edit_file", "ConversationRepository.kt", "app/src/main/java/com/cursorforandroid/data/repo/ConversationRepository.kt"),
+                    call("e2", ToolKind.Edit, "edit_file", "Mappers.kt", "app/src/main/java/com/cursorforandroid/data/repo/Mappers.kt"),
+                ),
+            ),
+            AssistantMessage("a318", "`chatStatus` now takes the stream's word first, the account's second and the run record's last; a terminal record older than the row's activity no longer ends a running row."),
+            RunFooter("rec-footer-8226", "run-318", RunStatus.FINISHED, 187_000, emptyList()),
+            UserMessage("u319", "Run the stress suite against a record whose last turn is in progress while the cached run says cancelled.", timestampMillis = 1_736_949_600_000),
+            ActivityGroup(
+                "g319",
+                listOf(
+                    call("s1", ToolKind.Shell, "run_terminal_cmd", "Run the stress suite", "./gradlew :app:testDebugUnitTest --tests '*LongConversationStressTest*'", status = ToolCall.STATUS_RUNNING),
+                ),
+            ),
+        )
+        return TranscriptRows.of(items, coordinatorMode = false, runActive = true)
+    }
+
+    @Test
+    fun transcriptLiveStatus() {
+        val rows = liveStatusRows()
+        assertThat((rows.last() as TranscriptRow.Stretch).live).isTrue()
+        compose.setContent { LongChat(rows) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("trace-status")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "71_transcript_live_status.png").path, RoborazziOptions())
+    }
+
+    @Test
+    fun transcriptDesktopLoading() {
+        val rows = longChat()
+        compose.setContent { DesktopLoading(rows) }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("share-diagnostics")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "70_transcript_desktop_loading.png").path, RoborazziOptions())
     }
 
     @Test

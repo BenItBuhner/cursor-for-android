@@ -14,6 +14,7 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.ui.agents.LocalMediaLoader
 import com.cursorforandroid.ui.auth.SignInScreen
 import com.cursorforandroid.ui.navigation.AppNavHost
+import com.cursorforandroid.ui.onboarding.ModeChoiceScreen
 import com.cursorforandroid.ui.theme.CursorTheme
 
 @Composable
@@ -25,10 +26,16 @@ fun CursorRoot(
     onNewChatConsumed: () -> Unit = {},
 ) {
     val session by graph.session.state.collectAsStateWithLifecycle()
-    // The session settles itself to signed-out when a store cannot be read; this only keeps a future throw from
-    // taking the composition (and the process) with it. The Extended mode upgrade step follows the restore: it reads
-    // the same stores, and an install it finds signed in is the one it owes a notice and a wipe.
+    // Whether the account that signed in still owes the first-run mode choice: true after a sign-in through the
+    // sign-in screen until the choice screen settles it, false for a restored session, null until the stored flag
+    // has been read below.
+    val modeChoicePending by graph.onboarding.modeChoicePending.collectAsStateWithLifecycle()
+    // The first-run flag is read ahead of the restore, so a session the restore finds signed in has its answer by
+    // the frame that shows it. The session settles itself to signed-out when a store cannot be read; this only keeps
+    // a future throw from taking the composition (and the process) with it. The Extended mode upgrade step follows
+    // the restore: it reads the same stores, and an install it finds signed in is the one it owes a notice and a wipe.
     LaunchedEffect(Unit) {
+        runCatching { graph.onboarding.load() }
         runCatching { graph.session.restoreIfNeeded() }
         runCatching { graph.extendedMode.migrateInstall() }
     }
@@ -36,18 +43,26 @@ fun CursorRoot(
         when (val s = session) {
             SessionState.Loading -> Unit
             SessionState.SignedOut -> SignInScreen(graph = graph)
-            // The loader is provided here rather than around the whole tree because building it is what first
-            // pulls Coil and its HTTP client in, and nothing before this point draws an image.
-            is SessionState.SignedIn -> CompositionLocalProvider(LocalMediaLoader provides graph.media) {
-                AppNavHost(
-                    graph = graph,
-                    user = s.user,
-                    isDemo = s.isDemo,
-                    deepLinkAgentId = deepLinkAgentId,
-                    onDeepLinkConsumed = onDeepLinkConsumed,
-                    newChatRequested = newChatRequested,
-                    onNewChatConsumed = onNewChatConsumed,
-                )
+            // The demo signs nothing in and has no account the choice could concern; a real sign-in goes through
+            // the choice before the shell is built, so nothing of the shell (its view models, its polling) starts
+            // under a screen that is not it. Until the flag is read, this is the same blank the session's own
+            // Loading shows.
+            is SessionState.SignedIn -> when {
+                !s.isDemo && modeChoicePending == true -> ModeChoiceScreen(graph = graph)
+                !s.isDemo && modeChoicePending == null -> Unit
+                // The loader is provided here rather than around the whole tree because building it is what first
+                // pulls Coil and its HTTP client in, and nothing before this point draws an image.
+                else -> CompositionLocalProvider(LocalMediaLoader provides graph.media) {
+                    AppNavHost(
+                        graph = graph,
+                        user = s.user,
+                        isDemo = s.isDemo,
+                        deepLinkAgentId = deepLinkAgentId,
+                        onDeepLinkConsumed = onDeepLinkConsumed,
+                        newChatRequested = newChatRequested,
+                        onNewChatConsumed = onNewChatConsumed,
+                    )
+                }
             }
         }
     }

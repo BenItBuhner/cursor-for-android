@@ -1,6 +1,8 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.ConversationRecordApi
+import com.cursorforandroid.data.api.RecordState
+import com.cursorforandroid.data.api.TurnTiming
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
@@ -10,6 +12,9 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.local.CachedLocalPrompt
+import com.cursorforandroid.data.local.CachedRecordTurn
+import com.cursorforandroid.data.local.CachedRecordWindow
+import com.cursorforandroid.data.local.CachedTurnTiming
 import com.cursorforandroid.data.local.CachedTrace
 import com.cursorforandroid.data.local.ConversationCache
 import com.cursorforandroid.data.local.PreferencesStore
@@ -26,12 +31,16 @@ import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.NoticeCard
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunOrder
 import com.cursorforandroid.domain.TranscriptLoadDiagnostics
+import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
@@ -58,6 +67,7 @@ import kotlinx.coroutines.flow.transformWhile
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
@@ -291,6 +301,19 @@ class ConversationRepository(
         /** The account's record said a prompt of this chat was sent in Project mode (see [ConversationState.isProjectConversation]). */
         var projectMode = false
         /**
+         * The account's own record of the chat as far as it has been read (Extended mode; see [RecordWindow]). When
+         * set, the transcript is built from it — its newest turns, tool calls and payloads included, whatever the
+         * documented run log still has — and the `/v0` text and the `/v1` replays are not consulted; the `/v1` run
+         * list still gives each turn its run (status, footer) and names the live one.
+         */
+        var recordWindow: RecordWindow? = null
+        /** The record answered with nothing for this chat (not served for it, or nothing yet): the documented path stands. */
+        var recordEmpty = false
+        /** The last read of the record failed (the network); what stands is the copy last read, or the documented path. */
+        var recordError: String? = null
+        /** The transcript is built from the account's record (see [recordWindow]). */
+        val fromRecord: Boolean get() = recordWindow != null
+        /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
          * follower is ignored. Left behind, it would keep standing in for a run that has since finished — hiding the
@@ -354,15 +377,54 @@ class ConversationRepository(
             val status = run.statusEnum()
             return if (status.isActive && run.id == cancelledRunId) RunStatus.CANCELLED else status
         }
+
+        /**
+         * The chat's status as the screen shows it, the freshest word first. A run being streamed is running,
+         * whatever any record says of it. Next the agent's row: when the account calls the chat running and its
+         * word is at least as new as the latest run record's, the chat is running — a record that says cancelled
+         * or finished is then an older turn's, or a stale copy (the cache, a `/v1` list that lags the account), and
+         * a new run is on its way into the list. Only then the latest run's own status. A terminal state is never
+         * shown while anything fresher calls the chat active.
+         */
+        fun chatStatus(latest: RunDto?, streaming: Boolean = streamJob?.isActive == true && live != null): RunStatus? {
+            if (streaming) return state.value.runStatus?.takeIf { it.isActive } ?: RunStatus.RUNNING
+            val recorded = latest?.let { statusOf(it) }
+            if (recorded?.isActive == true) return recorded
+            val row = agents.agent(agentId) ?: return recorded
+            if (row.latestRunId == cancelledRunId && cancelledRunId != null) return recorded
+            // The account's word: the row's own status, or the account list's running set (Extended mode; it says
+            // what runs without touching the row's run-level status). Not the legacy list's pass: its execution
+            // status lags a finish, which is the stale spinner the run records are read to end.
+            val accountRunning = row.isRunning || agents.runningScan.value.accountIds?.contains(agentId) == true
+            if (!accountRunning) return recorded
+            val recordAt = latest?.let { parseIsoMillis(it.updatedAt) } ?: 0L
+            // Running, and with activity after the record was last written (or a run the record is not): the record
+            // is an older turn's, or stale. A record as new as the row is the turn that just ended.
+            val fresher = latest == null || row.latestRunId != latest.id || row.updatedAtMillis > recordAt + STALE_RUN_RECORD_SLACK_MS
+            return if (fresher) RunStatus.RUNNING else recorded
+        }
+
+        /** True while the account or the run records call the chat active (see [chatStatus]). */
+        fun isChatRunning(): Boolean = chatStatus(latestRun())?.isActive == true
+
+        /** The row runs on a run other than [runId]: the account has moved past it (see [chatStatus]). */
+        fun accountNamesNewerRun(runId: String): Boolean {
+            val row = agents.agent(agentId) ?: return false
+            val rowLatest = row.latestRunId ?: return false
+            return row.isRunning && rowLatest != runId && !rowLatest.startsWith(LOCAL_RUN_PREFIX)
+        }
         /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
         var reportedWorkers: Set<String>? = null
+        /** When the items were last rebuilt and published (monotonic millis), and the trailing publish a burst is waiting on (see [publishCoalesced]). */
+        var lastPublishAtMs = 0L
+        var pendingPublish: Job? = null
         var lastUsedAt = AppClock.now()
         private var builtPrefix: Prefix? = null
         private var orderedFromRuns: List<RunDto>? = null
         private var orderedFromLocal: List<LocalPrompt>? = null
         private var orderedRuns: List<RunDto> = emptyList()
 
-        val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty()
+        val hasInputs: Boolean get() = messages.isNotEmpty() || runs.isNotEmpty() || recordWindow != null
         val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && runPagingJob?.isActive != true && !launching
 
         /**
@@ -384,6 +446,7 @@ class ConversationRepository(
          * the list that renders these.
          */
         fun items(): List<TimelineItem> {
+            recordWindow?.let { return recordItems(it) }
             val current = live
             val layout = layout()
             // A followed run is always the newest one there is, so it sorts last and everything the transcript
@@ -393,6 +456,105 @@ class ConversationRepository(
                 ?: return build(shownTraces(), layout)
             val prefix = builtPrefix?.takeIf { it.matches(this, tail.runId) } ?: buildPrefix(tail.runId, layout)
             return prefix.items + tail.items.withUniqueIds(prefix.ids)
+        }
+
+        /**
+         * The transcript from the account's record (Extended mode): each loaded turn's prompt — an injected turn as
+         * its row — and its trace, paired with its run from the newest turn back (the record's last turn is the
+         * chat's last run) for the footer and the live state. A turn whose run the list has not fetched gets its
+         * footer from the turn's timing instead. The run being followed shows its story so far in place of the
+         * record's copy of the turn, and a run followed to its end shows the complete trace the stream gave; prompts
+         * sent from here that the record has not caught up with trail the record's turns, as pending.
+         */
+        private fun recordItems(window: RecordWindow): List<TimelineItem> {
+            val ordered = allRuns()
+            val trailing = local.filter { !window.holds(it) }
+            val trailingIds = trailing.mapTo(HashSet()) { it.run.id }
+            val paired = ordered.filter { it.id !in trailingIds }
+            val offset = paired.size - window.turns.size
+            val current = live
+            // Running by the freshest word there is (see [chatStatus]): the newest turn is under way, whatever a
+            // stale run record says of it.
+            val latest = latestRun()
+            val chatRunning = chatStatus(latest)?.isActive == true
+            val items = ArrayList<TimelineItem>()
+            for ((i, turn) in window.turns.withIndex()) {
+                val run = paired.getOrNull(offset + i)
+                val timing = window.timing(i)
+                val startedAt = run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } }
+                    ?: timing?.timestampMs?.let { end -> end - (timing.durationMs ?: 0L) }?.takeIf { it > 0 }
+                turn.prompt?.let { text ->
+                    val promptId = "rec-prompt-${turn.stepIndex}"
+                    items += SystemNotifications.parse(promptId, text, startedAt)?.items
+                        ?: listOf(UserMessage(promptId, text, startedAt, attachments = run?.let { promptImages[it.id] } ?: emptyList()))
+                }
+                // The newest turn of the record is the live one while the chat runs and nothing sent from here trails it.
+                val newest = i == window.turns.lastIndex && trailing.isEmpty()
+                val complete = run?.let { traces[it.id] }
+                when {
+                    // The trace the stream gave, whole: its own footer included.
+                    complete != null -> { items += complete; continue }
+                    run != null && current?.runId == run.id -> { items += current.items; continue }
+                    turn.hasBody -> items += turn.items
+                    // The record has the turn without its steps: the run's log stands in when it has been replayed
+                    // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
+                    else -> {
+                        items += turn.items
+                        if (!(newest && chatRunning)) turnBodyNotice(turn, run)?.let { items += it }
+                    }
+                }
+                // The footer: the run's when known and over, else the timing's for a turn that is over. Its id is the
+                // turn's whichever gives it, so the row keeps its place when the run list lands.
+                when {
+                    newest && chatRunning -> Unit
+                    run != null -> if (!statusOf(run).isActive) items += TimelineBuilder.footer(run).copy(id = "rec-footer-${turn.stepIndex}")
+                    timing?.durationMs != null ->
+                        items += RunFooter("rec-footer-${turn.stepIndex}", "rec-${turn.stepIndex}", RunStatus.FINISHED, timing.durationMs, emptyList())
+                }
+            }
+            val pending = trailing.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
+            trailing.forEach { prompt ->
+                items += TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
+            }
+            return items.withUniqueIds()
+        }
+
+        /**
+         * What a turn without a body says for itself, once its run's log has been asked for: the log is gone, or it
+         * could not be read this time. Nothing while the replay is still on its way (the status line above the
+         * transcript says so), and nothing when the run is not known yet.
+         */
+        private fun turnBodyNotice(turn: RecordTurn, run: RunDto?): NoticeCard? {
+            val id = "rec-body-${turn.stepIndex}"
+            return when {
+                run == null -> null
+                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> NoticeCard(id, "This turn's activity is no longer available", "Cursor no longer has its log; the reply is shown when the record has it.", NoticeTone.Neutral)
+                run.id in failedTraces -> NoticeCard(id, "This turn's activity couldn't be loaded", "Retry from the line above the transcript.", NoticeTone.Warning)
+                else -> null
+            }
+        }
+
+        /**
+         * The runs whose turn the record holds without its steps — an account whose record keeps the prompts and
+         * files the bodies elsewhere — and whose log is the one place left to read them from: the finished runs
+         * paired with such turns, newest first, that no replay has answered for yet.
+         */
+        fun recordTurnsNeedingReplay(): List<RunDto> {
+            val window = recordWindow ?: return emptyList()
+            val ordered = allRuns()
+            val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+            val paired = ordered.filter { it.id !in trailing }
+            val offset = paired.size - window.turns.size
+            return window.turns.withIndex().mapNotNull { (i, turn) ->
+                val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
+                run.takeIf { !turn.hasBody && statusOf(it).isTerminal && it.id !in traces }
+            }.asReversed()
+        }
+
+        /** True when the record's newest turns include this prompt sent from here: the record has caught up with it. */
+        fun RecordWindow.holds(prompt: LocalPrompt): Boolean {
+            val text = prompt.message.text.trim()
+            return turns.asReversed().take(local.size + 1).any { it.prompt?.trim() == text }
         }
 
         /**
@@ -522,6 +684,16 @@ class ConversationRepository(
             olderRunsCursor = olderRunsCursor,
             // The window the reader had open, within reason: the next start renders it from disk before the network answers.
             window = window.coerceAtMost(MAX_RESTORED_WINDOW),
+            record = recordWindow?.let { w ->
+                val kept = w.turns.takeLast(MAX_RESTORED_WINDOW)
+                CachedRecordWindow(
+                    total = w.total,
+                    firstStep = kept.firstOrNull()?.stepIndex ?: w.firstStep,
+                    turnCount = w.state?.turnCount ?: 0,
+                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode) },
+                    timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
+                )
+            },
         )
 
         /** Runs the placeholder of a prompt sent now must sort after, whatever the device clock says relative to the server's. */
@@ -597,6 +769,25 @@ class ConversationRepository(
                 run.id in e.failedTraces -> "failed"
                 else -> "none"
             }
+            val window = e.recordWindow
+            val runLines = if (window != null) {
+                // From the record: one line per loaded turn, with the run the turn pairs with when the list has it.
+                val ordered = e.allRuns()
+                val offset = ordered.size - window.turns.size
+                window.turns.mapIndexed { i, turn ->
+                    val run = ordered.getOrNull(offset + i)
+                    val trace = when {
+                        run != null && run.statusEnum().isActive -> "live"
+                        turn.items.isEmpty() -> "pending"
+                        else -> "shown"
+                    }
+                    TranscriptLoadDiagnostics.RunLine("turn@${turn.stepIndex}" + (run?.let { "/" + ProjectDiagnostics.tail(it.id) } ?: ""), run?.status ?: "-", trace, turn.items.size)
+                }
+            } else {
+                (layout.paired + layout.standing).map { run ->
+                    TranscriptLoadDiagnostics.RunLine(ProjectDiagnostics.tail(run.id), run.status, traceOf(run), e.traces[run.id]?.size ?: 0)
+                }
+            }
             TranscriptLoadDiagnostics(
                 attached = e.attached,
                 paused = e.paused,
@@ -610,10 +801,24 @@ class ConversationRepository(
                 runOrder = e.runOrder,
                 latestFetchedById = e.latestFetchedById,
                 window = e.window,
-                windowStart = layout.olderCount,
-                chatTurns = layout.total,
-                runs = (layout.paired + layout.standing).map { run ->
-                    TranscriptLoadDiagnostics.RunLine(ProjectDiagnostics.tail(run.id), run.status, traceOf(run), e.traces[run.id]?.size ?: 0)
+                windowStart = if (window != null) window.turnCount - window.turns.size else layout.olderCount,
+                chatTurns = window?.turnCount ?: layout.total,
+                runs = runLines,
+                source = if (window != null) "record" else "runs",
+                record = if (window != null || e.recordEmpty || e.recordError != null) {
+                    TranscriptLoadDiagnostics.RecordLine(window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError)
+                } else null,
+                status = run {
+                    val latest = e.latestRun()
+                    val row = agents.agent(agentId)
+                    TranscriptLoadDiagnostics.StatusLine(
+                        shown = e.state.value.runStatus?.name ?: "-",
+                        latestRun = latest?.let { e.statusOf(it).name } ?: "-",
+                        streaming = streaming,
+                        rowRunning = row?.isRunning == true,
+                        accountRunning = agents.runningScan.value.accountIds?.contains(agentId) == true,
+                        rowNewerThanRecordMs = if (row != null && latest != null) row.updatedAtMillis - parseIsoMillis(latest.updatedAt) else null,
+                    )
                 },
                 traceQueue = e.traceQueue.size,
                 traceInFlight = e.traceInFlight.size,
@@ -692,6 +897,12 @@ class ConversationRepository(
         publish(
             mutate = {
                 window = MAX_RESTORED_WINDOW
+                recordWindow?.let { w ->
+                    if (w.turns.size > MAX_RESTORED_WINDOW) {
+                        val kept = w.turns.takeLast(MAX_RESTORED_WINDOW)
+                        recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis)
+                    }
+                }
                 val kept = layout().let { it.paired + it.standing }.mapTo(HashSet()) { it.id }
                 traces = traces.filterKeys { it in kept }
             },
@@ -749,6 +960,9 @@ class ConversationRepository(
                 latestFetchedById = false
                 transcriptError = null
                 projectMode = false
+                recordWindow = null
+                recordEmpty = false
+                recordError = null
                 expiredRuns.clear()
                 expiredBefore = Long.MIN_VALUE
                 recordedFinishes.clear()
@@ -833,11 +1047,11 @@ class ConversationRepository(
      */
     fun revalidate(agentId: String) = offload(agentId) { e -> revalidateNow(e) }
 
-    private fun revalidateNow(e: Entry) {
+    private fun revalidateNow(e: Entry, force: Boolean = false) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
             if (e.attached == 0 || e.loadJob?.isActive == true || e.launching) return
-            if (AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
+            if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
             e.loadJob = e.scope.launch { load(e, e.agentId) }
         }
     }
@@ -850,10 +1064,15 @@ class ConversationRepository(
     private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }) {
         val workers = synchronized(this) {
             mutate()
+            lastPublishAtMs = monotonicMillis()
             val items = items()
-            val layout = layout()
-            val status = traceStatus(layout)
-            state.update { it.copy(items = items, hasOlder = layout.olderCount > 0, traceStatus = status).transform() }
+            val window = recordWindow
+            val (older, status) = if (window != null) {
+                (window.hasOlder) to recordTraceStatus(window)
+            } else {
+                layout().let { (it.olderCount > 0) to traceStatus(it) }
+            }
+            state.update { it.copy(items = items, hasOlder = older, traceStatus = status).transform() }
             coordinatorLineage(items)
         }
         if (workers != null) {
@@ -863,6 +1082,57 @@ class ConversationRepository(
             val (created, _) = workers
             if (created.isNotEmpty()) agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
         }
+    }
+
+    /**
+     * [mutate]s the entry and publishes — at once when the last publication is [PUBLISH_COALESCE_MS] or more ago,
+     * else once, a little later, for the whole burst: a stream's deltas and a pass of replays landing one after
+     * another otherwise rebuild the transcript and recompose the screen for every one of them, which reads as
+     * churn on a long chat. What was mutated is in the entry either way; the trailing publication shows all of it.
+     */
+    private fun Entry.publishCoalesced(mutate: Entry.() -> Unit) {
+        val now = synchronized(this) {
+            mutate()
+            val now = monotonicMillis()
+            if (now - lastPublishAtMs >= PUBLISH_COALESCE_MS) return@synchronized true
+            if (pendingPublish?.isActive != true) {
+                pendingPublish = scope.launch {
+                    delay(PUBLISH_COALESCE_MS)
+                    publish()
+                }
+            }
+            false
+        }
+        if (now) publish()
+    }
+
+    /**
+     * Where the turns of the record's window stand (see [TraceStatus]): a turn with its body from the record, or
+     * with its run's trace, is shown; one without a body whose run is queued for a replay (or not paired yet) is
+     * pending; one whose log is gone is expired; one whose replay failed is failed. The live turn counts as shown.
+     */
+    private fun Entry.recordTraceStatus(window: RecordWindow): TraceStatus {
+        val ordered = allRuns()
+        val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+        val paired = ordered.filter { it.id !in trailing }
+        val offset = paired.size - window.turns.size
+        var shown = 0
+        var pending = 0
+        var expired = 0
+        var failed = 0
+        window.turns.forEachIndexed { i, turn ->
+            val run = paired.getOrNull(offset + i)
+            when {
+                turn.hasBody || (run != null && run.id in traces) || (run != null && live?.runId == run.id) -> shown++
+                run == null -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else pending++
+                run.statusEnum().isActive -> shown++
+                run.id in traceQueue || run.id in traceInFlight -> pending++
+                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> expired++
+                run.id in failedTraces -> failed++
+                else -> if (fetched || state.value.isLoading) pending++ else failed++
+            }
+        }
+        return TraceStatus(shown, pending, expired, failed)
     }
 
     /**
@@ -904,6 +1174,9 @@ class ConversationRepository(
         return CoordinatorLineage.createdWorkerIds(items) to workers
     }
 
+    /** True while a stream is open on [runId] for this entry. */
+    private fun Entry.isFollowing(runId: String): Boolean = synchronized(this) { streamJob?.isActive == true && state.value.activeRunId == runId }
+
     /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */
     private fun Entry.stopFollowing() {
         streamJob?.cancel()
@@ -916,6 +1189,25 @@ class ConversationRepository(
         val api = backend.api
         if (!e.hasInputs) restoreFromCache(e, agentId)
         e.state.update { it.copy(isLoading = true, error = null) }
+        // Extended mode: the account's own record is the transcript (see [loadFromRecord]); the documented path
+        // below stands in only for a chat the record has nothing for, or when the record cannot be read before
+        // anything is on screen.
+        val recordEnabled = record != null && !backend.isDemo && capabilities().accountTranscript
+        if (!recordEnabled && synchronized(e) { e.recordWindow != null }) {
+            // The mode was switched off since the record's window was shown (or restored): the documented path renders.
+            e.publish(mutate = { recordWindow = null; recordError = null })
+        }
+        val recordApi = record?.takeIf { recordEnabled && !synchronized(e) { e.recordEmpty } }
+        if (recordApi != null) {
+            val served = try {
+                loadFromRecord(e, agentId, recordApi, backend, tokens)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                synchronized(e) { e.recordError = t.userMessage() }
+                synchronized(e) { e.recordWindow != null }.also { standing -> if (standing) e.publish(transform = { copy(isLoading = false, transcriptError = t.userMessage()) }) }
+            }
+            if (served) return
+        }
         try {
             coroutineScope {
                 val conversation = async { runCatching { api.conversationV0(agentId) } }
@@ -923,6 +1215,17 @@ class ConversationRepository(
                 // cursor (see [pageOlderRuns]) rather than holding the first frame up.
                 val runPage = async { runCatching { api.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
+                // The runs and their traces render first: the `/v0` transcript is the whole chat in one answer,
+                // megabytes for a long one, and a slow connection takes its time over it. Whichever lands first is
+                // shown; when the runs come first the turns show with their traces and replies, and the prompts'
+                // text joins when the transcript arrives (see [publishRunsFirst]).
+                if (!conversation.isCompleted) {
+                    select<Unit> {
+                        conversation.onJoin { }
+                        runPage.onJoin { }
+                    }
+                    if (!conversation.isCompleted && runPage.isCompleted) publishRunsFirst(e, agentId, api, runPage.await(), stored.await())
+                }
                 val convResult = conversation.await()
                 val runResult = runPage.await()
                 val onDevice = stored.await()
@@ -968,13 +1271,15 @@ class ConversationRepository(
                             pageOlder = !runsComplete && olderRunsCursor != null
                         },
                         transform = {
+                            // A stream already open on the latest run (the runs rendered ahead of the transcript) keeps its word.
+                            val following = e.streamJob?.isActive == true && activeRunId == latest?.id
                             copy(
                                 isLoading = false,
                                 error = null,
                                 activeRunId = latest?.id,
-                                runStatus = latest?.let { e.statusOf(it) },
-                                isStreaming = false,
-                                isReconnecting = false,
+                                runStatus = if (following) runStatus else e.chatStatus(latest),
+                                isStreaming = following && isStreaming,
+                                isReconnecting = following && isReconnecting,
                                 transcriptUnavailable = unavailable,
                                 transcriptError = transcriptIssue,
                             )
@@ -993,7 +1298,9 @@ class ConversationRepository(
                     persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
-                        startStreaming(e, agentId, active)
+                        // Already followed when the runs rendered ahead of the transcript (see [publishRunsFirst]): the
+                        // stream is not opened a second time for the same run.
+                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
                     } else {
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
@@ -1011,8 +1318,193 @@ class ConversationRepository(
         }
     }
 
+    /**
+     * The run list landed before the `/v0` transcript: the newest runs are shown now — with the traces the disk has
+     * for them, their replies and footers — over whatever transcript stands (the disk's, or none), and the live run
+     * is followed. The transcript's text lays over them when it arrives; a transcript that never does leaves this
+     * standing, said as such (see [ConversationState.transcriptError]).
+     */
+    private suspend fun publishRunsFirst(e: Entry, agentId: String, api: CursorApi, runResult: Result<ListRunsResponseDto>, onDevice: Map<String, List<MessageAttachment>>) {
+        val firstPage = runResult.getOrNull() ?: return
+        val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+        val (known, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+        val newest = newestRuns(api, agentId, firstPage, latestId, known, knownComplete)
+        if (newest.page.items.isEmpty()) return
+        var latest: RunDto? = null
+        e.publish(
+            mutate = {
+                mergeNewestPage(newest.page, endKnown = newest.endKnown)
+                runOrder = if (newest.ascending) RunOrder.OLDEST_FIRST else RunOrder.NEWEST_FIRST
+                latestFetchedById = newest.latestFetched
+                pruneLocal()
+                promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
+                latest = latestRun()
+            },
+            // Still loading: the transcript is on its way. The screen shows what there is meanwhile.
+            transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest)) },
+        )
+        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+        val active = latest?.takeIf { it.statusEnum().isActive }
+        if (active != null) startStreaming(e, agentId, active)
+        loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
+    }
+
+    /**
+     * Extended mode's transcript: the newest turns of the account's record (`FetchBackgroundComposer`, paged from
+     * the record's end), shown the moment they are read; the run list (`/v1`, one page plus the latest run by id)
+     * for each turn's status, footer and the live run to follow; the account's latest conversation state
+     * (`GetLatestAgentConversationState`) for the turn count and every turn's timing. Each answer is shown as it
+     * lands. Returns false when the record has nothing for the chat — not served for it — so the documented path
+     * takes over; a record that cannot be read leaves the copy last read standing, with the failure said, and also
+     * returns false when there is no such copy, so the chat still opens on what the documented endpoints give.
+     */
+    private suspend fun loadFromRecord(e: Entry, agentId: String, api: ConversationRecordApi, backend: CursorBackend, tokens: CacheTokens): Boolean = coroutineScope {
+        val cursorApi = backend.api
+        val (known, wantTurns) = synchronized(e) { e.recordWindow to e.window }
+        val tail = async { runCatching { RecordPager.tail(api, agentId, wantTurns, known?.total) } }
+        val stateRead = async { runCatching { api.state(agentId) } }
+        val runPage = async { runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
+        val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
+        val raw = tail.await()
+        val onDevice = stored.await()
+        val rawWindow = raw.getOrNull()
+        if (raw.isSuccess && rawWindow == null) {
+            // Nothing in the record for this chat: the documented endpoints are its only account.
+            synchronized(e) { e.recordEmpty = true; e.recordError = null }
+            runPage.cancel()
+            stateRead.cancel()
+            return@coroutineScope false
+        }
+        if (rawWindow == null) {
+            val message = raw.exceptionOrNull()?.userMessage() ?: "The account's record could not be read."
+            synchronized(e) { e.recordError = message }
+            if (known == null) {
+                // Nothing on screen from the record and none to be had now: the documented path shows what it can.
+                runPage.cancel()
+                stateRead.cancel()
+                return@coroutineScope false
+            }
+            e.publish(transform = { copy(isLoading = false, transcriptError = message) })
+        } else {
+            val sink = images?.forAgent(agentId)
+            val now = AppClock.now()
+            val built = RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+            var project = false
+            e.publish(
+                mutate = {
+                    recordWindow = built
+                    recordEmpty = false
+                    recordError = null
+                    transcriptError = null
+                    transcriptUnavailable = false
+                    fetched = true
+                    fetchedAt = now
+                    inputsUpdatedAt = agents.agent(agentId)?.updatedAtMillis ?: 0L
+                    if (built.turns.any { it.projectMode }) projectMode = true
+                    project = projectMode
+                    pruneLocal()
+                    promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
+                },
+                transform = { copy(isLoading = false, error = null, transcriptError = null, transcriptUnavailable = false, isProjectConversation = project) },
+            )
+            persistRecord(e, built, known, backend, tokens)
+        }
+        // The runs: each turn's status and footer, and the run to follow.
+        val runResult = runPage.await()
+        val firstPage = runResult.getOrNull()
+        if (firstPage != null) {
+            val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+            val (knownRuns, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+            val newest = newestRuns(cursorApi, agentId, firstPage, latestId, knownRuns, knownComplete)
+            var latest: RunDto? = null
+            var merged: List<RunDto> = emptyList()
+            e.publish(
+                mutate = {
+                    mergeNewestPage(newest.page, endKnown = newest.endKnown)
+                    runOrder = if (newest.ascending) RunOrder.OLDEST_FIRST else RunOrder.NEWEST_FIRST
+                    latestFetchedById = newest.latestFetched
+                    pruneLocal()
+                    latest = latestRun()
+                    merged = runs
+                },
+                transform = {
+                    // A stream already open on the latest run keeps its word (see [publishRunsFirst]).
+                    val following = e.streamJob?.isActive == true && activeRunId == latest?.id
+                    copy(activeRunId = latest?.id, runStatus = if (following) runStatus else e.chatStatus(latest), isStreaming = following && isStreaming, isReconnecting = following && isReconnecting)
+                },
+            )
+            latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+            launch { agents.loadDetail(agentId, latest) }
+            val active = latest?.takeIf { it.statusEnum().isActive }
+            if (active != null) {
+                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
+            } else {
+                val followed = synchronized(e) { e.live?.runId }
+                if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
+            }
+            // The turns the record holds without their steps get them from their runs' logs, newest first.
+            loadTraces(e, agentId, e.shownRuns())
+        } else if (rawWindow == null) {
+            // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
+        }
+        // The account's word on the whole chat: how many turns there are, and each one's timing.
+        stateRead.await().getOrNull()?.let { state ->
+            var project = false
+            e.publish(
+                mutate = {
+                    recordWindow = recordWindow?.withState(state)
+                    if (state.isRootProject) projectMode = true
+                    project = projectMode
+                },
+                transform = { copy(isProjectConversation = project) },
+            )
+        }
+        agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
+        persist(e, backend, tokens)
+        true
+    }
+
+    /** Widens the record's window by [WINDOW_RUNS] older turns (see [loadOlderNow]). */
+    private suspend fun loadOlderFromRecord(e: Entry, window: RecordWindow) {
+        val api = record ?: return
+        val backend = session.current
+        val tokens = cacheTokens()
+        val older = RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
+        val sink = images?.forAgent(e.agentId)
+        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+        e.publish(mutate = {
+            // Only onto the window this was asked for: a re-read since replaced it, and its turns stand.
+            if (recordWindow === window || recordWindow?.firstStep == window.firstStep) recordWindow = built
+            this.window += WINDOW_RUNS
+        })
+        persistRecord(e, built, window, backend, tokens)
+        loadTraces(e, e.agentId, e.shownRuns())
+    }
+
+    /**
+     * Writes the record's window to disk: the conversation's copy of where it sits, and one file per turn for the
+     * turns [previous] did not already hold with the same steps (a finished turn's items never change; the live
+     * turn's are rewritten as it grows).
+     */
+    private suspend fun persistRecord(e: Entry, window: RecordWindow, previous: RecordWindow?, backend: CursorBackend, tokens: CacheTokens) {
+        val before = previous?.turns?.associateBy { it.stepIndex }
+        val changed = window.turns.takeLast(MAX_RESTORED_WINDOW).filter { turn ->
+            val old = before?.get(turn.stepIndex)
+            old == null || old.stepCount != turn.stepCount || old.items !== turn.items
+        }
+        if (changed.isNotEmpty()) {
+            val now = AppClock.now()
+            withContext(NonCancellable) {
+                writeTraces(e.agentId, changed.map { turn -> CachedTrace(turn.traceKey, now - (window.total - turn.stepIndex), turn.items) }, tokens)
+            }
+        }
+        persist(e, backend, tokens)
+    }
+
+    private fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
+
     /** The runs the window renders right now, newest last. */
-    private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { layout().let { it.paired + it.standing } }
+    private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { if (recordWindow != null) recordTurnsNeedingReplay() else layout().let { it.paired + it.standing } }
 
     /**
      * Folds the newest page of the run list into [Entry.runs], which hold the chat's newest runs and, behind them, as
@@ -1175,14 +1667,29 @@ class ConversationRepository(
     }
 
     private suspend fun loadOlderNow(e: Entry) {
+        val recordWindow: RecordWindow?
         val proceed = synchronized(e) {
             if (e.loadingOlder || e.attached == 0) return
-            if (e.layout().olderCount <= 0) return
+            recordWindow = e.recordWindow
+            if (recordWindow != null) {
+                if (!recordWindow.hasOlder) return
+            } else if (e.layout().olderCount <= 0) return
             e.loadingOlder = true
             true
         }
         if (!proceed) return
         e.state.update { it.copy(isLoadingOlder = true) }
+        if (recordWindow != null) {
+            try {
+                loadOlderFromRecord(e, recordWindow)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                e.publish(transform = { copy(transcriptError = t.userMessage()) })
+            } finally {
+                e.publish(mutate = { loadingOlder = false }, transform = { copy(isLoadingOlder = false) })
+            }
+            return
+        }
         try {
             // Records first: the window must not widen onto prompts whose runs have not been fetched, or their
             // footers and traces would be missing while a page is still in flight.
@@ -1218,6 +1725,11 @@ class ConversationRepository(
     private fun Entry.pruneLocal() {
         if (local.isEmpty()) return
         val listed = runs.mapTo(HashSet()) { it.id }
+        recordWindow?.let { window ->
+            // The record has the prompt's turn and the list its run: the server reports it in full.
+            local = local.filter { prompt -> !(window.holds(prompt) && prompt.run.id in listed) }
+            return
+        }
         val ordered = allRuns()
         val covered = coveredCount()
         local = local.filter { prompt -> prompt.run.id !in listed || ordered.indexOfFirst { it.id == prompt.run.id } >= covered }
@@ -1235,7 +1747,11 @@ class ConversationRepository(
         // ("Working…", Stop) waits for the network unless a fetched agent row confirms the run is still going.
         val list = agents.state.value
         val row = list.agents.firstOrNull { it.id == agentId }
-        val status = latest?.statusEnum()?.takeUnless { it.isActive && (list.isFromCache || row?.isRunning != true) }
+        // The freshest word wins here too (see [Entry.chatStatus]): a fetched account that calls the chat running
+        // stands over a copy whose newest run says cancelled or finished — that copy is of an older turn, or stale.
+        // An active word is only ever shown from a fetched list; a cached one waits for the network.
+        val accountRunning = row?.isRunning == true || agents.runningScan.value.accountIds?.contains(agentId) == true
+        val status = e.chatStatus(latest, streaming = false)?.takeUnless { it.isActive && (list.isFromCache || !accountRunning) }
         // The prompts' images live on this device only, so the saved transcript can show them right away too.
         val onDevice = runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap())
         // A copy whose runs are not the chat's newest — a page an earlier build kept from a list read oldest first,
@@ -1257,6 +1773,29 @@ class ConversationRepository(
             },
             transform = { if (trusted) copy(activeRunId = latest?.id, runStatus = status, transcriptUnavailable = cached.transcriptUnavailable) else copy(transcriptUnavailable = cached.transcriptUnavailable) },
         )
+        // The record's window (Extended mode): its turns' items come from their own files, one read per turn. Only
+        // while the record is the transcript's source; with the mode off the documented copy below renders.
+        cached.record?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript }?.let { saved ->
+            val files = readTraces(agentId, saved.turns.map { RecordTurn.traceKey(it.stepIndex) })
+            val state = saved.turnCount.takeIf { it > 0 }?.let { count ->
+                RecordState(count, saved.timings.map { TurnTiming(it.durationMs, it.timestampMs) }, pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
+            }
+            val turns = saved.turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList()) }
+            val restored = RecordWindow(saved.total, saved.firstStep, turns, emptyList(), state, readAtMillis = 0L)
+            var project = false
+            e.publish(
+                mutate = {
+                    recordWindow = restored
+                    if (turns.any { it.projectMode }) projectMode = true
+                    project = projectMode
+                },
+                transform = { copy(isProjectConversation = project) },
+            )
+            // The turns the record holds without their steps: the traces their runs' logs gave last time, from disk.
+            val replayed = readTraces(agentId, e.shownRuns().map { it.id })
+            if (replayed.isNotEmpty()) e.publish(mutate = { traces = replayed.mapValues { it.value.items } + traces })
+            return
+        }
         // The window's traces come straight from their files — one small read per run, nothing of the older turns —
         // so the chat is whole, tool calls and payloads included, before the network has said a word.
         val shown = e.shownRuns().filter { it.statusEnum().isTerminal }
@@ -1439,6 +1978,8 @@ class ConversationRepository(
     private suspend fun fillFromRecord(e: Entry, agentId: String, runs: List<RunDto>, tokens: CacheTokens) {
         val api = record ?: return
         if (session.isDemo || !capabilities().accountTranscript) return
+        // The record is the transcript already (see [recordWindow]): what it has of these turns is on screen.
+        if (synchronized(e) { e.recordWindow != null }) return
         val (ordered, total, prompts) = synchronized(e) {
             val listed = e.runs.sortedBy { parseIsoMillis(it.createdAt) }
             val prompts = e.messages.filter { it.type == USER_MESSAGE }.map { it.text.trim() }
@@ -1484,10 +2025,11 @@ class ConversationRepository(
 
     /** Shows a run's complete trace and hands it to the caller for the file. */
     private fun settleTrace(e: Entry, run: RunDto, items: List<TimelineItem>): CachedTrace {
-        e.publish(mutate = {
+        // A pass settles runs one after another: they land on screen together rather than one recomposition each.
+        e.publishCoalesced {
             traces = traces + (run.id to items)
             staleTraces -= run.id
-        })
+        }
         return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 
@@ -1507,9 +2049,16 @@ class ConversationRepository(
                         val finishedAt = snapshot.finishedAtMillis ?: AppClock.now()
                         prefs.markRead(agentId, finishedAt)
                         recordFinish(e, run, snapshot, finishedAt)
+                        // The account has moved on to another run (a steer ended this one for the next, a
+                        // coordinator's next turn): the list is read again for it, and it is followed.
+                        val rowLatest = agents.agent(agentId)?.latestRunId
+                        if (rowLatest != null && rowLatest != run.id && !rowLatest.startsWith(LOCAL_RUN_PREFIX) && agents.agent(agentId)?.isRunning == true) revalidateNow(e, force = true)
                         // An outcome read from the run record after the stream broke lacks whatever happened in
-                        // between; now that the run is over, its retained log is read whole.
-                        if (!snapshot.hasTrace && !snapshot.expired) loadTraces(e, agentId, listOf(run))
+                        // between; now that the run is over, its retained log is read whole — or, from the record,
+                        // the record's tail, which has the finished turn.
+                        if (!snapshot.hasTrace && !snapshot.expired) {
+                            if (synchronized(e) { e.recordWindow != null }) revalidateNow(e, force = true) else loadTraces(e, agentId, listOf(run))
+                        }
                     }
                 }
         }
@@ -1536,18 +2085,33 @@ class ConversationRepository(
      */
     private fun Entry.applyLive(follower: Job?, run: RunDto, snapshot: LiveRunHub.Snapshot): Boolean = synchronized(this) {
         if (streamJob !== follower) return false
+        val mutate: Entry.() -> Unit = {
+            if (snapshot.hasTrace) {
+                traces = traces + (run.id to snapshot.items)
+                live = null
+            } else {
+                live = LiveTrace(run.id, snapshot.items)
+            }
+        }
+        if (!snapshot.finished && snapshot.eventCount > 0 && state.value.isStreaming && state.value.isReconnecting == snapshot.reconnecting && (state.value.runStatus == snapshot.status || snapshot.eventCount > 1)) {
+            // A delta of a run already shown as streaming: the items alone changed, and a burst of them is one publication.
+            publishCoalesced(mutate)
+            return true
+        }
         publish(
-            mutate = {
-                if (snapshot.hasTrace) {
-                    traces = traces + (run.id to snapshot.items)
-                    live = null
-                } else {
-                    live = LiveTrace(run.id, snapshot.items)
-                }
-            },
+            mutate = mutate,
             transform = {
                 copy(
-                    runStatus = if (snapshot.eventCount > 0 || snapshot.finished) snapshot.status else runStatus,
+                    // A finished stream's word is the run's; the chat's is the freshest there is (see [chatStatus]):
+                    // a run the account still calls running — a `/v1` record that says cancelled while the account
+                    // runs on, or a steer that ended this run for the next — is not the chat's end.
+                    runStatus = when {
+                        // The stream's terminal word is the run's. The chat still runs only when the account already
+                        // names another run (a steer ended this one for the next, a coordinator's next turn).
+                        snapshot.finished -> if (accountNamesNewerRun(run.id)) RunStatus.RUNNING else snapshot.status
+                        snapshot.eventCount > 0 -> snapshot.status
+                        else -> runStatus
+                    },
                     isStreaming = !snapshot.finished,
                     isReconnecting = snapshot.reconnecting && !snapshot.finished,
                 )
@@ -2049,6 +2613,8 @@ class ConversationRepository(
         const val CLOCK_SKEW_ALLOWANCE_MS = 60_000L
         /** Pages of older run records read past the first: beyond them the oldest prompts are shown without runs. */
         const val MAX_RUN_PAGES = 8
+        /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */
+        const val PUBLISH_COALESCE_MS = 80L
         /** How many of the newest runs a chat opens on, and by how many the window widens each time the reader scrolls up to its end. */
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
