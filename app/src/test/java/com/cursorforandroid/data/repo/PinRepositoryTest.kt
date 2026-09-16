@@ -377,7 +377,8 @@ class PinRepositoryTest {
         val first = scope.launch { repository.toggle("bc-1") }
         val second = scope.launch { repository.toggle("bc-1") }
         // Both flips have landed once the pin is back where it started and a wish is still waiting for the server.
-        prefs.pendingPinChanges.first { it.isNotEmpty() }
+        // Each flip is written on the store's threads, so the second can land a beat after the first's wish shows.
+        withTimeout(10_000) { while (!(prefs.pendingPinChanges.first().isNotEmpty() && pinnedIds().isEmpty())) delay(5) }
         assertThat(pinnedIds()).isEmpty()
         release!!.resume(Unit)
         sync.join()
