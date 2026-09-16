@@ -155,8 +155,8 @@ class UiParityCompareTest {
     @Test
     fun chatWithSidebar() {
         launch(RailState.Expanded)
+        // The sidebar is the app's own (main's), untagged: its region is the window's first 278 dp of the screen capture.
         captureScreen("render-01-chat")
-        captureNode("sidebar", "render-sidebar")
         captureNode("cursor-header", "render-header")
         captureNode("composer-column", "render-composer")
     }

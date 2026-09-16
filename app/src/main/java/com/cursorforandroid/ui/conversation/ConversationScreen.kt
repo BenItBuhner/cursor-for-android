@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,8 +42,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
@@ -73,7 +70,6 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.ProjectGlyph
 import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
@@ -350,11 +346,8 @@ fun ConversationScreen(
                     onOpenSidebar != null -> FlatIconButton(CursorIcons.Sidebar, "Open sidebar", onClick = onOpenSidebar)
                 }
             },
-            // A Project's coordinator is named with its icon, as the web's header names a Project chat.
-            titleGlyph = if (agent?.looksLikeProject == true) ({ ProjectGlyph(agent?.projectAppearance) }) else null,
             trailing = {
-                // The web's order, left to right: "IDE ↗", the menu, then the panel toggle at the far edge.
-                IdeLink(onClick = { (agent?.url ?: CursorEndpoints.webUrl(agentId)).let(uriHandler::openUri) })
+                // The menu, then the panel toggle at the far edge, as the web's header orders them.
                 Box {
                     FlatIconButton(CursorIcons.More, "More", onClick = { menuOpen = true })
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = colors.elevated, shape = CursorTheme.shapes.lg) {
@@ -705,29 +698,6 @@ internal fun changesSummary(panel: PanelState): ConversationPillsState.ChangesSu
     val additions = changes.map { it.linesAdded }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
     val deletions = changes.map { it.linesRemoved }.takeIf { it.all { n -> n != null } }?.sumOf { it!! }
     return ConversationPillsState.ChangesSummary(additions, deletions, changes.size)
-}
-
-/**
- * The web header's "IDE ↗": the chat where Cursor's own client opens it. There is no IDE on a phone, so the link
- * opens the chat on cursor.com, which is where the desktop's "IDE" hand-off lands too.
- */
-@Composable
-private fun IdeLink(onClick: () -> Unit) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Row(
-        Modifier
-            .heightIn(min = 28.dp)
-            .pressable(onClick, CursorTheme.shapes.base)
-            .semantics { contentDescription = "Open in IDE" }
-            .padding(horizontal = 8.dp)
-            .testTag("header-ide"),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("IDE", style = type.small, color = colors.textSecondary, maxLines = 1)
-        Spacer(Modifier.width(2.dp))
-        Icon(CursorIcons.ArrowUpRight, null, tint = colors.iconSecondary, modifier = Modifier.size(12.dp))
-    }
 }
 
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */

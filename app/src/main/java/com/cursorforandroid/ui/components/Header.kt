@@ -34,8 +34,6 @@ fun CursorHeader(
     subtitle: String? = null,
     leading: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
-    /** A glyph before the title — a Project's icon in its colour, as the web's header names a Project chat. */
-    titleGlyph: (@Composable () -> Unit)? = null,
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -51,10 +49,6 @@ fun CursorHeader(
         leading?.invoke(this)
         if (title != null) {
             Spacer(Modifier.width(if (leading != null) 4.dp else 10.dp))
-            if (titleGlyph != null) {
-                titleGlyph()
-                Spacer(Modifier.width(8.dp))
-            }
             Column(Modifier.weight(1f)) {
                 Text(title, style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (subtitle != null) {

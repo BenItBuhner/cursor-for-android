@@ -120,49 +120,6 @@ object CursorIcons {
         }
     }
 
-    /** Lucide `send`: the web sidebar's "New Chat" row. */
-    val Send: ImageVector by lazy {
-        icon("Send") {
-            path("M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z")
-            path("m21.854 2.147-10.94 10.939")
-        }
-    }
-
-    /** Lucide `bot`: the web sidebar's "Automations" row. */
-    val Bot: ImageVector by lazy {
-        icon("Bot") {
-            path("M12 8V4H8")
-            rect(4f, 8f, 16f, 12f, 2f)
-            path("M2 14h2")
-            path("M20 14h2")
-            path("M15 13v2")
-            path("M9 13v2")
-        }
-    }
-
-    /** Lucide `sliders-horizontal`: the web sidebar's "Customize" row. */
-    val Sliders: ImageVector by lazy {
-        icon("Sliders") {
-            path("M21 4h-7")
-            path("M10 4H3")
-            path("M21 12h-9")
-            path("M8 12H3")
-            path("M21 20h-5")
-            path("M12 20H3")
-            path("M14 2v4")
-            path("M8 10v4")
-            path("M16 18v4")
-        }
-    }
-
-    /** Lucide `settings`: the gear on the web sidebar's account row. */
-    val Gear: ImageVector by lazy {
-        icon("Gear") {
-            path("M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z")
-            circle(12f, 12f, 3f)
-        }
-    }
-
     /** Lucide `maximize-2`: the panel's expand control. */
     val Expand: ImageVector by lazy {
         icon("Expand") {
@@ -207,14 +164,6 @@ object CursorIcons {
     val FolderOpen: ImageVector by lazy {
         icon("FolderOpen") {
             path("m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2")
-        }
-    }
-
-    /** Lucide `arrow-up-right`: the "IDE ↗" control in the content header. */
-    val ArrowUpRight: ImageVector by lazy {
-        icon("ArrowUpRight") {
-            path("M7 7h10v10")
-            path("M7 17 17 7")
         }
     }
 

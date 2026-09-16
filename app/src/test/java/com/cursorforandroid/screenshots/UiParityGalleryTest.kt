@@ -54,13 +54,15 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * The parity gallery: the demo Project's coordinator chat on every viewport of the responsive plan, crossed with
- * the rail's states and the panel's — closed, the Project tab, a document tab, All Files, a side chat tab — one frame
- * each, named `<viewport>-<rail>-<panel>.png` under `app/build/ui-parity/`. Not a CI check (its name keeps it out of
- * the screenshot job); run by hand with `./gradlew :app:recordRoborazziDebug --tests '*UiParityGalleryTest*'`.
+ * The parity gallery, the compact set for review: the demo Project's coordinator chat on six viewports — phone
+ * portrait, Fold cover, Fold inner portrait and landscape, Tab portrait and landscape — crossed with the sidebar
+ * showing and hidden and the panel's states — closed, the Project tab, a document tab — one frame each, named
+ * `<viewport>-<rail>-<panel>.png` under `app/build/ui-parity/`. Not a CI check (its name keeps it out of the
+ * screenshot job); run by hand with `./gradlew :app:recordRoborazziDebug --tests '*UiParityGalleryTest*'`.
  *
  * A compact window has no rail: its `expanded` is the drawer open over the chat (panel closed, since the drawer
- * covers it), its `hidden` the five panel states. Wide windows cross the sidebar showing and hidden by all five.
+ * covers it), its `hidden` the three panel states. Wide windows cross the sidebar showing and hidden by all three.
+ * The All Files and side chat states stay reachable through [panelState] for a fuller set.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @RunWith(AndroidJUnit4::class)
@@ -289,10 +291,6 @@ class UiParityGalleryTest {
     fun phonePortrait() = compactGallery("phone-portrait", 411, 914)
 
     @Test
-    @Config(sdk = [35], qualifiers = "w914dp-h411dp-land-night-420dpi")
-    fun phoneLandscape() = wideGallery("phone-landscape", 914, 411)
-
-    @Test
     @Config(sdk = [35], qualifiers = "w409dp-h955dp-night-420dpi")
     fun foldCover() = compactGallery("fold-cover", 409, 955)
 
@@ -313,7 +311,7 @@ class UiParityGalleryTest {
     fun tabLandscape() = wideGallery("tab-landscape", 1497, 936)
 
     private companion object {
-        val PANELS = listOf("closed", "project", "doc", "allfiles", "sidechat")
+        val PANELS = listOf("closed", "project", "doc")
         /** Wednesday 2025-01-15 14:00 UTC, the walkthrough's clock. */
         val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
     }
