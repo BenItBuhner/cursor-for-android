@@ -8,9 +8,11 @@ import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
+import com.cursorforandroid.fixtures.CoordinatorFixtures
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -19,6 +21,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 
@@ -270,10 +273,12 @@ class ProjectApiTest {
     /**
      * `PresignAgentStoreReads {agent_id, rel_paths[], share_id?, store_id?}` → `{instructions: AgentStoreReadInstruction
      * {rel_path, url, expires_at_ms}[]}`, the desktop's proto (aiserver.v1, read from its bundle): the bytes of a
-     * picture in the store come from the URL it hands out, asked for as the chat the path was read in.
+     * picture in the store come from the URL it hands out. The service wants exactly one identifier — "Exactly one of
+     * share_id, store_id, or legacy agent_id is required" — so a read by store id carries no agent id, and the legacy
+     * read by the owning agent carries no store id.
      */
     @Test
-    fun `a store file's bytes are behind the URL PresignAgentStoreReads hands out for it`() = runBlocking<Unit> {
+    fun `a store file's bytes are behind the URL PresignAgentStoreReads hands out, asked for by exactly one identifier`() = runBlocking<Unit> {
         server.enqueue(session("s"))
         server.enqueue(
             MockResponse().setBody(
@@ -283,21 +288,41 @@ class ProjectApiTest {
                    ]}""",
             ),
         )
+        server.enqueue(MockResponse().setBody("""{"instructions":[{"relPath":"media/legacy.png","url":"https://files.cursor.sh/legacy?sig=3"}]}"""))
         server.enqueue(MockResponse().setBody("""{"instructions":[]}"""))
 
-        val signed = api.presignRead("bc-worker", "st-proj", "media/ui-parity/tab-landscape-icon-only-project.png")!!
+        val signed = api.presignRead(StoreReadTarget.Store("st-proj"), "media/ui-parity/tab-landscape-icon-only-project.png")!!
         assertThat(signed.url).isEqualTo("https://files.cursor.sh/tab?sig=2")
         assertThat(signed.relativePath).isEqualTo("media/ui-parity/tab-landscape-icon-only-project.png")
         assertThat(signed.expiresAtMillis).isEqualTo(1_700_000_900_000L)
-        assertThat(api.presignRead("bc-worker", "st-proj", "media/missing.png")).isNull()
+        val legacy = api.presignRead(StoreReadTarget.Agent("bc-m"), "media/legacy.png")!!
+        assertThat(legacy.url).isEqualTo("https://files.cursor.sh/legacy?sig=3")
+        assertThat(legacy.expiresAtMillis).isNull()
+        assertThat(api.presignRead(StoreReadTarget.Store("st-proj"), "media/missing.png")).isNull()
 
         server.takeRequest()
-        val request = server.takeRequest()
-        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/PresignAgentStoreReads")
-        val body = request.json()
-        assertThat(body["agentId"]?.jsonPrimitive?.content).isEqualTo("bc-worker")
-        assertThat(body["storeId"]?.jsonPrimitive?.content).isEqualTo("st-proj")
-        assertThat(body["relPaths"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("media/ui-parity/tab-landscape-icon-only-project.png")
+        val byStore = server.takeRequest()
+        assertThat(byStore.path).isEqualTo("/aiserver.v1.BackgroundComposerService/PresignAgentStoreReads")
+        val storeBody = byStore.json()
+        assertThat(storeBody.keys).containsExactly("relPaths", "storeId")
+        assertThat(storeBody["storeId"]?.jsonPrimitive?.content).isEqualTo("st-proj")
+        assertThat(storeBody["relPaths"]?.jsonArray?.map { it.jsonPrimitive.content }).containsExactly("media/ui-parity/tab-landscape-icon-only-project.png")
+        val byAgent = server.takeRequest().json()
+        assertThat(byAgent.keys).containsExactly("relPaths", "agentId")
+        assertThat(byAgent["agentId"]?.jsonPrimitive?.content).isEqualTo("bc-m")
+    }
+
+    /** The service's refusal of a read naming two stores (what #148 sent, `store_presign_error.json`) comes through in its own words. */
+    @Test
+    fun `the service's refusal of a store read is surfaced verbatim`() = runBlocking<Unit> {
+        val fixture = CoordinatorFixtures.json("store_presign_error.json")
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setResponseCode(fixture.getValue("httpCode").jsonPrimitive.int).setBody(fixture.getValue("body").toString()))
+
+        val failure = assertThrows(ConnectRpcException::class.java) { runBlocking { api.presignRead(StoreReadTarget.Store("st-proj"), "media/a.png") } }
+        assertThat(failure).hasMessageThat().isEqualTo("Exactly one of share_id, store_id, or legacy agent_id is required.")
+        assertThat(failure.code).isEqualTo("invalid_argument")
+        assertThat(failure.userMessage()).isEqualTo("Exactly one of share_id, store_id, or legacy agent_id is required.")
     }
 
     @Test

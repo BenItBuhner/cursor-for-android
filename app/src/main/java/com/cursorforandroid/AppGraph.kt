@@ -33,6 +33,7 @@ import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
@@ -310,7 +311,7 @@ class AppGraph(
         override suspend fun storeFor(sourceId: String): String? = lazyProjectApi.value.storeFor(sourceId)
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
-        override suspend fun presignRead(requesterId: String, storeId: String, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(requesterId, storeId, relativePath)
+        override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(target, relativePath)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
