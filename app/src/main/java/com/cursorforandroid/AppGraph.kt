@@ -277,6 +277,7 @@ class AppGraph(
             probe = DesktopProbe(client = { lazyAccountClient.value }, origin = DesktopPage.ORIGIN),
             capabilities = capabilities,
             isDemo = { session.isDemo },
+            appVersion = BuildConfig.VERSION_NAME,
         )
     }
     val remote: RemoteRepository get() = lazyRemote.value

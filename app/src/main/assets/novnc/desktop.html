@@ -9,39 +9,112 @@
   #screen { position: absolute; inset: 0; width: 100%; height: 100%; }
   #screen canvas { outline: none; }
 </style>
+<script>
+  // Anything that goes wrong before or while the module below runs is kept where the app can read it back
+  // (cursorDesktop.state(), or __cursorDesktopError while the module has not run), so a viewer that never starts
+  // can say why instead of loading forever.
+  window.__cursorDesktopError = null;
+  window.addEventListener('error', function (e) {
+    window.__cursorDesktopError = (e && e.message) ? String(e.message) : 'script error';
+    if (window.AndroidDesktop && typeof window.AndroidDesktop.onState === 'function') {
+      window.AndroidDesktop.onState('error', window.__cursorDesktopError);
+    }
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    window.__cursorDesktopError = (e && e.reason) ? String(e.reason) : 'unhandled rejection';
+  });
+  // noVNC logs why a connection failed ("Connection closed (code: 1006)") and nothing else says; the last such line
+  // is kept for the app's report. noVNC binds these methods when its module starts, so the wrappers are what it binds.
+  window.__cursorDesktopLog = null;
+  ['error', 'warn'].forEach(function (level) {
+    var original = console[level] ? console[level].bind(console) : function () {};
+    console[level] = function () {
+      try { window.__cursorDesktopLog = Array.prototype.map.call(arguments, String).join(' '); } catch (_) { /* keep going */ }
+      return original.apply(console, arguments);
+    };
+  });
+</script>
 </head>
 <body>
 <div id="screen"></div>
-<script type="module">
-  // noVNC (MPL-2.0, see LICENSE.txt) against the websockify URL the app hands over through cursorDesktop.connect;
-  // the URL carries the desktop ticket, so it is never put in this page's own address. Every event goes back to
-  // the app through AndroidDesktop.onState(state, detail).
+<script type="module" onerror="window.__cursorDesktopError = window.__cursorDesktopError || 'the viewer module failed to load (a noVNC module did not fetch or parse)'">
+  // noVNC (MPL-2.0, see LICENSE.txt) against the websockify URL the app hands over through cursorDesktop.connect,
+  // the way the Agents Window's own desktop tab drives it: no WebSocket subprotocol for a pod, scaled to the
+  // viewport, view-only until control is taken. The URL carries the desktop ticket, so it is never put in this
+  // page's own address. Every event goes to the app through AndroidDesktop.onState(state, detail), and the app also
+  // reads cursorDesktop.state() back by script, so a broken bridge cannot hide the viewer's state.
   import RFB from './core/rfb.js';
 
   let rfb = null;
+  const state = { phase: 'idle', detail: null, name: null, frames: 0, ready: true, error: null };
 
-  function report(state, detail) {
+  function report(phase, detail) {
+    state.phase = phase;
+    state.detail = detail == null ? null : String(detail);
     if (window.AndroidDesktop && typeof window.AndroidDesktop.onState === 'function') {
-      window.AndroidDesktop.onState(state, detail == null ? '' : String(detail));
+      window.AndroidDesktop.onState(phase, detail == null ? '' : String(detail));
     }
+  }
+
+  // The first frame: the Agents Window watches the display's flip for it; so does this, and counts every one.
+  function watchFrames(instance) {
+    try {
+      const display = instance._display;
+      if (!display || typeof display.flip !== 'function') return;
+      const flip = display.flip;
+      display.flip = function () {
+        const result = flip.apply(this, arguments);
+        state.frames += 1;
+        if (state.frames === 1 && window.AndroidDesktop && typeof window.AndroidDesktop.onState === 'function') {
+          window.AndroidDesktop.onState('frame', '');
+        }
+        return result;
+      };
+    } catch (_) { /* the frame count stays at zero; the app assumes a frame after three seconds, as the Agents Window does */ }
   }
 
   window.cursorDesktop = {
     connect(url, viewOnly) {
       this.disconnect();
+      state.frames = 0;
+      state.error = null;
       const screen = document.getElementById('screen');
-      rfb = new RFB(screen, url, { wsProtocols: ['binary'], shared: true });
+      try {
+        rfb = new RFB(screen, url, { shared: true, wsProtocols: [] });
+      } catch (e) {
+        state.error = String(e);
+        report('failed', 'noVNC could not be started: ' + String(e));
+        return;
+      }
       rfb.viewOnly = !!viewOnly;
       rfb.scaleViewport = true;
       rfb.resizeSession = false;
       rfb.clipViewport = false;
+      rfb.focusOnClick = true;
       rfb.showDotCursor = true;
       rfb.background = '#000';
+      rfb.qualityLevel = 6;
+      rfb.compressionLevel = 2;
+      watchFrames(rfb);
       rfb.addEventListener('connect', () => report('connected', ''));
-      rfb.addEventListener('disconnect', (e) => report('disconnected', e.detail && e.detail.clean ? 'clean' : 'dropped'));
-      rfb.addEventListener('securityfailure', (e) => report('failed', (e.detail && e.detail.reason) || 'security failure'));
-      rfb.addEventListener('credentialsrequired', () => report('failed', 'The desktop asked for VNC credentials this app does not hold'));
-      rfb.addEventListener('desktopname', (e) => report('name', e.detail && e.detail.name));
+      rfb.addEventListener('disconnect', (e) => {
+        const clean = !!(e.detail && e.detail.clean);
+        if (!clean && !state.error) state.error = 'the socket closed before the RFB handshake finished, or dropped';
+        report('disconnected', clean ? 'clean' : 'dropped');
+      });
+      rfb.addEventListener('securityfailure', (e) => {
+        state.error = (e.detail && e.detail.reason) || 'security failure';
+        report('failed', state.error);
+      });
+      rfb.addEventListener('credentialsrequired', () => {
+        state.error = 'The desktop asked for VNC credentials this app does not hold';
+        report('failed', state.error);
+      });
+      rfb.addEventListener('desktopname', (e) => {
+        state.name = (e.detail && e.detail.name) || null;
+        if (window.AndroidDesktop && typeof window.AndroidDesktop.onState === 'function') window.AndroidDesktop.onState('name', state.name || '');
+      });
+      state.name = null;
       report('connecting', '');
     },
     setViewOnly(viewOnly) {
@@ -51,6 +124,9 @@
       if (!rfb) return;
       try { rfb.disconnect(); } catch (_) { /* already gone */ }
       rfb = null;
+    },
+    state() {
+      return { phase: state.phase, detail: state.detail, name: state.name, frames: state.frames, ready: true, error: state.error || window.__cursorDesktopError, log: window.__cursorDesktopLog };
     },
   };
 

@@ -24,10 +24,12 @@ sealed interface ProbeResult {
 }
 
 /**
- * Opens a WebSocket to each candidate desktop URL until one accepts the handshake — the way to tell which of the
- * ports Cursor's bundle builds (spec §9, item 5) serves this pod's desktop before a WebView is pointed at it, and to
- * give a stopped or hibernated VM a named state rather than a black canvas. The socket is closed the moment it opens;
- * websockify tolerates that. The `Origin` the WebView will send goes along, so a refusal shows here first.
+ * Opens a WebSocket to each candidate desktop URL until one accepts the handshake — the way to tell which of the two
+ * ports the Agents Window tries (its default, then its fallback after ten seconds) serves this pod's desktop before a
+ * WebView is pointed at it, and to give a stopped or hibernated VM a named state rather than a black canvas. The
+ * handshake is the Agents Window's: no subprotocol (its pod viewer passes noVNC no `wsProtocols`). The socket is torn
+ * down the moment it opens; websockify tolerates that. The `Origin` the WebView will send goes along, so a refusal
+ * shows here first.
  */
 open class DesktopProbe(
     /** Built on first use: the probe belongs to Extended mode, and a default-mode graph never needs its client. */
@@ -51,7 +53,6 @@ open class DesktopProbe(
         val request = Request.Builder()
             .url(url.replaceFirst("wss://", "https://").replaceFirst("ws://", "http://"))
             .apply { if (origin != null) header("Origin", origin) }
-            .header("Sec-WebSocket-Protocol", "binary")
             .build()
         val probing = client().newBuilder().readTimeout(timeoutMs, TimeUnit.MILLISECONDS).connectTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
         return withTimeoutOrNull(timeoutMs + 1_000) {
@@ -83,6 +84,7 @@ open class DesktopProbe(
     }
 
     companion object {
-        const val TIMEOUT_MS = 8_000L
+        /** The Agents Window gives each port ten seconds before moving on. */
+        const val TIMEOUT_MS = 10_000L
     }
 }
