@@ -92,6 +92,8 @@ data class SidebarCallbacks(
     val rowActions: AgentRowActions,
     /** The reader reached the end of the list and the server has older agents: the next page is asked for. */
     val onLoadMore: () -> Unit = {},
+    /** Opens the Create Project sheet from the Projects group's header; null hides the plus (default mode, where Projects are the account's). */
+    val onNewProject: (() -> Unit)? = null,
 )
 
 /**
@@ -208,14 +210,30 @@ fun Sidebar(
                 state.sections.forEach { section ->
                     val expanded = section.key !in collapsedKeys
                     item("hdr-${section.key}") {
-                        GroupLabel(
-                            section.title,
-                            Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap),
-                            expanded = expanded,
-                            onToggle = {
-                                collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
-                            },
-                        )
+                        val onNewProject = callbacks.onNewProject?.takeIf { section.key == AgentListOrganizer.PROJECTS_KEY }
+                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = if (onNewProject != null) 8.dp else 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap), verticalAlignment = Alignment.CenterVertically) {
+                            GroupLabel(
+                                section.title,
+                                Modifier.weight(1f),
+                                expanded = expanded,
+                                onToggle = {
+                                    collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
+                                },
+                            )
+                            // The composer's plus, much smaller, right-aligned: a new Project, created the desktop's way.
+                            if (onNewProject != null) {
+                                Icon(
+                                    CursorIcons.Plus,
+                                    contentDescription = "New Project",
+                                    tint = colors.iconQuaternary,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .pressable(onNewProject, CircleShape)
+                                        .padding(3.dp)
+                                        .testTag("new-project"),
+                                )
+                            }
+                        }
                     }
                     if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
                         // Without the account service only a coordinator's own transcript says which chats are its

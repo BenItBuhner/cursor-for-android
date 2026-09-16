@@ -36,6 +36,7 @@ import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
+import com.cursorforandroid.data.api.ConnectProjectCreationApi
 import com.cursorforandroid.data.api.ProjectApi
 import com.cursorforandroid.data.api.ProjectLineageApi
 import com.cursorforandroid.data.api.PullRequestApi
@@ -78,6 +79,7 @@ import com.cursorforandroid.data.repo.GitHubPullRequestSource
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
+import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
@@ -438,6 +440,11 @@ class AppGraph(
      */
     private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities) }
     val projects: ProjectRepository get() = lazyProjects.value
+
+    /** Creating a Project and editing its name and look, from the sidebar, the panel and the Project's own view (Extended mode). */
+    private val lazyProjectCreation = lazy { ConnectProjectCreationApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyProjectEditor = lazy { ProjectEditor(session, agents, projects, creation = { lazyProjectCreation.value }, capabilities = capabilities) }
+    val projectEditor: ProjectEditor get() = lazyProjectEditor.value
 
     private val lazyCatalog = lazy { CatalogRepository(session, caches.catalog) }
     val catalog: CatalogRepository get() = lazyCatalog.value

@@ -119,7 +119,7 @@ internal class ProjectActions(
 
 /**
  * The Project at a glance: its glyph in its colour, how many primaries are working or waiting on an answer, when it
- * last moved — and, in Extended mode, the pencil that opens the icon and colour editor.
+ * last moved — and, in Extended mode, the pencil that opens the Project editor (name, icon and colour).
  */
 @Composable
 private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppearance: (() -> Unit)?, enabled: Boolean) {
@@ -147,7 +147,7 @@ private fun ProjectSummary(state: ProjectViewState, nowMillis: Long, onEditAppea
             }
         }
         if (onEditAppearance != null) {
-            FlatIconButton(CursorIcons.Pencil, "Edit icon and colour", onClick = onEditAppearance, enabled = enabled, modifier = Modifier.testTag("project-appearance"))
+            FlatIconButton(CursorIcons.Pencil, "Edit Project", onClick = onEditAppearance, enabled = enabled, modifier = Modifier.testTag("project-appearance"))
         }
     }
 }

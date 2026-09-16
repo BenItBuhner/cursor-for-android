@@ -64,6 +64,8 @@ sealed interface ProjectSheet : java.io.Serializable {
     data object NewWorker : ProjectSheet { private fun readResolve(): Any = NewWorker }
     data object Adopt : ProjectSheet { private fun readResolve(): Any = Adopt }
     data object Appearance : ProjectSheet { private fun readResolve(): Any = Appearance }
+    /** The Project editor: name, icon and colour, and the repositories it was created with. */
+    data object EditProject : ProjectSheet { private fun readResolve(): Any = EditProject }
     data class Steer(val agentId: String, val name: String) : ProjectSheet
     data class Move(val agentId: String, val name: String) : ProjectSheet
 }
@@ -221,27 +223,7 @@ internal fun AppearanceSheet(current: ProjectAppearance?, onPick: (ProjectAppear
             }
         }
         Spacer(Modifier.height(12.dp))
-        // Ten 30 dp swatches fit a 360 dp phone with room to spare; narrower ones scroll.
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            ProjectPalette.tones.forEach { candidate ->
-                val selected = candidate.id == colorId
-                val swatch = colors.projectTone(candidate.id)
-                Box(
-                    Modifier
-                        .size(30.dp)
-                        .background(swatch.copy(alpha = if (selected) 1f else 0.55f), CircleShape)
-                        .then(if (selected) Modifier.border(2.dp, colors.textPrimary, CircleShape) else Modifier)
-                        .pressable({ colorId = candidate.id }, CircleShape)
-                        .semantics { contentDescription = "Colour ${candidate.label}"; this.selected = selected },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (selected) Icon(CursorIcons.Check, null, tint = if (candidate.id == ProjectPalette.DEFAULT_ID) colors.canvas else Color.White, modifier = Modifier.size(14.dp))
-                }
-            }
-        }
+        PaletteRow(colorId = colorId, onPick = { colorId = it })
         Spacer(Modifier.height(12.dp))
         SheetSearchField(value = query, onValueChange = { query = it }, placeholder = "Search ${ProjectIcons.ids.size} icons")
         Spacer(Modifier.height(6.dp))
@@ -262,18 +244,7 @@ internal fun AppearanceSheet(current: ProjectAppearance?, onPick: (ProjectAppear
                     Text(section.label, style = type.small, color = colors.textTertiary, modifier = Modifier.padding(start = 4.dp, top = 10.dp, bottom = 4.dp))
                 }
                 items(section.ids, key = { it }) { candidate ->
-                    val selected = candidate == icon
-                    Box(
-                        Modifier
-                            .size(40.dp)
-                            .background(if (selected) colors.fillMedium else Color.Transparent, CircleShape)
-                            .then(if (selected) Modifier.border(CursorDimens.hairline, tone, CircleShape) else Modifier)
-                            .pressable({ icon = candidate }, CircleShape)
-                            .semantics { contentDescription = "Icon ${ProjectIcons.label(candidate)}"; this.selected = selected },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(CursorIcons.project(candidate), null, tint = tone, modifier = Modifier.size(18.dp))
-                    }
+                    IconCell(candidate = candidate, selected = candidate == icon, tone = tone, onPick = { icon = candidate })
                 }
             }
         }
@@ -285,6 +256,49 @@ internal fun AppearanceSheet(current: ProjectAppearance?, onPick: (ProjectAppear
             Spacer(Modifier.width(8.dp))
             CursorButton("Save", primary = true, onClick = { onPick(ProjectAppearance(icon, colorId)); dismiss() })
         }
+    }
+}
+
+/** The catalog's ten tones in a row, the chosen one ringed: 30 dp swatches, ten of which fit a 360 dp phone; narrower ones scroll. */
+@Composable
+internal fun PaletteRow(colorId: String, onPick: (String) -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    Row(
+        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        ProjectPalette.tones.forEach { candidate ->
+            val selected = candidate.id == colorId
+            val swatch = colors.projectTone(candidate.id)
+            Box(
+                Modifier
+                    .size(30.dp)
+                    .background(swatch.copy(alpha = if (selected) 1f else 0.55f), CircleShape)
+                    .then(if (selected) Modifier.border(2.dp, colors.textPrimary, CircleShape) else Modifier)
+                    .pressable({ onPick(candidate.id) }, CircleShape)
+                    .semantics { contentDescription = "Colour ${candidate.label}"; this.selected = selected },
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selected) Icon(CursorIcons.Check, null, tint = if (candidate.id == ProjectPalette.DEFAULT_ID) colors.canvas else Color.White, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+}
+
+/** One icon of the catalog, drawn in the chosen tone, ringed when it is the one chosen. */
+@Composable
+internal fun IconCell(candidate: String, selected: Boolean, tone: Color, onPick: () -> Unit) {
+    val colors = CursorTheme.colors
+    Box(
+        Modifier
+            .size(40.dp)
+            .background(if (selected) colors.fillMedium else Color.Transparent, CircleShape)
+            .then(if (selected) Modifier.border(CursorDimens.hairline, tone, CircleShape) else Modifier)
+            .pressable(onPick, CircleShape)
+            .semantics { contentDescription = "Icon ${ProjectIcons.label(candidate)}"; this.selected = selected },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(CursorIcons.project(candidate), null, tint = tone, modifier = Modifier.size(18.dp))
     }
 }
 

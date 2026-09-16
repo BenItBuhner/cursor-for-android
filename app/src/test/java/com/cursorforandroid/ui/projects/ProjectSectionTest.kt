@@ -216,7 +216,7 @@ class ProjectSectionTest {
     fun `while an action is under way the hands are held, and a Project still syncing says so`() {
         show(state(actionsAvailable = true), isBusy = true)
         compose.onNodeWithContentDescription("Actions for Stripe webhook handler").assertIsNotEnabled()
-        compose.onNodeWithContentDescription("Edit icon and colour").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Edit Project").assertIsNotEnabled()
 
         busy = false
         current = ProjectViewState(projectId = "bc-p", root = root, hasSynced = false)
