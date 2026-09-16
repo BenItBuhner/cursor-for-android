@@ -479,6 +479,37 @@ class AgentListOrganizerTest {
         assertThat(sections.flatMap { it.rows }.map { it.agent.id }).containsNoDuplicates()
     }
 
+    /**
+     * The section and the order read the desktop's field (`rUm` orders by the header's `lastUpdatedAt`, `f3v`
+     * buckets by it; the header takes it from the record's `lastMessageActivityAtMs ?? updatedAtMs`), never the public
+     * row's `updatedAt` once the record has spoken: a month-old chat whose row the account keeps touching stays in
+     * Older, below a chat with newer activity and an older row stamp, and its read marker is judged by the same time.
+     */
+    @Test
+    fun `the record's activity dates a chat, not the public row's updatedAt`() {
+        val stale = agent("stale", updatedAgo = 0).copy(activityAtMillis = now - 40 * day)
+        val fresh = agent("fresh", updatedAgo = 3 * day).copy(activityAtMillis = now - hour)
+        val undated = agent("undated", updatedAgo = 2 * day)
+        val sections = AgentListOrganizer.organize(listOf(stale, fresh, undated), ListPreferences(), LocalAgentState(), nowMillis = now, zone = zone)
+        assertThat(sections.map { it.title to it.rows.map { r -> r.agent.id } }).containsExactly(
+            "Today" to listOf("fresh"),
+            "Last 7 Days" to listOf("undated"),
+            "Older" to listOf("stale"),
+        ).inOrder()
+        assertThat(AgentListOrganizer.sort(listOf(stale, undated, fresh).map { AgentListOrganizer.toRow(it, LocalAgentState(), now) }, SortOrder.Updated).map { it.agent.id })
+            .containsExactly("fresh", "undated", "stale").inOrder()
+        assertThat(stale.listedAtMillis).isEqualTo(now - 40 * day)
+        assertThat(undated.listedAtMillis).isEqualTo(undated.updatedAtMillis)
+        // Read by the same time: a marker at the record's activity reads it; the row stamp moving does not unread it.
+        val readAtActivity = LocalAgentState(readMarkers = mapOf("stale" to stale.listedAtMillis))
+        assertThat(AgentListOrganizer.isUnread(stale, readAtActivity, now)).isFalse()
+        assertThat(AgentListOrganizer.isUnread(stale.copy(updatedAtMillis = now + hour), readAtActivity, now)).isFalse()
+        assertThat(AgentListOrganizer.isUnread(stale.copy(activityAtMillis = now - day), readAtActivity, now)).isTrue()
+        // A send from this device moves the listed time forward and never back.
+        assertThat(stale.touched(now).listedAtMillis).isEqualTo(now)
+        assertThat(fresh.touched(now - 2 * day).listedAtMillis).isEqualTo(now - hour)
+    }
+
     @Test
     fun `date bucket boundaries`() {
         val today = LocalDate.of(2027, 1, 15)

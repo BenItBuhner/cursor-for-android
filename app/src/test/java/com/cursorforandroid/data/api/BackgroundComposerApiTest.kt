@@ -222,6 +222,30 @@ class BackgroundComposerApiTest {
     }
 
     /**
+     * The desktop dates a cloud agent by `lastMessageActivityAtMs ?? updatedAtMs` (Cursor 3.20.21, `CloudAgentRepository`
+     * `$pS`: `updatedAt: t.lastMessageActivityAtMs ?? t.updatedAtMs`), and its header's `lastUpdatedAt` falls back to
+     * `createdAtMs`; the row's `updated_at_ms` alone — which the account bumps for a status sweep, a PR check, an
+     * expiry — dates nothing while message activity is recorded. Int64s come as strings, or as numbers.
+     */
+    @Test
+    fun `a record is dated by its last message activity, then its row stamp, then its creation`() {
+        fun stamp(v: String) = kotlinx.serialization.json.JsonPrimitive(v)
+        val all = BackgroundComposerApi.snapshot(BackgroundComposerApi.ComposerDto(bcId = "bc-t", lastMessageActivityAtMs = stamp("1700000000000"), updatedAtMs = stamp("1799999999000"), createdAtMs = stamp("1600000000000")))!!
+        assertThat(all.activityAtMillis).isEqualTo(1_700_000_000_000L)
+        assertThat(all.createdAtMillis).isEqualTo(1_600_000_000_000L)
+        assertThat(all.listedAtMillis).isEqualTo(1_700_000_000_000L)
+        val noActivity = BackgroundComposerApi.snapshot(BackgroundComposerApi.ComposerDto(bcId = "bc-t", updatedAtMs = kotlinx.serialization.json.JsonPrimitive(1_799_999_999_000L), createdAtMs = stamp("1600000000000")))!!
+        assertThat(noActivity.activityAtMillis).isEqualTo(1_799_999_999_000L)
+        assertThat(noActivity.listedAtMillis).isEqualTo(1_799_999_999_000L)
+        val createdOnly = BackgroundComposerApi.snapshot(BackgroundComposerApi.ComposerDto(bcId = "bc-t", createdAtMs = stamp("1600000000000")))!!
+        assertThat(createdOnly.activityAtMillis).isNull()
+        assertThat(createdOnly.listedAtMillis).isEqualTo(1_600_000_000_000L)
+        val undated = BackgroundComposerApi.snapshot(BackgroundComposerApi.ComposerDto(bcId = "bc-t", lastMessageActivityAtMs = stamp("0"), updatedAtMs = stamp("not a time")))!!
+        assertThat(undated.activityAtMillis).isNull()
+        assertThat(undated.listedAtMillis).isNull()
+    }
+
+    /**
      * The root discovery pass reads the list to its end: by token where the service gives one, by the page's oldest
      * activity where it does not (the older service's `last_message_activity_at_ms_offset`), and a page that fails
      * ends the pass with what the pages before it said, not with nothing. A page that brings nothing new is the end.

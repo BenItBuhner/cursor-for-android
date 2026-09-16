@@ -456,8 +456,7 @@ class LiveRunHub(
                     durationMs = result.durationMs ?: a.durationMs,
                     branches = result.git.toBranches().ifEmpty { a.branches },
                     summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
-                    updatedAtMillis = finishedAt,
-                )
+                ).touched(finishedAt)
             }
             _finishes.tryEmit(entry.state.value)
         }

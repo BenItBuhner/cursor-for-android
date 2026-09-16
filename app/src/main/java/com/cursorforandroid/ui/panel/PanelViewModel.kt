@@ -198,7 +198,7 @@ class PanelViewModel(private val graph: AppGraph, val agentId: String) : ViewMod
 
     /** The chats the list hangs off this one as side chats, newest first — in either mode, from whatever placed them. */
     private val sideChats: StateFlow<List<Agent>> = graph.agents.state
-        .map { s -> s.agents.filter { it.parent?.id == agentId && it.parent.kind == AgentParentKind.SIDE_CHAT }.sortedByDescending { it.updatedAtMillis } }
+        .map { s -> s.agents.filter { it.parent?.id == agentId && it.parent.kind == AgentParentKind.SIDE_CHAT }.sortedByDescending { it.listedAtMillis } }
         .distinctUntilChanged()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

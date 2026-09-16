@@ -56,9 +56,22 @@ data class ComposerSnapshot(
     val status: RunStatus? = null,
     /** The model the chat runs on, as the record names it (`requested_model`, else `model_details`); null when it named none. */
     val model: AccountModel? = null,
+    /**
+     * When the chat was last active, the way the Agents Window reads it off the record (Cursor 3.20.21,
+     * `CloudAgentRepository`, `$pS`): `updatedAt: t.lastMessageActivityAtMs ?? t.updatedAtMs` — the last message
+     * activity first, the row's own `updated_at_ms` only when the record carries no message activity at all. The
+     * row's `updated_at_ms` moves with anything the account does to the record (a status sweep, a PR check, an
+     * expiry), which is why the desktop does not sort or bucket by it. Null when the record gave neither.
+     */
+    val activityAtMillis: Long? = null,
+    /** The record's `created_at_ms`; the desktop's last fallback for a chat's time (`lastUpdatedAt: updatedAt ?? createdAt ?? 0`). */
+    val createdAtMillis: Long? = null,
 ) {
     /** Where the chat belongs by this record's own facts, read the desktop's way (see [AgentScope.of]). */
     val scope: AgentScope get() = AgentScope.of(isProject, parent)
+
+    /** The desktop header's `lastUpdatedAt` for this record: `updatedAt ?? createdAt`, null when the record dated nothing. */
+    val listedAtMillis: Long? get() = activityAtMillis ?: createdAtMillis
 
     /** True when the record says a turn is going: the account's word on the running set. */
     val isRunning: Boolean get() = status?.isActive == true
@@ -455,8 +468,12 @@ class BackgroundComposerApi(
         val hasPendingInteraction: Boolean? = null,
         /** Created through the "New Project" flow; carried for the diagnostics, it is no Project flag on its own. */
         val startedAsNewProject: Boolean? = null,
-        /** `int64`, a string in proto3's JSON; what the older service pages by (see `cursor`). */
+        /** `int64`, a string in proto3's JSON; what the older service pages by (see `cursor`), and the desktop's `updatedAt` (see [ComposerSnapshot.activityAtMillis]). */
         val lastMessageActivityAtMs: JsonPrimitive? = null,
+        /** `updated_at_ms`: the row's own stamp, moved by whatever the account does to the record; the desktop's `updatedAt` only when no message activity is recorded. */
+        val updatedAtMs: JsonPrimitive? = null,
+        /** `created_at_ms`. */
+        val createdAtMs: JsonPrimitive? = null,
         /** `agent.v1.RequestedModel` (field 59): the model the chat was started or last followed up with. */
         val requestedModel: RequestedModelDto? = null,
         /** `aiserver.v1.ModelDetails` (field 28): the older word on the model, the one the Agents Window's badge reads. */
@@ -582,8 +599,14 @@ class BackgroundComposerApi(
                 hasPendingInteraction = composer.hasPendingInteraction == true,
                 status = composerStatus(composer.status),
                 model = accountModel(composer.requestedModel, composer.modelDetails),
+                // The desktop's `updatedAt`: `lastMessageActivityAtMs ?? updatedAtMs`, each an int64 the wire may write as a string.
+                activityAtMillis = composer.lastMessageActivityAtMs.epochMillis() ?: composer.updatedAtMs.epochMillis(),
+                createdAtMillis = composer.createdAtMs.epochMillis(),
             )
         }
+
+        /** An int64 stamp as Connect JSON writes it — a string, or a number from a server that encodes them so; null when absent or not a positive time. */
+        private fun JsonPrimitive?.epochMillis(): Long? = this?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }?.takeIf { it > 0 }
 
         /**
          * The record's model, read the way the desktop reads a cloud agent's: `requested_model` when it names an

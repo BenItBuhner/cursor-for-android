@@ -48,7 +48,7 @@ class ProjectViewModel(private val graph: AppGraph, val projectId: String) : Vie
 
     /** Chats the coordinator could adopt: the account's own chats, running or not, archived ones aside. */
     val adoptable: StateFlow<List<Agent>> = graph.agents.state
-        .map { s -> s.agents.filter { it.scope == AgentScope.PRIMARY && !it.isArchived && it.id != projectId }.sortedByDescending { it.updatedAtMillis } }
+        .map { s -> s.agents.filter { it.scope == AgentScope.PRIMARY && !it.isArchived && it.id != projectId }.sortedByDescending { it.listedAtMillis } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** Other Projects a primary could be moved under. */
@@ -113,7 +113,7 @@ class ProjectViewModel(private val graph: AppGraph, val projectId: String) : Vie
 
     fun closeContextFile() { openFile.value = null }
 
-    fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
+    fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.listedAtMillis) }
 
     /** Runs one action, holds the screen's controls meanwhile, and shows the outcome or the refusal. */
     private fun act(block: suspend () -> Result<String>) = viewModelScope.launch {
