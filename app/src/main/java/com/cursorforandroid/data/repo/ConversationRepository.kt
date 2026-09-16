@@ -22,7 +22,6 @@ import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.TimelineBuilder.withUniqueIds
 import com.cursorforandroid.domain.Agent
-import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
