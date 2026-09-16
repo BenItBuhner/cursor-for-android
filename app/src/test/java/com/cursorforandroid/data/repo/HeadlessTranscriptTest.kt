@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.HeadlessToolCall
 import com.cursorforandroid.data.api.HeadlessToolResult
+import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
@@ -33,6 +34,8 @@ class HeadlessTranscriptTest {
             )
         }
         val requests = mutableListOf<Pair<Int, Int>>()
+
+        override suspend fun state(agentId: String): RecordState = RecordState(steps.count { it.userMessage != null }, emptyList(), pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
 
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
             requests += startIndex to limit

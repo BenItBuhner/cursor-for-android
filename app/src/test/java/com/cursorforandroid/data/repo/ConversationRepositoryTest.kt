@@ -1199,11 +1199,14 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Done)
 
         val conversations = repository()
+        // Both answers held: the runs render before the transcript, and would follow the run, while a screen can see them.
         api.conversationGate = CompletableDeferred()
+        api.runsGate = CompletableDeferred()
         conversations.attach("bc-1")
         awaitUntil { api.conversationCalls == 1 }
         conversations.pause("bc-1")
         api.conversationGate!!.complete(Unit)
+        api.runsGate!!.complete(Unit)
 
         // The inputs the load fetched are still worth having; the stream and the replay are not started for them.
         awaitUntil { conversations.state("bc-1").value.items.any { it is UserMessage } }

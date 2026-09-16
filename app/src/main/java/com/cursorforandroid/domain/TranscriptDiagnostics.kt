@@ -47,8 +47,18 @@ data class TranscriptLoadDiagnostics(
     val lastError: String?,
     val transcriptError: String?,
     val transcriptUnavailable: Boolean,
+    /** Where the transcript comes from: `record` (the account's own record, Extended mode) or `runs` (`/v0` text over `/v1` runs). */
+    val source: String = "runs",
+    /** The account's record as far as it was read, when the chat has been asked for it (Extended mode). */
+    val record: RecordLine? = null,
 ) {
     data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int)
+
+    /**
+     * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
+     * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
+     */
+    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?)
 
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)
 }
@@ -137,10 +147,13 @@ object TranscriptDiagnostics {
      */
     private fun StringBuilder.describe(load: TranscriptLoadDiagnostics) {
         appendLine(
-            "load: attached=${load.attached} paused=${load.paused} fetched=${load.fetched} fetchedAt=${load.fetchedAtIso ?: "-"} messages=${load.messages} prompts=${load.prompts}" +
+            "load: source=${load.source} attached=${load.attached} paused=${load.paused} fetched=${load.fetched} fetchedAt=${load.fetchedAtIso ?: "-"} messages=${load.messages} prompts=${load.prompts}" +
                 " runs=${load.runsLoaded} complete=${load.runsComplete} olderCursor=${load.hasOlderCursor} order=${load.runOrder?.name ?: "-"} latestById=${load.latestFetchedById}" +
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
+        load.record?.let { r ->
+            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
+        }
         val shown = load.runs.count { it.trace == "shown" }
         appendLine(
             "traces: shown=$shown of ${load.runs.count { it.trace != "live" }} queue=${load.traceQueue} inFlight=${load.traceInFlight} worker=${load.traceWorkerRunning} expiredRuns=${load.expiredRuns} expiredBefore=${load.expiredBeforeIso ?: "-"} failed=${load.failedTraces}",

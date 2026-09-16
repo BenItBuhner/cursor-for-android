@@ -6,7 +6,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 
 /**
  * One step of the account's own copy of a chat's transcript (`HeadlessAgenticComposerResponse`), in the corner this
@@ -35,6 +37,24 @@ data class HeadlessToolResult(val callId: String, val result: JsonElement?)
 /** One page of the record: [steps] from [startIndex] on, out of [totalResponses] the account holds for the chat. */
 data class HeadlessPage(val steps: List<HeadlessStep>, val startIndex: Int, val totalResponses: Int)
 
+/** One turn's timing as the conversation state keeps it (`agent.v1.StepTiming`): how long it ran, and when it ended. */
+data class TurnTiming(val durationMs: Long?, val timestampMs: Long?)
+
+/**
+ * The account's latest word on a chat's conversation (`GetLatestAgentConversationState`), in the corner this app
+ * reads: how many turns the chat has ([turnCount], one per prompt), each turn's timing, whether a tool call is
+ * pending (the agent is mid-step), whether the chat is a Project's root conversation, and the two counters that say
+ * how far the live stream has gone ([numPriorInteractionUpdates]) and whether the chat was rewound ([rewindEpoch]).
+ */
+data class RecordState(
+    val turnCount: Int,
+    val timings: List<TurnTiming>,
+    val pendingToolCalls: Int,
+    val isRootProject: Boolean,
+    val numPriorInteractionUpdates: Long,
+    val rewindEpoch: Long,
+)
+
 /**
  * The account's transcript of a chat, tool calls included, which outlives the documented stream's retention window.
  * An interface so the conversation repository can be tested against a fake.
@@ -42,6 +62,9 @@ data class HeadlessPage(val steps: List<HeadlessStep>, val startIndex: Int, val 
 interface ConversationRecordApi {
     /** `FetchBackgroundComposer {bc_id, start_index, limit}`: [limit] steps from [startIndex], oldest first. */
     suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage
+
+    /** `GetLatestAgentConversationState {bc_id}`: the chat's turn count, timings and pending work (see [RecordState]). */
+    suspend fun state(agentId: String): RecordState
 }
 
 /**
@@ -66,11 +89,61 @@ class HeadlessConversationApi(
             FetchRequestDto.serializer(),
             FetchResponseDto.serializer(),
         )
-        return HeadlessPage(response.responses.mapNotNull { it.toStep() }, startIndex.coerceAtLeast(0), response.totalResponses ?: response.responses.size)
+        // One step per response, a blank one for a response this app reads nothing from (a status, a done marker):
+        // the record is paged by index, and a page's steps must line up with the indices it was asked for.
+        return HeadlessPage(response.responses.map { it.toStep() ?: HeadlessStep() }, startIndex.coerceAtLeast(0), response.totalResponses ?: response.responses.size)
+    }
+
+    override suspend fun state(agentId: String): RecordState {
+        val response = rpc.unaryWithSession(
+            SERVICE,
+            "GetLatestAgentConversationState",
+            tokens,
+            StateRequestDto(bcId = agentId),
+            StateRequestDto.serializer(),
+            StateResponseDto.serializer(),
+        )
+        val latest = response.latestConversationState
+        val conversation = latest?.conversationState
+        return RecordState(
+            turnCount = conversation?.turns?.size ?: 0,
+            timings = conversation?.turnTimings?.map { TurnTiming(it.durationMs?.toLongLenient(), it.timestampMs?.toLongLenient()) } ?: emptyList(),
+            pendingToolCalls = conversation?.pendingToolCalls?.size ?: 0,
+            isRootProject = conversation?.isRootProjectConversation == true,
+            numPriorInteractionUpdates = latest?.numPriorInteractionUpdates?.toLongLenient() ?: 0L,
+            rewindEpoch = latest?.conversationRewindEpoch?.toLongLenient() ?: 0L,
+        )
     }
 
     @Serializable
     private data class FetchRequestDto(val bcId: String, val startIndex: Int, val limit: Int)
+
+    @Serializable
+    private data class StateRequestDto(val bcId: String)
+
+    @Serializable
+    private data class StateResponseDto(val latestConversationState: LatestStateDto? = null)
+
+    /** `aiserver.v1.LatestAgentConversationState`: the counters are `uint32`, written as numbers or as strings by an encoder. */
+    @Serializable
+    private data class LatestStateDto(
+        val conversationState: ConversationStateDto? = null,
+        val numPriorInteractionUpdates: JsonElement? = null,
+        val conversationRewindEpoch: JsonElement? = null,
+    )
+
+    /** `agent.v1.ConversationStateStructure`, of which the turn list (blob ids, counted only), the timings and the pending calls are read. */
+    @Serializable
+    private data class ConversationStateDto(
+        val turns: List<JsonElement> = emptyList(),
+        val turnTimings: List<TimingDto> = emptyList(),
+        val pendingToolCalls: List<JsonElement> = emptyList(),
+        val isRootProjectConversation: Boolean? = null,
+    )
+
+    /** `agent.v1.StepTiming`: `uint64`s, which proto3 JSON writes as strings. */
+    @Serializable
+    private data class TimingDto(val durationMs: JsonElement? = null, val timestampMs: JsonElement? = null)
 
     @Serializable
     private data class FetchResponseDto(
@@ -160,5 +233,11 @@ class HeadlessConversationApi(
         }
 
         private fun snakeCase(camel: String): String = camel.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").lowercase()
+
+        /** A proto integer as Connect JSON writes it: a number, or a string for the 64-bit kinds. */
+        internal fun JsonElement.toLongLenient(): Long? {
+            val primitive = this as? JsonPrimitive ?: return null
+            return primitive.longOrNull ?: primitive.contentOrNull?.trim()?.toLongOrNull() ?: primitive.doubleOrNull?.toLong()
+        }
     }
 }

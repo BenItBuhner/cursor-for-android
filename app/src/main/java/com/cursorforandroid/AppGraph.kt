@@ -15,6 +15,7 @@ import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CreatedPullRequest
@@ -479,6 +480,7 @@ class AppGraph(
 
     private val accountTranscript = object : ConversationRecordApi {
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
+        override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
@@ -752,8 +754,8 @@ class AppGraph(
      * item kinds, tool names with their argument key names, the payload read off each call, and the decision that
      * reads the chat as a coordinator's. No message, prompt or argument text is in it.
      */
-    suspend fun transcriptDiagnosticsReport(): String {
-        val agentId = if (lazyConversations.isInitialized()) conversations.lastOpenedAgentId.value else null
+    suspend fun transcriptDiagnosticsReport(forAgentId: String? = null): String {
+        val agentId = forAgentId ?: if (lazyConversations.isInitialized()) conversations.lastOpenedAgentId.value else null
         val state = agentId?.let { conversations.state(it).value }
         return TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input(
