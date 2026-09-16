@@ -855,7 +855,7 @@ class ConversationRepository(
             if (e.attached == 1 && !e.launching) {
                 e.loadJob?.cancel()
                 e.loadJob = e.scope.launch {
-                    agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
+                    agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
                     load(e, agentId)
                 }
             }
@@ -1314,7 +1314,7 @@ class ConversationRepository(
                 latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
                 launch { agents.loadDetail(agentId, latest) }
                 if (fetched) {
-                    agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
+                    agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
                     persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
@@ -1480,7 +1480,7 @@ class ConversationRepository(
                 transform = { copy(isProjectConversation = project) },
             )
         }
-        agents.agent(agentId)?.let { prefs.markRead(agentId, it.updatedAtMillis) }
+        agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
         persist(e, backend, tokens)
         true
     }

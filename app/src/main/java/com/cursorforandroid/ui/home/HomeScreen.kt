@@ -333,7 +333,7 @@ fun RecentChatRow(
                 agent.modelName?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 val workspace = agent.envName?.takeIf { it.contains('#') } ?: agent.repoShortName
                 workspace?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
-                Text(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis), style = type.small, color = colors.textQuaternary)
+                Text(TimeFormat.relativeShort(agent.listedAtMillis, nowMillis), style = type.small, color = colors.textQuaternary)
             }
         }
     }

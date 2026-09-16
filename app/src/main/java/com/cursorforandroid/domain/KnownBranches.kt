@@ -44,7 +44,7 @@ object KnownBranches {
                 agent.startingRef?.trim()?.takeIf { it.isNotEmpty() }?.let { ref ->
                     val entry = seen.getOrPut(ref) { Seen() }
                     entry.started++
-                    entry.lastUsed = maxOf(entry.lastUsed, agent.updatedAtMillis)
+                    entry.lastUsed = maxOf(entry.lastUsed, agent.listedAtMillis)
                 }
             }
             for (pushed in agent.branches) {
@@ -57,7 +57,7 @@ object KnownBranches {
                     entry.pushedBy = agent.name
                     entry.pushedAt = agent.updatedAtMillis
                 }
-                entry.lastUsed = maxOf(entry.lastUsed, agent.updatedAtMillis)
+                entry.lastUsed = maxOf(entry.lastUsed, agent.listedAtMillis)
             }
         }
         return seen

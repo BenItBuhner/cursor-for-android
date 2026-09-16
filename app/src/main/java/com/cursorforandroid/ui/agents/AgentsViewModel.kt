@@ -288,13 +288,13 @@ class AgentsViewModel(
     /** Applies at once; the account hears about it now or at the next sync, so a failure needs no attention here. */
     fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
-    fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.updatedAtMillis) }
+    fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.listedAtMillis) }
 
     /** Marks every loaded conversation read at its current `updatedAt`, the same stamp opening a chat would write. */
     fun markAllRead() = viewModelScope.launch {
         val agents = graph.agents.state.value.agents
         if (agents.isEmpty()) return@launch
-        graph.prefs.markAllRead(agents.associate { it.id to it.updatedAtMillis })
+        graph.prefs.markAllRead(agents.associate { it.id to it.listedAtMillis })
     }
 
     /** Against the stored preferences, in one transaction, so quick successive changes compose (see the store). */

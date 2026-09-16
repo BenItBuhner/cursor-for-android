@@ -152,7 +152,7 @@ fun AgentRowItem(
             val trailing = buildList {
                 if (prefs.showWorkspace) agent.repoShortName?.let { add(it) }
                 // A stand-in's last activity is not known until its row is fetched; the slot waits for it.
-                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.updatedAtMillis, nowMillis))
+                if (prefs.showRuntime && !placeholder && !row.isStandIn) add(TimeFormat.relativeShort(agent.listedAtMillis, nowMillis))
             }
             if (trailing.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
