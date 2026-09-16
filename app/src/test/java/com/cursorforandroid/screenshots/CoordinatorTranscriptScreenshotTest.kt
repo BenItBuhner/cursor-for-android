@@ -57,8 +57,9 @@ import java.io.File
  * turn Cursor injected when a subagent finished — its instruction to the model hidden, the coordinator's brief remark
  * folded under the row — then the turn of the reference frame replayed from the documented stream's frames: the
  * coordinator's `SendMessage` updates as the messages — plain replies, read off `args.text.content` — and everything
- * between two of them (its notes, its thought, its message to a worker, its edit) behind one summary line each. The chat is read as a coordinator's from this content alone; no list row
- * says so. Written to `screenshots/` beside the walkthrough and compared pixel for pixel in CI.
+ * between two of them (the injected turn's line and its run's footer, its notes, its thought, its message to a
+ * worker, its edit) behind one summary line each. The chat is read as a coordinator's from this content alone; no
+ * list row says so. Written to `screenshots/` beside the walkthrough and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -133,7 +134,7 @@ class CoordinatorTranscriptScreenshotTest {
         val rows = TranscriptRows.of(shown, coordinatorMode = true)
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).hasSize(3)
         assertThat(rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }.map { it.summary.text })
-            .containsExactly("1 agent · 1 thought · 1 note", "1 edit · 1 note").inOrder()
+            .containsExactly("Worked 41s · 1 event · 1 agent · 1 thought", "1 edit · 1 note").inOrder()
 
         val controls = TranscriptControls(onOpenAgent = {}, agentById = { workers[it] }, coordinatorMode = true)
         compose.setContent {

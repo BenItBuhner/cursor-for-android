@@ -2,9 +2,12 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessStep
+import com.cursorforandroid.data.api.HeadlessToolCall
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.SseToolCallDto
+import com.cursorforandroid.data.api.dto.SseToolCallTruncationDto
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.TimelineItem
@@ -97,20 +100,53 @@ object HeadlessTranscript {
         return live.snapshot().filterNot { it is RunFooter }
     }
 
+    /**
+     * What the record has said of one tool call so far: its name and arguments from whichever of its steps carried
+     * them, and the pieces of arguments a streamed call — a coordinator's `SendMessage`, written out as the model
+     * produces it — arrived in, joined until they read as JSON.
+     */
+    private class KnownCall {
+        var name: String = ""
+        var args: JsonElement? = null
+        val pieces = StringBuilder()
+
+        /** Whether the call's arguments were streamed and never came whole: the body is not in the record as read. */
+        val partial: Boolean get() = args == null && pieces.isNotEmpty()
+
+        fun take(call: HeadlessToolCall) {
+            if (call.name.isNotBlank()) name = call.name
+            if (call.args != null) args = call.args
+            call.rawArgs?.let { piece ->
+                // A piece that repeats what came before, with more, is the whole so far; anything else is the next piece.
+                if (piece.startsWith(pieces)) pieces.setLength(0)
+                pieces.append(piece)
+                if (args == null) runCatching { CursorJson.parseToJsonElement(pieces.toString()) }.getOrNull()?.let { args = it }
+            }
+        }
+
+        /** The stream's event for the call as known: its arguments, or the word that they were cut, when they never came whole. */
+        fun event(callId: String, status: String, result: JsonElement? = null): SseToolCallDto =
+            SseToolCallDto(callId, name, status, args, result, truncated = if (partial) SseToolCallTruncationDto(args = true) else null)
+    }
+
     private fun replay(turn: Turn, key: String, images: GeneratedImageSink?): TimelineBuilder.LiveRun {
         val live = TimelineBuilder.LiveRun(key, timed = false, images = images)
-        val calls = HashMap<String, Pair<String, JsonElement?>>()
+        val calls = HashMap<String, KnownCall>()
         for (step in turn.steps) {
             when {
                 step.thinking != null -> live.apply(RunStreamEvent.Thinking(step.thinking))
                 step.text != null -> live.apply(RunStreamEvent.Assistant(step.text))
                 step.toolCall != null -> {
-                    calls[step.toolCall.callId] = step.toolCall.name to step.toolCall.args
-                    live.apply(RunStreamEvent.ToolCall(SseToolCallDto(step.toolCall.callId, step.toolCall.name, ToolCall.STATUS_RUNNING, step.toolCall.args)))
+                    val known = calls.getOrPut(step.toolCall.callId) { KnownCall() }
+                    known.take(step.toolCall)
+                    // A piece with nothing new to say — a streamed call's progress, its name and arguments already
+                    // known — is not a step of its own; the call stands as it is until the next one adds to it.
+                    if (known.name.isBlank() && known.args == null && known.pieces.isEmpty()) continue
+                    live.apply(RunStreamEvent.ToolCall(known.event(step.toolCall.callId, ToolCall.STATUS_RUNNING)))
                 }
                 step.toolResult != null -> {
-                    val (name, args) = calls[step.toolResult.callId] ?: ("" to null)
-                    live.apply(RunStreamEvent.ToolCall(SseToolCallDto(step.toolResult.callId, name, ToolCall.STATUS_COMPLETED, args, step.toolResult.result)))
+                    val known = calls[step.toolResult.callId] ?: KnownCall()
+                    live.apply(RunStreamEvent.ToolCall(known.event(step.toolResult.callId, ToolCall.STATUS_COMPLETED, step.toolResult.result)))
                 }
             }
         }

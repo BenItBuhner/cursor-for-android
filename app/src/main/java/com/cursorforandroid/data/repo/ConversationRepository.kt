@@ -536,8 +536,9 @@ class ConversationRepository(
 
         /**
          * The runs whose turn the record holds without its steps — an account whose record keeps the prompts and
-         * files the bodies elsewhere — and whose log is the one place left to read them from: the finished runs
-         * paired with such turns, newest first, that no replay has answered for yet.
+         * files the bodies elsewhere — or, in a coordinator's chat, without the coordinator's word to the user, and
+         * whose log is the one place left to read them from: the finished runs paired with such turns, newest first,
+         * that no replay has answered for yet.
          */
         fun recordTurnsNeedingReplay(): List<RunDto> {
             val window = recordWindow ?: return emptyList()
@@ -547,7 +548,10 @@ class ConversationRepository(
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
                 val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
-                run.takeIf { !turn.hasBody && statusOf(it).isTerminal && it.id !in traces }
+                // Without a body; or, in a coordinator's chat, with a body but without the coordinator's word to the
+                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has it whole.
+                val wanting = !turn.hasBody || (projectMode && !turn.hasUserMessage)
+                run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }
 
@@ -1039,6 +1043,22 @@ class ConversationRepository(
     }
 
     /**
+     * Throws away everything kept for the chat — in memory and on disk: its transcript, its traces, the record's
+     * window — and reads it again from the server, for a chat that shows less than it should because a copy an
+     * earlier build wrote is standing in the way. The disk goes first, so what the new read writes is not swept away under it.
+     */
+    fun reloadTranscript(agentId: String) {
+        val e = entry(agentId)
+        e.emptyInPlace()
+        diskIndex[agentId] = ABSENT
+        e.loadJob = e.scope.launch {
+            cache?.remove(agentId)
+            traceCache?.remove(agentId)
+            load(e, agentId)
+        }
+    }
+
+    /**
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
@@ -1442,7 +1462,8 @@ class ConversationRepository(
                 val followed = synchronized(e) { e.live?.runId }
                 if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
             }
-            // The turns the record holds without their steps get them from their runs' logs, newest first.
+            // The turns the record holds without their steps — or, in a coordinator's chat, without the coordinator's
+            // word — get them from their runs' logs, newest first.
             loadTraces(e, agentId, e.shownRuns())
         } else if (rawWindow == null) {
             // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
@@ -1958,7 +1979,7 @@ class ConversationRepository(
                     }
                 }
                 // The runs whose logs are gone: in Extended mode the account's own transcript still has their turns.
-                val gone = synchronized(e) { pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
+                val gone = synchronized(e) { if (e.recordWindow != null) emptyList() else pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
                 if (gone.isNotEmpty()) fillFromRecord(e, agentId, gone, tokens)
             } finally {
                 // Runs this pass did not get to (paused half-way) wait on the queue for the next one — unless a pause

@@ -10,6 +10,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -38,9 +39,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The wall of injected turns (see `event_wall.json`) on screen: one line that says how many and of what, opening
- * onto every event as its own compact row — subject, verb, actor, age, a count for a repeat — each still opening
- * onto its own report and its agent's chat; the newest group open on its own only when small.
+ * The wall of injected turns (see `event_wall.json`) on screen: the stretch's one line says how many; opened, the
+ * group's line says of what, and opens onto every event as its own compact row — subject, verb, actor, age, a count
+ * for a repeat — each still opening onto its own report and its agent's chat; the newest group open on its own only when small.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -82,14 +83,26 @@ class EventRowsTest {
         return rows
     }
 
+    /** The one line the stretch between two messages is: opened, it lists its steps, the events behind their own line. */
+    private fun openStretch() {
+        compose.onNodeWithTag("stretch").assertIsDisplayed()
+        compose.onAllNodes(hasTestTag("event-group")).assertCountEquals(0)
+        compose.onAllNodesWithText("18 events").onFirst().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-group")).fetchSemanticsNodes().size == 1 }
+    }
+
     @Test
     fun `the wall is one closed line that opens onto every event as its compact row`() {
         val rows = show(wallItems())
-        val group = rows.single() as TranscriptRow.Events
-        compose.onNodeWithTag("event-group").assertIsDisplayed()
+        val stretch = rows.single() as TranscriptRow.Stretch
+        val group = (stretch.listed.single() as TranscriptRow.Entry.Events).group
+        // The stretch's line says the count; nothing of the events is on screen until it is opened.
         compose.onNodeWithText("18 events").assertIsDisplayed()
+        compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
+        openStretch()
+        // Inside: the group's own line, still closed; no "Subagent completed" or "GitHub notification" label anywhere.
+        compose.onNodeWithTag("event-group").assertIsDisplayed()
         compose.onNodeWithText("\u00B7 11 GitHub \u00B7 7 subagents \u00B7 1h 59m span").assertIsDisplayed()
-        // Closed: none of the eighteen is on screen, and no "Subagent completed" or "GitHub notification" label anywhere.
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
         assertThat(compose.onAllNodesWithText("GitHub notification").fetchSemanticsNodes()).isEmpty()
 
@@ -120,9 +133,12 @@ class EventRowsTest {
     @Test
     fun `inside the open group a row still opens onto its report, and a subagent's onto its chat`() {
         show(wallItems(3))
-        // Three events: closed, as any group of three or more.
+        // The stretch's line, then the group's: three events, closed, as any group of three or more.
         compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
-        compose.onNodeWithText("3 events").performClick()
+        compose.onAllNodesWithText("3 events").onFirst().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-group")).fetchSemanticsNodes().size == 1 }
+        compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Show events").performClick()
         compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 3 }
         assertThat(compose.onAllNodesWithText("Rendered the hand & arm stills", substring = true).fetchSemanticsNodes()).isEmpty()
         compose.onNodeWithText("Hand & Arm Renders").performClick()
@@ -137,11 +153,14 @@ class EventRowsTest {
     }
 
     @Test
-    fun `the newest group of two opens on its own`() {
+    fun `the newest group of two opens on its own once its stretch is`() {
         val rows = show(wallItems(2))
-        assertThat((rows.single() as TranscriptRow.Events).startsOpen).isTrue()
+        val stretch = rows.single() as TranscriptRow.Stretch
+        assertThat(((stretch.listed.single() as TranscriptRow.Entry.Events).group).startsOpen).isTrue()
         compose.onNodeWithText("2 events").assertIsDisplayed()
-        compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(2)
+        compose.onAllNodes(hasTestTag("event-row")).assertCountEquals(0)
+        compose.onAllNodesWithText("2 events").onFirst().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("event-row")).fetchSemanticsNodes().size == 2 }
         compose.onNodeWithText("Hand & Arm Renders").assertIsDisplayed()
         compose.onNodeWithText("#64").assertIsDisplayed()
         compose.onNodeWithContentDescription("Hide events").performClick()
@@ -149,9 +168,10 @@ class EventRowsTest {
     }
 
     @Test
-    fun `a lone event is its compact row, with no group line`() {
+    fun `a lone event is its compact row, with no group line and no stretch line`() {
         show(wallItems(1))
         compose.onAllNodes(hasTestTag("event-group")).assertCountEquals(0)
+        compose.onAllNodes(hasTestTag("stretch")).assertCountEquals(0)
         compose.onNodeWithTag("event-row").assertIsDisplayed()
         compose.onNodeWithText("Hand & Arm Renders").assertIsDisplayed()
         compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()

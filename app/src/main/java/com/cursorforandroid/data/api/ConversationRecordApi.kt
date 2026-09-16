@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
@@ -28,8 +29,20 @@ data class HeadlessStep(
     val projectMode: Boolean = false,
 )
 
-/** A tool call as the account records it: its id, the tool's name, and the arguments the model wrote, as JSON. */
-data class HeadlessToolCall(val callId: String, val name: String, val args: JsonElement?)
+/**
+ * A tool call as the account records it: its id, the tool's name, and the arguments the model wrote, as JSON. A
+ * call the model streamed — a coordinator's `SendMessage`, whose text the desktop shows as it is written — is
+ * recorded as several responses for the same id, each with a piece of the arguments: [rawArgs] carries a piece that
+ * is not JSON on its own, for `HeadlessTranscript` to join with the rest; [isLastMessage] marks the last of them.
+ */
+data class HeadlessToolCall(
+    val callId: String,
+    val name: String,
+    val args: JsonElement?,
+    val rawArgs: String? = null,
+    val isStreaming: Boolean = false,
+    val isLastMessage: Boolean = false,
+)
 
 /** What a tool call came back with, as JSON, by the call's id. */
 data class HeadlessToolResult(val callId: String, val result: JsonElement?)
@@ -151,12 +164,19 @@ class HeadlessConversationApi(
         val totalResponses: Int? = null,
     )
 
-    /** The oneof-ish shape of `HeadlessAgenticComposerResponse`, each field present on the steps of its kind. */
+    /**
+     * The oneof-ish shape of `HeadlessAgenticComposerResponse`, each field present on the steps of its kind. A tool
+     * call arrives as `tool_call` (`ClientSideToolV2Call`) or, for a call the runner streamed back piece by piece, as
+     * `streamed_back_tool_call` (`StreamedBackToolCall {tool, tool_call_id, name, raw_args, …}`): both name the call
+     * and carry its arguments, and both are steps of the call. Everything else with a tool call's id but nothing of
+     * its own — a status, a done marker — is a blank step.
+     */
     @Serializable
     private data class ResponseDto(
         val text: String? = null,
         /** `ClientSideToolV2Call`, read whole: its typed `*Params` member is named after the tool (see [toolCall]). */
         val toolCall: JsonObject? = null,
+        val streamedBackToolCall: JsonObject? = null,
         val finalToolResult: ToolResultDto? = null,
         val userMessage: UserMessageDto? = null,
         val humanMessage: HumanMessageDto? = null,
@@ -166,6 +186,7 @@ class HeadlessConversationApi(
             userMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = userMessage.text)
             humanMessage?.text?.isNotBlank() == true -> HeadlessStep(userMessage = humanMessage.text, projectMode = humanMessage.isProjectMode)
             toolCall != null -> readToolCall(toolCall)?.let { HeadlessStep(toolCall = it) }
+            streamedBackToolCall != null -> readToolCall(streamedBackToolCall)?.let { HeadlessStep(toolCall = it.copy(isStreaming = true)) }
             finalToolResult != null && finalToolResult.toolCallId.isNotBlank() -> HeadlessStep(toolResult = HeadlessToolResult(finalToolResult.toolCallId, finalToolResult.result))
             thinking?.text?.isNotEmpty() == true -> HeadlessStep(thinking = thinking.text)
             !text.isNullOrEmpty() -> HeadlessStep(text = text)
@@ -213,16 +234,30 @@ class HeadlessConversationApi(
          * stand in, their fields being the ones the mappers already read.
          */
         internal fun readToolCall(call: JsonObject): HeadlessToolCall? {
-            val id = (call["toolCallId"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
-            val params = call.entries.firstOrNull { (key, value) -> key.endsWith("Params") && value is JsonObject }
-            val name = (call["name"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+            // The call's id, or the model's id for it when the record carries no other: what its result names it by.
+            val id = call.string("toolCallId") ?: call.string("modelCallId") ?: return null
+            val params = call.entries.firstOrNull { (key, value) -> (key.endsWith("Params") || key.endsWith("Stream")) && value is JsonObject }
+            val name = call.string("name")
                 ?: toolEnumName(call["tool"])
-                ?: params?.key?.removeSuffix("Params")?.let(::snakeCase)
+                ?: params?.key?.removeSuffix("Params")?.removeSuffix("Stream")?.let(::snakeCase)
                 ?: ""
-            val raw = (call["rawArgs"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
-            val args = raw?.let { text -> runCatching { CursorJson.parseToJsonElement(text) }.getOrElse { JsonPrimitive(text) } } ?: params?.value
-            return HeadlessToolCall(id, name, args)
+            val raw = call.string("rawArgs")
+            // Arguments that are not JSON on their own are a piece of a streamed call's, kept as text to be joined.
+            val parsed = raw?.let { text -> runCatching { CursorJson.parseToJsonElement(text) }.getOrNull()?.takeIf { it is JsonObject } }
+            val args = parsed ?: params?.takeIf { it.key.endsWith("Params") }?.value
+            return HeadlessToolCall(
+                id,
+                name,
+                args,
+                rawArgs = raw?.takeIf { parsed == null },
+                isStreaming = call.boolean("isStreaming"),
+                isLastMessage = call.boolean("isLastMessage"),
+            )
         }
+
+        private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+
+        private fun JsonObject.boolean(key: String): Boolean = (this[key] as? JsonPrimitive)?.let { it.booleanOrNull ?: (it.contentOrNull == "true") } == true
 
         /** The tool's name from the legacy enum: `CLIENT_SIDE_TOOL_V2_READ_FILE_V2` → `read_file_v2`; a number only when it is the one coordinator tool the enum has. */
         private fun toolEnumName(tool: JsonElement?): String? {

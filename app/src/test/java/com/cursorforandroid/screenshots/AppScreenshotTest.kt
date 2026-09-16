@@ -366,7 +366,15 @@ class AppScreenshotTest {
             items.count { it is RunFooter } == 4 && items.count { it is ActivityGroup } == 4
         }
         compose.waitForIdle()
-        // The goal's row reads "Goal continued" with the objective beside it; a tap opens the objective in full beneath.
+        // The turn Cursor injected is inside the stretch of the run it started — "Worked 38m · 1 event · …" — as its
+        // line: opened, the goal's row reads "Goal continued" with the objective beside it, and a tap on it opens the
+        // objective in full beneath.
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Worked 38m 0s"))
+        compose.onAllNodesWithText("Worked 38m 0s").onFirst().performClick()
+        compose.waitUntil(20_000) { compose.onAllNodesWithText("Goal continued").fetchSemanticsNodes().isNotEmpty() }
+        // On screen before it is tapped: the opened stretch runs past the fold, and a tap at a row's centre off the
+        // screen lands on whatever is drawn there instead.
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Goal continued"))
         compose.onAllNodesWithText("Goal continued").onFirst().performClick()
         compose.waitUntil(20_000) { compose.onAllNodes(hasText("In the Verity photoreal engine", substring = true)).fetchSemanticsNodes().size >= 2 }
         compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Goal continued"))

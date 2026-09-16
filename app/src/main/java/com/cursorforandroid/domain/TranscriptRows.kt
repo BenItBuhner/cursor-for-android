@@ -67,18 +67,30 @@ sealed interface TranscriptRow {
     }
 
     /**
-     * Everything between two messages, behind one summary. [live] while the run is still writing into it: the
-     * summary then reads "Working" and shimmers. A stretch of one entry is drawn as that entry, not as a summary of it.
+     * Everything between two messages the reader sees, behind one summary: the agent's thoughts, its tool calls, a
+     * coordinator's working notes, the turns Cursor injected (as their event rows, a run of them behind one line),
+     * and the footers of the runs it spans. [live] while the run is still writing into it: the summary then reads
+     * "Working" and shimmers. A stretch of one step — a tool call, a thought, a footer, an event — is drawn as that
+     * step, not as a summary of it; a note is never drawn alone, it reads under the summary with the rest.
      */
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
         override val key: String get() = "stretch:${entries.first().key}"
 
-        val single: Entry? get() = entries.singleOrNull()
+        val single: Entry? get() = entries.singleOrNull()?.takeUnless { it is Entry.Note || it is Entry.Events }
 
         val summary: StretchSummary by lazy { StretchSummary.of(this) }
 
-        /** The entries the open stretch lists: the footer is not among them, the summary already carries it. */
+        /** The entries the open stretch lists: the footers are not among them, the summary already carries them. */
         val listed: List<Entry> get() = entries.filterNot { it is Entry.Footer }
+
+        /** How many injected turns the stretch holds, a repeated one counted each time it came. */
+        val eventCount: Int get() = entries.sumOf { entry ->
+            when (entry) {
+                is Entry.Event -> entry.row.count
+                is Entry.Events -> entry.group.count
+                else -> 0
+            }
+        }
     }
 
     /** One step of a [Stretch], in the order it happened. */
@@ -99,6 +111,16 @@ sealed interface TranscriptRow {
 
         data class Line(val row: SummaryRow) : Entry {
             override val key: String get() = row.id
+        }
+
+        /** A turn Cursor injected, as its one-line row (see [TranscriptRow.Event]). */
+        data class Event(val row: TranscriptRow.Event) : Entry {
+            override val key: String get() = row.key
+        }
+
+        /** A run of injected turns behind one line (see [TranscriptRow.Events]). */
+        data class Events(val group: TranscriptRow.Events) : Entry {
+            override val key: String get() = group.key
         }
     }
 }
@@ -128,6 +150,7 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
             // The calls no count above names — a mode switch, a to-do update, a plan — are steps; a question has its card.
             val steps = calls.count { it.kind == ToolKind.Other || it.kind == ToolKind.Todo || it.kind == ToolKind.Plan || (it.kind == ToolKind.Coordinator && it.payload !is ToolPayload.WorkerAction) }
             val counts = listOfNotNull(
+                plural(stretch.eventCount, "event"),
                 plural(work.edits + work.deletes, "edit"),
                 plural(work.files.size + work.directories.size, "file"),
                 plural(work.searches + work.fetches, "search", "searches"),
@@ -140,10 +163,16 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
                 plural(steps, "step"),
             )
             val failure = if (failed > 0) "$failed failed" else null
-            val footer = stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().lastOrNull()?.footer
+            // A stretch spanning several runs — silent turns one after another — worked for all their time together.
+            val footers = stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer }
+            val footer = footers.lastOrNull()?.let { last ->
+                val durations = footers.mapNotNull { it.durationMs }
+                if (durations.isEmpty()) last else last.copy(durationMs = durations.sum())
+            }
             val action = when {
-                footer != null -> footerLabel(footer)
+                // Still being written: whatever earlier runs closed inside it, the stretch is working.
                 stretch.live -> "Working"
+                footer != null -> footerLabel(footer)
                 else -> counts.firstOrNull() ?: failure ?: "Worked"
             }
             val rest = if (footer != null || stretch.live) counts else counts.drop(1)
@@ -289,7 +318,7 @@ object TranscriptRows {
 
         fun flush() {
             if (open.isNotEmpty()) {
-                rows += TranscriptRow.Stretch(open.toList())
+                rows += TranscriptRow.Stretch(foldEvents(open))
                 open.clear()
             }
             rows += media
@@ -304,21 +333,16 @@ object TranscriptRows {
                     flush()
                     rows += TranscriptRow.Item(item)
                 }
-                is SystemNotification -> {
-                    flush()
-                    rows += TranscriptRow.Event(item)
-                }
+                // An injected turn is not a message the reader sent or was sent: it reads inside the stretch, as its line.
+                is SystemNotification -> open += TranscriptRow.Entry.Event(TranscriptRow.Event(item))
                 is AssistantMessage -> if (coordinatorMode) {
                     open += TranscriptRow.Entry.Note(item)
                 } else {
                     flush()
                     rows += TranscriptRow.Item(item)
                 }
-                is RunFooter -> {
-                    // The footer closes its run: what follows belongs to the next one, whether or not a prompt heads it.
-                    open += TranscriptRow.Entry.Footer(item)
-                    flush()
-                }
+                // The footer closes its run, not the stretch: a silent turn and the next read as one until a message.
+                is RunFooter -> open += TranscriptRow.Entry.Footer(item)
                 is SummaryRow -> open += TranscriptRow.Entry.Line(item)
                 is ActivityGroup -> {
                     val pictures = ArrayList<ToolCall>()
@@ -349,29 +373,63 @@ object TranscriptRows {
         }
         flush()
         if (runActive) markLive(rows)
-        return groupEvents(dedupe(rows))
+        return openNewestGroup(rows)
     }
 
-    /** The newest stretch is the one still being written, unless its run has already closed with a footer. */
+    /**
+     * The newest stretch is the one still being written, unless its run has already closed with a footer. An
+     * earlier run's footer inside it — a silent turn's, before the injected turn now running — is not the end of it.
+     */
     private fun markLive(rows: MutableList<TranscriptRow>) {
         val last = rows.indexOfLast { it is TranscriptRow.Stretch }
         if (last < 0) return
         val stretch = rows[last] as TranscriptRow.Stretch
-        if (stretch.entries.any { it is TranscriptRow.Entry.Footer }) return
+        if (stretch.entries.lastOrNull() is TranscriptRow.Entry.Footer) return
         if (rows.subList(last + 1, rows.size).any { it !is TranscriptRow.Media && it !is TranscriptRow.Question }) return
         rows[last] = stretch.copy(live = true)
     }
 
-    /** The same notice arriving several times in a row — a pull request synchronized twice — is one row counted twice. */
-    private fun dedupe(rows: List<TranscriptRow>): List<TranscriptRow> {
-        val out = ArrayList<TranscriptRow>(rows.size)
-        for (row in rows) {
-            val previous = out.lastOrNull()
-            if (row is TranscriptRow.Event && previous is TranscriptRow.Event && sameNotice(previous.notification, row.notification)) {
-                out[out.size - 1] = previous.copy(count = previous.count + row.count)
+    /**
+     * The stretch's entries with its injected turns folded: the same notice arriving several times in a row — a
+     * pull request synchronized twice — is one row counted twice, and two or more events in a row (the footers of
+     * their runs between them, which the summary carries) are one [TranscriptRow.Events] behind one line. Anything
+     * else between two events — a note, a thought, a call — keeps them apart.
+     */
+    private fun foldEvents(entries: List<TranscriptRow.Entry>): List<TranscriptRow.Entry> {
+        if (entries.none { it is TranscriptRow.Entry.Event }) return entries.toList()
+        val deduped = ArrayList<TranscriptRow.Entry>(entries.size)
+        for (entry in entries) {
+            val previous = deduped.lastOrNull { it !is TranscriptRow.Entry.Footer }
+            if (entry is TranscriptRow.Entry.Event && previous is TranscriptRow.Entry.Event && sameNotice(previous.row.notification, entry.row.notification)) {
+                deduped[deduped.indexOf(previous)] = TranscriptRow.Entry.Event(previous.row.copy(count = previous.row.count + entry.row.count))
             } else {
-                out += row
+                deduped += entry
             }
+        }
+        val out = ArrayList<TranscriptRow.Entry>(deduped.size)
+        var i = 0
+        while (i < deduped.size) {
+            if (deduped[i] !is TranscriptRow.Entry.Event) {
+                out += deduped[i]
+                i++
+                continue
+            }
+            // The run of events from here, footers between them allowed, up to the first entry of another kind.
+            var j = i
+            var lastEvent = i
+            while (j < deduped.size && (deduped[j] is TranscriptRow.Entry.Event || deduped[j] is TranscriptRow.Entry.Footer)) {
+                if (deduped[j] is TranscriptRow.Entry.Event) lastEvent = j
+                j++
+            }
+            val run = deduped.subList(i, lastEvent + 1)
+            val events = run.filterIsInstance<TranscriptRow.Entry.Event>()
+            if (events.size >= 2) {
+                out += TranscriptRow.Entry.Events(TranscriptRow.Events(events.map { it.row }))
+                out += run.filterIsInstance<TranscriptRow.Entry.Footer>()
+            } else {
+                out += run
+            }
+            i = lastEvent + 1
         }
         return out
     }
@@ -379,52 +437,19 @@ object TranscriptRows {
     private fun sameNotice(a: SystemNotification, b: SystemNotification): Boolean =
         a.kind == b.kind && a.title == b.title && a.summary == b.summary && a.agentId == b.agentId
 
-    /**
-     * Consecutive silent injected turns — an event row followed by nothing, or by stretches alone, up to the next
-     * turn — become one [TranscriptRow.Events] when there are two or more of them. A turn that produced a message,
-     * a worker's card, a question, a picture, or that is still running, is not silent: it stays as its rows and
-     * ends the group before it. The newest group opens on its own when it holds fewer than three events.
-     */
-    private fun groupEvents(rows: List<TranscriptRow>): List<TranscriptRow> {
-        if (rows.count { it is TranscriptRow.Event } < 2) return rows
-        val out = ArrayList<TranscriptRow>(rows.size)
-        var i = 0
-        while (i < rows.size) {
-            if (rows[i] !is TranscriptRow.Event) {
-                out += rows[i]
-                i++
-                continue
-            }
-            val group = ArrayList<TranscriptRow>()
-            var j = i
-            while (j < rows.size && rows[j] is TranscriptRow.Event) {
-                var k = j + 1
-                while (k < rows.size && rows[k].let { it is TranscriptRow.Stretch && !it.live }) k++
-                if (!silentTurnEndsAt(rows, k)) break
-                group += rows.subList(j, k)
-                j = k
-            }
-            if (group.count { it is TranscriptRow.Event } >= 2) {
-                out += TranscriptRow.Events(group.toList())
-                i = j
-            } else {
-                out += rows[i]
-                i++
-            }
+    /** The newest group of events in the transcript opens on its own when it holds fewer than [OPEN_BELOW] events. */
+    private fun openNewestGroup(rows: List<TranscriptRow>): List<TranscriptRow> {
+        for (r in rows.indices.reversed()) {
+            val stretch = rows[r] as? TranscriptRow.Stretch ?: continue
+            val e = stretch.entries.indexOfLast { it is TranscriptRow.Entry.Events }
+            if (e < 0) continue
+            val group = (stretch.entries[e] as TranscriptRow.Entry.Events).group
+            if (group.count >= OPEN_BELOW) return rows
+            val entries = stretch.entries.toMutableList()
+            entries[e] = TranscriptRow.Entry.Events(group.copy(startsOpen = true))
+            return rows.toMutableList().also { it[r] = stretch.copy(entries = entries) }
         }
-        val newest = out.indexOfLast { it is TranscriptRow.Events }
-        if (newest >= 0) {
-            val group = out[newest] as TranscriptRow.Events
-            if (group.count < OPEN_BELOW) out[newest] = group.copy(startsOpen = true)
-        }
-        return out
-    }
-
-    /** Whether the turn whose rows end before [index] said nothing: the next row starts another turn, or there is none. */
-    private fun silentTurnEndsAt(rows: List<TranscriptRow>, index: Int): Boolean {
-        if (index >= rows.size) return true
-        val next = rows[index]
-        return next is TranscriptRow.Event || (next is TranscriptRow.Item && (next.item is UserMessage || next.item is NoticeCard))
+        return rows
     }
 
     /** A newest group with fewer events than this is shown open. */
