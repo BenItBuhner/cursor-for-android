@@ -487,8 +487,9 @@ data class SystemNotification(
 
 /**
  * Terminal marker for a run: status, duration and pushed branches. [endedAtMillis] is when the run ended as far as
- * its record says (`updatedAt` of a run that is over), when known: what tells a run the user's next message
- * interrupted from one they stopped and came back to (see `TranscriptRows`).
+ * its record says (`updatedAt` of a run that is over), when the footer was built from the record; a footer the
+ * stream built carries none. It is what tells a run the user's next message interrupted from one they stopped and
+ * came back to (see `TranscriptRows`).
  */
 @Serializable
 @SerialName("footer")

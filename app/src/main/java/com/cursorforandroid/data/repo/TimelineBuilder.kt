@@ -386,9 +386,9 @@ object TimelineBuilder {
             // end other than finished: "Cancelled after 30s" was this device's clock — from opening the stream to
             // reading a stale record — read as the turn's.
             val elapsed = startedAtMillis?.takeIf { timed && it > 0 && !event.fromRecord && event.status == RunStatus.FINISHED }?.let { nowProvider() - it }?.takeIf { it > 0 }
-            // When the run ended: now, for a run the stream itself saw end; unknown for an outcome read off a record.
-            val endedAt = if (!event.fromRecord && timed) nowProvider() else null
-            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches(), endedAtMillis = endedAt)
+            // No end time here: the run record's `updatedAt` gives it when the chat is read again (see [footer]),
+            // and a footer stamped with this device's clock would differ from the record's copy of the same run.
+            items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
         }
 
         /**
