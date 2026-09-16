@@ -246,9 +246,10 @@ class CoordinatorContentTest {
                 narration = "Noted; the release worker is done and nothing else needs doing.",
             ),
         )
-        compose.onNodeWithText("Subagent completed").assertIsDisplayed()
+        compose.onNodeWithText("Land merge train and prep release").assertIsDisplayed()
+        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
         assertThat(compose.onAllNodesWithText("Noted; the release worker is done and nothing else needs doing.").fetchSemanticsNodes()).isEmpty()
-        compose.onNodeWithText("Subagent completed").performClick()
+        compose.onNodeWithText("Land merge train and prep release").performClick()
         compose.onNodeWithText("The merge train landed: #113 merged, v0.3.4 tagged.").assertIsDisplayed()
         compose.onNodeWithTag("notification-narration", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("Noted; the release worker is done and nothing else needs doing.").assertIsDisplayed()
@@ -262,7 +263,12 @@ class CoordinatorContentTest {
                 body = null, tone = NoticeTone.Neutral, raw = "<system_notification source=\"github\">…</system_notification>", narration = "Acknowledged.",
             ),
         )
-        compose.onNodeWithText("GitHub notification").performClick()
+        // "#59 · synchronize · cursor[bot]": the pull request, the action, the actor, no "GitHub notification" label.
+        compose.onNodeWithText("#59").assertIsDisplayed()
+        compose.onNodeWithText(" \u00B7 synchronize").assertIsDisplayed()
+        compose.onNodeWithText(" \u00B7 cursor[bot]").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("GitHub notification").fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("#59").performClick()
         compose.onNodeWithText("Acknowledged.").assertIsDisplayed()
     }
 

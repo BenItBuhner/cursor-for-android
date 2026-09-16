@@ -366,9 +366,10 @@ class AppScreenshotTest {
             items.count { it is RunFooter } == 4 && items.count { it is ActivityGroup } == 4
         }
         compose.waitForIdle()
-        compose.onNodeWithText("Goal continued").performClick()
-        waitForText("In the Verity photoreal engine")
-        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText("Goal continued"))
+        // The goal's row is its objective, then "continued"; a tap opens the objective in full beneath it.
+        compose.onAllNodes(hasText("In the Verity photoreal engine", substring = true)).onFirst().performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText("In the Verity photoreal engine", substring = true)).fetchSemanticsNodes().size >= 2 }
+        compose.onAllNodes(hasScrollToNodeAction()).onFirst().performScrollToNode(hasText(" \u00B7 continued"))
         compose.waitForIdle()
         capture("23_conversation_notifications")
         // Leave the chat, so nothing of it is still streaming when the next test brings up its own app.

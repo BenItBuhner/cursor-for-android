@@ -94,23 +94,24 @@ class MessageActionsTest {
     @Test
     fun `an injected notification reads as one row, opens onto its report on a tap, and copies as injected`() {
         show(SystemNotifications.parse("n1", injected)!!.items.single())
-        compose.onNodeWithText("Subagent completed").assertIsDisplayed()
+        // One line: the subagent's title, then what became of it.
         compose.onNodeWithText("Contacts and clipping").assertIsDisplayed()
+        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
         // The markup is nowhere on screen, and neither is the report until asked for.
         assertThat(compose.onAllNodesWithText("<system_notification>", substring = true).fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("The clipping is gone", substring = true).fetchSemanticsNodes()).isEmpty()
 
-        compose.onNodeWithText("Subagent completed").performClick()
+        compose.onNodeWithText("Contacts and clipping").performClick()
         compose.onNodeWithText("The clipping is gone. Four commits, not pushed.").assertIsDisplayed()
         assertThat(menuIsOpen()).isFalse()
-        compose.onNodeWithText("Subagent completed").performClick()
+        compose.onNodeWithText("Contacts and clipping").performClick()
         compose.waitUntil(5_000) { compose.onAllNodesWithText("The clipping is gone", substring = true).fetchSemanticsNodes().isEmpty() }
 
-        compose.onNodeWithText("Subagent completed").performTouchInput { longClick() }
+        compose.onNodeWithText("Contacts and clipping").performTouchInput { longClick() }
         compose.onNodeWithText("Copy message").assertIsDisplayed().performClick()
         compose.waitUntil(5_000) { !menuIsOpen() }
         assertThat(clipboard.getText()?.text).isEqualTo(injected)
-        val node = compose.onNodeWithText("Subagent completed").fetchSemanticsNode()
+        val node = compose.onNodeWithText("Contacts and clipping").fetchSemanticsNode()
         assertThat(node.config.getOrNull(SemanticsActions.OnClick)).isNotNull()
         assertThat(node.config.getOrNull(SemanticsActions.OnLongClick)).isNotNull()
     }
@@ -118,9 +119,10 @@ class MessageActionsTest {
     @Test
     fun `a one-line notification the row shows in full has nothing to open`() {
         show(SystemNotifications.parse("n2", "<system_notification>The user paused the goal.</system_notification>")!!.items.single())
-        compose.onNodeWithText("System notification").assertIsDisplayed()
+        // A bare notice is its line alone: no "System notification" label before it.
+        assertThat(compose.onAllNodesWithText("System notification").fetchSemanticsNodes()).isEmpty()
         compose.onNodeWithText("The user paused the goal.").assertIsDisplayed()
-        compose.onNodeWithText("System notification").performClick()
+        compose.onNodeWithText("The user paused the goal.").performClick()
         compose.waitForIdle()
         // Still exactly one copy of the line: nothing unfolded.
         assertThat(compose.onAllNodesWithText("The user paused the goal.").fetchSemanticsNodes()).hasSize(1)
