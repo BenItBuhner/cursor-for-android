@@ -43,6 +43,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 @Serializable
 private data class CachedUser(
@@ -58,47 +59,38 @@ private data class CachedUser(
 class PreferencesStore(
     context: Context,
     /** Injectable for tests only: a store whose writes fail, so a lost write can be told from one that landed. */
-    private val store: DataStore<Preferences> = settingsStore(context),
+    store: DataStore<Preferences>? = null,
 ) {
 
     /**
-     * The settings as this process last wrote them, published beside the store's own flow. DataStore 1.1's `data`
-     * can drop the push of an update to a collector whose collection raced the write (b/431787506, fixed upstream
-     * only from 1.3.0-alpha03): the collector keeps the value it had while a fresh read returns the new one. Every
-     * write here goes through [edit], which records the settings it produced, and [data] prefers that record to the
-     * store's flow — so a pin, a read marker or a toggle written by this process reaches every collector, always.
-     * Nothing else writes the file: the store is this process's alone.
+     * The settings file this process holds: one per file, shared by every [PreferencesStore] built on it (see
+     * [SettingsFile]). A second `DataStore` on the same file is what DataStore forbids — it throws on its first
+     * read or write, and whatever was in flight (a chat's read marker on open, then its load) dies with it.
      */
-    private val written = MutableStateFlow<Preferences?>(null)
+    private val file: SettingsFile = store?.let { SettingsFile(it) } ?: SettingsFile.of(context)
 
     /**
-     * What every flow below reads: the store's flow, with this process's own writes preferred (see [written]). A
-     * settings file that cannot be read even after being replaced degrades to defaults rather than throwing into
-     * whatever is collecting — a Compose screen, or the session restore the splash screen waits on.
+     * What every flow below reads: the store's flow, with this process's own writes preferred (see
+     * [SettingsFile.written]). A settings file that cannot be read even after being replaced degrades to defaults
+     * rather than throwing into whatever is collecting — a Compose screen, or the session restore the splash screen
+     * waits on.
      */
     private val data: Flow<Preferences> = combine(
-        store.data.catch { t ->
+        file.store.data.catch { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be read; using defaults", t)
             emit(emptyPreferences())
         },
-        written,
+        file.written,
     ) { fromStore, mine -> mine ?: fromStore }.distinctUntilChanged()
-
-    /**
-     * Serialises the writes with the recording of what they produced: the store orders the writes on its own, but two
-     * callers finishing out of order would otherwise record an older snapshot over a newer one and hold every flow
-     * at the older until the next write.
-     */
-    private val writes = Mutex()
 
     /**
      * A write that cannot reach the disk (a full disk, an unreadable file) loses the value, not the app. False when
      * it was lost, so the callers whose value is the user's own action or the account's cleanup can say so. What a
-     * write produced is recorded for the flows (see [written]).
+     * write produced is recorded for the flows (see [SettingsFile.written]).
      */
     private suspend fun edit(transform: (MutablePreferences) -> Unit): Boolean =
-        runCatching { writes.withLock { written.value = store.edit(transform) }; true }.getOrElse { t ->
+        runCatching { file.writes.withLock { file.written.value = file.store.edit(transform) }; true }.getOrElse { t ->
             if (t !is IOException) throw t
             Log.w(TAG, "Settings could not be written", t)
             false
@@ -644,10 +636,48 @@ class PreferencesStore(
     }
 }
 
-private fun settingsStore(context: Context): DataStore<Preferences> = PreferenceDataStoreFactory.create(
-    // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read for the rest of
-    // the install's life; everything here is device-local and re-derivable, so it starts over instead.
-    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
-    scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-    produceFile = { context.applicationContext.preferencesDataStoreFile("cursor_settings") },
-)
+/**
+ * The settings file as this process holds it: the `DataStore`, and beside it what this process last wrote and the
+ * lock the writes take. One per file for the process's lifetime, whichever `PreferencesStore` — the app's graph, a
+ * widget's, a test's — is built on it: DataStore allows a single instance per file and throws "There are multiple
+ * DataStores active for the same file" at the second one's first use, which is what a screen driven by a graph of
+ * its own saw while the application's own graph held the file.
+ */
+private class SettingsFile(val store: DataStore<Preferences>) {
+    /**
+     * The settings as this process last wrote them, published beside the store's own flow. DataStore 1.1's `data`
+     * can drop the push of an update to a collector whose collection raced the write (b/431787506, fixed upstream
+     * only from 1.3.0-alpha03): the collector keeps the value it had while a fresh read returns the new one. Every
+     * write goes through `PreferencesStore.edit`, which records the settings it produced, and the flows prefer that
+     * record to the store's — so a pin, a read marker or a toggle written by this process reaches every collector,
+     * always. Nothing else writes the file: the store is this process's alone.
+     */
+    val written = MutableStateFlow<Preferences?>(null)
+
+    /**
+     * Serialises the writes with the recording of what they produced: the store orders the writes on its own, but two
+     * callers finishing out of order would otherwise record an older snapshot over a newer one and hold every flow
+     * at the older until the next write.
+     */
+    val writes = Mutex()
+
+    companion object {
+        private val files = ConcurrentHashMap<String, SettingsFile>()
+
+        fun of(context: Context): SettingsFile {
+            val path = context.applicationContext.preferencesDataStoreFile("cursor_settings")
+            return files.computeIfAbsent(path.absolutePath) {
+                SettingsFile(
+                    PreferenceDataStoreFactory.create(
+                        // A file left half-written by a kill (or a bad OEM restore) would otherwise throw on every read
+                        // for the rest of the install's life; everything here is device-local and re-derivable, so it
+                        // starts over instead.
+                        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+                        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+                        produceFile = { path },
+                    ),
+                )
+            }
+        }
+    }
+}

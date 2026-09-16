@@ -288,7 +288,16 @@ class AppScreenshotTest {
         compose.onAllNodesWithText("Cesium Revenue Strategy").onFirst().performClick()
         waitForText("Follow up")
         val cesiumId = graph.agents.state.value.agents.first { it.name == "Cesium Revenue Strategy" }.id
+        try {
         compose.waitUntil(90_000) { graph.conversations.state(cesiumId).value.items.any { it is RunFooter } }
+        } catch (t: Throwable) {
+            val st = graph.conversations.state(cesiumId).value
+            val probe = runCatching { runBlocking { graph.prefs.markRead(cesiumId, 1L) } }.fold({ "markRead ok=$it" }, { "markRead threw ${it::class.simpleName}: ${it.message?.take(300)}" })
+            val appProbe = runCatching { runBlocking { (ApplicationProvider.getApplicationContext<Context>() as com.cursorforandroid.CursorApp).graph.prefs.markRead(cesiumId, 1L) } }.fold({ "app markRead ok=$it" }, { "app markRead threw ${it::class.simpleName}: ${it.message?.take(300)}" })
+            println("DEBUGPROBE test-graph: $probe | app-graph: $appProbe")
+            println("DEBUGCESIUM items=" + st.items.map { it::class.simpleName + ":" + it.id } + " loading=" + st.isLoading + " streaming=" + st.isStreaming + " reconnecting=" + st.isReconnecting + " active=" + st.activeRunId + " status=" + st.runStatus + " err=" + st.error + " attached=" + graph.conversations.isAttached(cesiumId) + " diag=" + graph.conversations.loadDiagnostics(cesiumId) + " row=" + graph.agents.agent(cesiumId)?.let { "${it.runStatus}/${it.latestRunId}" })
+            throw t
+        }
         compose.waitForIdle()
         capture("06_conversation")
 
@@ -302,7 +311,16 @@ class AppScreenshotTest {
         // The finished run's trace is replayed a beat after the transcript; wait for it too, so what is captured is
         // the settled list rather than whichever of the trace and the media happened to land first.
         val mobileId = graph.agents.state.value.agents.first { it.name == "Android mobile experience" }.id
+        try {
         compose.waitUntil(30_000) { graph.conversations.state(mobileId).value.items.any { it is ActivityGroup } }
+        } catch (t: Throwable) {
+            val st = graph.conversations.state(mobileId).value
+            val probe = runCatching { runBlocking { graph.prefs.markRead(mobileId, 1L) } }.fold({ "markRead ok=$it" }, { "markRead threw ${it::class.simpleName}: ${it.message?.take(200)}" })
+            val appProbe = runCatching { runBlocking { (ApplicationProvider.getApplicationContext<Context>() as com.cursorforandroid.CursorApp).graph.prefs.markRead(mobileId, 1L) } }.fold({ "app markRead ok=$it" }, { "app markRead threw ${it::class.simpleName}: ${it.message?.take(200)}" })
+            println("DEBUGPROBE test-graph: $probe | app-graph: $appProbe")
+            println("DEBUGMOBILE items=" + st.items.map { it::class.simpleName + ":" + it.id } + " loading=" + st.isLoading + " streaming=" + st.isStreaming + " active=" + st.activeRunId + " status=" + st.runStatus + " err=" + st.error + " traceStatus=" + st.traceStatus + " attached=" + graph.conversations.isAttached(mobileId) + " diag=" + graph.conversations.loadDiagnostics(mobileId))
+            throw t
+        }
         compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Sidebar drawer mid-gesture")).fetchSemanticsNodes().isNotEmpty() }
         compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription("Video: predictive_back_demo.mp4")).fetchSemanticsNodes().isNotEmpty() }
         // The reply is taller than the viewport; line its first paragraph up with the top so the figure is in frame.
