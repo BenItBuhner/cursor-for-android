@@ -280,10 +280,12 @@ class CoordinatorContentTest {
                 body = "Added the aggregates. PR #215 merged.", tone = NoticeTone.Success, raw = "<system_notification>…</system_notification>", agentId = "bc-w1",
             ),
         )
-        compose.onNodeWithText("Worker completed").assertIsDisplayed()
+        // One line: the worker's title, what became of it, no "Worker completed" label.
         compose.onNodeWithText("Usage events aggregation").assertIsDisplayed()
+        compose.onNodeWithText(" \u00B7 completed").assertIsDisplayed()
+        assertThat(compose.onAllNodesWithText("Worker completed").fetchSemanticsNodes()).isEmpty()
         // The row opens the report; the button at its end opens the worker.
-        compose.onNodeWithText("Worker completed").performClick()
+        compose.onNodeWithText("Usage events aggregation").performClick()
         compose.onNodeWithText("Added the aggregates. PR #215 merged.").assertIsDisplayed()
         compose.onNodeWithContentDescription("Open agent").performClick()
         assertThat(opened).containsExactly("bc-w1")
