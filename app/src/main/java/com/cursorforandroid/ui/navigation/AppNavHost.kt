@@ -20,13 +20,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.AgentRow
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.UpdateState
@@ -104,7 +102,6 @@ internal fun AppShell(
     val selectedAgentId = (topScreen as? Screen.Agent)?.id
     val drawerState = rememberCursorDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val uriHandler = LocalUriHandler.current
     var customizeOpen by remember { mutableStateOf(false) }
     val colors = CursorTheme.colors
 
@@ -277,7 +274,6 @@ internal fun AppShell(
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
-                onAutomations = { runCatching { uriHandler.openUri(CursorEndpoints.AUTOMATIONS_URL) } },
             ),
             modifier = modifier,
         )

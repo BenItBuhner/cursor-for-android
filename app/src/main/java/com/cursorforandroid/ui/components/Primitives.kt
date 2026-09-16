@@ -350,8 +350,6 @@ fun StateGlyph(indicator: AgentIndicator, hasBranch: Boolean, hasPullRequest: Bo
             AgentIndicator.Read -> when {
                 hasPullRequest -> Icon(CursorIcons.GitPullRequest, pullRequest?.label ?: "Pull request", tint = pullRequestTint(pullRequest), modifier = Modifier.size(16.dp))
                 hasBranch -> Icon(CursorIcons.GitBranch, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
-                // A plain read chat: the faint dot the web's rows keep in the slot.
-                else -> Dot(colors.iconQuaternary.copy(alpha = 0.5f))
             }
             AgentIndicator.Archived -> Icon(CursorIcons.Archive, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
             AgentIndicator.Snoozed -> Icon(CursorIcons.Clock, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))

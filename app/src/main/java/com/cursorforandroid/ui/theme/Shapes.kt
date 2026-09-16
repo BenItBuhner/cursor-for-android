@@ -47,14 +47,9 @@ object CursorDimens {
     val iconButton = 32.dp
     val touchTarget = 44.dp
     val chevron = 16.dp
-    /**
-     * Sidebar rows: cursor.com's are 27px on a 27px pitch, sized for a pointer; 30dp on a 32dp pitch is the closest a
-     * finger can be given (the row's fill is what a thumb sees, so the gap stays the web's 2px).
-     */
-    val sidebarRow = 30.dp
+    /** Sidebar rows. */
+    val sidebarRow = 36.dp
     val sidebarRowGap = 2.dp
-    /** The air the web leaves over a group's label after the group before it: 38px pitch against the rows' 27. */
-    val sidebarGroupGap = 8.dp
     /** Selected row: inset on both sides, radius 6. */
     val selectionInset = 8.dp
     /** One level of the sidebar's tree: a chat nested under its Project or parent chat starts this much further in. */

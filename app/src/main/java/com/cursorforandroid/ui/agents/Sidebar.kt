@@ -56,12 +56,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -71,10 +68,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.AgentListOrganizer
-import com.cursorforandroid.domain.AgentSection
-import com.cursorforandroid.domain.AgentsWindowList
-import com.cursorforandroid.domain.GroupBy
-import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
@@ -93,22 +86,19 @@ data class SidebarCallbacks(
     val onNewChat: () -> Unit,
     val onSettings: () -> Unit,
     val onCustomize: () -> Unit,
-    /** The toggle at the sidebar's top-left: closes the drawer on a phone, hides the column on a wide window. Null hides the button. */
+    /** Present when the sidebar is a drawer; drives the sidebar-toggle glyph top-right. */
     val onToggleSidebar: (() -> Unit)?,
     val onRefresh: () -> Unit,
     val rowActions: AgentRowActions,
     /** The reader reached the end of the list and the server has older agents: the next page is asked for. */
     val onLoadMore: () -> Unit = {},
-    /** The web sidebar's "Automations" row; the app has no automations surface of its own, so it opens theirs. Null leaves the row out. */
-    val onAutomations: (() -> Unit)? = null,
 )
 
 /**
- * The Cursor sidebar as cursor.com/agents lays it out beside a Project chat: the sidebar toggle alone at the
- * top-left, then the four navigation rows — New Chat, Search, Automations, Customize — then the Projects group,
- * the pinned chats and the date buckets (Today, Yesterday, Last 7 Days, Last 30 Days, Older, each shown even when
- * empty), and the account row at the foot with the settings gear. A chat row carries its state dot at the start and
- * its pull request's glyph at the end, as the web's do. Surface is `--cursor-sidebar` (#181818).
+ * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
+ * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
+ * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
+ * and subagents sit under it as a tree, closed until its count is tapped. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,6 +124,9 @@ fun Sidebar(
     // inserted on the left, so a search could not be typed. Closing still clears both.
     var query by rememberSaveable { mutableStateOf("") }
     var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
+    // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
+    // opened: a Project can have dozens of workers, and the row's count says they are there.
+    var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
     val focusRequester = remember { FocusRequester() }
 
     fun setSearchQuery(value: String) {
@@ -143,17 +136,30 @@ fun Sidebar(
     // A process death restores [searching] and [query] together; the ViewModel starts empty and has to be told.
     LaunchedEffect(Unit) { if (searching) onQueryChange(query) }
 
-    Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars).testTag("sidebar")) {
-        // The web's header is the toggle alone, at the top-left; nothing else sits on the row.
-        Row(Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(modifier.fillMaxSize().background(colors.sidebar).windowInsetsPadding(WindowInsets.statusBars)) {
+        Row(
+            Modifier.fillMaxWidth().height(CursorDimens.headerHeight).padding(start = 14.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(CursorIcons.Cube, "Cursor", tint = colors.iconPrimary, modifier = Modifier.size(CursorDimens.logo))
+            Spacer(Modifier.weight(1f))
+            FlatIconButton(CursorIcons.Plus, "New chat", onClick = callbacks.onNewChat)
+            FlatIconButton(
+                CursorIcons.Search,
+                "Search chats",
+                onClick = { searching = !searching; if (!searching) setSearchQuery("") },
+                tint = if (searching) colors.iconPrimary else colors.iconSecondary,
+            )
+            FlatIconButton(
+                CursorIcons.Filter,
+                "Filter and group chats",
+                onClick = callbacks.onCustomize,
+                tint = if (state.prefs.isDefault) colors.iconSecondary else colors.accent,
+            )
             if (callbacks.onToggleSidebar != null) {
                 FlatIconButton(CursorIcons.Sidebar, "Toggle sidebar", onClick = callbacks.onToggleSidebar)
             }
         }
-        NavRow(CursorIcons.Send, "New chat", selected = selectedDestination == SidebarDestination.NewChat, onClick = callbacks.onNewChat, modifier = Modifier.testTag("nav-new-chat"))
-        NavRow(CursorIcons.Search, "Search", selected = searching, onClick = { searching = !searching; if (!searching) setSearchQuery("") }, modifier = Modifier.testTag("nav-search"))
-        callbacks.onAutomations?.let { NavRow(CursorIcons.Bot, "Automations", selected = false, onClick = it, modifier = Modifier.testTag("nav-automations")) }
-        NavRow(CursorIcons.Sliders, "Customize", selected = false, onClick = callbacks.onCustomize, modifier = Modifier.testTag("nav-customize"))
 
         AnimatedVisibility(visible = searching, enter = expandVertically(tween(160)) + fadeIn(tween(160)), exit = shrinkVertically(tween(140)) + fadeOut(tween(100))) {
             SearchField(
@@ -199,27 +205,17 @@ fun Sidebar(
                 state.error?.let { err ->
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
-                // The date buckets the web always lists, empty or not, in its order; the organizer's own groups keep
-                // their places and the missing buckets are drawn as labels alone.
-                val sections = withEmptyDateBuckets(state.sections, state.prefs)
-                val firstDateKey = sections.firstOrNull { section -> DATE_BUCKETS.any { it.first == section.key } }?.key
-                sections.forEach { section ->
+                state.sections.forEach { section ->
                     val expanded = section.key !in collapsedKeys
                     item("hdr-${section.key}") {
-                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 10.dp, top = CursorDimens.sidebarGroupGap).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap), verticalAlignment = Alignment.CenterVertically) {
-                            GroupLabel(
-                                section.title,
-                                Modifier.weight(1f),
-                                expanded = expanded,
-                                onToggle = if (section.rows.isEmpty()) null else ({
-                                    collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
-                                }),
-                            )
-                            // The web puts the list's filter on the first date bucket's label.
-                            if (section.key == firstDateKey) {
-                                FlatIconButton(CursorIcons.Filter, "Filter and group chats", onClick = callbacks.onCustomize, size = 24.dp, iconSize = 14.dp, tint = if (state.prefs.isDefault) colors.iconTertiary else colors.accent)
-                            }
-                        }
+                        GroupLabel(
+                            section.title,
+                            Modifier.padding(start = 16.dp, end = 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap),
+                            expanded = expanded,
+                            onToggle = {
+                                collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
+                            },
+                        )
                     }
                     if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
                         // Without the account service only a coordinator's own transcript says which chats are its
@@ -234,18 +230,23 @@ fun Sidebar(
                         }
                     }
                     if (expanded) {
-                        // The web's sidebar lists a Project's row alone; its workers and side chats are the coordinator's
-                        // panel's. A search still shows every match where it sits in the tree.
-                        val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else emptySet()
+                        // A search shows every match where it sits in the tree, so the tree is open while one is typed.
+                        val expandedIds = if (query.isNotBlank()) section.rows.flatMap { listOf(it) + it.descendants() }.mapTo(HashSet()) { it.agent.id } else expandedParents.toSet()
                         items(AgentListOrganizer.flatten(section.rows, expandedIds), key = { "${section.key}:${it.row.agent.id}" }) { (row, depth) ->
+                            val id = row.agent.id
                             AgentRowItem(
                                 row = row,
-                                selected = row.agent.id == selectedAgentId,
+                                selected = id == selectedAgentId,
                                 prefs = state.prefs,
                                 actions = callbacks.rowActions,
                                 modifier = Modifier.animateItem().padding(vertical = CursorDimens.sidebarRowGap / 2),
                                 nowMillis = state.nowMillis,
                                 depth = depth,
+                                // A Project whose chats the pages do not hold yet still shows the account's count of them.
+                                childrenExpanded = if (row.children.isEmpty() && (row.memberCount ?: 0) == 0) null else id in expandedIds,
+                                onToggleChildren = {
+                                    expandedParents = if (id in expandedIds) expandedParents - id else expandedParents + id
+                                },
                             )
                         }
                     }
@@ -408,60 +409,8 @@ private fun AccountFooter(user: CursorUser, isDemo: Boolean, extendedMode: Boole
                 extendedMode -> Text(ExtendedModeCopy.INDICATOR, style = type.small, color = colors.orange, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        FlatIconButton(CursorIcons.Gear, "Settings", onClick = onClick)
+        FlatIconButton(CursorIcons.More, "Account", onClick = onClick)
     }
-}
-
-/**
- * One of the sidebar's navigation rows — New Chat, Search, Automations, Customize — as the web draws them: the
- * glyph, the label, the selection fill on the one that names the screen on show.
- */
-@Composable
-private fun NavRow(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val shape = CursorTheme.shapes.base
-    Row(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = CursorDimens.selectionInset, vertical = CursorDimens.sidebarRowGap / 2)
-            .background(if (selected) colors.fillSoft else Color.Transparent, shape)
-            .pressable(onClick, shape)
-            .height(CursorDimens.sidebarRow)
-            .padding(start = 8.dp, end = 10.dp)
-            .semantics { contentDescription = label },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(CursorDimens.glyph), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = CursorTheme.typography.row, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-/** The web's date buckets, in its order, by the organizer's section keys; a bucket it produced no rows for is still listed as a label. */
-internal val DATE_BUCKETS: List<Pair<String, String>> = AgentsWindowList.TimeBucket.entries.map { "date:${it.label}" to it.label }
-
-/**
- * [sections] with the web's date buckets filled in: an empty bucket is added as a label at its place in the order
- * when the list is grouped by date. The organizer's own sections (Projects, Pinned, the buckets it filled) are kept
- * as they came, in their order.
- */
-internal fun withEmptyDateBuckets(sections: List<AgentSection>, prefs: ListPreferences): List<AgentSection> {
-    if (prefs.groupBy != GroupBy.Date) return sections
-    val keys = sections.mapTo(HashSet()) { it.key }
-    val bucketKeys = DATE_BUCKETS.map { it.first }
-    if (bucketKeys.all { it in keys }) return sections
-    val result = ArrayList<AgentSection>()
-    // Everything before the first date bucket keeps its place; the buckets follow in the web's order.
-    val firstBucket = sections.indexOfFirst { it.key in bucketKeys }
-    val head = if (firstBucket < 0) sections else sections.subList(0, firstBucket)
-    result += head
-    val byKey = sections.associateBy { it.key }
-    DATE_BUCKETS.forEach { (key, title) -> result += byKey[key] ?: AgentSection(key, title, emptyList()) }
-    // Anything the organizer put after the buckets (none today) follows them.
-    sections.filter { it.key !in bucketKeys && it !in head }.forEach { result += it }
-    return result
 }
 
 @Composable
