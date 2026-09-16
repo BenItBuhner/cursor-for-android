@@ -61,9 +61,10 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
     val type = CursorTheme.typography
     val line = remember(item) { EventLine.of(item) }
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
-    // A one-line notification is said in full by the row unless the row had to cut its subject short.
+    // A one-line notification is said in full by the row unless the row had to cut its subject, or the detail beside it, short.
     var subjectCut by remember(item.summary) { mutableStateOf(false) }
-    val report = item.body?.takeIf { it != item.summary || subjectCut }
+    var tailCut by remember(item.summary) { mutableStateOf(false) }
+    val report = item.body?.takeIf { it != item.summary || subjectCut || tailCut }
     // The agent's brief remark on the notice, folded under the row in a coordinator's chat (see CoordinatorTranscript).
     val narration = item.narration?.trim()?.takeIf { it.isNotEmpty() }
     val body = report ?: narration
@@ -111,7 +112,15 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
                                 Text(" \u00B7 $verb", style = type.base, color = colors.textTertiary, maxLines = 1)
                             }
                             line.actor?.let { actor ->
-                                Text(" \u00B7 $actor", style = type.base, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                Text(
+                                    " \u00B7 $actor",
+                                    style = type.base,
+                                    color = colors.textQuaternary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    onTextLayout = { tailCut = it.hasVisualOverflow },
+                                    modifier = Modifier.weight(1f, fill = false),
+                                )
                             }
                         }
                     },
