@@ -40,6 +40,7 @@ import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunOrder
 import com.cursorforandroid.domain.TranscriptLoadDiagnostics
+import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SystemNotifications
@@ -884,6 +885,7 @@ class ConversationRepository(
         val e = entry(agentId)
         lastOpened.value = agentId
         val firstScreen = synchronized(e) {
+            if (e.attached == 0) TranscriptPerf.opened(agentId)
             e.attached++
             // A screen attaching can see the chat, whatever the last one that left had done.
             e.paused = false
@@ -1126,6 +1128,7 @@ class ConversationRepository(
         val workers = synchronized(this) {
             mutate()
             lastPublishAtMs = monotonicMillis()
+            val buildStartedAt = System.nanoTime()
             val items = items()
             val window = recordWindow
             val (older, status) = if (window != null) {
@@ -1134,6 +1137,8 @@ class ConversationRepository(
                 layout().let { (it.olderCount > 0) to traceStatus(it) }
             }
             state.update { it.copy(items = items, hasOlder = older, traceStatus = status).transform() }
+            // The newest page counts as whole once nothing shown is still being read or replayed.
+            TranscriptPerf.session(agentId).publication(items.size, whole = status.pending == 0, buildNanos = System.nanoTime() - buildStartedAt)
             coordinatorLineage(items)
         }
         if (workers != null) {
@@ -1271,10 +1276,10 @@ class ConversationRepository(
         }
         try {
             coroutineScope {
-                val conversation = async { runCatching { api.conversationV0(agentId) } }
+                val conversation = async { net(agentId, "transcript"); runCatching { api.conversationV0(agentId) } }
                 // The newest runs, one page: enough to render the window; the rest of the records follow behind the
                 // cursor (see [pageOlderRuns]) rather than holding the first frame up.
-                val runPage = async { runCatching { api.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
+                val runPage = async { net(agentId, "runs"); runCatching { api.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 // The runs and their traces render first: the `/v0` transcript is the whole chat in one answer,
                 // megabytes for a long one, and a slow connection takes its time over it. Whichever lands first is
@@ -1428,8 +1433,8 @@ class ConversationRepository(
         val cursorApi = backend.api
         val (known, wantTurns) = synchronized(e) { e.recordWindow to e.window }
         val tail = async { runCatching { RecordPager.tail(api, agentId, wantTurns, known?.total) } }
-        val stateRead = async { runCatching { api.state(agentId) } }
-        val runPage = async { runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
+        val stateRead = async { net(agentId, "state"); runCatching { api.state(agentId) } }
+        val runPage = async { net(agentId, "runs"); runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
         val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
         val raw = tail.await()
         val onDevice = stored.await()
@@ -1454,7 +1459,7 @@ class ConversationRepository(
         } else {
             val sink = images?.forAgent(agentId)
             val now = AppClock.now()
-            val built = RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+            val built = RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
             var project = false
             e.publish(
                 mutate = {
@@ -1601,10 +1606,11 @@ class ConversationRepository(
         val api = session.current.api
         // The agent's record, read for its latest run alone: the row is left as it is (a record a poll behind a
         // finish the stream saw would otherwise put the spinner back on the finished run).
+        net(agentId, "agent")
         val detail = runCatching { api.getAgent(agentId) }.getOrElse { t -> if (t is CancellationException) throw t; null }
         val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
         val known = synchronized(e) { e.runById(latestId) }
-        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
+        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
         // Active as this device knows it: the run it stopped is not the next one to follow, whatever its record says yet.
         if (!e.statusOf(run).isActive) return false
         var follow = false
@@ -1629,7 +1635,7 @@ class ConversationRepository(
         val wantTurns = synchronized(e) { e.window }
         val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
         val sink = images?.forAgent(e.agentId)
-        val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+        val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
         e.publish(mutate = { if (recordWindow === known) recordWindow = built })
         persistRecord(e, built, known, session.current, cacheTokens())
     }
@@ -1641,7 +1647,7 @@ class ConversationRepository(
         val tokens = cacheTokens()
         val older = RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
         val sink = images?.forAgent(e.agentId)
-        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS, build = turnBuilder(e.agentId, sink))
         e.publish(mutate = {
             // Only onto the window this was asked for: a re-read since replaced it, and its turns stand.
             if (recordWindow === window || recordWindow?.firstStep == window.firstStep) recordWindow = built
@@ -1735,7 +1741,7 @@ class ConversationRepository(
             var next: String? = cursor
             var pages = 1
             while (next != null && pages < MAX_RUN_PAGES) {
-                val more = runCatching { api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = next) }.getOrElse { t ->
+                val more = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = next) }.getOrElse { t ->
                     if (t is CancellationException) throw t
                     null
                 } ?: break
@@ -1755,7 +1761,7 @@ class ConversationRepository(
             }
         }
         if (latestId != null && page.items.none { it.id == latestId }) {
-            val latest = runCatching { api.getRun(agentId, latestId) }.getOrElse { t ->
+            val latest = runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 null
             }
@@ -1801,7 +1807,7 @@ class ConversationRepository(
         var fetched = 0
         for (i in 0 until pages) {
             val cursor = synchronized(e) { e.olderRunsCursor.takeUnless { e.runsComplete } } ?: break
-            val page = runCatching { backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
+            val page = runCatching { net(agentId, "runs"); backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 break
             }
@@ -1980,8 +1986,18 @@ class ConversationRepository(
         }
     }
 
+    /** One network call of [kind] for the chat's counters (see [TranscriptPerf]). */
+    private fun net(agentId: String, kind: String) = TranscriptPerf.session(agentId).network(kind)
+
+    /** Builds a record turn's items (see [HeadlessTranscript.body]), timed for the chat's counters. */
+    private fun turnBuilder(agentId: String, sink: GeneratedImageSink?): (HeadlessTranscript.Turn, String) -> List<TimelineItem> = { turn, key ->
+        val startedAt = System.nanoTime()
+        HeadlessTranscript.body(turn, key, sink).also { TranscriptPerf.session(agentId).turnBuilt(System.nanoTime() - startedAt) }
+    }
+
     private suspend fun readCache(agentId: String): CachedConversation? {
         val store = cache?.takeIf { !session.isDemo } ?: return null
+        TranscriptPerf.session(agentId).conversationRead()
         val cached = store.read(agentId)?.value
         diskIndex[agentId] = cached?.agentUpdatedAtMillis ?: ABSENT
         return cached
@@ -1991,7 +2007,9 @@ class ConversationRepository(
     private suspend fun readTraces(agentId: String, runIds: Collection<String>): Map<String, CachedTrace> {
         if (runIds.isEmpty()) return emptyMap()
         val store = traceCache?.takeIf { !session.isDemo } ?: return emptyMap()
+        val startedAt = System.nanoTime()
         return runCatching { store.read(agentId, runIds) }.getOrDefault(emptyMap())
+            .also { TranscriptPerf.session(agentId).traceRead(runIds.size, System.nanoTime() - startedAt) }
     }
 
     /**
@@ -2104,6 +2122,7 @@ class ConversationRepository(
                                     synchronized(e) { e.expiredRuns += run.id; e.traceInFlight.remove(run.id) }
                                     continue
                                 }
+                                net(agentId, "replay")
                                 val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
                                 when {
                                     snapshot.hasTrace -> {
