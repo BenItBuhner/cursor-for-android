@@ -2,6 +2,7 @@ package com.cursorforandroid.ui.conversation
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -11,6 +12,13 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.media.ConversationMedia
+import com.cursorforandroid.ui.media.MediaEntry
+import com.cursorforandroid.ui.media.MediaViewerHost
+import com.cursorforandroid.ui.media.MediaViewerState
+import com.cursorforandroid.ui.media.ViewerFixtures
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
@@ -72,14 +80,39 @@ class MessageAttachmentsTest {
         compose.onNodeWithText("See the attached image.").assertIsDisplayed()
     }
 
+    /** The thumbnail is one of the media viewer's: a tap opens the viewer on the picture, out of the strip's crop. */
     @Test
-    fun `tapping a thumbnail opens the full-screen viewer`() {
+    fun `tapping a thumbnail opens the media viewer on the picture`() {
+        val viewer = MediaViewerState(null)
+        val loader = ViewerFixtures.loader()
+        val message = UserMessage("m1", "Look", attachments = listOf(shot("a.jpg", 400, 400)))
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                MediaViewerHost(viewer, loader) {
+                    CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext("bc-1", loader, entries = { ConversationMedia.of(listOf(message)) })) {
+                        TimelineItemView(message)
+                    }
+                }
+            }
+        }
+        compose.waitUntil(10_000) { countOf("Attached image") == 1 }
+        compose.onNodeWithContentDescription("Attached image").performClick()
+        compose.waitUntil(30_000) { compose.waitForIdle(); viewer.phase == MediaViewerState.Phase.Open && countOf("Close") == 1 }
+        assertThat(viewer.current?.src).isEqualTo("file://${message.attachments.single().path}")
+        assertThat(viewer.current?.kind).isEqualTo(MediaEntry.Kind.Image)
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.waitUntil(30_000) { compose.waitForIdle(); !viewer.isOpen }
+        assertThat(countOf("Close")).isEqualTo(0)
+    }
+
+    /** Without a viewer hosted (a preview, a test of the row alone) the thumbnail is inert rather than a crash. */
+    @Test
+    fun `a thumbnail with no viewer to open does nothing`() {
         show(UserMessage("m1", "Look", attachments = listOf(shot("a.jpg", 400, 400))))
         compose.waitUntil(10_000) { countOf("Attached image") == 1 }
         compose.onNodeWithContentDescription("Attached image").performClick()
-        compose.waitUntil(10_000) { countOf("Close") == 1 }
-        compose.onNodeWithContentDescription("Close").performClick()
-        compose.waitUntil(10_000) { countOf("Close") == 0 }
+        compose.waitForIdle()
+        assertThat(countOf("Close")).isEqualTo(0)
     }
 
     @Test

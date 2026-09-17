@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -72,7 +73,6 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
@@ -83,10 +83,10 @@ import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
+import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopDialog
@@ -232,22 +232,8 @@ fun ConversationScreen(
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
-    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
-    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
-    // opens in the document sheet; without the account it points at the Project on cursor.com.
-    val lightbox = rememberLightboxState(agentId)
     val canReadStores = capabilities.projects && !isDemo
     var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
-    val markdownMedia = remember(agentId, lightbox, canReadStores) {
-        MarkdownMediaContext(
-            agentId, graph.media, lightbox,
-            canReadStores = canReadStores,
-            onOpenStorePath = { path ->
-                val target = storeRef(path, agentId)
-                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
-            },
-        )
-    }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -283,6 +269,24 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
+    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
+    // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
+    // the media viewer among the chat's media in transcript order (see [ConversationMedia]), the artifacts the panel
+    // has listed after them; the list is read at the tap, off the items as they are then.
+    val latestItems = rememberUpdatedState(conversation.items)
+    val latestArtifacts = rememberUpdatedState(panel.artifacts.valueOrNull.orEmpty())
+    val markdownMedia = remember(agentId, canReadStores) {
+        MarkdownMediaContext(
+            agentId, graph.media,
+            canReadStores = canReadStores,
+            onOpenStorePath = { path ->
+                val target = storeRef(path, agentId)
+                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
+            },
+            entries = { ConversationMedia.of(latestItems.value, latestArtifacts.value) },
+        )
+    }
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
     // that have one to show — the Agents Window's rule, a cloud composer, narrowed to the chats GetMachine would not
     // refuse (DesktopEligibility). It opens over the whole screen for the whole of the way there: the steps while the
@@ -303,7 +307,7 @@ fun ConversationScreen(
         modifier = modifier,
         panelContent = {
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
-            // open into the same lightbox as the transcript's.
+            // open into the same viewer as the transcript's, among the same pages.
             CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
                 ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
             }
@@ -569,9 +573,6 @@ fun ConversationScreen(
     }
     }
 
-    // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
-    // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
-    FigureLightbox(lightbox, graph.media, agentId)
     openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->
         CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
             StoreDocumentSheet(ref, graph.storeFiles, onDismiss = { openStorePath = null })

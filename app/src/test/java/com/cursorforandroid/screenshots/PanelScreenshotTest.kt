@@ -41,7 +41,6 @@ import com.cursorforandroid.domain.DesktopTrace
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.panel.ConversationPanel
 import com.cursorforandroid.ui.panel.DesktopScreen
 import com.cursorforandroid.ui.panel.DesktopState
@@ -126,8 +125,7 @@ class PanelScreenshotTest {
     private fun Panel(state: PanelState) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { AssetApi() })) }
-        val lightbox = rememberLightboxState("bc-demo")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
                 // The panel as it sits on a phone: over the chat's canvas, the width the host gives it.
