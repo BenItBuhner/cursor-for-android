@@ -48,7 +48,7 @@ class ComposerSlashPopoverTest {
                     onValueChange = { value = it; prompt = it },
                     placeholder = "Ask",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onSkillUsed = { remembered += it }),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onSkillUsed = { remembered += it }),
                     commands = commands,
                 )
             }

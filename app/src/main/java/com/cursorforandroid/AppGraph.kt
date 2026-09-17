@@ -527,14 +527,14 @@ class AppGraph(
             hub = liveRuns,
             mcpServers = { mcpServers.enabled() },
             // A queued message with files goes out through the account's follow-up: its files uploaded first, then
-            // `AddAsyncFollowupBackgroundComposer` with them as `selected_documents[]` (Extended mode).
+            // `AddAsyncFollowupBackgroundComposer` with them as `selected_documents[]` — or `selected_images[]` for an image — (Extended mode).
             accountSend = { agentId, item ->
                 if (!capabilities().promptFiles || session.isDemo) throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED)
-                val documents = promptUploads.upload(item.files.map { it.file })
+                val uploaded = promptUploads.upload(item.files.map { it.file })
                 val followup = AccountFollowup(
                     text = item.previewText,
                     images = item.images.map { it.image },
-                    documents = documents,
+                    files = uploaded,
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
                 )

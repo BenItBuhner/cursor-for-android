@@ -137,7 +137,7 @@ class GoalStripTest {
                         onEditing = { _, _ -> },
                         modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                     )
-                    ComposerBox(value = "", onValueChange = {}, placeholder = "Follow up…", onSend = {}, isRunning = true, onStop = {}, plusMenu = ComposerMenuActions(onPickFiles = {}), modifier = Modifier.fillMaxWidth())
+                    ComposerBox(value = "", onValueChange = {}, placeholder = "Follow up…", onSend = {}, isRunning = true, onStop = {}, plusMenu = ComposerMenuActions(onPickMedia = {}), modifier = Modifier.fillMaxWidth())
                 }
             }
         }

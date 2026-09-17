@@ -4,7 +4,7 @@ import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PresignedPromptUpload
 import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.PromptUploadCompletion
-import com.cursorforandroid.data.api.SelectedDocument
+import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.data.api.await
 import com.cursorforandroid.domain.PromptFile
 import kotlinx.coroutines.CancellationException
@@ -37,7 +37,7 @@ fun interface UploadProgress {
  * offset + size)})` sends the slice of a `File` as a typeless `Blob`; the object's type is what the presign was told),
  * each bounded by [PART_TIMEOUT_MS] — then `CompletePromptUpload`, whose status has to be `COMPLETED`. A part or the
  * completion failing aborts the staged upload (`AbortPromptUpload`) and fails the file, named. The desktop's fallback
- * for the upload path being off — the bytes inline as `SelectedDocument.data` — is taken here when the account refuses
+ * for the upload path being off — the bytes inline as `UploadedFile.data` — is taken here when the account refuses
  * to presign at all (the method unimplemented, the account not allowed it): nothing has moved yet, and the request can
  * still carry the file itself.
  */
@@ -50,14 +50,14 @@ class PromptUploader(
 ) {
 
     /** Every file in turn, so the chips fill one after another; the first failure stops the rest. */
-    suspend fun upload(files: List<PromptFile>, progress: UploadProgress = UploadProgress.NONE): List<SelectedDocument> =
+    suspend fun upload(files: List<PromptFile>, progress: UploadProgress = UploadProgress.NONE): List<UploadedFile> =
         files.mapIndexed { index, file -> upload(file) { done, total -> progress.onProgress(index, done, total) } }
 
-    suspend fun upload(file: PromptFile, progress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }): SelectedDocument {
+    suspend fun upload(file: PromptFile, progress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }): UploadedFile {
         val mimeType = file.mimeType.ifBlank { PromptFile.OCTET_STREAM }
         val total = file.sizeBytes.toLong()
         // The desktop carries an empty file inline; there is nothing to stage.
-        if (total == 0L) return SelectedDocument(file.name, mimeType, uploadId = null, data = file.bytes)
+        if (total == 0L) return UploadedFile(file.name, mimeType, uploadId = null, data = file.bytes)
         val presigned = try {
             api.presign(file.name, mimeType, total, teamId())
         } catch (e: CancellationException) {
@@ -65,7 +65,7 @@ class PromptUploader(
         } catch (e: ConnectRpcException) {
             if (e.refusesUploads()) {
                 progress(total, total)
-                return SelectedDocument(file.name, mimeType, uploadId = null, data = file.bytes)
+                return UploadedFile(file.name, mimeType, uploadId = null, data = file.bytes)
             }
             throw PromptUploadException(file.name, "Couldn't upload ${file.name}: ${e.message}", e)
         } catch (e: IOException) {
@@ -99,7 +99,7 @@ class PromptUploader(
             abortQuietly(presigned)
             throw PromptUploadException(file.name, "Couldn't upload ${file.name}: ${e.message ?: "the connection failed"}", e)
         }
-        return SelectedDocument(file.name, mimeType, uploadId = presigned.uploadId)
+        return UploadedFile(file.name, mimeType, uploadId = presigned.uploadId)
     }
 
     /** One part: `PUT <url>` with the slice as its body, no type, bounded in time like the desktop's 120 s `AbortSignal.timeout`. */

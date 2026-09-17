@@ -30,7 +30,7 @@ class ComposerTest {
                     onValueChange = {},
                     placeholder = "Ask Cursor to build, fix bugs, explore",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}),
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
                 )
@@ -58,7 +58,7 @@ class ComposerTest {
                     onValueChange = {},
                     placeholder = "Ask Cursor to build, fix bugs, explore",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}),
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
                 )

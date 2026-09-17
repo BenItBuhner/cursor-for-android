@@ -7,10 +7,14 @@ import org.junit.Test
 class PromptFileTest {
 
     @Test
-    fun `the cap is 15 MB, five files a prompt, and the guard's words say so`() {
+    fun `the cap is 15 MB, five files a prompt, and the guard's words say so in the words of what was picked`() {
         assertThat(PromptFile.MAX_BYTES).isEqualTo(15L * 1024 * 1024)
         assertThat(PromptFile.MAX_COUNT).isEqualTo(5)
         assertThat(PromptFile.TOO_LARGE_MESSAGE).isEqualTo("Files must be 15 MB or smaller.")
+        assertThat(PromptFile.tooLargeMessage("video/mp4", "clip.mp4")).isEqualTo("Videos must be 15 MB or smaller.")
+        assertThat(PromptFile.tooLargeMessage(null, "clip.mov")).isEqualTo("Videos must be 15 MB or smaller.")
+        assertThat(PromptFile.tooLargeMessage("image/jpeg", "IMG_1.jpg")).isEqualTo("Images must be 15 MB or smaller.")
+        assertThat(PromptFile.tooLargeMessage("application/zip", "a.zip")).isEqualTo("Files must be 15 MB or smaller.")
     }
 
     @Test
@@ -28,6 +32,10 @@ class PromptFileTest {
         assertThat(PromptFileKind.of("bundle.zip", "application/zip")).isEqualTo(PromptFileKind.Archive)
         assertThat(PromptFileKind.of("build.apk", "application/vnd.android.package-archive")).isEqualTo(PromptFileKind.Archive)
         assertThat(PromptFileKind.of("mystery.xyz", "application/octet-stream")).isEqualTo(PromptFileKind.Other)
+        // A provider that names no type leaves the name to say, as the desktop's `cCm` does for a video.
+        assertThat(PromptFileKind.of("clip.mov", "")).isEqualTo(PromptFileKind.Video)
+        assertThat(PromptFileKind.of("voice.opus", "application/octet-stream")).isEqualTo(PromptFileKind.Audio)
+        assertThat(PromptFileKind.of("IMG_0001.HEIC", "")).isEqualTo(PromptFileKind.Image)
         assertThat(PromptFileKind.Other.label).isEqualTo("File")
     }
 
