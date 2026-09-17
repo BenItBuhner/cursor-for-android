@@ -105,7 +105,9 @@ import kotlinx.coroutines.withContext
  * nervous double-tap cancelling one that is about to succeed.
  *
  * The field is a [TextFieldState] editor so Android can paste images into it — from the clipboard, the keyboard
- * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files.
+ * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files. In
+ * Extended mode the "+" menu also attaches [files] of any type ([PendingFile]), shown as chips with their name, kind
+ * and size under the image strip, filling with the upload while the prompt goes out.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -129,6 +131,12 @@ fun ComposerBox(
     /** Clipboard / IME image paste; null leaves the field text-only. */
     onAddAttachments: ((List<PendingAttachment>) -> Unit)? = null,
     onAttachmentError: ((String) -> Unit)? = null,
+    /** Files of any type attached in Extended mode, as chips under the image strip; see [FileChips]. */
+    files: List<PendingFile> = emptyList(),
+    onRemoveFile: ((PendingFile) -> Unit)? = null,
+    /** Where each file's upload stands while a send is under way, by [PendingFile.id]; a failed one offers [onRetryFile]. */
+    fileUploads: Map<String, FileUploadState> = emptyMap(),
+    onRetryFile: ((PendingFile) -> Unit)? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     /**
@@ -273,6 +281,9 @@ fun ComposerBox(
     ) {
         if (attachments.isNotEmpty() && onRemoveAttachment != null) {
             AttachmentStrip(attachments, onRemoveAttachment)
+        }
+        if (files.isNotEmpty() && onRemoveFile != null) {
+            FileChips(files, onRemove = onRemoveFile, uploads = fileUploads, onRetry = onRetryFile, modifier = Modifier.padding(bottom = 8.dp))
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,

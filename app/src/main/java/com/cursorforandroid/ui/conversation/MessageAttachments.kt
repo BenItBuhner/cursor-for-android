@@ -1,5 +1,9 @@
 package com.cursorforandroid.ui.conversation
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.foundation.Image
@@ -8,12 +12,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,19 +39,28 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.cursorforandroid.domain.MessageAttachment
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * The images of a prompt, shown inside its bubble: 88dp-tall thumbnails at their own aspect ratio (clamped so a
@@ -52,12 +71,87 @@ import kotlinx.coroutines.withContext
 @Composable
 fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
     var viewing by remember { mutableStateOf<MessageAttachment?>(null) }
-    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        attachments.forEach { attachment ->
-            AttachmentThumbnail(attachment, alpha = alpha, onClick = { viewing = attachment })
+    val images = attachments.filterNot { it.isFile }
+    val files = attachments.filter { it.isFile }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (images.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                images.forEach { attachment ->
+                    AttachmentThumbnail(attachment, alpha = alpha, onClick = { viewing = attachment })
+                }
+            }
         }
+        // Files of any type, one card each — the desktop's `context-pill` for a document, with its size and a real
+        // open: the copy kept on this device goes to whatever app handles its type.
+        files.forEach { attachment -> AttachmentFileCard(attachment, alpha = alpha) }
     }
     viewing?.let { AttachmentViewer(it, onDismiss = { viewing = null }) }
+}
+
+/**
+ * A file the prompt carried: its kind's glyph, its name and its size, on the bubble's own surface. Tapping hands the
+ * on-device copy to the system viewer through the app's `FileProvider` (`files/attachments/…`); a copy that is gone
+ * — cleared with the account, or never kept — says so instead of opening nothing.
+ */
+@Composable
+internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val context = LocalContext.current
+    val shape = CursorTheme.shapes.lg
+    val name = attachment.name ?: "Document"
+    val kind = attachment.kind
+    var missing by remember(attachment.path) { mutableStateOf(false) }
+    Row(
+        modifier
+            .widthIn(min = 160.dp, max = 320.dp)
+            .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
+            .pressable({ if (!openAttachedFile(context, attachment)) missing = true }, shape)
+            .heightIn(min = 44.dp)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .testTag("attachment-file-card")
+            .semantics { contentDescription = "Attached file $name, ${kind.label}, ${PromptFile.formatSize(attachment.sizeBytes)}" },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(kind.icon(), null, tint = colors.iconSecondary.faded(alpha), modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(name, style = type.base, color = colors.textPrimary.faded(alpha), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                if (missing) "This file is no longer on this device." else "${kind.label} · ${PromptFile.formatSize(attachment.sizeBytes)}",
+                style = type.small,
+                color = (if (missing) colors.red else colors.textTertiary).faded(alpha),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
+ * Opens the copy at [attachment]'s path with the system's handler for its type. False when the copy is gone; a
+ * device with nothing to open the type shows the chooser's own word for that.
+ */
+internal fun openAttachedFile(context: Context, attachment: MessageAttachment): Boolean {
+    val file = File(attachment.path)
+    if (!file.isFile) return false
+    val uri = try {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    } catch (_: IllegalArgumentException) {
+        return false
+    }
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, attachment.mimeType?.takeIf { it.isNotBlank() } ?: PromptFile.OCTET_STREAM)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val chooser = Intent.createChooser(intent, attachment.name ?: "Open file").apply {
+        if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return try {
+        context.startActivity(chooser)
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
+    }
 }
 
 @Composable

@@ -80,6 +80,7 @@ import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.keyboardInsetPadding
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -139,6 +140,8 @@ fun ConversationScreen(
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val files by viewModel.pendingFiles.collectAsStateWithLifecycle()
+    val fileUploads by viewModel.fileUploads.collectAsStateWithLifecycle()
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
@@ -171,7 +174,15 @@ fun ConversationScreen(
         )
     }
     val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
-    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    // Files of any type (Extended mode): the document picker, whose images join the image strip like the photo picker's.
+    val pickFiles = rememberFilePicker(
+        currentFileCount = files.size,
+        currentImageCount = attachments.size,
+        onPickedFiles = viewModel::addFiles,
+        onPickedImages = viewModel::addAttachments,
+        onError = viewModel::showMessage,
+    )
+    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages, onAttachFile = if (capabilities.promptFiles && !isDemo) pickFiles else null)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val incoming = share ?: return@LaunchedEffect
@@ -525,7 +536,7 @@ fun ConversationScreen(
                     else -> "Follow up…"
                 },
                 onSend = viewModel::send,
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && !archived,
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
@@ -535,6 +546,10 @@ fun ConversationScreen(
                 onRemoveAttachment = viewModel::removeAttachment,
                 onAddAttachments = viewModel::addAttachments,
                 onAttachmentError = viewModel::showMessage,
+                files = files,
+                onRemoveFile = viewModel::removeFile,
+                fileUploads = fileUploads,
+                onRetryFile = viewModel::retryFile,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,

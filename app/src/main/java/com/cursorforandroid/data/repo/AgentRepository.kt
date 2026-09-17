@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import com.cursorforandroid.data.api.AgentStartApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.StartRequest
 import com.cursorforandroid.data.api.RecordFields
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
@@ -38,6 +40,7 @@ import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
@@ -107,6 +110,11 @@ enum class RefreshOutcome {
 data class LaunchRequest(
     val prompt: String,
     val images: List<PromptImage> = emptyList(),
+    /**
+     * Files of any type (Extended mode). The documented create request cannot carry them, so a launch with any goes
+     * through the account's start instead (see [AgentRepository.launch]); the images ride along inline as they do there.
+     */
+    val files: List<PromptFile> = emptyList(),
     val repoUrl: String?,
     val ref: String?,
     val modelId: String?,
@@ -248,6 +256,13 @@ class AgentRepository(
     /** How a launch whose reply was lost looks for its chat (see [launch]): reads of `GET /v1/agents/{id}`, and the wait between them. */
     private val lostReplyProbes: Int = LOST_REPLY_PROBES,
     private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
+    /**
+     * The account's start (`StartBackgroundComposerFromSnapshot`) and its prompt uploads, for a launch whose prompt
+     * carries files of any type — which the documented create request cannot (Extended mode, `promptFiles`). Null
+     * when there is no account to start on; such a launch then fails before anything is sent.
+     */
+    private val start: (suspend () -> AgentStartApi)? = null,
+    private val uploads: (suspend () -> PromptUploader)? = null,
 ) {
     private val restoreMutex = Mutex()
 
@@ -1296,11 +1311,13 @@ class AgentRepository(
      * [beginLaunch] put in the list is replaced by the server's record, or removed when the request fails.
      * [saveImages] is off for a caller that staged the prompt's images itself and files them under the run.
      */
-    suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true): Result<Launched> {
+    suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true, progress: UploadProgress = UploadProgress.NONE): Result<Launched> {
         val startedIn = token()
         val result = runCatching {
             val api = session.current.api
-            val (dto, run) = try {
+            val (dto, run) = if (request.files.isNotEmpty()) {
+                startWithFiles(api, request, progress)
+            } else try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
                 withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
@@ -1326,7 +1343,7 @@ class AgentRepository(
             upsert(agent, startedIn)
             // The agent exists now; a full disk must not turn that into a launch error. A retry that found the agent
             // already created files the images under the same run, so this stays idempotent.
-            if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images) } }
+            if (saveImages) run?.let { runCatching { attachments.save(agent.id, it.id, request.images, request.files) } }
             prefs.markLaunchedHere(agent.id)
             // Read as of now; the finished run will bump updatedAt past this and surface the unread dot.
             prefs.markRead(agent.id, AppClock.now())
@@ -1337,6 +1354,42 @@ class AgentRepository(
             result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
         }
         return result
+    }
+
+    /**
+     * A launch whose prompt carries files, the way the desktop starts one: the files go up through the account's
+     * prompt uploads, then `StartBackgroundComposerFromSnapshot` carries them as `selected_documents[]` beside the
+     * inline images (see [ConnectAgentStartApi][com.cursorforandroid.data.api.ConnectAgentStartApi]). The chat is then
+     * read back through the documented API under the id the request minted — the account answers with its record,
+     * not a run, and the list and the transcript are built from `GET /v1/agents/{id}` like every other chat's; the
+     * first run is read once it is named, asked for a few times as [recoverLostReply] does. A machine or pool is
+     * refused here, before anything is sent: the desktop's private-worker start has no equivalent in this request.
+     */
+    private suspend fun startWithFiles(api: CursorApi, request: LaunchRequest, progress: UploadProgress): Pair<AgentDto, RunDto?> {
+        val id = requireNotNull(request.agentId) { "A launch with files needs the client-minted agent id." }
+        val startApi = start ?: throw IllegalStateException(FILES_NEED_EXTENDED)
+        val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
+        if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
+        if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
+        val documents = uploader().upload(request.files, progress)
+        startApi().start(
+            StartRequest(
+                agentId = id,
+                text = request.prompt,
+                images = request.images,
+                documents = documents,
+                repoUrl = request.repoUrl,
+                ref = request.ref,
+                environmentName = request.env.apiName,
+                modelId = request.modelId,
+                modelParams = request.modelParams,
+                planMode = request.planMode,
+                autoCreatePr = request.autoCreatePr,
+                name = request.name,
+                mcpServers = request.mcpServers,
+            ),
+        )
+        return recoverLostReply(api, id) ?: throw LaunchUnansweredException(IOException("The chat was started on your account but has not appeared in the API yet."))
     }
 
     /** The agent an earlier attempt created under the client-minted [id], with its latest run when that can be read. */
@@ -1737,6 +1790,8 @@ class AgentRepository(
         /** A row that reads finished but was active this recently may still be going; its record settles it. */
         private const val VERIFY_JUST_ACTIVE_WINDOW_MS = 5 * 60 * 1000L
         private const val AGENT_ID_CONFLICT = "agent_id_conflict"
+        const val FILES_NEED_EXTENDED = "Attaching files needs Extended mode; turn it on in Settings, or take the files off."
+        const val FILES_NEED_CLOUD = "Files can go on a new chat that runs on Cursor's cloud only. Start it on Cloud, or attach them in a follow-up once it is running."
         /** Reads of the chat by id after a launch's reply was lost, and the wait between them: about a quarter of a minute in all. */
         const val LOST_REPLY_PROBES = 5
         const val LOST_REPLY_PROBE_DELAY_MS = 3_000L

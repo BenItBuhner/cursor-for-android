@@ -3,9 +3,11 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.google.common.truth.Truth.assertThat
@@ -90,6 +92,33 @@ class FollowUpStoreTest {
         store.write("bc-1", FollowUpDraft("a"), emptyList())
         assertThat(files()).isEmpty()
         assertThat(store.read("bc-1")?.draft?.text).isEqualTo("a")
+    }
+
+    @Test
+    fun `files of any type round-trip with their names and types, kept byte for byte and dropped like images`() = runBlocking<Unit> {
+        val pdf = DraftFile("content://docs/9@1", PromptFile(byteArrayOf(0x25, 0x50, 0x44, 0x46), "Q3 report (final).pdf", "application/pdf"))
+        val zip = DraftFile("content://docs/10@2", PromptFile(ByteArray(3) { 9 }, "bundle.zip", "application/zip"))
+        store.write("bc-1", FollowUpDraft("Look at these", files = listOf(pdf)), listOf(QueuedFollowUp("q", "", files = listOf(zip), queuedAtMillis = 1L)))
+
+        val read = store.read("bc-1")!!
+        val draftFile = read.draft.files.single()
+        assertThat(draftFile.id).isEqualTo("content://docs/9@1")
+        assertThat(draftFile.file.name).isEqualTo("Q3 report (final).pdf")
+        assertThat(draftFile.file.mimeType).isEqualTo("application/pdf")
+        assertThat(draftFile.file.bytes.toList()).isEqualTo(listOf<Byte>(0x25, 0x50, 0x44, 0x46))
+        val queuedFile = read.queue.single().files.single()
+        assertThat(queuedFile.file.name).isEqualTo("bundle.zip")
+        assertThat(queuedFile.file.bytes).hasLength(3)
+        assertThat(read.queue.single().previewText).isEqualTo("See the attached file.")
+        // On disk under safe names with their own extensions, apart from the images.
+        val names = agentDir("bc-1").listFiles()!!.map { it.name }.filter { it != "state.json" }
+        assertThat(names).hasSize(2)
+        assertThat(names.count { it.startsWith("file-") && it.endsWith(".pdf") }).isEqualTo(1)
+        assertThat(names.count { it.startsWith("file-") && it.endsWith(".zip") }).isEqualTo(1)
+
+        store.write("bc-1", FollowUpDraft("Look at these"), emptyList())
+        assertThat(agentDir("bc-1").listFiles()!!.map { it.name }).containsExactly("state.json")
+        assertThat(store.read("bc-1")!!.draft.files).isEmpty()
     }
 
     @Test

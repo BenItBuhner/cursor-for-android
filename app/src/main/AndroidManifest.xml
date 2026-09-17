@@ -109,7 +109,7 @@
             android:authorities="${applicationId}.SentryPerformanceProvider"
             tools:node="remove" />
 
-        <!-- Hands the Project diagnostics report to the share sheet as a file (see ProjectDiagnosticsRow). -->
+        <!-- Hands the diagnostics reports to the share sheet, and a prompt's attached files to the system viewer (see file_paths.xml). -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

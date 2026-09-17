@@ -92,7 +92,7 @@ class ConnectProjectCreationApi(
                 repoConfig = if (repos.size > 1) RepoConfigDto(repos.map { RepoEntryDto(repoUrl = it) }) else null,
             )
         } else {
-            StartingPointDto(environmentPublicId = noRepoEnvironment())
+            StartingPointDto(environmentPublicId = noRepoEnvironmentPublicId())
         }
         val messageId = "msg-${UUID.randomUUID()}"
         val request = StartFromSnapshotDto(
@@ -139,8 +139,11 @@ class ConnectProjectCreationApi(
         return response.name?.takeIf { it.isNotBlank() } ?: name.trim()
     }
 
-    /** The account's personal no-repo environment — found among its environments, or created empty — by its public id. */
-    private suspend fun noRepoEnvironment(): String {
+    /**
+     * The account's personal no-repo environment — found among its environments, or created empty — by its public id.
+     * Shared with [ConnectAgentStartApi], whose no-repo chats start in the same environment the desktop's do.
+     */
+    suspend fun noRepoEnvironmentPublicId(): String {
         val listed = call("ListEnvironments", ListEnvironmentsDto(includeEnvironmentJson = true, repositoryScopeRepoUrls = emptyList()), ListEnvironmentsDto.serializer(), ListEnvironmentsResponseDto.serializer())
         listed.environments.firstOrNull { it.isPersonalNoRepo }?.publicId?.takeIf { it.isNotBlank() }?.let { return it }
         val created = call(

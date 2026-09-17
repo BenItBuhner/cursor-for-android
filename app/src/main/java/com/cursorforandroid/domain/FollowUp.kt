@@ -6,16 +6,27 @@ package com.cursorforandroid.domain
  */
 class DraftImage(val id: String, val image: PromptImage)
 
-/** What the follow-up composer holds for one chat: the text and the images, saved as typed so leaving the chat loses nothing. */
+/** A file (any type, Extended mode) in the follow-up composer or a queued follow-up; the same id rule as [DraftImage]. */
+class DraftFile(val id: String, val file: PromptFile)
+
+/** What the follow-up composer holds for one chat: the text, the images and the files, saved as typed so leaving the chat loses nothing. */
 data class FollowUpDraft(
     val text: String = "",
     val images: List<DraftImage> = emptyList(),
+    val files: List<DraftFile> = emptyList(),
 ) {
-    val isEmpty: Boolean get() = text.isBlank() && images.isEmpty()
+    val isEmpty: Boolean get() = text.isBlank() && images.isEmpty() && files.isEmpty()
 
     companion object {
         val EMPTY = FollowUpDraft()
     }
+}
+
+/** What an attachment-only prompt says in its text: images alone, files alone, or both, the way the composer sends one. */
+fun attachmentOnlyText(images: Int, files: Int): String = when {
+    files == 0 -> QueuedFollowUp.IMAGE_ONLY_TEXT
+    images == 0 -> if (files == 1) QueuedFollowUp.FILE_ONLY_TEXT else QueuedFollowUp.FILES_ONLY_TEXT
+    else -> QueuedFollowUp.ATTACHMENTS_ONLY_TEXT
 }
 
 /**
@@ -57,9 +68,11 @@ data class QueuedFollowUp(
      * at the head of the queue and nothing behind it goes out until the user retries it or takes it away.
      */
     val error: String? = null,
+    /** Files of any type (Extended mode); a queued message that carries one goes out through the account's follow-up. */
+    val files: List<DraftFile> = emptyList(),
 ) {
-    /** The text a card shows: the message itself, or what the request will say for an image-only follow-up. */
-    val previewText: String get() = text.ifBlank { IMAGE_ONLY_TEXT }
+    /** The text a card shows: the message itself, or what the request will say for an attachment-only follow-up. */
+    val previewText: String get() = text.ifBlank { attachmentOnlyText(images.size, files.size) }
 
     /** What the card warns about: why the last attempt failed, or that this one may be on the agent already. */
     val warning: String? get() = error ?: MAY_HAVE_BEEN_SENT.takeIf { needsConfirmation }
@@ -67,6 +80,9 @@ data class QueuedFollowUp(
     companion object {
         /** What an image-only follow-up says in its prompt, the same as when the composer sends one directly. */
         const val IMAGE_ONLY_TEXT = "See the attached image."
+        const val FILE_ONLY_TEXT = "See the attached file."
+        const val FILES_ONLY_TEXT = "See the attached files."
+        const val ATTACHMENTS_ONLY_TEXT = "See the attached files and images."
 
         /** Said of a message whose send the app did not live to see the end of; see [needsConfirmation]. */
         const val MAY_HAVE_BEEN_SENT = "This may already have been sent. Check the chat before sending it again."

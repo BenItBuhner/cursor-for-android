@@ -12,7 +12,7 @@ import java.util.UUID
  * a timeout, a dropped connection or a cancel adopts the agent the first attempt may already have created instead of
  * starting a duplicate. Hashing the request means any edit to the draft (text, images, repo, ref, model, device,
  * options) yields a fresh id, while an unchanged retry keeps the old one. The enabled MCP servers count as part of the draft,
- * hashed in the shape they are sent. [nonce] separates otherwise identical drafts — the composer rotates it after
+ * hashed in the shape they are sent, and so do the attached files (name, type and bytes). [nonce] separates otherwise identical drafts — the composer rotates it after
  * every successful launch so that sending the same prompt twice on purpose still creates two agents.
  */
 object LaunchIdempotency {
@@ -43,6 +43,15 @@ object LaunchIdempotency {
         request.images.forEach { image ->
             field(image.mimeType)
             bytes(image.bytes)
+        }
+        // Appended after the images so a draft without files hashes exactly as it did before files existed.
+        if (request.files.isNotEmpty()) {
+            field(request.files.size.toString())
+            request.files.forEach { file ->
+                field(file.name)
+                field(file.mimeType)
+                bytes(file.bytes)
+            }
         }
         // The inline MCP servers as they go out: toggling one, or editing what it sends, is an edit to the draft too.
         fun map(value: Map<String, String>?) {

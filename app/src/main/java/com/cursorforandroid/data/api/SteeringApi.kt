@@ -6,7 +6,9 @@ import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.Goal
 import com.cursorforandroid.domain.GoalStatus
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
@@ -32,6 +34,8 @@ fun interface InteractionApi {
 data class AccountFollowup(
     val text: String,
     val images: List<PromptImage> = emptyList(),
+    /** Files of any type, uploaded beforehand (or carried inline), as `selected_documents[]` (Extended mode). */
+    val documents: List<SelectedDocument> = emptyList(),
     /** The mode the message goes out under; null keeps the chat's. */
     val mode: AgentMode? = null,
     /** The model the chat switches to from this run on; null keeps the current one. */
@@ -154,6 +158,8 @@ class SteeringApi(
         val images = followup.images.takeIf { it.isNotEmpty() }?.map { image ->
             SelectedImageDto(data = Base64.getEncoder().encodeToString(image.bytes), mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
         }
+        val documents = followup.documents.takeIf { it.isNotEmpty() }?.map(::selectedDocumentDto)
+        val context = if (images == null && documents == null) null else SelectedContextDto(selectedImages = images, selectedDocuments = documents)
         val request = AddFollowupDto(
             bcId = agentId,
             followup = text,
@@ -168,7 +174,7 @@ class SteeringApi(
                         text = text,
                         messageId = "msg-${UUID.randomUUID()}",
                         mode = followup.mode?.wireName,
-                        selectedContext = images?.let { SelectedContextDto(selectedImages = it) },
+                        selectedContext = context,
                     ),
                     sendToInteractionListener = true,
                 ),
@@ -182,15 +188,27 @@ class SteeringApi(
         val response = call("ListPendingFollowups", BcIdDto(agentId), BcIdDto.serializer(), PendingFollowupsResponseDto.serializer())
         return response.pendingFollowups.mapNotNull { dto ->
             val id = dto.followupId?.trim()?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val context = dto.conversationAction?.userMessageAction?.userMessage?.selectedContext
             PendingFollowup(
                 id = id,
                 text = dto.text.orEmpty(),
                 createdAtMillis = dto.createdAtMs?.longOrNull ?: dto.createdAtMs?.contentOrNull?.toLongOrNull(),
                 source = AgentSource.parse(dto.source?.contentOrNull),
                 isEditing = dto.isEditing?.booleanOrNull ?: dto.editing?.booleanOrNull ?: false,
+                files = context?.selectedDocuments.orEmpty().map { PendingAttachment(it.filename?.takeIf { n -> n.isNotBlank() } ?: "Document", it.mimeType.orEmpty()) },
+                imageCount = context?.selectedImages.orEmpty().size,
             )
         }
     }
+
+    /** `agent.v1.SelectedDocument` as the desktop's `WKy` fills it: the upload's id, or the bytes when there was no upload. */
+    private fun selectedDocumentDto(document: SelectedDocument) = SelectedDocumentDto(
+        uuid = document.uuid,
+        filename = document.filename,
+        mimeType = document.mimeType.ifBlank { PromptFile.OCTET_STREAM },
+        promptUploadRef = document.uploadId?.let { PromptUploadRefDto(it) },
+        data = if (document.uploadId == null) document.data?.let { Base64.getEncoder().encodeToString(it) } else null,
+    )
 
     override suspend fun updatePending(agentId: String, followupId: String, text: String) {
         val request = UpdatePendingDto(agentId, followupId, ConversationMessageDto(text = text.trim()))
@@ -327,12 +345,30 @@ class SteeringApi(
     @Serializable
     private data class UserMessageDto(val text: String, val messageId: String, val mode: String? = null, val selectedContext: SelectedContextDto? = null)
 
+    /** `agent.v1.SelectedContext`, the two lists a prompt from here fills: `selected_images` (1) and `selected_documents` (25). */
     @Serializable
-    private data class SelectedContextDto(val selectedImages: List<SelectedImageDto>)
+    private data class SelectedContextDto(val selectedImages: List<SelectedImageDto>? = null, val selectedDocuments: List<SelectedDocumentDto>? = null)
 
     /** `agent.v1.SelectedImage` with its bytes inline (`data` of the `data_or_blob_id` oneof, base64 in JSON). */
     @Serializable
-    private data class SelectedImageDto(val data: String, val mimeType: String, val uuid: String)
+    private data class SelectedImageDto(val data: String? = null, val mimeType: String? = null, val uuid: String? = null)
+
+    /**
+     * `agent.v1.SelectedDocument {2 uuid, 3 filename, 4 mime_type}` with one member of its `data_or_blob_id` oneof:
+     * `prompt_upload_ref` (10) after an upload, or `data` (8) inline. Also what the queue's rows are read from.
+     */
+    @Serializable
+    private data class SelectedDocumentDto(
+        val uuid: String? = null,
+        val filename: String? = null,
+        val mimeType: String? = null,
+        val promptUploadRef: PromptUploadRefDto? = null,
+        val data: String? = null,
+    )
+
+    /** `agent.v1.PromptUploadRef {1 upload_id}`. */
+    @Serializable
+    private data class PromptUploadRefDto(val uploadId: String)
 
     @Serializable
     private data class AddFollowupResponseDto(val runId: String? = null)
@@ -349,7 +385,19 @@ class SteeringApi(
         val source: JsonPrimitive? = null,
         val isEditing: JsonPrimitive? = null,
         val editing: JsonPrimitive? = null,
+        /** `conversation_action` (10): the queued message itself, whose `selected_context` names its attachments. */
+        val conversationAction: PendingActionDto? = null,
     )
+
+    /** The read side of `agent.v1.ConversationAction { user_message_action { user_message { selected_context } } }`. */
+    @Serializable
+    private data class PendingActionDto(val userMessageAction: PendingUserMessageActionDto? = null)
+
+    @Serializable
+    private data class PendingUserMessageActionDto(val userMessage: PendingUserMessageDto? = null)
+
+    @Serializable
+    private data class PendingUserMessageDto(val text: String? = null, val selectedContext: SelectedContextDto? = null)
 
     @Serializable
     private data class UpdatePendingDto(val bcId: String, val followupId: String, val updatedMessage: ConversationMessageDto)

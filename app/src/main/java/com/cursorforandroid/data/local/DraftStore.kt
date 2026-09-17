@@ -3,6 +3,7 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import android.util.Log
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -40,6 +41,8 @@ class DraftStore(context: Context) {
     data class Draft(
         val prompt: String = "",
         val images: List<Image> = emptyList(),
+        /** Files of any type attached in Extended mode, each a file beside the draft like an image. */
+        val files: List<StoredFile> = emptyList(),
         val repoUrl: String? = null,
         val noRepo: Boolean = false,
         val ref: String = "",
@@ -55,6 +58,10 @@ class DraftStore(context: Context) {
     /** One attached image: the name of its file in the draft directory, and what it was picked as. */
     @Serializable
     data class Image(val file: String, val mimeType: String)
+
+    /** One attached file: its bytes' name in the draft directory, and the name and type the request carries. */
+    @Serializable
+    data class StoredFile(val file: String, val name: String, val mimeType: String)
 
     suspend fun read(): Draft? = withContext(Dispatchers.IO) {
         if (!file.isFile) return@withContext null
@@ -83,6 +90,26 @@ class DraftStore(context: Context) {
         runCatching { PromptImage(File(dir, image.file).readBytes(), image.mimeType) }.getOrNull()
     }
 
+    /** Writes [file]'s bytes into the draft directory and returns what to reference it by, or null if it could not be written. */
+    suspend fun writeFile(file: PromptFile): StoredFile? {
+        val startedIn = generation.get()
+        return withContext(Dispatchers.IO) {
+            mutex.withLock {
+                if (generation.get() != startedIn) return@withLock null
+                runCatching {
+                    dir.mkdirs()
+                    val name = UUID.randomUUID().toString()
+                    File(dir, name).writeBytes(file.bytes)
+                    StoredFile(name, file.name, file.mimeType)
+                }.onFailure { Log.w(TAG, "Draft file could not be written", it) }.getOrNull()
+            }
+        }
+    }
+
+    suspend fun readFile(stored: StoredFile): PromptFile? = withContext(Dispatchers.IO) {
+        runCatching { PromptFile(File(dir, stored.file).readBytes(), stored.name, stored.mimeType) }.getOrNull()
+    }
+
     /** Saves [draft] and deletes the image files it no longer references. Written whole, so a kill cannot halve it. */
     suspend fun write(draft: Draft) {
         val startedIn = generation.get()
@@ -95,7 +122,7 @@ class DraftStore(context: Context) {
                     val scratch = File(dir, "composer.json.tmp")
                     scratch.writeText(CursorJson.encodeToString(Draft.serializer(), draft))
                     if (!scratch.renameTo(file)) scratch.delete()
-                    prune(draft.images.mapTo(mutableSetOf()) { it.file })
+                    prune(draft.images.mapTo(mutableSetOf()) { it.file } + draft.files.map { it.file })
                 }.onFailure { Log.w(TAG, "Draft could not be written", it) }
             }
         }

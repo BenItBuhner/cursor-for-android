@@ -221,7 +221,7 @@ private fun attachmentImport(results: List<Result<PendingAttachment>>, overflow:
 }
 
 /** What the provider says the selection weighs, or -1 when it will not say — which a picker is free to do. */
-private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
+internal fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
     val queried = runCatching {
         resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
             val column = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -235,17 +235,22 @@ private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
 }
 
 /**
- * The selection's bytes, refused before they are all in memory when there are more than [PromptImage.MAX_BYTES] of
- * them. A declared size is only a hint — a provider may give none at all, and a document provider streaming a
- * 100 MB original is allowed to be wrong about it — so the copy stops one byte past the cap regardless. Reading the
- * whole stream first risked an OutOfMemoryError, which `runCatching` does not make safe, in place of the size
- * message the user is promised.
+ * The selection's bytes, refused before they are all in memory when there are more than [maxBytes] of them
+ * ([PromptImage.MAX_BYTES] for an image, the same 15 MB for a file). A declared size is only a hint — a provider may
+ * give none at all, and a document provider streaming a 100 MB original is allowed to be wrong about it — so the copy
+ * stops one byte past the cap regardless. Reading the whole stream first risked an OutOfMemoryError, which
+ * `runCatching` does not make safe, in place of the size message the user is promised.
  */
-internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): ByteArray {
-    if (declaredSize > PromptImage.MAX_BYTES) error(TooLargeMessage)
-    val stream = open() ?: error("Couldn't read the selected image.")
-    val limit = PromptImage.MAX_BYTES + 1
-    val out = ByteArrayOutputStream(if (declaredSize in 1..PromptImage.MAX_BYTES) declaredSize.toInt() else 256 * 1024)
+internal fun readBoundedBytes(
+    declaredSize: Long,
+    maxBytes: Long = PromptImage.MAX_BYTES,
+    tooLarge: String = TooLargeMessage,
+    open: () -> InputStream?,
+): ByteArray {
+    if (declaredSize > maxBytes) error(tooLarge)
+    val stream = open() ?: error("Couldn't read the selected file.")
+    val limit = maxBytes + 1
+    val out = ByteArrayOutputStream(if (declaredSize in 1..maxBytes) declaredSize.toInt() else 256 * 1024)
     stream.use { input ->
         val buffer = ByteArray(64 * 1024)
         while (out.size() < limit) {
@@ -254,7 +259,7 @@ internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): Byt
             out.write(buffer, 0, n)
         }
     }
-    if (out.size() > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    if (out.size() > maxBytes) error(tooLarge)
     return out.toByteArray()
 }
 

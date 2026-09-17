@@ -72,11 +72,19 @@ data class Capabilities(
      * agent's `CreateGoal` / `UpdateGoal` calls on the documented stream and the "Goal continued" turns.
      */
     val accountGoal: Boolean = false,
+    /**
+     * Files of any type attached to a prompt, the way the desktop Agents Window attaches them: uploaded through the
+     * account's `PresignPromptUpload` / `CompletePromptUpload` and referenced from the prompt as `selected_documents[]`
+     * on `AddAsyncFollowupBackgroundComposer` and `StartBackgroundComposerFromSnapshot`. Off: the documented
+     * `prompt.images[]` alone — the picker offers images only.
+     */
+    val promptFiles: Boolean = false,
 ) {
     /** True when any private surface is on: what the persistent indicator and the default-mode explanations go by. */
     val anyExtended: Boolean
         get() = accountSession || accountProfile || pinSync || accountLifecycle || accountSlashCommands || accountPullRequests || projects || steering ||
-            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript || accountGoal
+            workspaceFiles || diffDetails || scmPullRequests || remoteDesktop || interactions || accountQueue || agentModes || accountTranscript || accountGoal ||
+            promptFiles
 
     companion object {
         /** The default: the documented API only. */
@@ -98,6 +106,7 @@ data class Capabilities(
             agentModes = false,
             accountTranscript = false,
             accountGoal = false,
+            promptFiles = false,
         )
 
         /** Extended mode: every private surface, exactly as the app used them before the setting existed. */
@@ -119,6 +128,7 @@ data class Capabilities(
             agentModes = true,
             accountTranscript = true,
             accountGoal = true,
+            promptFiles = true,
         )
 
         fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED

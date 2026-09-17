@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -499,6 +500,19 @@ fun SpinnerRing(modifier: Modifier = Modifier, color: Color = CursorTheme.colors
             val stroke = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
             drawArc(color.copy(alpha = 0.25f), 0f, 360f, false, style = stroke)
             drawArc(color, angle, 90f, false, style = stroke)
+        },
+    )
+}
+
+/** [SpinnerRing]'s determinate twin: the arc fills clockwise from the top with [progress] (0..1), for an upload under way. */
+@Composable
+fun ProgressRing(progress: Float, modifier: Modifier = Modifier, color: Color = CursorTheme.colors.accent, size: Dp = 11.dp, strokeWidth: Dp = 1.5.dp) {
+    val sweep by animateFloatAsState(progress.coerceIn(0f, 1f) * 360f, tween(160), label = "progress")
+    Box(
+        modifier.size(size).drawBehind {
+            val stroke = Stroke(width = strokeWidth.toPx(), cap = StrokeCap.Round)
+            drawArc(color.copy(alpha = 0.25f), 0f, 360f, false, style = stroke)
+            if (sweep > 0f) drawArc(color, -90f, sweep, false, style = stroke)
         },
     )
 }

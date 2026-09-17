@@ -63,9 +63,20 @@ data class PendingFollowup(
     /** Where it was queued from, as the account spells the source (see [AgentSource]); null when the record left it out. */
     val source: AgentSource? = null,
     val isEditing: Boolean = false,
+    /**
+     * What the queued message carries besides its text, read off its `conversation_action`'s `selected_context`: the
+     * documents by filename and type, and the images by count — enough for the row to show what will go out with it.
+     */
+    val files: List<PendingAttachment> = emptyList(),
+    val imageCount: Int = 0,
 ) {
     /** The line a card shows: the message, or a word for one that carries only attachments. */
-    val previewText: String get() = text.ifBlank { QueuedFollowUp.IMAGE_ONLY_TEXT }
+    val previewText: String get() = text.ifBlank { attachmentOnlyText(imageCount, files.size) }
+}
+
+/** A file on a queued follow-up as the account describes it (`agent.v1.SelectedDocument`'s `filename` and `mime_type`); the bytes stay on the server. */
+data class PendingAttachment(val name: String, val mimeType: String) {
+    val kind: PromptFileKind get() = PromptFileKind.of(name, mimeType)
 }
 
 /**
