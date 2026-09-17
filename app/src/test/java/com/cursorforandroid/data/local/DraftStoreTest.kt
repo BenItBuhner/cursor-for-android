@@ -3,6 +3,7 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineStart
@@ -49,6 +50,23 @@ class DraftStoreTest {
         assertThat(read.prompt).isEqualTo("Ship it")
         assertThat(read.nonce).isEqualTo("nonce")
         assertThat(store.readImage(read.images.single())!!.bytes).isEqualTo(byteArrayOf(1, 2, 3))
+    }
+
+    @Test
+    fun `a draft's files come back with their names and types, and are pruned with the draft`() = runBlocking<Unit> {
+        val store = DraftStore(context)
+        val stored = store.writeFile(PromptFile(byteArrayOf(9, 9), "trace.zip", "application/zip"))!!
+        store.write(draft("Look").copy(files = listOf(stored)))
+
+        val read = DraftStore(context).read()!!
+        val file = store.readFile(read.files.single())!!
+        assertThat(file.name).isEqualTo("trace.zip")
+        assertThat(file.mimeType).isEqualTo("application/zip")
+        assertThat(file.bytes).isEqualTo(byteArrayOf(9, 9))
+        assertThat(files()).containsExactly("composer.json", stored.file)
+
+        store.write(draft("Look"))
+        assertThat(files()).containsExactly("composer.json")
     }
 
     @Test

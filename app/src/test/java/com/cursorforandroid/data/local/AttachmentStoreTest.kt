@@ -6,6 +6,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -74,6 +76,37 @@ class AttachmentStoreTest {
 
         assertThat(store.forAgent("bc-1")).isEqualTo(mapOf("run-7" to kept))
         assertThat(store.forAgent("bc-2")).isEmpty()
+    }
+
+    @Test
+    fun `files of any type are staged byte for byte under their own names and come back after the images, with name, type and size`() = runBlocking {
+        val pdf = PromptFile(byteArrayOf(0x25, 0x50, 0x44, 0x46, 0x2D), "Q3 report (final).pdf", "application/pdf")
+        val zip = PromptFile(ByteArray(3) { 1 }, "bundle.zip", "application/zip")
+        val staged = store.stage(listOf(png(64, 64)), listOf(pdf, zip))
+        assertThat(staged.attachments).hasSize(3)
+        val files = staged.attachments.filter { it.isFile }
+        assertThat(files.map { it.name }).containsExactly("Q3 report (final).pdf", "bundle.zip").inOrder()
+        assertThat(files.map { it.mimeType }).containsExactly("application/pdf", "application/zip").inOrder()
+        assertThat(files.map { it.sizeBytes }).containsExactly(5L, 3L).inOrder()
+        // Kept as picked, under a name the filesystem takes, so the viewer reads the type off the extension.
+        assertThat(File(files[0].path).name).isEqualTo("f0-Q3_report__final_.pdf")
+        assertThat(File(files[0].path).readBytes()).isEqualTo(pdf.bytes)
+
+        val kept = store.commit("bc-1", "run-8", staged)
+        assertThat(kept.filter { it.isFile }.map { it.name }).containsExactly("Q3 report (final).pdf", "bundle.zip").inOrder()
+        kept.forEach { assertThat(File(it.path).isFile).isTrue() }
+        val read = store.forAgent("bc-1").getValue("run-8")
+        assertThat(read.filterNot { it.isFile }).hasSize(1)
+        assertThat(read.filter { it.isFile }.map { it.name to it.sizeBytes }).containsExactly("Q3 report (final).pdf" to 5L, "bundle.zip" to 3L).inOrder()
+        assertThat(read.filter { it.isFile }.map { it.kind }).containsExactly(PromptFileKind.Pdf, PromptFileKind.Archive).inOrder()
+        assertThat(read.indexOfFirst { it.isFile }).isEqualTo(1)
+    }
+
+    @Test
+    fun `a prompt of files alone stages, and a save files them under the run in one step`() = runBlocking {
+        val kept = store.save("bc-3", "run-1", emptyList(), listOf(PromptFile(byteArrayOf(7), "notes.txt", "text/plain")))
+        assertThat(kept.single().isFile).isTrue()
+        assertThat(store.forAgent("bc-3").getValue("run-1").single().name).isEqualTo("notes.txt")
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.SteerOutcome
@@ -123,6 +124,68 @@ class SteeringApiTest {
         val plain = now["followupConversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject
         assertThat(plain.containsKey("mode")).isFalse()
         assertThat(plain.containsKey("selectedContext")).isFalse()
+    }
+
+    @Test
+    fun `a follow-up with files carries them as selected_documents, uploaded by reference or inline, beside the images`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"runId":"run-8"}"""))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        val uploaded = SelectedDocument("report.pdf", "application/pdf", uploadId = "up-1", uuid = "doc-1")
+        val inline = SelectedDocument("notes.txt", "text/plain", uploadId = null, data = byteArrayOf(7, 8), uuid = "doc-2")
+        val image = PromptImage(byteArrayOf(1), "image/png")
+        val followup = AccountFollowup("See the attached files.", listOf(image), documents = listOf(uploaded, inline), followupId = "fu-2")
+        assertThat(api.addFollowup("bc-1", followup, synchronous = false)).isEqualTo("run-8")
+        // Files alone: the context carries documents and no images key at all.
+        api.addFollowup("bc-1", AccountFollowup("Read this", documents = listOf(uploaded), followupId = "fu-3"), synchronous = false)
+
+        server.takeRequest()
+        val body = server.takeRequest().json()
+        assertThat(body["followupId"]?.jsonPrimitive?.content).isEqualTo("fu-2")
+        val context = body["followupConversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject["selectedContext"]!!.jsonObject
+        assertThat(context["selectedImages"]!!.jsonArray).hasSize(1)
+        val documents = context["selectedDocuments"]!!.jsonArray.map { it.jsonObject }
+        assertThat(documents).hasSize(2)
+        // agent.v1.SelectedDocument {uuid, filename, mime_type, prompt_upload_ref {upload_id}} — the desktop's WKy after an upload.
+        assertThat(documents[0]["uuid"]?.jsonPrimitive?.content).isEqualTo("doc-1")
+        assertThat(documents[0]["filename"]?.jsonPrimitive?.content).isEqualTo("report.pdf")
+        assertThat(documents[0]["mimeType"]?.jsonPrimitive?.content).isEqualTo("application/pdf")
+        assertThat(documents[0]["promptUploadRef"]!!.jsonObject["uploadId"]?.jsonPrimitive?.content).isEqualTo("up-1")
+        assertThat(documents[0].containsKey("data")).isFalse()
+        // The oneof's other member: the bytes inline, base64, and no upload reference beside them.
+        assertThat(documents[1]["uuid"]?.jsonPrimitive?.content).isEqualTo("doc-2")
+        assertThat(documents[1]["data"]?.jsonPrimitive?.content).isEqualTo(Base64.getEncoder().encodeToString(byteArrayOf(7, 8)))
+        assertThat(documents[1].containsKey("promptUploadRef")).isFalse()
+        assertThat(documents[1]["mimeType"]?.jsonPrimitive?.content).isEqualTo("text/plain")
+
+        val filesOnly = server.takeRequest().json()["followupConversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject["selectedContext"]!!.jsonObject
+        assertThat(filesOnly.containsKey("selectedImages")).isFalse()
+        assertThat(filesOnly["selectedDocuments"]!!.jsonArray).hasSize(1)
+    }
+
+    @Test
+    fun `a queued message's attachments are read off its conversation action, files by name and images by count`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"pendingFollowups":[
+                     {"followupId":"fu-1","text":"Check these","conversationAction":{"userMessageAction":{"userMessage":{"text":"Check these","selectedContext":{
+                        "selectedImages":[{"uuid":"i1","mimeType":"image/png"},{"uuid":"i2","mimeType":"image/jpeg"}],
+                        "selectedDocuments":[{"uuid":"d1","filename":"spec.pdf","mimeType":"application/pdf","promptUploadRef":{"uploadId":"up-1"}},{"uuid":"d2","mimeType":"application/zip"}]
+                     }}}}},
+                     {"followupId":"fu-2","text":"plain"}
+                   ]}""",
+            ),
+        )
+
+        val queue = api.listPending("bc-1")
+
+        assertThat(queue).hasSize(2)
+        assertThat(queue[0].files).containsExactly(PendingAttachment("spec.pdf", "application/pdf"), PendingAttachment("Document", "application/zip")).inOrder()
+        assertThat(queue[0].imageCount).isEqualTo(2)
+        assertThat(queue[1].files).isEmpty()
+        assertThat(queue[1].imageCount).isEqualTo(0)
     }
 
     @Test
