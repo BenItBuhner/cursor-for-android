@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What the app's FileProvider may hand to another app: the diagnostics reports written under the cache. -->
+<!--
+  What the app's FileProvider may hand to another app: the diagnostics reports written under the cache, and the
+  on-device copies of the files attached to prompts (AttachmentStore, files/attachments/<agent>/<run>/), which a
+  transcript card opens with the system viewer.
+-->
 <paths>
     <cache-path name="diagnostics" path="diagnostics/" />
+    <files-path name="attachments" path="attachments/" />
 </paths>

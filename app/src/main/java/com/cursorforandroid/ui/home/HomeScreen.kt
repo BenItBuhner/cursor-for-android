@@ -77,6 +77,7 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
+import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberImagePicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.share.ShareTarget
@@ -125,7 +126,15 @@ fun HomeScreen(
         onPicked = viewModel::addAttachments,
         onError = viewModel::reportError,
     )
-    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    // Files of any type (Extended mode): the document picker, whose images join the image strip like the photo picker's.
+    val pickFiles = rememberFilePicker(
+        currentFileCount = state.files.size,
+        currentImageCount = state.attachments.size,
+        onPickedFiles = viewModel::addFiles,
+        onPickedImages = viewModel::addAttachments,
+        onError = viewModel::reportError,
+    )
+    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages, onAttachFile = if (state.canAttachFiles) pickFiles else null)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val draft = share ?: return@LaunchedEffect
@@ -175,6 +184,8 @@ fun HomeScreen(
                         onRemoveAttachment = viewModel::removeAttachment,
                         onAddAttachments = viewModel::addAttachments,
                         onAttachmentError = viewModel::reportError,
+                        files = state.files,
+                        onRemoveFile = viewModel::removeFile,
                         modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
                         // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.

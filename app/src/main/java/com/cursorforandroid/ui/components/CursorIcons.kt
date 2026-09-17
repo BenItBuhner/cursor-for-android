@@ -316,6 +316,38 @@ object CursorIcons {
         }
     }
 
+    /** A page with lines: a text or document attachment. */
+    val FileText: ImageVector by lazy {
+        icon("FileText") {
+            path("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z")
+            path("M14 2v4a2 2 0 0 0 2 2h4")
+            path("M10 9H8")
+            path("M16 13H8")
+            path("M16 17H8")
+        }
+    }
+
+    /** A page with a zip seam: an archive attachment. */
+    val FileArchive: ImageVector by lazy {
+        icon("FileArchive") {
+            path("M10 12v-1")
+            path("M10 18v-2")
+            path("M10 7V6")
+            path("M14 2v4a2 2 0 0 0 2 2h4")
+            path("M15.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v16a2 2 0 0 0 .274 1.01")
+            circle(10f, 20f, 2f)
+        }
+    }
+
+    /** A pair of notes: an audio attachment. */
+    val Music: ImageVector by lazy {
+        icon("Music") {
+            path("M9 18V5l12-2v13")
+            circle(6f, 18f, 3f)
+            circle(18f, 16f, 3f)
+        }
+    }
+
     val Pencil: ImageVector by lazy {
         icon("Pencil") {
             path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z")

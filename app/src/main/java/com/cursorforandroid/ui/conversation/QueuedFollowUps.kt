@@ -47,6 +47,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 
@@ -111,7 +112,7 @@ private fun QueuedFollowUpRow(
         if (item.warning != null) {
             Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(8.dp))
-        } else if (item.images.isNotEmpty()) {
+        } else if (item.images.isNotEmpty() || item.files.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 item.images.forEach { image ->
                     Box(Modifier.size(Tile).cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.sm)) {
@@ -121,6 +122,12 @@ private fun QueuedFollowUpRow(
                         } else {
                             Icon(CursorIcons.Image, null, tint = colors.iconTertiary, modifier = Modifier.size(10.dp).align(Alignment.Center))
                         }
+                    }
+                }
+                // A file keeps its glyph where an image has its tile; its name follows the message line below.
+                item.files.forEach { file ->
+                    Box(Modifier.size(Tile).cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.sm).semantics { contentDescription = "Attached file ${file.file.name}" }) {
+                        Icon(file.file.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(10.dp).align(Alignment.Center))
                     }
                 }
             }
@@ -135,6 +142,7 @@ private fun QueuedFollowUpRow(
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (item.files.isNotEmpty()) AttachedFileNames(item.files.map { it.file.name })
             // Why it did not go, in the server's words or the connection's: without it the warning is only a riddle.
             item.warning?.let { note ->
                 Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -252,6 +260,15 @@ private fun AccountQueueRow(
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // What the account says the message carries (`selected_context`): its files by name, its images by count.
+                if (item.files.isNotEmpty() || item.imageCount > 0) {
+                    val images = when (item.imageCount) {
+                        0 -> emptyList()
+                        1 -> listOf("1 image")
+                        else -> listOf("${item.imageCount} images")
+                    }
+                    AttachedFileNames(item.files.map { it.name } + images)
+                }
                 if (item.isEditing) Text("Being edited on another device", style = type.small, color = colors.textQuaternary, maxLines = 1)
             }
             Spacer(Modifier.width(8.dp))
@@ -278,6 +295,20 @@ private fun AccountQueueRow(
             }
         }
     }
+}
+
+/** The attachments a queued row carries, named in one small line under its text: `report.pdf · trace.zip · 2 images`. */
+@Composable
+private fun AttachedFileNames(names: List<String>) {
+    Text(
+        names.joinToString(" · "),
+        style = CursorTheme.typography.small,
+        color = CursorTheme.colors.textTertiary,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.testTag("queued-attachments"),
+    )
 }
 
 /** One line of the reorder menu: the direction's glyph and word, dimmed at the end of the queue it cannot move past. */

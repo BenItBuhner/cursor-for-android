@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpServerForm
 import com.cursorforandroid.domain.McpTransport
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -59,8 +60,13 @@ import java.util.UUID
 
 /** What the composer's "+" menu can reach. Screens wire these to their view model and stores. */
 class ComposerMenuActions(
-    /** "Files": opens the system picker (the API takes images only). */
+    /** "Files" (or "Images" beside [onAttachFile]): opens the system photo picker; the documented API takes images only. */
     val onPickFiles: () -> Unit,
+    /**
+     * "Attach file": the system document picker for files of any type, up to 15 MB each (Extended mode). Null hides
+     * the row and leaves the image picker as the menu's one "Files" entry, as in the default mode.
+     */
+    val onAttachFile: (() -> Unit)? = null,
     /** Project / synced skill names typed before, most recent first. */
     val recentSkills: List<String> = emptyList(),
     /** Called with a project / synced skill name the user picked, so it can be remembered. */
@@ -126,6 +132,7 @@ fun ComposerPlusMenu(
                         multitaskOn = SlashCommands.has(prompt, SlashCommands.MULTITASK),
                         onMultitask = { toggleCommand(SlashCommands.MULTITASK) },
                         onFiles = { onDismiss(); actions.onPickFiles() },
+                        onAttachFile = actions.onAttachFile?.let { attach -> { onDismiss(); attach() } },
                         onSkills = { page = MenuPage.Skills },
                         onMcpServers = { page = MenuPage.McpServers },
                     )
@@ -169,7 +176,7 @@ private val PageListMaxHeight = 300.dp
 private const val PageMillis = 220
 
 @Composable
-private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () -> Unit, onSkills: () -> Unit, onMcpServers: () -> Unit) {
+private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () -> Unit, onAttachFile: (() -> Unit)?, onSkills: () -> Unit, onMcpServers: () -> Unit) {
     val colors = CursorTheme.colors
     MenuRow(
         icon = CursorIcons.Multitask,
@@ -179,7 +186,13 @@ private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () 
         trailing = { if (multitaskOn) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(16.dp)) },
     )
     HairlineDivider(Modifier.padding(vertical = 4.dp))
-    MenuRow(CursorIcons.Paperclip, "Files", onClick = onFiles)
+    if (onAttachFile == null) {
+        MenuRow(CursorIcons.Paperclip, "Files", onClick = onFiles)
+    } else {
+        // Two pickers side by side read as one thing each: the photo picker for images, the document picker for the rest.
+        MenuRow(CursorIcons.Image, "Images", onClick = onFiles)
+        MenuRow(CursorIcons.Paperclip, "Attach file", subtitle = "Any type, up to ${PromptFile.MAX_BYTES / (1024 * 1024)} MB each", onClick = onAttachFile)
+    }
     MenuRow(CursorIcons.Book, "Skills", onClick = onSkills, trailing = { Chevron() })
     MenuRow(CursorIcons.Plug, "MCP Servers", onClick = onMcpServers, trailing = { Chevron() })
 }

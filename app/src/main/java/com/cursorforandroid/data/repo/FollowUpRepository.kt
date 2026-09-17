@@ -6,6 +6,7 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.FollowUpStore
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
+import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.FollowUpDraft
@@ -64,6 +65,12 @@ class FollowUpRepository(
     private val agents: AgentRepository,
     private val hub: LiveRunHub,
     private val mcpServers: suspend () -> List<McpServer>,
+    /**
+     * Sends a queued message that carries files through the account's follow-up (Extended mode) — the documented run
+     * request cannot take a file — and answers with the run the account named, if any. Null when there is no account
+     * to send through; such a message then fails with [AgentRepository.FILES_NEED_EXTENDED] and waits for the user.
+     */
+    private val accountSend: (suspend (agentId: String, item: QueuedFollowUp) -> String?)? = null,
     private val store: FollowUpStore? = null,
     /** False (the demo) keeps everything in memory. */
     private val persist: () -> Boolean = { true },
@@ -134,6 +141,12 @@ class FollowUpRepository(
         e.scheduleSave()
     }
 
+    fun setDraftFiles(agentId: String, files: List<DraftFile>) {
+        val e = entry(agentId)
+        e.update { copy(draft = draft.copy(files = files)) }
+        e.scheduleSave()
+    }
+
     fun clearDraft(agentId: String) {
         val e = entry(agentId)
         e.update { copy(draft = FollowUpDraft.EMPTY) }
@@ -157,11 +170,13 @@ class FollowUpRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
+        files: List<DraftFile> = emptyList(),
     ): QueuedFollowUp {
         val item = QueuedFollowUp(
             id = "queued-" + UUID.randomUUID(),
             text = text.trim(),
             images = images,
+            files = files,
             queuedAtMillis = AppClock.now(),
             planMode = planMode,
             modelId = modelId,
@@ -198,10 +213,10 @@ class FollowUpRepository(
                 val item = queue.firstOrNull { it.id == id && !it.isSending && !it.isSteered } ?: return@update this
                 taken = item
                 val displaced = draft.takeUnless { it.isEmpty }?.let { d ->
-                    item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, queuedAtMillis = AppClock.now(), error = null)
+                    item.copy(id = "queued-" + UUID.randomUUID(), text = d.text.trim(), images = d.images, files = d.files, queuedAtMillis = AppClock.now(), error = null)
                 }
                 copy(
-                    draft = FollowUpDraft(item.text, item.images),
+                    draft = FollowUpDraft(item.text, item.images, item.files),
                     queue = queue.flatMap { q -> if (q.id != id) listOf(q) else listOfNotNull(displaced) },
                 )
             }
@@ -247,7 +262,7 @@ class FollowUpRepository(
 
     private suspend fun steer(e: Entry, item: QueuedFollowUp, startedIn: Int) {
         if (generation.get() != startedIn) return
-        val staged = conversations.stageFollowUp(e.agentId, item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }, item.images.map { it.image })
+        val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file })
         stopTurn(e).exceptionOrNull()?.let { t ->
             if (t is CancellationException) throw t
             unsteer(e, item, staged, t)
@@ -316,16 +331,7 @@ class FollowUpRepository(
             val startedAt = AppClock.now()
             e.update { copy(queue = queue.map { if (it.id == item.id) it.copy(sendStartedAtMillis = startedAt) else it }) }
             e.scheduleSave()
-            val result = conversations.sendStaged(
-                e.agentId,
-                staged,
-                item.images.map { it.image },
-                mcpServers = mcpServers(),
-                planMode = item.planMode,
-                modelId = item.modelId,
-                modelParams = item.modelParams,
-                modelDisplayName = item.modelDisplayName,
-            )
+            val result = sendStagedItem(e, staged, item)
             val t = result.exceptionOrNull()
             when {
                 t == null -> {
@@ -335,13 +341,36 @@ class FollowUpRepository(
                 }
                 t is CancellationException -> throw t
                 t.toCursorError()?.code == AGENT_BUSY -> awaitBusyTurn(e.agentId, busyStreak++)
-                t.isTransientFailure() && retries < MAX_SEND_RETRIES -> delay(retryBaseMs shl retries++)
+                // A message with files went through the account's follow-up, whose failure has already taken the
+                // bubble down (see [ConversationRepository.sendStagedVia]): it is not sent again under a bubble that is gone.
+                t.isTransientFailure() && retries < MAX_SEND_RETRIES && item.files.isEmpty() -> delay(retryBaseMs shl retries++)
                 else -> {
                     unsteer(e, item, staged, t)
                     return
                 }
             }
         }
+    }
+
+    /**
+     * Sends a staged queued message: the documented run request, or — for one that carries files — the account's
+     * follow-up through [accountSend], which alone can take them.
+     */
+    private suspend fun sendStagedItem(e: Entry, staged: StagedFollowUp, item: QueuedFollowUp): Result<Unit> {
+        if (item.files.isEmpty()) {
+            return conversations.sendStaged(
+                e.agentId,
+                staged,
+                item.images.map { it.image },
+                mcpServers = mcpServers(),
+                planMode = item.planMode,
+                modelId = item.modelId,
+                modelParams = item.modelParams,
+                modelDisplayName = item.modelDisplayName,
+            )
+        }
+        val send = accountSend ?: return conversations.sendStagedVia(e.agentId, staged) { throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED) }
+        return conversations.sendStagedVia(e.agentId, staged, item.modelId, item.modelParams, item.modelDisplayName) { send(e.agentId, item) }
     }
 
     /**
@@ -485,8 +514,7 @@ class FollowUpRepository(
         for (item in pending) {
             if (generation.get() != startedIn) return
             val since = item.sendStartedAtMillis ?: continue
-            val text = item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT }
-            val sent = conversations.wasSentSince(e.agentId, text, since)
+            val sent = conversations.wasSentSince(e.agentId, item.previewText, since)
             synchronized(e) {
                 if (generation.get() != startedIn) return
                 when {
@@ -614,16 +642,21 @@ class FollowUpRepository(
      */
     private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int, busyStreak: Int): Boolean {
         if (generation.get() != startedIn) return false
-        val result = conversations.sendFollowUp(
-            e.agentId,
-            item.text.ifEmpty { QueuedFollowUp.IMAGE_ONLY_TEXT },
-            item.images.map { it.image },
-            mcpServers = mcpServers(),
-            planMode = item.planMode,
-            modelId = item.modelId,
-            modelParams = item.modelParams,
-            modelDisplayName = item.modelDisplayName,
-        )
+        val result = if (item.files.isEmpty()) {
+            conversations.sendFollowUp(
+                e.agentId,
+                item.previewText,
+                item.images.map { it.image },
+                mcpServers = mcpServers(),
+                planMode = item.planMode,
+                modelId = item.modelId,
+                modelParams = item.modelParams,
+                modelDisplayName = item.modelDisplayName,
+            )
+        } else {
+            val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file })
+            sendStagedItem(e, staged, item)
+        }
         if (generation.get() != startedIn) return false
         return result.fold(
             onSuccess = {

@@ -32,8 +32,19 @@ data class MessageAttachment(
     val path: String,
     val width: Int,
     val height: Int,
+    /** Set for a file of any type (Extended mode): what the card is titled. Null for an image. */
+    val name: String? = null,
+    val mimeType: String? = null,
+    val sizeBytes: Long = 0L,
 ) {
     val aspectRatio: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 1f
+    /** A file card rather than an image thumbnail. */
+    val isFile: Boolean get() = name != null
+    val kind: PromptFileKind get() = PromptFileKind.of(name.orEmpty(), mimeType.orEmpty())
+
+    companion object {
+        fun file(path: String, name: String, mimeType: String, sizeBytes: Long) = MessageAttachment(path, 0, 0, name, mimeType, sizeBytes)
+    }
 }
 
 @Serializable

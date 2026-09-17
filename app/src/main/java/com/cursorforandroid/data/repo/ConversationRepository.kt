@@ -35,6 +35,7 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.ProjectDiagnostics
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunOrder
@@ -2420,15 +2421,15 @@ class ConversationRepository(
      * [sendFollowUp] so a queued message that is steered can be on screen while the turn it interrupts is still being
      * cancelled.
      */
-    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList()): StagedFollowUp {
+    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), files: List<PromptFile> = emptyList()): StagedFollowUp {
         val e = entry(agentId)
         val trimmed = text.trim()
         val now = AppClock.now()
         val localId = "$LOCAL_RUN_PREFIX$now"
         val placeholder = e.placeholderRun(localId, now)
-        // Written before the request so the bubble shows its images from the first frame, like the text. Storage
-        // trouble costs the previews, never the send.
-        val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
+        // Written before the request so the bubble shows its images and files from the first frame, like the text.
+        // Storage trouble costs the previews, never the send.
+        val staged = runCatching { attachments.stage(images, files) }.getOrDefault(StagedAttachments.EMPTY)
         e.publish(
             mutate = {
                 local = local + LocalPrompt(V0ConversationMessageDto(localId, USER_MESSAGE, trimmed), placeholder)
@@ -2477,14 +2478,30 @@ class ConversationRepository(
         agentId: String,
         text: String,
         images: List<PromptImage> = emptyList(),
+        files: List<PromptFile> = emptyList(),
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
         send: suspend () -> String?,
     ): Result<Unit> {
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
+        val staged = stageFollowUp(agentId, text, images, files)
+        return sendStagedVia(agentId, staged, modelId, modelParams, modelDisplayName, send)
+    }
+
+    /**
+     * [sendFollowUpVia] for a prompt already [stageFollowUp]ed — a queued message that carries files, which only the
+     * account's follow-up can take. The bubble comes down with the reason when [send] fails, as it does there.
+     */
+    suspend fun sendStagedVia(
+        agentId: String,
+        staged: StagedFollowUp,
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
+        send: suspend () -> String?,
+    ): Result<Unit> {
         val e = entry(agentId)
-        val staged = stageFollowUp(agentId, text, images)
         return agents.followUpVia(agentId, modelId, modelParams, modelDisplayName, send)
             .map { run ->
                 if (run != null) {
@@ -2552,9 +2569,9 @@ class ConversationRepository(
         val now = AppClock.now()
         val localId = "$LOCAL_RUN_PREFIX$now"
         val placeholder = e.placeholderRun(localId, now)
-        // Staged before anything is shown, so the bubble has its images from its first frame. Storage trouble costs
-        // the previews, never the launch.
-        val staged = runCatching { attachments.stage(request.images) }.getOrDefault(StagedAttachments.EMPTY)
+        // Staged before anything is shown, so the bubble has its images and files from its first frame. Storage
+        // trouble costs the previews, never the launch.
+        val staged = runCatching { attachments.stage(request.images, request.files) }.getOrDefault(StagedAttachments.EMPTY)
         agents.beginLaunch(request, modelDisplayName)
         e.publish(
             mutate = {
