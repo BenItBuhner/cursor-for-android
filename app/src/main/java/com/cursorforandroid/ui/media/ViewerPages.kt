@@ -51,6 +51,7 @@ import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.first
 
 /**
  * What one page has to show and where: the best picture it has so far (the thumbnail's decode, then the
@@ -115,6 +116,11 @@ internal fun ImagePage(
     LaunchedEffect(ref, viewport) {
         if (viewport.width <= 0 || viewport.height <= 0 || presentation.loaded) return@LaunchedEffect
         val target = boundedPixels(viewport.width, viewport.height)
+        // Nothing lands on a page while the transform runs: a decode arriving then is a bitmap swap and a re-layout
+        // mid-animation — on the page opening, or on a neighbour no one can see yet — for a difference no one sees
+        // at that size, the thumbnail's own decode being bounded by the screen's short edge already. The decodes
+        // are asked for only once the page has landed, and the pager's neighbours have the swipe's time to arrive.
+        snapshotFlow { state.phase }.first { it != MediaViewerState.Phase.Opening }
         if (presentation.bitmap == null) {
             runCatching { environment.loader.image(ref, target.width / 3, target.height / 3) }.onSuccess { presentation.offer(it.asImageBitmap()) }
         }

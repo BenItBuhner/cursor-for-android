@@ -72,7 +72,7 @@ fun StoreDocumentSheet(ref: MediaRef.Store, files: StoreFileRepository, onDismis
     val type = CursorTheme.typography
     val uriHandler = LocalUriHandler.current
     val path = ref.path
-    CursorSheet(onDismiss = onDismiss) { _ ->
+    CursorSheet(onDismiss = onDismiss) { dismiss ->
         SheetHeader(
             path.fileName,
             trailing = {
@@ -87,9 +87,9 @@ fun StoreDocumentSheet(ref: MediaRef.Store, files: StoreFileRepository, onDismis
         Text(path.text, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 20.dp))
         HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         // The sheet is a window over the app's; a figure tapped here opens the media viewer, a layer of the app's
-        // window, so the sheet puts itself away as the viewer grows out of the figure.
+        // window, so the sheet slides away as the viewer comes up beneath it.
         val media = LocalMarkdownMedia.current
-        val steppingAside = remember(media, onDismiss) { media?.withBeforeOpen(onDismiss) }
+        val steppingAside = remember(media, dismiss) { media?.withBeforeOpen(dismiss) }
         when {
             path.isImage -> CompositionLocalProvider(LocalMarkdownMedia provides steppingAside) {
                 Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { ImageBlock(path.text, alt = path.fileName) }

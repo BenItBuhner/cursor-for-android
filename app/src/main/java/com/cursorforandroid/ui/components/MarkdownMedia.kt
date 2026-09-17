@@ -252,7 +252,7 @@ fun VideoBlock(src: String, poster: String?, modifier: Modifier = Modifier, heig
         }
 
         Box(Modifier.thumbnailSlot(slot).size(cardSize).cursorSurface(Color.Black, colors.strokeSubtle, shape)) {
-            frame?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+            frame?.let { Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().testTag("video-poster")) }
             Box(
                 Modifier
                     .fillMaxSize()

@@ -14,6 +14,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.unit.IntSize
 
 /**
@@ -129,6 +130,8 @@ class MediaViewerState internal constructor(restored: Session?) {
         }
         currentIndex = at
         controlsVisible = true
+        // The count is the session's: a close asked of the last session must not close this one as it opens.
+        closeRequests = 0
         session = Session(nextSessionId++, agentId, list, at, slot, seen, seenSize, autoplay)
         phase = Phase.Opening
     }
@@ -211,6 +214,8 @@ class ThumbnailSlot internal constructor(val id: Int, val src: String, internal 
      */
     internal fun frame(host: LayoutCoordinates, requireVisible: Boolean): ThumbnailFrame? {
         val coords = coordinates?.takeIf { it.isAttached } ?: return null
+        // A thumbnail in another window (a sheet's) shares no hierarchy with the host: there is no box to grow out of.
+        if (coords.findRootCoordinates() !== host.findRootCoordinates()) return null
         val bounds = host.localBoundingBoxOf(coords, clipBounds = false)
         if (bounds.width <= 0f || bounds.height <= 0f) return null
         if (requireVisible) {

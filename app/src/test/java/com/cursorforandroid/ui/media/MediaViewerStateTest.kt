@@ -47,6 +47,18 @@ class MediaViewerStateTest {
     }
 
     @Test
+    fun `a close asked of the last session does not carry over to the next`() {
+        val state = MediaViewerState(null)
+        state.open("agent", entries, "a.png")
+        state.close()
+        assertThat(state.closeRequests).isEqualTo(1)
+        state.finishClose()
+        state.open("agent", entries, "c.png")
+        assertThat(state.closeRequests).isEqualTo(0)
+        assertThat(state.isOpen).isTrue()
+    }
+
+    @Test
     fun `a second open while one is showing is ignored`() {
         val state = MediaViewerState(null)
         state.open("agent", entries, "c.png")

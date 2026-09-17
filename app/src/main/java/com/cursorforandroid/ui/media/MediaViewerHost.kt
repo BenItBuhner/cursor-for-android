@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -302,20 +303,20 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                 MediaEntry.Kind.Video -> VideoPage(state, session, entry, page, presentation, environment, viewport, isCurrent)
             }
         }
-        // The transform layer: the page's picture on its way between its thumbnail and its place, above everything.
-        frames?.let { active ->
-            if (state.phase != MediaViewerState.Phase.Open) {
-                TransformLayer(state, active, dismiss, Modifier.fillMaxSize().testTag("viewer-transform"))
-            }
-        }
-        // The chrome: only once the page has landed, and only while the reader wants it.
+        // The chrome: composed on the open's first frame, so that its arrival costs the landing frame nothing, but
+        // faded in only over the transform's last stretch (a layer alpha, read here); out with the close; away
+        // while the reader does not want it. Under the transform layer, so the picture on its way passes over it.
         AnimatedVisibility(
-            visible = state.phase == MediaViewerState.Phase.Open && state.controlsVisible,
+            visible = state.phase != MediaViewerState.Phase.Closing && state.controlsVisible,
             enter = fadeIn(tween(ChromeFadeMillis)),
             exit = fadeOut(tween(ChromeFadeMillis)),
             modifier = Modifier.fillMaxSize(),
         ) {
-            Box(Modifier.fillMaxSize()) {
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    alpha = if (state.phase == MediaViewerState.Phase.Opening) ((state.progress.value - ChromeFadeStart) / (1f - ChromeFadeStart)).coerceIn(0f, 1f) else 1f
+                },
+            ) {
                 if (current != null) {
                     val ref = remember(current.src, session.agentId) { MediaRef.parse(current.src, session.agentId) }
                     fun run(block: suspend () -> Result<String?>) {
@@ -341,6 +342,12 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                 }
+            }
+        }
+        // The transform layer: the page's picture on its way between its thumbnail and its place, above everything.
+        frames?.let { active ->
+            if (state.phase != MediaViewerState.Phase.Open) {
+                TransformLayer(state, active, dismiss, Modifier.fillMaxSize().testTag("viewer-transform"))
             }
         }
         notice?.let { text ->
@@ -406,6 +413,8 @@ private fun restingRect(viewport: IntSize, imageSize: IntSize): Rect {
 internal val TransformSpec: AnimationSpec<Float> = tween(TransformMillis, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
 internal const val TransformMillis = 300
 private const val ChromeFadeMillis = 160
+/** The share of the open transform the chrome stays clear for before it fades in over the rest. */
+private const val ChromeFadeStart = 0.6f
 private const val AutoHideMillis = 3_500L
 private const val NoticeMillis = 2_500L
 /** How far toward the thumbnail a full back gesture takes the page before it is committed. */
