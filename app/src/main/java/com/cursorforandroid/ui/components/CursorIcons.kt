@@ -538,6 +538,54 @@ object CursorIcons {
         }
     }
 
+    // ------------------------------------------------------------------------------------------------------------
+    // The media viewer's chrome
+    // ------------------------------------------------------------------------------------------------------------
+
+    /** Lucide `share`: the viewer's share action. */
+    val Share: ImageVector by lazy {
+        icon("Share") {
+            path("M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8")
+            path("m16 6-4-4-4 4")
+            path("M12 2v13")
+        }
+    }
+
+    /** Lucide `download`: saving a picture or recording to the device's gallery. */
+    val Download: ImageVector by lazy {
+        icon("Download") {
+            path("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4")
+            path("m7 10 5 5 5-5")
+            path("M12 15V3")
+        }
+    }
+
+    /** Lucide `volume-2`: a recording playing with its sound. */
+    val Volume: ImageVector by lazy {
+        icon("Volume") {
+            path("M11 5 6 9H2v6h4l5 4z")
+            path("M15.54 8.46a5 5 0 0 1 0 7.07")
+            path("M19.07 4.93a10 10 0 0 1 0 14.14")
+        }
+    }
+
+    /** Lucide `volume-x`: the recording muted. */
+    val VolumeOff: ImageVector by lazy {
+        icon("VolumeOff") {
+            path("M11 5 6 9H2v6h4l5 4z")
+            path("m22 9-6 6")
+            path("m16 9 6 6")
+        }
+    }
+
+    /** Lucide `pause`, filled like [Play]: the two share the disc over a playing recording. */
+    val PauseFilled: ImageVector by lazy {
+        icon("PauseFilled") {
+            fill("M6 4.5A1.5 1.5 0 0 1 7.5 3h2A1.5 1.5 0 0 1 11 4.5v15A1.5 1.5 0 0 1 9.5 21h-2A1.5 1.5 0 0 1 6 19.5z")
+            fill("M13 4.5A1.5 1.5 0 0 1 14.5 3h2A1.5 1.5 0 0 1 18 4.5v15a1.5 1.5 0 0 1-1.5 1.5h-2A1.5 1.5 0 0 1 13 19.5z")
+        }
+    }
+
     /**
      * The glyph for a Project's icon name as the account spells it (`lightning`, `rocket`, `logo-notion`, …): the
      * whole catalog the Agents Window offers, drawn from open-licensed geometry, with the cube the desktop itself

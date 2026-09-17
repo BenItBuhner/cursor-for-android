@@ -97,8 +97,7 @@ class StoreMediaTest {
         serveImage()
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val lightbox = rememberLightboxState(store)
-                CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext(store, loader(Capabilities.EXTENDED), lightbox, canReadStores = true)) {
+                CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext(store, loader(Capabilities.EXTENDED), canReadStores = true)) {
                     MarkdownText(markdown.lines().first { it.startsWith("![") })
                 }
             }
@@ -115,10 +114,9 @@ class StoreMediaTest {
         val uriHandler = object : UriHandler { override fun openUri(uri: String) { opened += uri } }
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val lightbox = rememberLightboxState(store)
                 CompositionLocalProvider(
                     LocalUriHandler provides uriHandler,
-                    LocalMarkdownMedia provides MarkdownMediaContext(store, loader(Capabilities.DOCUMENTED), lightbox, canReadStores = false),
+                    LocalMarkdownMedia provides MarkdownMediaContext(store, loader(Capabilities.DOCUMENTED), canReadStores = false),
                 ) {
                     MarkdownText(markdown)
                 }
@@ -142,8 +140,7 @@ class StoreMediaTest {
         val sent = mutableListOf<StorePath>()
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                val lightbox = rememberLightboxState(store)
-                val media = MarkdownMediaContext(store, loader(Capabilities.DOCUMENTED), lightbox, canReadStores = false, onOpenStorePath = { sent += it })
+                val media = MarkdownMediaContext(store, loader(Capabilities.DOCUMENTED), canReadStores = false, onOpenStorePath = { sent += it })
                 CompositionLocalProvider(LocalMarkdownMedia provides media) {
                     MarkdownText("![The board after the merge](/cursor/stores/self/media/board.png)")
                 }
@@ -170,10 +167,9 @@ class StoreMediaTest {
                 val context = ApplicationProvider.getApplicationContext<Context>()
                 val files = StoreFileRepository(api = { refusing }, capabilities = { Capabilities.EXTENDED })
                 val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) { files } }
-                val lightbox = rememberLightboxState(store)
                 CompositionLocalProvider(
                     LocalUriHandler provides uriHandler,
-                    LocalMarkdownMedia provides MarkdownMediaContext(store, loader, lightbox, canReadStores = true),
+                    LocalMarkdownMedia provides MarkdownMediaContext(store, loader, canReadStores = true),
                 ) {
                     MarkdownText(markdown.lines().first { it.startsWith("![") })
                 }
