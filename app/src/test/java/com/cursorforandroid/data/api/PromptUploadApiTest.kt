@@ -127,6 +127,16 @@ class PromptUploadApiTest {
     }
 
     @Test
+    fun `an uploaded file is an image on the prompt only for the types the API takes as images`() {
+        assertThat(UploadedFile("a.png", "image/png", uploadId = "u").isImage).isTrue()
+        assertThat(UploadedFile("a.jpg", "image/JPEG", uploadId = "u").isImage).isTrue()
+        assertThat(UploadedFile("a.heic", "image/heic", uploadId = "u").isImage).isFalse()
+        assertThat(UploadedFile("a.svg", "image/svg+xml", uploadId = "u").isImage).isFalse()
+        assertThat(UploadedFile("a.mp4", "video/mp4", uploadId = "u").isImage).isFalse()
+        assertThat(runCatching { UploadedFile("a.pdf", "application/pdf", uploadId = null) }.isFailure).isTrue()
+    }
+
+    @Test
     fun `the completion enum matches the descriptor's numbering`() {
         assertThat(PromptUploadCompletion.entries.map { it.number }).containsExactly(0, 1, 2, 3, 4, 5).inOrder()
         assertThat(PromptUploadCompletion.INVALID_PARTS.number).isEqualTo(5)

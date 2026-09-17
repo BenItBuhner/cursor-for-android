@@ -73,45 +73,23 @@ fun thumbnailOf(image: PromptImage): ImageBitmap? {
 }
 
 /**
- * Launches the system photo picker and converts the selection into [PendingAttachment]s, enforcing the API's
- * limits (5 images, 15 MB each, png / jpeg / gif / webp). Returns a function that opens the picker.
+ * Launches the system photo picker for images alone and converts the selection into [PendingAttachment]s, enforcing
+ * the API's limits (5 images, 15 MB each, png / jpeg / gif / webp): the default mode's "Images", the documented
+ * `prompt.images[]`. Returns a function that opens the picker. See [rememberMediaPicker] for the Extended mode's
+ * "Images and videos", which this is the image-only case of.
  */
 @Composable
 fun rememberImagePicker(
     currentCount: Int,
     onPicked: (List<PendingAttachment>) -> Unit,
     onError: (String) -> Unit,
-): () -> Unit {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(1)
-    // Remembered: the contract has no equals, and rememberLauncherForActivityResult keys its DisposableEffect on it,
-    // so a fresh one unregisters and re-registers the launcher on every recomposition — which is every SSE delta on
-    // the conversation screen.
-    val contract = remember(remaining) { ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2)) }
-    val singleContract = remember { ActivityResultContracts.PickVisualMedia() }
-    val deliver: (List<Uri>) -> Unit = { uris ->
-        if (uris.isNotEmpty()) {
-            scope.launch {
-                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, currentCount) }
-                if (imported.attachments.isNotEmpty()) onPicked(imported.attachments)
-                imported.error?.let(onError)
-            }
-        }
-    }
-    val launcher = rememberLauncherForActivityResult(contract) { uris -> deliver(uris) }
-    // PickMultipleVisualMedia insists on a limit above one, so with a single slot left it would let the user choose
-    // two and then discard one of them after the fact. The single-item picker asks for exactly what will fit.
-    val single = rememberLauncherForActivityResult(singleContract) { uri -> deliver(listOfNotNull(uri)) }
-    return {
-        val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-        when {
-            currentCount >= PromptImage.MAX_COUNT -> onError(attachmentLimitMessage())
-            remaining == 1 -> single.launch(request)
-            else -> launcher.launch(request)
-        }
-    }
-}
+): () -> Unit = rememberMediaPicker(
+    extended = false,
+    counts = AttachmentCounts(images = currentCount, files = 0),
+    onPickedImages = onPicked,
+    onPickedFiles = {},
+    onError = onError,
+)
 
 private const val TooLargeMessage = "Images must be 15 MB or smaller."
 

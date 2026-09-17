@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.PromptImage
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -9,11 +10,13 @@ import kotlinx.serialization.json.longOrNull
 import java.util.UUID
 
 /**
- * A file the prompt refers to: `agent.v1.SelectedDocument {uuid, filename, mime_type, data_or_blob_id}`, the way the
- * desktop Agents Window fills it (Cursor 3.20.21 `cloudAgentPromptUpload.js`, `WKy`): after an upload the oneof is
- * `prompt_upload_ref {upload_id}`; with the upload path off, or for an empty file, it is the bytes themselves (`data`).
+ * A file the prompt refers to, staged with the account or carried inline, the way the desktop Agents Window builds one
+ * (Cursor 3.20.21 `cloudAgentPromptUpload.js`): an image (`HKy`) becomes `agent.v1.SelectedImage {uuid, mime_type,
+ * data_or_blob_id}` in `selected_images[]`, anything else (`WKy`) an `agent.v1.SelectedDocument {uuid, filename,
+ * mime_type, data_or_blob_id}` in `selected_documents[]`. After an upload the oneof is `prompt_upload_ref {upload_id}`;
+ * with the upload path off, or for an empty file, it is the bytes themselves (`data`).
  */
-class SelectedDocument(
+class UploadedFile(
     val filename: String,
     val mimeType: String,
     /** The `PresignPromptUpload` id the bytes went up under; null when [data] is carried inline. */
@@ -22,8 +25,15 @@ class SelectedDocument(
     val uuid: String = UUID.randomUUID().toString(),
 ) {
     init {
-        require(uploadId != null || data != null) { "A SelectedDocument carries an upload id or its bytes." }
+        require(uploadId != null || data != null) { "An UploadedFile carries an upload id or its bytes." }
     }
+
+    /**
+     * Whether the prompt names it as an image (`selected_images[]`) rather than a document: one of the types the
+     * documented API takes as an image. The desktop's cloud picker treats HEIC and SVG as documents too (`Dkt`
+     * excludes its conversion images), so they, and every other image type outside that set, travel as documents here as well.
+     */
+    val isImage: Boolean get() = PromptImage.isSupported(mimeType)
 }
 
 /** One presigned part of a multipart prompt upload (`aiserver.v1.PromptUploadPart`). */

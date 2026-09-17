@@ -79,9 +79,10 @@ import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.keyboardInsetPadding
+import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberFilePicker
-import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
@@ -173,16 +174,19 @@ fun ConversationScreen(
             coordinatorMode = coordinatorMode,
         )
     }
-    val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
-    // Files of any type (Extended mode): the document picker, whose images join the image strip like the photo picker's.
-    val pickFiles = rememberFilePicker(
-        currentFileCount = files.size,
-        currentImageCount = attachments.size,
-        onPickedFiles = viewModel::addFiles,
+    // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
+    // Extended mode — and, in Extended mode, the document picker for files of any type.
+    val extendedFiles = capabilities.promptFiles && !isDemo
+    val counts = AttachmentCounts.of(attachments, files)
+    val pickMedia = rememberMediaPicker(
+        extended = extendedFiles,
+        counts = counts,
         onPickedImages = viewModel::addAttachments,
+        onPickedFiles = viewModel::addFiles,
         onError = viewModel::showMessage,
     )
-    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages, onAttachFile = if (capabilities.promptFiles && !isDemo) pickFiles else null)
+    val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::showMessage)
+    val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (extendedFiles) pickFiles else null)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val incoming = share ?: return@LaunchedEffect
@@ -303,7 +307,7 @@ fun ConversationScreen(
         modifier = modifier,
         panelContent = {
             // The panel's figures — generated images, recordings, artifacts — resolve through the same media context and
-            // open into the same lightbox as the transcript's.
+            // open into the same viewer as the transcript's, among the same pages.
             CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia, LocalPanelGraph provides graph) {
                 ConversationPanel(panel, panelActions, onClose = { scope.launch { panelState.close() } })
             }

@@ -6,7 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.AccountFollowup
-import com.cursorforandroid.data.api.SelectedDocument
+import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentRepository
@@ -46,6 +46,7 @@ import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.components.thumbnailOf
+import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -333,7 +334,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             toast.value = AgentRepository.FILES_NEED_EXTENDED
             return
         }
-        setFiles((files.value + items).take(PromptFile.MAX_COUNT))
+        setFiles((files.value + items).withinSlots(imagesElsewhere = attachments.value.size))
     }
 
     fun removeFile(item: PendingFile) {
@@ -358,10 +359,12 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         val restored = withContext(Dispatchers.Default) {
             saved.images.map { PendingAttachment.of(it.image, it.id, thumbnails.value[it.id]) }
         }
+        // An image file's chip thumbnail is decoded on the way back too, off the main thread.
+        val restoredFiles = withContext(Dispatchers.Default) { saved.files.map { PendingFile.of(it.file, it.id) } }
         thumbnails.update { cache -> cache + restored.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
         draft.value = saved.text
         attachments.value = restored
-        files.value = saved.files.map { PendingFile(it.id, it.file) }
+        files.value = restoredFiles
         uploads.value = emptyMap()
         keepModesExclusive(saved.text)
     }
@@ -440,8 +443,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 modelParams = options.override?.params.orEmpty(),
                 modelDisplayName = options.override?.label,
             ) {
-                val documents = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, documents, options)).getOrThrow()
+                val uploaded = uploadFiles(attached)
+                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
             }.onSuccess {
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
@@ -458,8 +461,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             draft.value = ""
             attachments.value = emptyList()
             runCatching {
-                val documents = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, documents, options)).getOrThrow()
+                val uploaded = uploadFiles(attached)
+                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
             }.onSuccess {
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
@@ -469,7 +472,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     /** Puts [attached] up through the account's prompt uploads, the chips following each file's bytes. */
-    private suspend fun uploadFiles(attached: List<PendingFile>): List<SelectedDocument> {
+    private suspend fun uploadFiles(attached: List<PendingFile>): List<UploadedFile> {
         if (attached.isEmpty()) return emptyList()
         uploads.update { it + attached.associate { f -> f.id to FileUploadState() } }
         return try {
@@ -493,10 +496,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         uploads.update { it - sentIds }
     }
 
-    private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, documents: List<SelectedDocument>, options: FollowUpModelState) = AccountFollowup(
+    private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, uploaded: List<UploadedFile>, options: FollowUpModelState) = AccountFollowup(
         text = text.ifEmpty { attachmentOnlyText(images.size, fileCount) },
         images = images.map { it.image },
-        documents = documents,
+        files = uploaded,
         mode = options.mode,
         modelId = options.override?.model?.id,
     )

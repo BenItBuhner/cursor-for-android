@@ -9,18 +9,18 @@ import com.cursorforandroid.ui.components.ComposerMenuActions
 import kotlinx.coroutines.launch
 
 /**
- * Binds the composer's "+" menu to the app: the image picker for Files, the document picker for Attach file (Extended
- * mode, when [onAttachFile] is given), recent skill names from preferences, and the encrypted MCP server list. Shared
- * by the New Chat and conversation composers so both menus behave the same.
+ * Binds the composer's "+" menu to the app: the photo picker for Images and videos, the document picker for Files
+ * (Extended mode, when [onPickFiles] is given), recent skill names from preferences, and the encrypted MCP server
+ * list. Shared by the New Chat and conversation composers so both menus behave the same.
  */
 @Composable
-fun rememberComposerMenuActions(graph: AppGraph, onPickFiles: () -> Unit, onAttachFile: (() -> Unit)? = null): ComposerMenuActions {
+fun rememberComposerMenuActions(graph: AppGraph, onPickMedia: () -> Unit, onPickFiles: (() -> Unit)? = null): ComposerMenuActions {
     val servers by graph.mcpServers.servers.collectAsStateWithLifecycle()
     val recentSkills by graph.prefs.recentSkills.collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
     return ComposerMenuActions(
+        onPickMedia = onPickMedia,
         onPickFiles = onPickFiles,
-        onAttachFile = onAttachFile,
         recentSkills = recentSkills,
         onSkillUsed = { name -> scope.launch { graph.prefs.rememberSkill(name) } },
         mcpServers = servers,

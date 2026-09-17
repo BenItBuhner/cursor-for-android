@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -20,7 +21,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** The composer's file chips and the "+" menu's Attach file row, on and off with the Extended mode. */
+/** The composer's file chips and the "+" menu's two pickers — Images and videos, Files — on and off with the Extended mode. */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
@@ -42,7 +43,7 @@ class ComposerFilesTest {
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onAttachFile = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     files = listOf(pdf, zip),
                     onRemoveFile = { removed += it },
                 )
@@ -71,7 +72,7 @@ class ComposerFilesTest {
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onAttachFile = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     files = listOf(pdf, zip),
                     onRemoveFile = {},
                     fileUploads = mapOf("f1" to FileUploadState(progress = 0.4f), "f2" to FileUploadState(progress = 0.1f, failed = true)),
@@ -91,9 +92,24 @@ class ComposerFilesTest {
     }
 
     @Test
-    fun `the plus menu offers Attach file beside Images in Extended mode, and the one Files row without it`() {
-        var attached = 0
-        var pickedImages = 0
+    fun `an image file's chip shows its thumbnail in place of the glyph`() {
+        val bitmap = ImageBitmap(4, 4)
+        val photo = PendingFile("f3", PromptFile(ByteArray(900), "IMG_20260917_074100.jpg", "image/jpeg"), thumbnail = bitmap)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                ComposerBox(value = "", onValueChange = {}, placeholder = "Follow up…", onSend = {}, files = listOf(photo), onRemoveFile = {})
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("IMG_20260917_074100.jpg").assertIsDisplayed()
+        compose.onNodeWithText("Image · 900 B").assertIsDisplayed()
+        assertThat(photo.isImage).isTrue()
+    }
+
+    @Test
+    fun `the plus menu reads Images and videos, then Files, in Extended mode, each opening its own picker`() {
+        var pickedFiles = 0
+        var pickedMedia = 0
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 ComposerBox(
@@ -101,42 +117,53 @@ class ComposerFilesTest {
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = { pickedImages++ }, onAttachFile = { attached++ }),
+                    plusMenu = ComposerMenuActions(onPickMedia = { pickedMedia++ }, onPickFiles = { pickedFiles++ }),
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.waitForIdle()
+        val media = compose.onNodeWithText("Images and videos").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val files = compose.onNodeWithText("Files").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertThat(media.top).isLessThan(files.top)
+        compose.onNodeWithText("Any type, up to 15 MB each").assertIsDisplayed()
+        compose.onAllNodesWithText("Attach file").assertCountEquals(0)
+        compose.onAllNodesWithText("Images").assertCountEquals(0)
+        compose.onNodeWithText("Files").performClick()
+        compose.waitForIdle()
+        assertThat(pickedFiles).isEqualTo(1)
+        assertThat(pickedMedia).isEqualTo(0)
+
+        compose.onNodeWithContentDescription("Add to prompt").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Images and videos").performClick()
+        compose.waitForIdle()
+        assertThat(pickedMedia).isEqualTo(1)
+        assertThat(pickedFiles).isEqualTo(1)
+    }
+
+    @Test
+    fun `the default mode's menu has Images alone - the image-only picker - and no Files row`() {
+        var pickedMedia = 0
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                ComposerBox(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    plusMenu = ComposerMenuActions(onPickMedia = { pickedMedia++ }),
                 )
             }
         }
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         compose.waitForIdle()
         compose.onNodeWithText("Images").assertIsDisplayed()
-        compose.onNodeWithText("Attach file").assertIsDisplayed()
-        compose.onNodeWithText("Any type, up to 15 MB each").assertIsDisplayed()
-        compose.onNodeWithText("Attach file").performClick()
-        compose.waitForIdle()
-        assertThat(attached).isEqualTo(1)
-        assertThat(pickedImages).isEqualTo(0)
-    }
-
-    @Test
-    fun `the default mode's menu is unchanged - one Files row with the image picker behind it`() {
-        var pickedImages = 0
-        compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) {
-                ComposerBox(
-                    value = "",
-                    onValueChange = {},
-                    placeholder = "Follow up…",
-                    onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = { pickedImages++ }),
-                )
-            }
-        }
-        compose.onNodeWithContentDescription("Add to prompt").performClick()
-        compose.waitForIdle()
-        compose.onNodeWithText("Files").assertIsDisplayed()
+        compose.onAllNodesWithText("Files").assertCountEquals(0)
+        compose.onAllNodesWithText("Images and videos").assertCountEquals(0)
         compose.onAllNodesWithText("Attach file").assertCountEquals(0)
-        compose.onAllNodesWithText("Images").assertCountEquals(0)
-        compose.onNodeWithText("Files").performClick()
+        compose.onNodeWithText("Images").performClick()
         compose.waitForIdle()
-        assertThat(pickedImages).isEqualTo(1)
+        assertThat(pickedMedia).isEqualTo(1)
     }
 }

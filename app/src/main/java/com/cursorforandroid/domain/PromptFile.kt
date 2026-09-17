@@ -3,11 +3,12 @@ package com.cursorforandroid.domain
 import java.util.Locale
 
 /**
- * A file of any type attached to a prompt in Extended mode — a PDF, a recording, an archive, a log — carried the way
- * the desktop Agents Window carries one: uploaded through the account's `PresignPromptUpload` / `CompletePromptUpload`
- * and referenced from the prompt as an `agent.v1.SelectedDocument {uuid, filename, mime_type, prompt_upload_ref}`
- * (Cursor 3.20.21 `cloudAgentPromptUpload.js`). Images are not files here: they stay [PromptImage]s and travel as
- * `prompt.images[]` / `selected_images[]`, inline, as they always have.
+ * A file of any type attached to a prompt in Extended mode — a PDF, a recording, an archive, a log, a picture or a
+ * video straight from the gallery — carried the way the desktop Agents Window carries one: uploaded through the
+ * account's `PresignPromptUpload` / `CompletePromptUpload` and referenced from the prompt by its upload id, as an
+ * `agent.v1.SelectedImage` when it is an image and an `agent.v1.SelectedDocument {uuid, filename, mime_type,
+ * prompt_upload_ref}` otherwise (Cursor 3.20.21 `cloudAgentPromptUpload.js`, `HKy` and `WKy`). A pasted or
+ * shared-in image is not a file: it stays a [PromptImage] and travels inline, as `prompt.images[]` / `selected_images[]`.
  */
 class PromptFile(
     val bytes: ByteArray,
@@ -32,6 +33,13 @@ class PromptFile(
 
         /** `Files must be 15 MB or smaller.`, in the words of the desktop's guard with this build's ceiling. */
         val TOO_LARGE_MESSAGE = "Files must be ${MAX_BYTES / (1024 * 1024)} MB or smaller."
+
+        /** The size refusal in the words of what was picked: `Videos must be…` for a video, `Images must be…` for an image, [TOO_LARGE_MESSAGE] otherwise. */
+        fun tooLargeMessage(mimeType: String?, name: String): String = when (PromptFileKind.of(name, mimeType.orEmpty())) {
+            PromptFileKind.Video -> "Videos must be ${MAX_BYTES / (1024 * 1024)} MB or smaller."
+            PromptFileKind.Image -> "Images must be ${MAX_BYTES / (1024 * 1024)} MB or smaller."
+            else -> TOO_LARGE_MESSAGE
+        }
 
         /** The provider's type when it names one, else what the extension says, else [OCTET_STREAM]. */
         fun resolveMimeType(declared: String?, name: String): String {
@@ -124,14 +132,18 @@ enum class PromptFileKind(val label: String) {
             "cs", "swift", "m", "sh", "bash", "zsh", "sql", "html", "htm", "css", "scss", "gradle", "properties", "env", "diff", "patch",
         )
         private val archiveExtensions = setOf("zip", "gz", "tgz", "tar", "7z", "rar", "bz2", "xz", "jar", "apk", "aab")
+        /** The desktop's `cCm`: what it calls a video by name when the provider names no type. */
+        private val videoExtensions = setOf("mp4", "mov", "webm", "mkv", "avi", "wmv", "m4v", "mpeg", "mpg")
+        private val audioExtensions = setOf("mp3", "m4a", "wav", "ogg", "oga", "flac", "aac", "opus")
+        private val imageExtensions = setOf("png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "svg", "avif")
 
         fun of(name: String, mimeType: String): PromptFileKind {
             val mime = mimeType.lowercase(Locale.ROOT)
             val extension = PromptFile.extensionOf(name)
             return when {
-                mime.startsWith("image/") -> Image
-                mime.startsWith("video/") -> Video
-                mime.startsWith("audio/") -> Audio
+                mime.startsWith("image/") || (mime.isEmpty() || mime == PromptFile.OCTET_STREAM) && extension in imageExtensions -> Image
+                mime.startsWith("video/") || (mime.isEmpty() || mime == PromptFile.OCTET_STREAM) && extension in videoExtensions -> Video
+                mime.startsWith("audio/") || (mime.isEmpty() || mime == PromptFile.OCTET_STREAM) && extension in audioExtensions -> Audio
                 mime == "application/pdf" || extension == "pdf" -> Pdf
                 extension in archiveExtensions || mime in setOf("application/zip", "application/gzip", "application/x-tar", "application/x-7z-compressed", "application/vnd.rar") -> Archive
                 extension in codeExtensions || mime in setOf("application/json", "application/xml", "text/xml", "application/x-yaml", "text/yaml", "text/html") -> Code

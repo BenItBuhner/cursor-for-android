@@ -27,7 +27,8 @@ data class StartRequest(
     val agentId: String,
     val text: String,
     val images: List<PromptImage> = emptyList(),
-    val documents: List<SelectedDocument> = emptyList(),
+    /** Uploaded files: an image among them joins `selected_images[]` by its upload reference, the rest go as `selected_documents[]`. */
+    val files: List<UploadedFile> = emptyList(),
     /** The repository, or null for a chat with no repository (the account's personal no-repo environment). */
     val repoUrl: String?,
     /** The branch (or commit) to start from; null leaves it to the repository's default. */
@@ -62,9 +63,10 @@ fun interface AgentStartApi {
  * - The prompt (`A1n(te, mode)`): `conversation_action { user_message_action { user_message: agent.v1.UserMessage
  *   {text, rich_text, message_id, mode, selected_context {selected_images[], selected_documents[]}},
  *   send_to_interaction_listener: true } }`, `starting_message_type: USER_MESSAGE`, and `conversation_history` holding
- *   the same text as one `MESSAGE_TYPE_HUMAN` message with `past_chats_explicitly_set`. The documents are the
- *   `SelectedDocument`s `_buildSelectedContextForComposer` gets back from `_convertFilesToSelectedDocuments` (`WKy`):
- *   `prompt_upload_ref` after a `PresignPromptUpload`, the bytes inline otherwise; the images stay inline (`HKy`'s fallback).
+ *   the same text as one `MESSAGE_TYPE_HUMAN` message with `past_chats_explicitly_set`. The files are what
+ *   `_buildSelectedContextForComposer` gets back from `_convertFilesToSelectedImages` (`HKy`) and
+ *   `_convertFilesToSelectedDocuments` (`WKy`): `prompt_upload_ref` after a `PresignPromptUpload`, the bytes inline
+ *   otherwise — an uploaded image as a `SelectedImage`, anything else as a `SelectedDocument`; pasted images stay inline.
  * - The model (`_buildStartRequestModelFields`): `requested_models: [agent.v1.RequestedModel {model_id, parameters[]}]`,
  *   `default` for Auto — the account refuses a start that names none.
  * - `auto_create_pr` (field 37) when asked for with a repository; `mcp_config_json` (field 95) with the enabled inline
@@ -100,16 +102,25 @@ class ConnectAgentStartApi(
         }
         val text = request.text.trim()
         val mode = (if (request.planMode) AgentMode.PLAN else AgentMode.AGENT).wireName
-        val images = request.images.takeIf { it.isNotEmpty() }?.map { image ->
+        val inlineImages = request.images.map { image ->
             SelectedImageDto(data = Base64.getEncoder().encodeToString(image.bytes), mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
         }
-        val documents = request.documents.takeIf { it.isNotEmpty() }?.map { document ->
+        val uploadedImages = request.files.filter { it.isImage }.map { file ->
+            SelectedImageDto(
+                uuid = file.uuid,
+                mimeType = file.mimeType.lowercase(),
+                promptUploadRef = file.uploadId?.let { PromptUploadRefDto(it) },
+                data = if (file.uploadId == null) file.data?.let { Base64.getEncoder().encodeToString(it) } else null,
+            )
+        }
+        val images = (inlineImages + uploadedImages).takeIf { it.isNotEmpty() }
+        val documents = request.files.filterNot { it.isImage }.takeIf { it.isNotEmpty() }?.map { file ->
             SelectedDocumentDto(
-                uuid = document.uuid,
-                filename = document.filename,
-                mimeType = document.mimeType.ifBlank { "application/octet-stream" },
-                promptUploadRef = document.uploadId?.let { PromptUploadRefDto(it) },
-                data = if (document.uploadId == null) document.data?.let { Base64.getEncoder().encodeToString(it) } else null,
+                uuid = file.uuid,
+                filename = file.filename,
+                mimeType = file.mimeType.ifBlank { "application/octet-stream" },
+                promptUploadRef = file.uploadId?.let { PromptUploadRefDto(it) },
+                data = if (file.uploadId == null) file.data?.let { Base64.getEncoder().encodeToString(it) } else null,
             )
         }
         val dto = StartDto(
@@ -198,8 +209,9 @@ class ConnectAgentStartApi(
     @Serializable
     private data class SelectedContextDto(val selectedImages: List<SelectedImageDto>? = null, val selectedDocuments: List<SelectedDocumentDto>? = null)
 
+    /** `agent.v1.SelectedImage`: `data` inline, or `prompt_upload_ref` after an upload (`HKy`). */
     @Serializable
-    private data class SelectedImageDto(val data: String, val mimeType: String, val uuid: String)
+    private data class SelectedImageDto(val uuid: String, val mimeType: String, val data: String? = null, val promptUploadRef: PromptUploadRefDto? = null)
 
     @Serializable
     private data class SelectedDocumentDto(val uuid: String, val filename: String, val mimeType: String, val promptUploadRef: PromptUploadRefDto? = null, val data: String? = null)
