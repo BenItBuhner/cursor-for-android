@@ -123,6 +123,40 @@ class TranscriptDiagnosticsTest {
     }
 
     @Test
+    fun `the perf block says what the open cost, and what the presenter, the markdown cache, the disk and the network did`() {
+        var nanos = 0L
+        TranscriptPerf.useClock { nanos }
+        try {
+            val session = TranscriptPerf.opened("bc-perf")
+            nanos = 120_000_000L
+            session.publication(items = 12, whole = false, buildNanos = 4_000_000L)
+            nanos = 340_000_000L
+            session.publication(items = 40, whole = true, buildNanos = 9_000_000L)
+            session.presenterRun(2_500_000L, built = 10, reused = 0)
+            session.presenterRun(400_000L, built = 1, reused = 9)
+            session.rowComposed(); session.rowComposed()
+            session.markdownParsed(3_000_000L); session.markdownHit(); session.markdownHit()
+            session.turnBuilt(20_000_000L); session.turnRendered(); session.turnRenderReused()
+            session.conversationRead(); session.traceRead(files = 39, nanos = 87_000_000L)
+            session.network("record"); session.network("record"); session.network("runs"); session.network("state")
+            nanos = 2_000_000_000L
+            val report = TranscriptDiagnostics.render(
+                TranscriptDiagnostics.Input("0.3.32", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-perf", agent = null, state = TranscriptDiagnostics.State(items), perf = session.snapshot()),
+            )
+            assertThat(report).contains("perf: open=2000ms firstContent=120ms newestPageWhole=340ms publications=2 (2.0/min, lastMinute=2) itemsRebuilt=13.0ms (max 9.0ms)")
+            assertThat(report).contains("  presenter: runs=2 total=2.9ms avg=1.5ms max=2.5ms rowsMaterialized=11 rowsReused=9 rowsComposed=2 turnsBuilt=1 (20.0ms) turnsReused=0 turnsRendered=1 turnRendersReused=1")
+            assertThat(report).contains("  markdown: parses=1 cacheHits=2 parseTime=3.0ms")
+            assertThat(report).contains("  disk: conversationReads=1 traceFileReads=39 (87.0ms)")
+            assertThat(report).contains("  network: total=4 (4.0/min, lastMinute=4) record=2 runs=1 state=1")
+            // A chat never opened this process has no block; nothing else of the report changes.
+            assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.32", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-perf", agent = null, state = TranscriptDiagnostics.State(items)))).doesNotContain("perf:")
+        } finally {
+            TranscriptPerf.useClock(System::nanoTime)
+            TranscriptPerf.clearAll()
+        }
+    }
+
+    @Test
     fun `the decision names each of its words, and a chat never opened says so`() {
         assertThat(render(recordProjectMode = true)).contains("classification: COORDINATOR listProject=false recordProjectMode=true content=true")
         val none = TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = false, agentId = null, agent = null, state = null))

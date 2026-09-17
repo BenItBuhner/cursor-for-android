@@ -13,6 +13,9 @@ import com.cursorforandroid.domain.PullRequestStatus
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.TimelineItem
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -287,16 +290,39 @@ class TraceCache(
         return read(agentId, runIds(agentId))
     }
 
-    /** The traces the disk holds for [runIds], by run id: one small file per run named, nothing else touched. */
+    /**
+     * The traces the disk holds for [runIds], by run id: one small file per run named, nothing else touched. The
+     * files are read [READ_PARALLELISM] at a time: a turn's file is a few hundred kilobytes of JSON, and a window of
+     * thirty read one after another on a phone was the second the tool calls took to come up after a restart.
+     */
     suspend fun read(agentId: String, runIds: Collection<String>): Map<String, CachedTrace> {
         if (runIds.isEmpty()) return emptyMap()
         migrate(agentId)
         val files = agentCache(agentId)
-        val found = LinkedHashMap<String, CachedTrace>()
-        for (runId in runIds.distinct()) {
-            if (runId == INDEX_KEY || !files.has(runId)) continue
-            files.read(runId, CachedTrace.serializer(), readableVersions(runId))?.value?.let { found[runId] = it }
+        val wanted = runIds.distinct().filter { it != INDEX_KEY && files.has(it) }
+        if (wanted.isEmpty()) return emptyMap()
+        val read: List<CachedTrace?> = if (wanted.size == 1) {
+            listOf(files.read(wanted[0], CachedTrace.serializer(), readableVersions(wanted[0]))?.value)
+        } else {
+            coroutineScope {
+                val next = java.util.concurrent.atomic.AtomicInteger(0)
+                val out = arrayOfNulls<CachedTrace>(wanted.size)
+                val readers = List(minOf(READ_PARALLELISM, wanted.size)) {
+                    launch {
+                        while (true) {
+                            val i = next.getAndIncrement()
+                            if (i >= wanted.size) return@launch
+                            out[i] = files.read(wanted[i], CachedTrace.serializer(), readableVersions(wanted[i]))?.value
+                        }
+                    }
+                }
+                // Every reader done before the array is read: the scope alone would join them after this value was taken.
+                readers.joinAll()
+                out.toList()
+            }
         }
+        val found = LinkedHashMap<String, CachedTrace>()
+        wanted.forEachIndexed { i, runId -> read[i]?.let { found[runId] = it } }
         return found
     }
 
@@ -430,6 +456,8 @@ class TraceCache(
          * eight hundred payload-carrying calls before the oldest runs go — a long chat's worth, where 2 MiB was six runs'.
          */
         const val MAX_BYTES_PER_AGENT = 32L shl 20
+        /** Files decoded at once by [read]: the decode is the cost, and phones have the cores for a few. */
+        private const val READ_PARALLELISM = 4
     }
 }
 

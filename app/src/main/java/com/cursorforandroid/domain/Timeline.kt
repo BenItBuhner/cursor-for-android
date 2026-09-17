@@ -626,9 +626,30 @@ object ToolNames {
      * (`SendToUserArgs {message}`) is the older tool for the same purpose; both land on [USER_MESSAGE_TOOL] here.
      */
     fun coordinatorTool(name: String): String? {
+        coordinatorToolByName[name]?.let { return it.takeUnless { t -> t === NO_TOOL } }
         val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call")
-        if (n == "send_message" || n == "sendmessage") return USER_MESSAGE_TOOL
-        return COORDINATOR.keys.firstOrNull { it == n || it.replace("_", "") == n }
+        val tool = if (n == "send_message" || n == "sendmessage") USER_MESSAGE_TOOL else COORDINATOR.keys.firstOrNull { it == n || it.replace("_", "") == n }
+        remember(coordinatorToolByName, name, tool ?: NO_TOOL)
+        return tool
+    }
+
+    /**
+     * The answers of [coordinatorTool] and [goalTool] by the name asked, as it came. The transcript's thousands of
+     * calls carry a few dozen distinct names, and every pass over them — the classification, the re-reading of
+     * cached calls, the goal calls lifted out — asked the string work of each call over again; the map answers in
+     * one lookup and never grows past the vocabulary it sees.
+     */
+    private val coordinatorToolByName = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val goalToolByName = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    /** The sentinel for "not that kind of tool", so an absent answer is cached like a present one. */
+    private val NO_TOOL = String()
+
+    /** A vocabulary this large is not tool names: stop remembering rather than grow without bound. */
+    private const val MAX_CACHED_NAMES = 512
+
+    private fun <V : Any> remember(cache: java.util.concurrent.ConcurrentHashMap<String, V>, name: String, value: V) {
+        if (cache.size < MAX_CACHED_NAMES) cache.putIfAbsent(name, value)
     }
 
     /** The key [coordinatorTool] answers for the coordinator's message to the user, whichever of its two tools sent it. */
@@ -641,12 +662,15 @@ object ToolNames {
      * and the names Cursor's own prompts use for them (`CreateGoal` / `UpdateGoal`). Null for any other tool.
      */
     fun goalTool(name: String): ToolPayload.GoalChange.Action? {
+        goalToolByName[name]?.let { return it as? ToolPayload.GoalChange.Action }
         val n = name.trim().lowercase().removeSuffix("toolcall").removeSuffix("_tool_call").replace("_", "")
-        return when (n) {
+        val action = when (n) {
             "creategoal", "setgoal" -> ToolPayload.GoalChange.Action.Set
             "updategoal" -> ToolPayload.GoalChange.Action.Update
             else -> null
         }
+        remember(goalToolByName, name, action ?: NO_TOOL)
+        return action
     }
 
     /** The verbs of a kind; for [ToolKind.Other] the tool's own, or its name read as words ("Switched mode"). */

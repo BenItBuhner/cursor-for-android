@@ -36,6 +36,8 @@ object TranscriptPerf {
         private val turnsBuilt = AtomicInteger(0)
         private val turnBuildNanos = AtomicLong(0L)
         private val turnsReused = AtomicInteger(0)
+        private val turnsRendered = AtomicInteger(0)
+        private val turnRendersReused = AtomicInteger(0)
         private val conversationReads = AtomicInteger(0)
         private val traceReads = AtomicInteger(0)
         private val traceReadNanos = AtomicLong(0L)
@@ -53,6 +55,7 @@ object TranscriptPerf {
             publishMaxNanos.updateAndGet { maxOf(it, buildNanos) }
             if (items > 0) firstContentAt.compareAndSet(0L, clock())
             if (items > 0 && whole) newestPageWholeAt.compareAndSet(0L, clock())
+            logger?.let { log -> log("$agentId items=$items whole=$whole\n${snapshot().render()}") }
         }
 
         fun presenterRun(nanos: Long, built: Int, reused: Int) {
@@ -71,6 +74,9 @@ object TranscriptPerf {
         /** One turn's items built from the record's steps (see `RecordTranscript.window`), in [nanos]. */
         fun turnBuilt(nanos: Long) { turnsBuilt.incrementAndGet(); turnBuildNanos.addAndGet(nanos) }
         fun turnReused() { turnsReused.incrementAndGet() }
+        /** One record turn rendered into the transcript's items on a publication, or taken as last rendered. */
+        fun turnRendered() { turnsRendered.incrementAndGet() }
+        fun turnRenderReused() { turnRendersReused.incrementAndGet() }
 
         fun conversationRead() { conversationReads.incrementAndGet() }
         fun traceRead(files: Int, nanos: Long) { traceReads.addAndGet(files); traceReadNanos.addAndGet(nanos) }
@@ -104,6 +110,8 @@ object TranscriptPerf {
                 turnsBuilt = turnsBuilt.get(),
                 turnBuildMs = turnBuildNanos.get() / 1_000_000.0,
                 turnsReused = turnsReused.get(),
+                turnsRendered = turnsRendered.get(),
+                turnRendersReused = turnRendersReused.get(),
                 conversationReads = conversationReads.get(),
                 traceReads = traceReads.get(),
                 traceReadMs = traceReadNanos.get() / 1_000_000.0,
@@ -132,6 +140,8 @@ object TranscriptPerf {
             turnsBuilt.set(0)
             turnBuildNanos.set(0L)
             turnsReused.set(0)
+            turnsRendered.set(0)
+            turnRendersReused.set(0)
             conversationReads.set(0)
             traceReads.set(0)
             traceReadNanos.set(0L)
@@ -162,6 +172,9 @@ object TranscriptPerf {
         val turnsBuilt: Int,
         val turnBuildMs: Double,
         val turnsReused: Int,
+        /** Record turns rendered into items on publications, against those taken as last rendered (see `ConversationRepository.Entry.recordItems`). */
+        val turnsRendered: Int,
+        val turnRendersReused: Int,
         val conversationReads: Int,
         val traceReads: Int,
         val traceReadMs: Double,
@@ -171,14 +184,11 @@ object TranscriptPerf {
         val networkTotal: Int get() = network.values.sum()
         val presenterAvgMs: Double get() = if (presenterRuns == 0) 0.0 else presenterTotalMs / presenterRuns
 
-        /** Publications per minute over the chat's open time (the whole of it when under a minute). */
+        /** Publications per minute over the chat's open time, never over less than a minute: a chat open for two seconds is not read as sixty a minute. */
         val publicationsPerMinute: Double get() = perMinute(publications)
         val networkPerMinute: Double get() = perMinute(networkTotal)
 
-        private fun perMinute(count: Int): Double {
-            val minutes = openForMs / 60_000.0
-            return if (minutes <= 0.0) 0.0 else count / maxOf(minutes, 1.0 / 60)
-        }
+        private fun perMinute(count: Int): Double = count / maxOf(openForMs / 60_000.0, 1.0)
 
         /** The `perf:` block of the transcript diagnostics. */
         fun render(): String = buildString {
@@ -188,7 +198,7 @@ object TranscriptPerf {
             )
             appendLine(
                 "  presenter: runs=$presenterRuns total=${fmt(presenterTotalMs)}ms avg=${fmt(presenterAvgMs)}ms max=${fmt(presenterMaxMs)}ms" +
-                    " rowsMaterialized=$rowsBuilt rowsReused=$rowsReused rowsComposed=$rowCompositions turnsBuilt=$turnsBuilt (${fmt(turnBuildMs)}ms) turnsReused=$turnsReused",
+                    " rowsMaterialized=$rowsBuilt rowsReused=$rowsReused rowsComposed=$rowCompositions turnsBuilt=$turnsBuilt (${fmt(turnBuildMs)}ms) turnsReused=$turnsReused turnsRendered=$turnsRendered turnRendersReused=$turnRendersReused",
             )
             appendLine("  markdown: parses=$markdownParses cacheHits=$markdownHits parseTime=${fmt(markdownParseMs)}ms")
             appendLine("  disk: conversationReads=$conversationReads traceFileReads=$traceReads (${fmt(traceReadMs)}ms)")
@@ -234,11 +244,24 @@ object TranscriptPerf {
     /** The counters of [agentId] when the chat has been opened this process, else null. */
     fun sessionOrNull(agentId: String): Session? = sessions[agentId]
 
-    /** A screen opened the chat: the counters start over from now. */
-    fun opened(agentId: String): Session = session(agentId).also { it.reopen() }
+    /** A screen opened the chat: the counters start over from now, and the chat is the one the screen-side counters go to. */
+    fun opened(agentId: String): Session = session(agentId).also { it.reopen(); focused = it }
+
+    /**
+     * The chat a screen last opened: where the counters that know no chat — the markdown cache's, the presenter's,
+     * the rows composed — are filed. Null before any chat was opened this process.
+     */
+    @Volatile var focused: Session? = null
+        private set
 
     /** The clock the stamps are read from; a test may hold it. */
     fun useClock(nanos: () -> Long) { clock = nanos }
+
+    /**
+     * Where a debug build measuring the transcript on a device writes the `perf:` block after each publication
+     * (logcat); null — the default, and every release build — writes nothing.
+     */
+    @Volatile var logger: ((String) -> Unit)? = null
 
     fun clearAll() = sessions.clear()
 

@@ -423,7 +423,21 @@ class TranscriptPerfBenchmarkTest {
                 AssistantMessage("a$t", "Reply $t\n\n- one\n- two"),
             )
         }
-        repeat(300) { legacyPresent(items, coordinatorMode = false, runActive = it % 2 == 0); presenter.present(items, coordinatorMode = false, runActive = it % 2 == 0) }
+        val injected = (1..12).flatMap { t ->
+            listOf(
+                SystemNotification("n$t", SystemNotification.Kind.Subagent, "Subagent completed", "Shard $t", "The shard landed.", raw = "<system_notification/>", timestampMillis = now + t * 1000L),
+                ActivityGroup("cg$t", listOf(com.cursorforandroid.domain.ToolCall("s$t", "SendMessage", com.cursorforandroid.domain.ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("Update $t with `code`")))),
+                AssistantMessage("ca$t", "Logged."),
+                com.cursorforandroid.domain.RunFooter("f$t", "run$t", RunStatus.FINISHED, 12_000L, emptyList()),
+            )
+        }
+        val coordinatorPresenter = TranscriptPresenter()
+        repeat(300) {
+            legacyPresent(items, coordinatorMode = false, runActive = it % 2 == 0)
+            presenter.present(items, coordinatorMode = false, runActive = it % 2 == 0)
+            legacyPresent(injected, coordinatorMode = true, runActive = it % 2 == 0)
+            coordinatorPresenter.present(injected, coordinatorMode = true, runActive = it % 2 == 0)
+        }
         MarkdownCache.clear()
     }
 

@@ -56,12 +56,9 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
-import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
-import com.cursorforandroid.domain.GoalTranscript
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
@@ -134,7 +131,10 @@ fun ConversationScreen(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent by viewModel.agent.collectAsStateWithLifecycle()
-    val conversation by viewModel.conversation.collectAsStateWithLifecycle()
+    // The chat as last presented: its state and the rows drawn for it, computed off the main thread (see
+    // [ConversationViewModel.presented]); everything below reads the two together so they agree.
+    val presentedTranscript by viewModel.presented.collectAsStateWithLifecycle()
+    val conversation = presentedTranscript.state
     val draft by viewModel.draftText.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
@@ -162,8 +162,8 @@ fun ConversationScreen(
     // Project, the account's record says its prompts were sent in Project mode, or — needing no account at all —
     // its own transcript carries the coordinator's tools, under any name and however an earlier build filed them
     // (see [CoordinatorTranscript]). The list's word arrives late or not at all on a large account; the content is
-    // in hand from the first frame.
-    val coordinatorMode = agent?.looksLikeProject == true || conversation.isProjectConversation || remember(conversation.items) { CoordinatorTranscript.hasCoordinatorContent(conversation.items) }
+    // in hand from the first frame. Decided with the rows, off the main thread (see [TranscriptPresenter]).
+    val coordinatorMode = presentedTranscript.coordinatorMode
     val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
         TranscriptControls(
             state = controls,
@@ -223,12 +223,13 @@ fun ConversationScreen(
 
     // The items as the transcript shows them: every cached call re-read by this build, in a coordinator's chat the
     // brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]), and the
-    // agent's goal calls lifted out of their stretches of work into rows of their own (see [GoalTranscript.lift]).
-    val items = remember(conversation.items, coordinatorMode) { GoalTranscript.lift(CoordinatorTranscript.present(conversation.items, coordinatorMode)) }
+    // agent's goal calls lifted out of their stretches of work into rows of their own (see [GoalTranscript.lift]) —
+    // and the rows the list draws: the messages as themselves, and everything the agent did between two of them
+    // behind one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still
+    // writes. Both come presented, a turn at a time, off the main thread (see [TranscriptPresenter]).
+    val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    // The rows the list draws: the messages as themselves, and everything the agent did between two of them behind
-    // one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still writes.
-    val rows = remember(items, coordinatorMode, isActive) { TranscriptRows.of(items, coordinatorMode, runActive = isActive) }
+    val rows = presentedTranscript.rows
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
@@ -623,8 +624,12 @@ fun ConversationScreen(
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
 private const val BottomTolerancePx = 48
 
-/** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
-private const val OlderTurnsPrefetchRows = 3
+/**
+ * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
+ * screen's worth, so a page is on its way while the reader is still reading the one above it rather than when they
+ * have reached its end (the insert above them costs nothing to what they are looking at; see [TranscriptPresenter]).
+ */
+private const val OlderTurnsPrefetchRows = 6
 
 /**
  * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the
