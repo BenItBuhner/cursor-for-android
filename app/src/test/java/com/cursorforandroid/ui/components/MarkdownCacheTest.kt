@@ -37,16 +37,28 @@ class MarkdownCacheTest {
 
     @Test
     fun `the cache is bounded by entries and by characters, the least recently drawn let go first`() {
-        repeat(600) { i -> MarkdownCache.parse("message $i with some **markdown** in it") }
-        assertThat(MarkdownCache.size).isAtMost(512)
+        repeat(2_500) { i -> MarkdownCache.parse("message $i with some **markdown** in it") }
+        assertThat(MarkdownCache.size).isAtMost(2_048)
         assertThat(MarkdownCache.cached("message 0 with some **markdown** in it")).isNull()
-        assertThat(MarkdownCache.cached("message 599 with some **markdown** in it")).isNotNull()
+        assertThat(MarkdownCache.cached("message 2499 with some **markdown** in it")).isNotNull()
         MarkdownCache.clear()
-        // Sixty messages of 100 000 characters are more than the character budget: the oldest go.
-        val big = (0 until 60).map { i -> "m$i " + "word ".repeat(20_000) }
+        // A hundred messages of 100 000 characters are more than the character budget: the oldest go.
+        val big = (0 until 100).map { i -> "m$i " + "word ".repeat(20_000) }
         big.forEach { MarkdownCache.parse(it) }
         assertThat(MarkdownCache.cached(big.first())).isNull()
         assertThat(MarkdownCache.cached(big.last())).isNotNull()
-        assertThat(MarkdownCache.size).isLessThan(60)
+        assertThat(MarkdownCache.size).isLessThan(100)
+    }
+
+    @Test
+    fun `priming a message already held keeps it from being the next to go`() {
+        val newest = "the newest **reply**"
+        MarkdownCache.prime(newest)
+        repeat(2_047) { i -> MarkdownCache.parse("older message $i") }
+        // Touched again as the newest page's is on every presentation: it stays while the sweep evicts the rest.
+        MarkdownCache.prime(newest)
+        MarkdownCache.parse("one more")
+        assertThat(MarkdownCache.cached(newest)).isNotNull()
+        assertThat(MarkdownCache.cached("older message 0")).isNull()
     }
 }
