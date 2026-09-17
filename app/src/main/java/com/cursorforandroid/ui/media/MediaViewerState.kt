@@ -66,6 +66,9 @@ class MediaViewerState internal constructor(restored: Session?) {
         internal set
     var zoomPan by mutableStateOf(Offset.Zero)
         internal set
+    /** The pixels the page on screen is drawing: the thumbnail's decode, then the one sized for the viewport. */
+    var currentDecodeSize by mutableStateOf(IntSize.Zero)
+        internal set
 
     /** Whether the chrome — close, index, actions, caption, the video's controls — is showing; a tap toggles it. */
     var controlsVisible by mutableStateOf(true)

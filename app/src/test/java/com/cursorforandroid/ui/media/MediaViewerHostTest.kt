@@ -2,9 +2,12 @@ package com.cursorforandroid.ui.media
 
 import androidx.activity.BackEventCompat
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -21,6 +24,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
 import org.junit.Before
@@ -186,6 +190,44 @@ class MediaViewerHostTest {
         settle { exists("viewer-image-1") }
         compose.onNodeWithContentDescription("Close").performClick()
         settle { !exists("media-viewer") }
+    }
+
+    /**
+     * The activity handles rotation and fold changes itself, so the viewer lives on through a window that changes
+     * shape: the page, its zoom and its place stay, and a wide picture that portrait could only show 1078 wide is
+     * decoded again for the 2399 px landscape now offers it.
+     */
+    @Test
+    fun `a rotation keeps the page and its zoom, and decodes for the new shape`() {
+        val big = ViewerFixtures.png("big.png", 3000, 1500, 0xFF203040.toInt())
+        val media = listOf(MediaEntry(big, MediaEntry.Kind.Image, "Big"))
+        var landscape by mutableStateOf(false)
+        compose.setContent {
+            Box(Modifier.requiredSize(if (landscape) 914.dp else 411.dp, if (landscape) 411.dp else 914.dp)) {
+                ViewerScene(state, loader, media)
+            }
+        }
+        settle { nodes("Big") == 1 }
+        compose.onAllNodes(hasContentDescription("Big"))[0].performClick()
+        settle { state.phase == MediaViewerState.Phase.Open && exists("viewer-image-0") }
+        // Portrait: the decode is bounded by the 1078 px width, the same pixels the thumbnail had.
+        settle { state.currentDecodeSize.width >= 1070 }
+        val portrait = state.currentDecodeSize
+        assertThat(portrait.width).isAtMost(1080)
+        compose.onNodeWithTag("viewer-page-0").performTouchInput { doubleClick(center) }
+        settle { state.zoomScale > 1f }
+        val zoom = state.zoomScale
+
+        landscape = true
+        settle { state.currentDecodeSize.width > portrait.width }
+
+        assertThat(state.isOpen).isTrue()
+        assertThat(state.phase).isEqualTo(MediaViewerState.Phase.Open)
+        assertThat(state.currentIndex).isEqualTo(0)
+        assertThat(state.zoomScale).isEqualTo(zoom)
+        // Fitted to the 1078 px landscape height: 2156 wide, twice what portrait could show.
+        assertThat(state.currentDecodeSize.width).isWithin(4).of(2156)
+        assertThat(state.currentDecodeSize.height).isWithin(4).of(1078)
     }
 
     @Test

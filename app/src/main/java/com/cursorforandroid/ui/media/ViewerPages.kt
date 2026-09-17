@@ -114,8 +114,12 @@ internal fun ImagePage(
     val density = LocalDensity.current
 
     LaunchedEffect(ref, viewport) {
-        if (viewport.width <= 0 || viewport.height <= 0 || presentation.loaded) return@LaunchedEffect
+        if (viewport.width <= 0 || viewport.height <= 0) return@LaunchedEffect
         val target = boundedPixels(viewport.width, viewport.height)
+        // A decode that already reaches the viewport on either axis is as sharp as the fit can show; a rotation that
+        // turns a portrait viewport into a landscape one asks for the wider decode a wide picture then needs.
+        val have = presentation.bitmap
+        if (presentation.loaded && have != null && (have.width >= target.width || have.height >= target.height)) return@LaunchedEffect
         // Nothing lands on a page while the transform runs: a decode arriving then is a bitmap swap and a re-layout
         // mid-animation — on the page opening, or on a neighbour no one can see yet — for a difference no one sees
         // at that size, the thumbnail's own decode being bounded by the screen's short edge already. The decodes
@@ -139,9 +143,10 @@ internal fun ImagePage(
             zoom.reset()
             return@LaunchedEffect
         }
-        snapshotFlow { zoom.scale to zoom.pan }.collect { (scale, pan) ->
+        snapshotFlow { Triple(zoom.scale, zoom.pan, presentation.imageSize) }.collect { (scale, pan, decoded) ->
             state.zoomScale = scale
             state.zoomPan = pan
+            state.currentDecodeSize = decoded
         }
     }
 
@@ -272,6 +277,7 @@ internal fun VideoPage(
         if (isCurrent) {
             state.zoomScale = 1f
             state.zoomPan = Offset.Zero
+            snapshotFlow { presentation.imageSize }.collect { state.currentDecodeSize = it }
         }
     }
     val poster = presentation.bitmap
