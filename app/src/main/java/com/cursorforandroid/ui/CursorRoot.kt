@@ -13,6 +13,8 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.ui.agents.LocalMediaLoader
 import com.cursorforandroid.ui.auth.SignInScreen
+import com.cursorforandroid.ui.media.MediaViewerHost
+import com.cursorforandroid.ui.media.rememberMediaViewerState
 import com.cursorforandroid.ui.navigation.AppNavHost
 import com.cursorforandroid.ui.onboarding.ModeChoiceScreen
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -51,17 +53,20 @@ fun CursorRoot(
                 !s.isDemo && modeChoicePending == true -> ModeChoiceScreen(graph = graph)
                 !s.isDemo && modeChoicePending == null -> Unit
                 // The loader is provided here rather than around the whole tree because building it is what first
-                // pulls Coil and its HTTP client in, and nothing before this point draws an image.
+                // pulls Coil and its HTTP client in, and nothing before this point draws an image. The media viewer
+                // is hosted over the whole shell — sidebar, chat and panel alike — so a figure opens over all of it.
                 else -> CompositionLocalProvider(LocalMediaLoader provides graph.media) {
-                    AppNavHost(
-                        graph = graph,
-                        user = s.user,
-                        isDemo = s.isDemo,
-                        deepLinkAgentId = deepLinkAgentId,
-                        onDeepLinkConsumed = onDeepLinkConsumed,
-                        newChatRequested = newChatRequested,
-                        onNewChatConsumed = onNewChatConsumed,
-                    )
+                    MediaViewerHost(state = rememberMediaViewerState(), loader = graph.media) {
+                        AppNavHost(
+                            graph = graph,
+                            user = s.user,
+                            isDemo = s.isDemo,
+                            deepLinkAgentId = deepLinkAgentId,
+                            onDeepLinkConsumed = onDeepLinkConsumed,
+                            newChatRequested = newChatRequested,
+                            onNewChatConsumed = onNewChatConsumed,
+                        )
+                    }
                 }
             }
         }

@@ -20,6 +20,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -42,6 +43,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.ImageBlock
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
@@ -84,9 +86,17 @@ fun StoreDocumentSheet(ref: MediaRef.Store, files: StoreFileRepository, onDismis
         )
         Text(path.text, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 20.dp))
         HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        // The sheet is a window over the app's; a figure tapped here opens the media viewer, a layer of the app's
+        // window, so the sheet puts itself away as the viewer grows out of the figure.
+        val media = LocalMarkdownMedia.current
+        val steppingAside = remember(media, onDismiss) { media?.withBeforeOpen(onDismiss) }
         when {
-            path.isImage -> Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { ImageBlock(path.text, alt = path.fileName) }
-            path.isVideo -> Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { VideoBlock(path.text, poster = null) }
+            path.isImage -> CompositionLocalProvider(LocalMarkdownMedia provides steppingAside) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { ImageBlock(path.text, alt = path.fileName) }
+            }
+            path.isVideo -> CompositionLocalProvider(LocalMarkdownMedia provides steppingAside) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) { VideoBlock(path.text, poster = null) }
+            }
             else -> StoreTextDocument(ref, files)
         }
     }

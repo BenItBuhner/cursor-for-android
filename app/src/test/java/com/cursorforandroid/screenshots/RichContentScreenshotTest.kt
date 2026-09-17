@@ -43,7 +43,6 @@ import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
@@ -153,8 +152,7 @@ class RichContentScreenshotTest {
     private fun Transcript(items: List<TimelineItem>, controls: TranscriptControls = TranscriptControls()) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { StubApi() })) }
-        val lightbox = rememberLightboxState("bc-demo")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides controls) {
                 Column(

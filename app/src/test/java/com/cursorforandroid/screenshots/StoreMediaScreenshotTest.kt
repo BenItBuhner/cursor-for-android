@@ -46,7 +46,6 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.CoordinatorFixtures
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.conversation.TranscriptRowView
@@ -134,8 +133,7 @@ class StoreMediaScreenshotTest {
             val files = StoreFileRepository(api = { StoreOnTheWire() }, capabilities = { capabilities }, http = OkHttpClient())
             MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) { files }
         }
-        val lightbox = rememberLightboxState(store)
-        val media = remember(loader, lightbox) { MarkdownMediaContext(store, loader, lightbox, canReadStores = capabilities.projects, onOpenStorePath = {}) }
+        val media = remember(loader) { MarkdownMediaContext(store, loader, canReadStores = capabilities.projects, onOpenStorePath = {}) }
         val controls = TranscriptControls(coordinatorMode = true)
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides controls) {

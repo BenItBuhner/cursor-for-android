@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.LruCache
 import androidx.core.net.toUri
 import coil3.ImageLoader
+import coil3.decode.BitmapFactoryDecoder
 import coil3.network.HttpException
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ErrorResult
@@ -25,6 +26,7 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.IOException
 
@@ -38,7 +40,7 @@ class VideoPoster(val frame: Bitmap?, val durationMs: Long?)
  */
 class MediaLoader(
     private val context: Context,
-    okHttp: OkHttpClient,
+    private val okHttp: OkHttpClient,
     private val artifacts: ArtifactRepository,
     /**
      * The Agent Store reads behind `/cursor/stores/…` paths (Extended mode); null where no account is wired. Looked
@@ -46,14 +48,22 @@ class MediaLoader(
      */
     private val stores: () -> StoreFileRepository? = { null },
 ) {
+    // BitmapFactory for every decode, registered ahead of Coil's ImageDecoder default: the bitmaps are software ones
+    // anyway (allowHardware false), the downsampling is the same, and it is the one path that also runs under the JVM
+    // test renderer, so a fetched URL — cached as a file, which ImageDecoder there cannot open — decodes like an asset.
     private val imageLoader: ImageLoader = ImageLoader.Builder(context)
-        .components { add(OkHttpNetworkFetcherFactory(okHttp)) }
+        .components {
+            add(BitmapFactoryDecoder.Factory())
+            add(OkHttpNetworkFetcherFactory(okHttp))
+        }
         .build()
 
     private val posters = LruCache<String, VideoPoster>(12)
 
     /** Decodes [ref] to fit within [maxWidthPx] x [maxHeightPx] (downsampling only, never upscaling). */
-    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
+    suspend fun image(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap = onMain { decodeImage(ref, maxWidthPx, maxHeightPx) }
+
+    private suspend fun decodeImage(ref: MediaRef, maxWidthPx: Int, maxHeightPx: Int): Bitmap {
         val data = dataFor(ref)
         val first = decode(ref, data, maxWidthPx, maxHeightPx)
         if (first is SuccessResult) return first.image.toBitmap()
@@ -69,7 +79,9 @@ class MediaLoader(
     }
 
     /** The URL ExoPlayer should open for a video; resolved at play time so it is never an expired one. */
-    suspend fun playbackUrl(ref: MediaRef): String = when (ref) {
+    suspend fun playbackUrl(ref: MediaRef): String = onMain { resolvePlaybackUrl(ref) }
+
+    private suspend fun resolvePlaybackUrl(ref: MediaRef): String = when (ref) {
         is MediaRef.Remote -> ref.url
         is MediaRef.Artifact -> artifacts.downloadUrl(ref.agentId, ref.path)
         is MediaRef.Store -> storeUrl(ref)
@@ -79,19 +91,78 @@ class MediaLoader(
     }
 
     /** A poster frame and duration for the video at [ref]; null (and remembered as such) when unavailable. */
-    suspend fun videoPoster(ref: MediaRef, maxPx: Int): VideoPoster? {
-        posters.get(ref.cacheKey)?.let { return it }
-        val url = runCatching { playbackUrl(ref) }.getOrElse { return null }
+    suspend fun videoPoster(ref: MediaRef, maxPx: Int): VideoPoster? = onMain {
+        posters.get(ref.cacheKey)?.let { return@onMain it }
+        val url = runCatching { resolvePlaybackUrl(ref) }.getOrElse { return@onMain null }
         val poster = probe(url, maxPx) ?: VideoPoster(frame = null, durationMs = null)
         posters.put(ref.cacheKey, poster)
-        return poster
+        poster
+    }
+
+    /**
+     * The bytes behind [ref] as a file of this app's cache (`cache/media/`), for handing to another app — the share
+     * sheet, a viewer, the gallery — through the `FileProvider`. Fetched once per artifact and kept; a copy already
+     * there is answered without a request. [fileName] gives the copy its name and so its type, as the other app
+     * reads it.
+     */
+    suspend fun file(ref: MediaRef, fileName: String): File = onMain { materialize(ref, fileName) }
+
+    private suspend fun materialize(ref: MediaRef, fileName: String): File = withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
+        val safeName = fileName.replace(Regex("""[^A-Za-z0-9._-]"""), "_").ifBlank { "media" }
+        val target = File(dir, "${ref.cacheKey.hashCode().toUInt().toString(16)}-$safeName")
+        if (target.isFile && target.length() > 0L) return@withContext target
+        val partial = File(dir, "${target.name}.part")
+        try {
+            when (ref) {
+                is MediaRef.Local -> File(ref.path).takeIf { it.isFile }?.copyTo(partial, overwrite = true) ?: throw IOException("This file is no longer on this device.")
+                is MediaRef.Inline -> partial.writeBytes(ref.bytes)
+                is MediaRef.Store -> partial.writeBytes(storeReads().readBytes(ref))
+                is MediaRef.Remote, is MediaRef.Artifact -> download(resolvePlaybackUrl(ref), partial)
+                is MediaRef.Unavailable -> throw IOException("This file isn't available.")
+            }
+            if (!partial.renameTo(target)) partial.copyTo(target, overwrite = true)
+            target
+        } finally {
+            partial.delete()
+        }
+    }
+
+    private fun download(url: String, into: File) {
+        if (url.startsWith(ASSET_PREFIX)) {
+            context.assets.open(url.removePrefix(ASSET_PREFIX)).use { input -> into.outputStream().use { input.copyTo(it) } }
+            return
+        }
+        if (url.startsWith("file:")) {
+            File(url.toUri().path ?: throw IOException("Bad file URL")).copyTo(into, overwrite = true)
+            return
+        }
+        okHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("The download answered ${response.code}.")
+            val body = response.body ?: throw IOException("The download was empty.")
+            into.outputStream().use { body.byteStream().copyTo(it) }
+        }
     }
 
     /** Forgets everything fetched for the signed-out account; the disk cache is wiped off the main thread. */
     suspend fun clearCaches() {
         posters.evictAll()
         imageLoader.memoryCache?.clear()
-        withContext(Dispatchers.IO) { imageLoader.diskCache?.clear() }
+        withContext(Dispatchers.IO) {
+            imageLoader.diskCache?.clear()
+            File(context.cacheDir, MEDIA_DIR).deleteRecursively()
+        }
+    }
+
+    /**
+     * Runs [block] and hands its answer (or its failure) back on the main thread. Every caller is a composition
+     * effect, and Coil, the retriever and the downloads all complete on their own threads: resuming a composition's
+     * coroutine on one of those puts snapshot writes and, under the test harness's unconfined effect dispatcher,
+     * whole frames on a worker thread while the main thread is mid-layout.
+     */
+    private suspend fun <T> onMain(block: suspend () -> T): T {
+        val result = runCatching { block() }
+        return withContext(Dispatchers.Main.immediate) { result.getOrThrow() }
     }
 
     private fun storeReads(): StoreFileRepository = stores() ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
@@ -167,6 +238,8 @@ class MediaLoader(
     companion object {
         /** Coil's and ExoPlayer's spelling for APK assets; the demo backend serves its sample media this way. */
         const val ASSET_PREFIX = "file:///android_asset/"
+        /** Under the cache: the copies [file] makes for other apps; `file_paths.xml` lets the FileProvider hand them out. */
+        const val MEDIA_DIR = "media"
         private const val POSTER_AT_MS = 1_500L
         /** A header and one frame's worth of range requests; anything slower than this is a network that has gone. */
         private const val PROBE_TIMEOUT_MS = 15_000L

@@ -7,9 +7,6 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Icon
@@ -38,7 +34,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -46,17 +41,20 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.SpinnerRing
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.media.MediaEntry
+import com.cursorforandroid.ui.media.ThumbnailSlot
+import com.cursorforandroid.ui.media.rememberThumbnailSlot
+import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -70,22 +68,42 @@ import java.io.File
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
-    var viewing by remember { mutableStateOf<MessageAttachment?>(null) }
     val images = attachments.filterNot { it.isFile }
     val files = attachments.filter { it.isFile }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (images.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                images.forEach { attachment ->
-                    AttachmentThumbnail(attachment, alpha = alpha, onClick = { viewing = attachment })
-                }
+                images.forEach { attachment -> AttachmentThumbnail(attachment, alpha = alpha) }
             }
         }
         // Files of any type, one card each — the desktop's `context-pill` for a document, with its size and a real
-        // open: the copy kept on this device goes to whatever app handles its type.
+        // open: a picture or a recording into the media viewer, anything else to whatever app handles its type.
         files.forEach { attachment -> AttachmentFileCard(attachment, alpha = alpha) }
     }
-    viewing?.let { AttachmentViewer(it, onDismiss = { viewing = null }) }
+}
+
+/** The `file://` reference the transcript's media list knows the attachment by (see [com.cursorforandroid.ui.media.ConversationMedia]). */
+private val MessageAttachment.src: String get() = "file://$path"
+
+/**
+ * Opens the media viewer on [attachment], grown out of [slot], among the conversation's media; false when there is
+ * no viewer to open (a component test, a preview).
+ */
+@Composable
+private fun rememberOpenInViewer(attachment: MessageAttachment, slot: ThumbnailSlot, seen: () -> ImageBitmap?): (() -> Boolean) {
+    val viewer = LocalMediaViewer.current
+    val media = LocalMarkdownMedia.current
+    return {
+        if (viewer == null) {
+            false
+        } else {
+            val kind = if (attachment.kind == PromptFileKind.Video) MediaEntry.Kind.Video else MediaEntry.Kind.Image
+            val fallback = MediaEntry(attachment.src, kind, fileName = attachment.name ?: attachment.path.substringAfterLast('/'), mimeType = attachment.mimeType)
+            media?.onBeforeOpen?.invoke()
+            viewer.open(media?.agentId, media?.entries?.invoke().orEmpty(), attachment.src, slot, seen = seen(), fallback = fallback, autoplay = kind == MediaEntry.Kind.Video)
+            true
+        }
+    }
 }
 
 /**
@@ -102,11 +120,16 @@ internal fun AttachmentFileCard(attachment: MessageAttachment, alpha: Float = 1f
     val name = attachment.name ?: "Document"
     val kind = attachment.kind
     var missing by remember(attachment.path) { mutableStateOf(false) }
+    // A picture or a recording opens in the viewer, out of this card; the viewer says so itself when the copy is gone.
+    val viewable = kind == PromptFileKind.Image || kind == PromptFileKind.Video
+    val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
+    val openInViewer = rememberOpenInViewer(attachment, slot) { null }
     Row(
         modifier
+            .thumbnailSlot(slot)
             .widthIn(min = 160.dp, max = 320.dp)
             .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
-            .pressable({ if (!openAttachedFile(context, attachment)) missing = true }, shape)
+            .pressable({ if (!(viewable && File(attachment.path).isFile && openInViewer()) && !openAttachedFile(context, attachment)) missing = true }, shape)
             .heightIn(min = 44.dp)
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .testTag("attachment-file-card")
@@ -154,58 +177,29 @@ internal fun openAttachedFile(context: Context, attachment: MessageAttachment): 
     }
 }
 
+/** One picture of the prompt, cropped into its strip; a tap opens the viewer, which grows the whole picture out of the crop. */
 @Composable
-private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float, onClick: () -> Unit) {
+private fun AttachmentThumbnail(attachment: MessageAttachment, alpha: Float) {
     val colors = CursorTheme.colors
     val shape = CursorTheme.shapes.lg
     val width = (THUMB_HEIGHT * attachment.aspectRatio).coerceIn(THUMB_MIN_WIDTH, THUMB_MAX_WIDTH)
     // Decoded at twice the slot so the crop stays sharp on dense screens without paying for the full file.
     val targetPx = with(LocalDensity.current) { maxOf(width, THUMB_HEIGHT).roundToPx() * 2 }
     val image = rememberAttachmentImage(attachment.path, targetPx)
+    val slot = rememberThumbnailSlot(attachment.src, shape, crop = true)
+    val open = rememberOpenInViewer(attachment, slot) { (image as? LoadedImage.Ready)?.bitmap }
     Box(
         Modifier
+            .thumbnailSlot(slot)
             .size(width, THUMB_HEIGHT)
             .cursorSurface(colors.fill.faded(alpha), colors.stroke.faded(alpha), shape)
-            .pressable(onClick, shape),
+            .pressable({ open() }, shape, enabled = image is LoadedImage.Ready),
         contentAlignment = Alignment.Center,
     ) {
         when (image) {
             is LoadedImage.Ready -> Image(image.bitmap, contentDescription = "Attached image", contentScale = ContentScale.Crop, alpha = alpha, modifier = Modifier.fillMaxSize())
             LoadedImage.Missing -> Icon(CursorIcons.File, "Attached image unavailable", tint = colors.iconTertiary.faded(alpha), modifier = Modifier.size(16.dp))
             LoadedImage.Loading -> Unit
-        }
-    }
-}
-
-/** Full-screen view of one attachment on a near-black scrim; tapping anywhere or the close button dismisses it. */
-@Composable
-private fun AttachmentViewer(attachment: MessageAttachment, onDismiss: () -> Unit) {
-    // Twice the screen's long edge is more than a pinch can show; the file itself may be any size at all (a GIF
-    // skips the capture-time downscale entirely), and decoding that is how the viewer used to run out of memory.
-    val configuration = LocalConfiguration.current
-    val targetPx = with(LocalDensity.current) { maxOf(configuration.screenWidthDp, configuration.screenHeightDp).dp.roundToPx() * 2 }
-    // One of these is the size of every thumbnail in the chat put together, so it stays out of their cache.
-    val image = rememberAttachmentImage(attachment.path, targetPx, cache = false)
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.94f))
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
-            contentAlignment = Alignment.Center,
-        ) {
-            when (image) {
-                is LoadedImage.Ready -> Image(image.bitmap, contentDescription = "Attached image", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(12.dp))
-                LoadedImage.Missing -> Text("This image is no longer on this device.", style = CursorTheme.typography.base, color = Color.White.copy(alpha = 0.7f))
-                LoadedImage.Loading -> SpinnerRing(size = 18.dp, color = Color.White)
-            }
-            FlatIconButton(
-                CursorIcons.Close,
-                "Close",
-                onClick = onDismiss,
-                tint = Color.White,
-                modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
-            )
         }
     }
 }
