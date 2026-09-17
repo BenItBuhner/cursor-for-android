@@ -43,6 +43,9 @@ import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 /**
@@ -252,7 +255,7 @@ internal fun displayName(resolver: ContentResolver, uri: Uri): String? {
 
 /** `IMG_20260917_074100.jpg` / `VID_….mp4` / `FILE_….bin`, the way a gallery names an export, for a pick the provider left nameless. */
 internal fun generatedName(mimeType: String?, nowMillis: Long = System.currentTimeMillis()): String {
-    val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date(nowMillis))
+    val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(nowMillis))
     val extension = mimeType?.substringAfter('/', "")?.takeIf { it.isNotEmpty() && it != "*" }?.let { subtype ->
         when (subtype) {
             "jpeg" -> "jpg"
