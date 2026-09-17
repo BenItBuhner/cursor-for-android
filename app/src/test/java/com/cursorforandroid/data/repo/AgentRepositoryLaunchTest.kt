@@ -253,9 +253,9 @@ class AgentRepositoryLaunchTest {
         assertThat(sent.autoCreatePr).isTrue()
         assertThat(sent.environmentName).isNull()
         assertThat(sent.images).hasSize(1)
-        assertThat(sent.documents.single().filename).isEqualTo("spec.pdf")
-        assertThat(sent.documents.single().mimeType).isEqualTo("application/pdf")
-        assertThat(sent.documents.single().data).isEqualTo(byteArrayOf(1, 2, 3))
+        assertThat(sent.files.single().filename).isEqualTo("spec.pdf")
+        assertThat(sent.files.single().mimeType).isEqualTo("application/pdf")
+        assertThat(sent.files.single().data).isEqualTo(byteArrayOf(1, 2, 3))
         assertThat(uploads.presigned).containsExactly("spec.pdf")
         // Adopted the way a lost reply's chat is: the row from GET /v1/agents/{id}, its run read once named.
         assertThat(agent.id).isEqualTo(id)

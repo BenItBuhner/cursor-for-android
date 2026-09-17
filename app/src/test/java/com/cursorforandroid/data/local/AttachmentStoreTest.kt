@@ -103,6 +103,28 @@ class AttachmentStoreTest {
     }
 
     @Test
+    fun `a picture attached as a file is kept as a preview so the transcript shows it inline, and a video stays a file`() = runBlocking {
+        val photo = PromptFile(png(64, 48).bytes, "IMG_20260917_074100.png", "image/png")
+        val clip = PromptFile(ByteArray(6) { 3 }, "VID_20260917_074200.mp4", "video/mp4")
+        val junk = PromptFile(byteArrayOf(1, 2, 3), "broken.png", "image/png")
+
+        val kept = store.save("bc-4", "run-2", emptyList(), listOf(photo, clip, junk))
+
+        assertThat(kept).hasSize(3)
+        // The photo: an image attachment with its dimensions, no name, decodable by the bubble like a pasted one.
+        assertThat(kept[0].isFile).isFalse()
+        assertThat(kept[0].width to kept[0].height).isEqualTo(64 to 48)
+        // The clip: a card with its name, type and size, opened by the system viewer.
+        assertThat(kept[1].isFile).isTrue()
+        assertThat(kept[1].name).isEqualTo("VID_20260917_074200.mp4")
+        assertThat(kept[1].kind).isEqualTo(PromptFileKind.Video)
+        // Bytes that call themselves an image but will not decode are kept as the file they are.
+        assertThat(kept[2].isFile).isTrue()
+        assertThat(kept[2].name).isEqualTo("broken.png")
+        assertThat(store.forAgent("bc-4").getValue("run-2").map { it.isFile }).containsExactly(false, true, true).inOrder()
+    }
+
+    @Test
     fun `a prompt of files alone stages, and a save files them under the run in one step`() = runBlocking {
         val kept = store.save("bc-3", "run-1", emptyList(), listOf(PromptFile(byteArrayOf(7), "notes.txt", "text/plain")))
         assertThat(kept.single().isFile).isTrue()

@@ -36,6 +36,7 @@ import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
+import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -277,7 +278,8 @@ class NewAgentViewModel(
         // Decodes a bitmap per image, so not on the main thread.
         val attachments = withContext(Dispatchers.IO) { images.map { (stored, image) -> stored to PendingAttachment.of(image) } }
         savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
-        val files = draft.files.mapNotNull { stored -> graph.drafts.readFile(stored)?.let { stored to PendingFile.of(it) } }
+        // An image file's chip thumbnail is decoded on the way back, off the main thread like the strip's.
+        val files = withContext(Dispatchers.IO) { draft.files.mapNotNull { stored -> graph.drafts.readFile(stored)?.let { stored to PendingFile.of(it) } } }
         savedFiles = files.associate { (stored, file) -> file.id to stored }
         if (draft.nonce.isNotBlank()) launchNonce = draft.nonce
         _state.update {
@@ -545,7 +547,7 @@ class NewAgentViewModel(
             reportError(AgentRepository.FILES_NEED_EXTENDED)
             return
         }
-        _state.update { it.copy(files = (it.files + items).take(PromptFile.MAX_COUNT), error = null) }
+        _state.update { it.copy(files = (it.files + items).withinSlots(imagesElsewhere = it.attachments.size), error = null) }
     }
     fun removeFile(item: PendingFile) {
         _state.update { s -> s.copy(files = s.files.filterNot { it.id == item.id }) }
@@ -717,7 +719,8 @@ class NewAgentViewModel(
         val images = failed.request.images
         // The strip's thumbnails are decoded off the main thread, as they were when the images were picked.
         val attachments = if (images.isEmpty()) emptyList() else withContext(Dispatchers.IO) { images.map(PendingAttachment::of) }
-        waiting += ReturnedDraft(failed, attachments, failed.request.files.map { PendingFile.of(it) })
+        val files = if (failed.request.files.isEmpty()) emptyList() else withContext(Dispatchers.IO) { failed.request.files.map { PendingFile.of(it) } }
+        waiting += ReturnedDraft(failed, attachments, files)
         restoreWaitingIfFree()
     }
 

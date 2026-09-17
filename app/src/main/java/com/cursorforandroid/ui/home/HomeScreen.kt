@@ -77,8 +77,9 @@ import com.cursorforandroid.ui.components.SheetHeader
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.pullRequestTint
+import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.rememberFilePicker
-import com.cursorforandroid.ui.components.rememberImagePicker
+import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.compose.NewAgentUiState
@@ -121,20 +122,18 @@ fun HomeScreen(
     // The Chats filters chosen in the sidebar's menu apply here just the same (the sidebar search does not), so the two
     // lists never disagree about which chats are visible; the cards are newest first.
     val recent = listState.recentRows
-    val pickImages = rememberImagePicker(
-        currentCount = state.attachments.size,
-        onPicked = viewModel::addAttachments,
-        onError = viewModel::reportError,
-    )
-    // Files of any type (Extended mode): the document picker, whose images join the image strip like the photo picker's.
-    val pickFiles = rememberFilePicker(
-        currentFileCount = state.files.size,
-        currentImageCount = state.attachments.size,
-        onPickedFiles = viewModel::addFiles,
+    // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
+    // Extended mode — and, in Extended mode, the document picker for files of any type.
+    val counts = AttachmentCounts.of(state.attachments, state.files)
+    val pickMedia = rememberMediaPicker(
+        extended = state.canAttachFiles,
+        counts = counts,
         onPickedImages = viewModel::addAttachments,
+        onPickedFiles = viewModel::addFiles,
         onError = viewModel::reportError,
     )
-    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages, onAttachFile = if (state.canAttachFiles) pickFiles else null)
+    val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::reportError)
+    val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (state.canAttachFiles) pickFiles else null)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val draft = share ?: return@LaunchedEffect

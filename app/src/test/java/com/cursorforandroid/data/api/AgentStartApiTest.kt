@@ -59,9 +59,9 @@ class AgentStartApiTest {
                 agentId = "bc-f1",
                 text = "Read the attached spec and implement it",
                 images = listOf(PromptImage(byteArrayOf(1, 2), "image/PNG")),
-                documents = listOf(
-                    SelectedDocument("spec.pdf", "application/pdf", uploadId = "up-1", uuid = "doc-1"),
-                    SelectedDocument("notes.txt", "text/plain", uploadId = null, data = byteArrayOf(5), uuid = "doc-2"),
+                files = listOf(
+                    UploadedFile("spec.pdf", "application/pdf", uploadId = "up-1", uuid = "doc-1"),
+                    UploadedFile("notes.txt", "text/plain", uploadId = null, data = byteArrayOf(5), uuid = "doc-2"),
                 ),
                 repoUrl = "https://github.com/Acme/Billing.git",
                 ref = "feature/spec",
@@ -160,7 +160,7 @@ class AgentStartApiTest {
             StartRequest(
                 agentId = "bc-f2",
                 text = "See the attached file.",
-                documents = listOf(SelectedDocument("data.csv", "text/csv", uploadId = "up-4", uuid = "doc-4")),
+                files = listOf(UploadedFile("data.csv", "text/csv", uploadId = "up-4", uuid = "doc-4")),
                 repoUrl = null,
                 ref = "main",
                 autoCreatePr = true,
@@ -186,6 +186,36 @@ class AgentStartApiTest {
         val context = message["selectedContext"]!!.jsonObject
         assertThat(context.containsKey("selectedImages")).isFalse()
         assertThat(context["selectedDocuments"]!!.jsonArray).hasSize(1)
+    }
+
+    @Test
+    fun `an uploaded gallery picture or video starts the chat as a SelectedImage by reference and a video document`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("{}"))
+
+        api.start(
+            StartRequest(
+                agentId = "bc-f4",
+                text = "Watch the clip and match the screenshot",
+                repoUrl = "https://github.com/acme/billing",
+                files = listOf(
+                    UploadedFile("IMG_20260917_074100.jpg", "image/jpeg", uploadId = "up-1", uuid = "img-1"),
+                    UploadedFile("VID_20260917_074200.mp4", "video/mp4", uploadId = "up-2", uuid = "vid-2"),
+                ),
+            ),
+        )
+
+        server.takeRequest()
+        val context = server.takeRequest().json()["conversationAction"]!!.jsonObject["userMessageAction"]!!.jsonObject["userMessage"]!!.jsonObject["selectedContext"]!!.jsonObject
+        val image = context["selectedImages"]!!.jsonArray.single().jsonObject
+        assertThat(image["uuid"]?.jsonPrimitive?.content).isEqualTo("img-1")
+        assertThat(image["mimeType"]?.jsonPrimitive?.content).isEqualTo("image/jpeg")
+        assertThat(image["promptUploadRef"]!!.jsonObject["uploadId"]?.jsonPrimitive?.content).isEqualTo("up-1")
+        assertThat(image.containsKey("data")).isFalse()
+        val video = context["selectedDocuments"]!!.jsonArray.single().jsonObject
+        assertThat(video["filename"]?.jsonPrimitive?.content).isEqualTo("VID_20260917_074200.mp4")
+        assertThat(video["mimeType"]?.jsonPrimitive?.content).isEqualTo("video/mp4")
+        assertThat(video["promptUploadRef"]!!.jsonObject["uploadId"]?.jsonPrimitive?.content).isEqualTo("up-2")
     }
 
     @Test

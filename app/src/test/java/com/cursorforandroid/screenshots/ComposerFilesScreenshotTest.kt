@@ -49,9 +49,10 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * Files of any type on a prompt (Extended mode): the composer's chips at rest and mid-upload, the "+" menu's Attach
- * file row beside Images, and the transcript's cards for the files a prompt carried. Same device qualifiers as
- * [AppScreenshotTest]; written to `screenshots/`, which CI compares pixel for pixel.
+ * Files of any type on a prompt (Extended mode): the composer's chips at rest — a gallery picture with its thumbnail,
+ * a video, documents — and mid-upload, the "+" menu's two pickers in each mode, and the transcript's cards for the
+ * files a prompt carried. Same device qualifiers as [AppScreenshotTest]; written to `screenshots/`, which CI
+ * compares pixel for pixel.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -67,12 +68,17 @@ class ComposerFilesScreenshotTest {
     private val recording = PendingFile("f2", PromptFile(ByteArray(11_600 * 1024), "checkout-flow.mp4", "video/mp4"))
     private val trace = PendingFile("f3", PromptFile(ByteArray(48 * 1024), "network-trace.har", "application/json"))
 
-    /** A screenshot-sized swatch, so the image strip stands beside the chips as it would after a paste. */
-    private fun screenshot(): PendingAttachment {
-        val bitmap = Bitmap.createBitmap(120, 240, Bitmap.Config.ARGB_8888).apply { eraseColor(AndroidColor.rgb(52, 120, 246)) }
-        val bytes = ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
-        return PendingAttachment.of(PromptImage(bytes, "image/png"), id = "img-1")
+    /** A swatch standing in for a picture: the bytes of a PNG, decodable for a thumbnail. */
+    private fun swatch(width: Int, height: Int, color: Int): ByteArray {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }
+        return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
     }
+
+    /** A screenshot-sized swatch in the image strip, as it would be after a paste. */
+    private fun screenshot(): PendingAttachment = PendingAttachment.of(PromptImage(swatch(120, 240, AndroidColor.rgb(52, 120, 246)), "image/png"), id = "img-1")
+
+    /** A picture from the gallery, in Extended mode: a real file, its chip wearing its thumbnail. */
+    private fun photo(): PendingFile = PendingFile.of(PromptFile(swatch(160, 120, AndroidColor.rgb(214, 108, 52)), "IMG_20260917_074100.png", "image/png"), id = "f0")
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -96,10 +102,10 @@ class ComposerFilesScreenshotTest {
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onAttachFile = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     attachments = listOf(screenshot()),
                     onRemoveAttachment = {},
-                    files = listOf(spec, recording, trace),
+                    files = listOf(photo(), recording, spec, trace),
                     onRemoveFile = {},
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
@@ -121,7 +127,7 @@ class ComposerFilesScreenshotTest {
                     placeholder = "Follow up…",
                     onSend = {},
                     isSending = true,
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onAttachFile = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     files = listOf(spec, recording, trace),
                     onRemoveFile = {},
                     fileUploads = mapOf("f1" to FileUploadState(progress = 1f), "f2" to FileUploadState(progress = 0.62f), "f3" to FileUploadState(progress = 0f, failed = true)),
@@ -136,8 +142,8 @@ class ComposerFilesScreenshotTest {
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "79_composer_file_uploading.png").path, RoborazziOptions())
     }
 
-    @Test
-    fun composerMenuAttachFile() {
+    /** The "+" menu open over the composer; the menu is a popup window, so the whole screen is what carries it. */
+    private fun captureMenu(actions: ComposerMenuActions, name: String) {
         compose.setContent {
             Scene {
                 ComposerBox(
@@ -145,7 +151,7 @@ class ComposerFilesScreenshotTest {
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}, onAttachFile = {}),
+                    plusMenu = actions,
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
                     minLines = 3,
@@ -155,9 +161,16 @@ class ComposerFilesScreenshotTest {
         }
         compose.onNodeWithContentDescription("Add to prompt").performClick()
         compose.waitForIdle()
-        // The menu is a popup window, so the whole screen is what carries it.
-        captureScreenRoboImage(File(outDir, "80_composer_menu_attach_file.png").path, RoborazziOptions())
+        captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
+
+    /** Extended mode: Images and videos (the gallery, as real files) and Files (the document picker). */
+    @Test
+    fun composerMenuExtended() = captureMenu(ComposerMenuActions(onPickMedia = {}, onPickFiles = {}), "80_composer_plus_menu_extended")
+
+    /** The default mode: Images alone, the image-only picker behind the documented `prompt.images[]`. */
+    @Test
+    fun composerMenuDefault() = captureMenu(ComposerMenuActions(onPickMedia = {}), "82_composer_plus_menu_default")
 
     @Test
     fun transcriptFileCards() {

@@ -50,14 +50,19 @@ class AttachmentStore(context: Context) {
 
     /**
      * Writes previews of [images] and copies of [files] into a scratch directory. Images that cannot be decoded are
-     * skipped; a file is kept as it is, under its own name, so the card can hand it to the system viewer.
+     * skipped; a file is kept as it is, under its own name, so the card can hand it to the system viewer — except a
+     * picture attached as a file (from the gallery, in Extended mode), which is kept as a preview like any image, so
+     * the transcript shows it inline; one that will not decode is kept as a file after all.
      */
     suspend fun stage(images: List<PromptImage>, files: List<PromptFile> = emptyList()): StagedAttachments = withContext(Dispatchers.IO) {
         if (images.isEmpty() && files.isEmpty()) return@withContext StagedAttachments.EMPTY
         val dir = File(staging, UUID.randomUUID().toString())
         if (!dir.mkdirs() && !dir.isDirectory) return@withContext StagedAttachments.EMPTY
         val written = images.mapIndexedNotNull { index, image -> runCatching { writePreview(image, dir, index) }.getOrNull() } +
-            files.mapIndexedNotNull { index, file -> runCatching { writeFile(file, dir, index) }.getOrNull() }
+            files.mapIndexedNotNull { index, file ->
+                val preview = if (PromptImage.isSupported(file.mimeType)) runCatching { writePreview(PromptImage(file.bytes, file.mimeType), dir, images.size + index) }.getOrNull() else null
+                preview ?: runCatching { writeFile(file, dir, index) }.getOrNull()
+            }
         if (written.isEmpty()) {
             dir.deleteRecursively()
             return@withContext StagedAttachments.EMPTY

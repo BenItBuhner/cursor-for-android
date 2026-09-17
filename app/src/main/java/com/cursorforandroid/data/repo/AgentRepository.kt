@@ -1371,13 +1371,13 @@ class AgentRepository(
         val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
         if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
         if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
-        val documents = uploader().upload(request.files, progress)
+        val uploaded = uploader().upload(request.files, progress)
         startApi().start(
             StartRequest(
                 agentId = id,
                 text = request.prompt,
                 images = request.images,
-                documents = documents,
+                files = uploaded,
                 repoUrl = request.repoUrl,
                 ref = request.ref,
                 environmentName = request.env.apiName,

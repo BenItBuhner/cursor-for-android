@@ -74,7 +74,7 @@ data class PendingFollowup(
     val previewText: String get() = text.ifBlank { attachmentOnlyText(imageCount, files.size) }
 }
 
-/** A file on a queued follow-up as the account describes it (`agent.v1.SelectedDocument`'s `filename` and `mime_type`); the bytes stay on the server. */
+/** A file on a queued follow-up as the account describes it (an `agent.v1.SelectedDocument`'s `filename` and `mime_type`); the bytes stay on the server. */
 data class PendingAttachment(val name: String, val mimeType: String) {
     val kind: PromptFileKind get() = PromptFileKind.of(name, mimeType)
 }

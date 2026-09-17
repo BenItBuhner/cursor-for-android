@@ -75,7 +75,7 @@ class ComposerPillsScreenshotTest {
                         placeholder = "Ask Cursor to build, fix bugs, explore",
                         onSend = {},
                         minLines = 3,
-                        plusMenu = ComposerMenuActions(onPickFiles = {}),
+                        plusMenu = ComposerMenuActions(onPickMedia = {}),
                         modelLabel = scene.modelLabel,
                         onModel = {},
                         modePill = scene.modePill ?: if (scene.planMode) ModePills.Pill.Plan else null,

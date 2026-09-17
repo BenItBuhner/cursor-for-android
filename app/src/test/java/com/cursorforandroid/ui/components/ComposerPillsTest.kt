@@ -69,7 +69,7 @@ class ComposerPillsTest {
                     onValueChange = { value = it },
                     placeholder = "Ask Cursor to build, fix bugs, explore",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}),
                     modelLabel = modelLabel,
                     onModel = {},
                     modePill = modePill,
