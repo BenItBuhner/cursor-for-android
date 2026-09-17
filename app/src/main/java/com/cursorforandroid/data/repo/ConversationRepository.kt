@@ -535,7 +535,11 @@ class ConversationRepository(
          */
         private fun recordItems(window: RecordWindow): List<TimelineItem> {
             val ordered = allRuns()
-            val trailing = local.filter { !window.holds(it) }
+            // The prompts sent from here the record has not caught up with. Each stands where its run's creation puts
+            // it among the record's turns — before the first turn that started after it, when the account's timings
+            // say so, else after them all: a reply is never shown above the prompt it answers, whichever source each
+            // came from (see [turnOf], and the order this keeps, `LocalEchoOrderTest`).
+            val trailing = local.filter { window.turnOf(it) == null }
             val trailingIds = trailing.mapTo(HashSet()) { it.run.id }
             val paired = ordered.filter { it.id !in trailingIds }
             val offset = paired.size - window.turns.size
@@ -547,10 +551,24 @@ class ConversationRepository(
             val items = ArrayList<TimelineItem>(window.turns.size * 4 + 8)
             val shown = HashSet<Int>(window.turns.size * 2)
             val perf = TranscriptPerf.session(agentId)
+            val pending = trailing.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
+            fun echo(prompt: LocalPrompt): List<TimelineItem> =
+                TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
+            fun startOf(i: Int): Long? {
+                val run = paired.getOrNull(offset + i)
+                return run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } } ?: window.turnStartedAt(i)
+            }
+            // Where each trailing prompt goes: the index of the first turn that started after its run was created, or null for the end.
+            val insertBefore: Map<LocalPrompt, Int?> = trailing.associateWith { prompt ->
+                val sentAt = if (prompt.filed) parseIsoMillis(prompt.run.createdAt).takeIf { it > 0 } else null
+                if (sentAt == null) null else window.turns.indices.firstOrNull { i -> (startOf(i) ?: Long.MIN_VALUE) > sentAt }
+            }
+            val appended = trailing.filter { insertBefore[it] == null }
             for ((i, turn) in window.turns.withIndex()) {
+                trailing.forEach { prompt -> if (insertBefore[prompt] == i) items += echo(prompt) }
                 val run = paired.getOrNull(offset + i)
                 // The newest turn of the record is the live one while the chat runs and nothing sent from here trails it.
-                val newest = i == window.turns.lastIndex && trailing.isEmpty()
+                val newest = i == window.turns.lastIndex && appended.isEmpty()
                 val complete = run?.let { traces[it.id] }
                 val liveItems = if (complete == null && run != null && current?.runId == run.id && current.items.isNotEmpty()) current.items else null
                 val liveNewest = newest && chatRunning
@@ -574,10 +592,7 @@ class ConversationRepository(
             }
             // The cache holds the window's turns and nothing else: a turn paged out (see [trimWindow]) leaves it.
             if (renderedTurns.size > shown.size) renderedTurns.keys.retainAll(shown)
-            val pending = trailing.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
-            trailing.forEach { prompt ->
-                items += TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
-            }
+            appended.forEach { prompt -> items += echo(prompt) }
             return items.withUniqueIds()
         }
 
@@ -650,7 +665,7 @@ class ConversationRepository(
         fun recordTurnsNeedingReplay(): List<RunDto> {
             val window = recordWindow ?: return emptyList()
             val ordered = allRuns()
-            val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+            val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
             val paired = ordered.filter { it.id !in trailing }
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
@@ -663,10 +678,46 @@ class ConversationRepository(
             }.asReversed()
         }
 
-        /** True when the record's newest turns include this prompt sent from here: the record has caught up with it. */
-        fun RecordWindow.holds(prompt: LocalPrompt): Boolean {
-            val text = prompt.message.text.trim()
-            return turns.asReversed().take(local.size + 1).any { it.prompt?.trim() == text }
+        /**
+         * The window's turn that is [prompt]'s — the record has caught up with the prompt sent from here — or null.
+         *
+         * Until 0.3.33 the record held a prompt when its text was among the window's newest `local.size + 1` turns.
+         * A Project coordinator's workers report in as injected turns, dozens in a minute, so by the time the record
+         * was read again the user's turn was far from its end: the echo was never matched, never pruned, and stood
+         * trailing behind every turn the record had — the reply above the question, restart after restart (Bennett's
+         * v0.3.32 frames). Now the whole window is searched for a turn of the user's (never an injected one) whose
+         * prompt reads the same once whitespace is normalised — the server trims and reflows what the phone sent.
+         * One such turn is the prompt's; among several (the same words sent twice) the one that started closest to
+         * the run's creation, when the account's timings say, else the newest. The text is the whole criterion: a
+         * turn that merely started around the time the prompt was sent is another question asked a moment before or
+         * after, and taking it for this one would make that question disappear.
+         */
+        fun RecordWindow.turnOf(prompt: LocalPrompt): RecordTurn? {
+            val text = normalizePrompt(prompt.message.text)
+            if (text.isEmpty()) return null
+            val sentAt = if (prompt.filed) parseIsoMillis(prompt.run.createdAt).takeIf { it > 0 } else null
+            var match: RecordTurn? = null
+            var matchDelta = Long.MAX_VALUE
+            for (i in turns.indices.reversed()) {
+                val turn = turns[i]
+                val recorded = turn.prompt ?: continue
+                if (SystemNotifications.isInjected(recorded) || normalizePrompt(recorded) != text) continue
+                // Newest first: an older match replaces the newer only when the timings put it closer to the send.
+                val startedAt = turnStartedAt(i)
+                val delta = if (sentAt != null && startedAt != null) kotlin.math.abs(startedAt - sentAt) else null
+                if (match == null || (delta != null && delta < matchDelta)) {
+                    match = turn
+                    matchDelta = delta ?: matchDelta
+                }
+            }
+            return match
+        }
+
+        /** When the [i]th loaded turn started, by the account's timing of it (its end less its duration), when read. */
+        private fun RecordWindow.turnStartedAt(i: Int): Long? {
+            val timing = timing(i) ?: return null
+            val end = timing.timestampMs ?: return null
+            return (end - (timing.durationMs ?: 0L)).takeIf { it > 0 }
         }
 
         /**
@@ -1259,7 +1310,7 @@ class ConversationRepository(
      */
     private fun Entry.recordTraceStatus(window: RecordWindow): TraceStatus {
         val ordered = allRuns()
-        val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+        val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
         val paired = ordered.filter { it.id !in trailing }
         val offset = paired.size - window.turns.size
         var shown = 0
@@ -1716,7 +1767,8 @@ class ConversationRepository(
         val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
         val sink = images?.forAgent(e.agentId)
         val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
-        e.publish(mutate = { if (recordWindow === known) recordWindow = built })
+        // The record has grown: the prompts sent from here it now holds hand over to it (see [pruneLocal]).
+        e.publish(mutate = { if (recordWindow === known) recordWindow = built; pruneLocal() })
         persistRecord(e, built, known, session.current, cacheTokens())
     }
 
@@ -1734,6 +1786,8 @@ class ConversationRepository(
             // Only onto the window this was asked for: a re-read since replaced it, and its turns stand.
             if (recordWindow === window || recordWindow?.firstStep == window.firstStep) recordWindow = built
             this.window += WINDOW_RUNS
+            // The page may hold the turn of a prompt sent from here that the newest turns did not: the echo hands over to it.
+            pruneLocal()
         })
         prefetchOlderRecord(e, built)
         persistRecord(e, built, window, backend, tokens)
@@ -2007,8 +2061,15 @@ class ConversationRepository(
         if (local.isEmpty()) return
         val listed = runs.mapTo(HashSet()) { it.id }
         recordWindow?.let { window ->
-            // The record has the prompt's turn and the list its run: the server reports it in full.
-            local = local.filter { prompt -> !(window.holds(prompt) && prompt.run.id in listed) }
+            // The record has the prompt's turn: the server reports it in full, and the echo goes. A prompt the server
+            // has not answered for (a placeholder run) is kept until it has. The turn pairs with its run once the echo
+            // is gone, so a run the list has not reached yet (a coordinator's injected turns fill the first page)
+            // joins the list from the answer the server gave when the prompt was sent.
+            val held = local.filter { prompt -> prompt.filed && window.turnOf(prompt) != null }
+            if (held.isEmpty()) return
+            val missing = held.map { it.run }.filter { it.id !in listed }
+            if (missing.isNotEmpty()) runs = runs + missing
+            local = local - held
             return
         }
         val ordered = allRuns()
@@ -2960,6 +3021,10 @@ class ConversationRepository(
         const val MAX_RUN_PAGES = 8
         /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */
         const val PUBLISH_COALESCE_MS = 80L
+        private val PROMPT_WHITESPACE = Regex("""\s+""")
+
+        /** A prompt's text as the server and the phone agree on it: runs of whitespace as one space, trimmed. */
+        fun normalizePrompt(text: String): String = text.replace(PROMPT_WHITESPACE, " ").trim()
         /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
         const val KEEP_FOLLOWING_BASE_MS = 2_000L
         const val KEEP_FOLLOWING_MAX_MS = 15_000L
