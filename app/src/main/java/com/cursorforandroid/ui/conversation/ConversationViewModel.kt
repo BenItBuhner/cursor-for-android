@@ -40,8 +40,13 @@ import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.SnoozeDuration
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.TranscriptPresenter
+import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.domain.UserMessage
+import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.share.ShareDraft
 import com.cursorforandroid.ui.components.FileUploadState
+import com.cursorforandroid.ui.components.MarkdownCache
 import com.cursorforandroid.ui.components.ModePills
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
@@ -49,12 +54,15 @@ import com.cursorforandroid.ui.components.thumbnailOf
 import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -120,6 +128,17 @@ data class FollowUpModelState(
     val modePill: ModePills.Pill? get() = ModePills.Pill.of(mode)
 }
 
+/** One published state of the chat with the rows the screen draws for it (see [ConversationViewModel.presented]). */
+class PresentedTranscript(val state: ConversationState, val presented: TranscriptPresenter.Presented) {
+    val rows: List<TranscriptRow> get() = presented.rows
+    val items get() = presented.items
+    val coordinatorMode: Boolean get() = presented.coordinatorMode
+}
+
+/** Where every screen's transcript is presented: one thread at a time, off the main one, in the order the states came. */
+@OptIn(ExperimentalCoroutinesApi::class)
+private val presenting = Dispatchers.Default.limitedParallelism(1)
+
 class ConversationViewModel(private val graph: AppGraph, val agentId: String) : ViewModel() {
 
     /**
@@ -143,6 +162,39 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.agents.agent(agentId))
 
     val conversation: StateFlow<ConversationState> = graph.conversations.state(agentId)
+
+    /**
+     * The transcript as the screen draws it: each published state presented into rows off the main thread (see
+     * [TranscriptPresenter]) — incrementally, so a live delta or a page of older turns costs its own turns and not
+     * the whole chat — with the markdown of the newest page parsed ahead of the rows being composed. Conflated: a
+     * state that lands while the one before it is being presented is presented next, and the ones between go
+     * unpresented, as the screen would only ever have shown the latest anyway. The state it was presented from
+     * travels with it, so what the screen reads of the chat (loading, running, older turns) agrees with its rows.
+     */
+    private val presenter = TranscriptPresenter()
+
+    val presented: StateFlow<PresentedTranscript> = combine(conversation, agent.map { it?.looksLikeProject == true }.distinctUntilChanged()) { c, project -> c to project }
+        .conflate()
+        .map { (c, project) -> withContext(presenting) { presentNow(c, project) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PresentedTranscript(conversation.value, TranscriptPresenter.Presented.EMPTY))
+
+    private fun presentNow(state: ConversationState, listSaysProject: Boolean): PresentedTranscript {
+        val presented = presenter.present(state.items, coordinatorMode = listSaysProject || state.isProjectConversation, runActive = state.runStatus?.isActive == true || state.isStreaming)
+        // The newest rows are what the first frame composes: their markdown is parsed here, not on that frame.
+        presented.rows.asReversed().asSequence().take(PRIMED_ROWS).forEach { row ->
+            when (row) {
+                is TranscriptRow.Message -> (row.call.payload as? ToolPayload.CoordinatorMessage)?.message?.let(MarkdownCache::prime)
+                is TranscriptRow.Item -> when (val item = row.item) {
+                    is UserMessage -> MarkdownCache.prime(item.text)
+                    is AssistantMessage -> if (!item.isStreaming) MarkdownCache.prime(item.markdown)
+                    else -> Unit
+                }
+                else -> Unit
+            }
+        }
+        return PresentedTranscript(state, presented)
+    }
+
     val draftText: StateFlow<String> = draft.asStateFlow()
     val pendingAttachments: StateFlow<List<PendingAttachment>> = attachments.asStateFlow()
     val pendingFiles: StateFlow<List<PendingFile>> = files.asStateFlow()
@@ -178,8 +230,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * Cursor's continuations have taken it, including one completed in the newest turn (see [GoalTranscript.derive]).
      * Null when there is no goal to show.
      */
-    val goal: StateFlow<Goal?> = combine(conversation, controls) { c, ctrl -> goalOf(c, ctrl) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), goalOf(conversation.value, controls.value))
+    val goal: StateFlow<Goal?> = combine(presented, controls) { p, ctrl -> goalOf(p.presented.goal, ctrl) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), goalOf(presented.value.presented.goal, controls.value))
 
     /**
      * What `/` offers the follow-up composer: the agent's skills and the `.cursor/commands` its machine reported, over
@@ -228,8 +280,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * The account's open goal stands over the transcript's reading; when the account says the goal is over (or has
      * none), the transcript still gets to show a goal completed in the newest turn, and nothing otherwise.
      */
-    private fun goalOf(conversation: ConversationState, controls: ConversationControls): Goal? {
-        val derived = GoalTranscript.derive(conversation.items)
+    private fun goalOf(derived: Goal?, controls: ConversationControls): Goal? {
         if (!controls.goalKnown) return derived
         val account = controls.goal
         if (account != null && account.status.isOpen) return account
@@ -688,6 +739,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     private companion object {
         /** Eight more asks at the pending interval: about two minutes, longer than a machine takes to come up. */
         const val PENDING_RETRIES = 8
+        /** How many of the newest rows have their markdown parsed with the rows, ahead of the screen: a phone's worth and the next page. */
+        const val PRIMED_ROWS = 24
     }
 
     class Factory(private val graph: AppGraph, private val agentId: String) : ViewModelProvider.Factory {

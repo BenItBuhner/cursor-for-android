@@ -186,7 +186,13 @@ class AppGraph(
     }
     private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
-    private val demoParts = lazy { DemoBackendFactory.create() }
+    private val perfSeeds = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPerfSeeds.enabled(app.cacheDir)
+    private val demoParts = lazy { DemoBackendFactory.create(perfSeeds = perfSeeds) }
+
+    init {
+        // A debug build measuring the transcript on a device: the `perf:` block after each presentation, in logcat.
+        if (perfSeeds) com.cursorforandroid.domain.TranscriptPerf.logger = { android.util.Log.i("TranscriptPerf", it) }
+    }
     private val demoBackend = demo ?: CursorBackend(isDemo = true, parts = demoParts)
 
     /**
@@ -821,6 +827,7 @@ class AppGraph(
                 },
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
+                perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
             ),
         )
     }

@@ -550,10 +550,12 @@ fun MarkdownText(
     color: Color = CursorTheme.colors.textPrimary,
     streaming: Boolean = false,
 ) {
-    // Re-reads only the tail of a reply that is still arriving; see [IncrementalMarkdown].
+    // A reply still arriving re-reads only its tail (see [IncrementalMarkdown]); a finished message is parsed once
+    // for as long as it stands, wherever it is drawn (see [MarkdownCache]) — the presenter has usually parsed the
+    // newest page's before the row is composed, off the main thread.
     val parser = remember { IncrementalMarkdown() }
     val blocks = remember(markdown, streaming) {
-        parser.parse(if (streaming) MediaMarkup.trimPartialTail(markdown) else markdown)
+        if (streaming) parser.parse(MediaMarkup.trimPartialTail(markdown)) else MarkdownCache.parse(markdown)
     }
     MarkdownBlocks(blocks, style, color, modifier, spacing = 10.dp)
 }

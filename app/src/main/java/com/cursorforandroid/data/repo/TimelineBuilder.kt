@@ -100,13 +100,25 @@ object TimelineBuilder {
      * gives the same result as making the whole thing unique in one pass.
      */
     fun List<TimelineItem>.withUniqueIds(taken: Set<String> = emptySet()): List<TimelineItem> {
-        val seen: HashSet<String> = if (taken.isEmpty()) HashSet(size) else HashSet(taken)
-        return map { item ->
+        val seen: HashSet<String> = if (taken.isEmpty()) HashSet(size * 2) else HashSet(taken)
+        // The usual case — no id repeats — is answered with the list itself: the callers keep it as it is, and what
+        // reads it downstream can tell an unchanged item by identity.
+        var first = -1
+        for (i in indices) {
+            if (!seen.add(this[i].id)) { first = i; break }
+        }
+        if (first < 0) return this
+        // From the first repeat on: its id is in [seen] already, so the loop below gives it its suffix.
+        val out = ArrayList<TimelineItem>(size)
+        for (i in 0 until first) out += this[i]
+        for (i in first until size) {
+            val item = this[i]
             var id = item.id
             var n = 1
             while (!seen.add(id)) id = "${item.id}#${++n}"
-            if (id == item.id) item else item.withId(id)
+            out += if (id == item.id) item else item.withId(id)
         }
+        return out
     }
 
     private fun TimelineItem.withId(id: String): TimelineItem = when (this) {

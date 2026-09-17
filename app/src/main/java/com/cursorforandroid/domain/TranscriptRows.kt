@@ -325,13 +325,25 @@ data class EventGroupSummary(val count: String, val kinds: String?, val span: St
  */
 object TranscriptRows {
 
-    fun of(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean = false): List<TranscriptRow> {
+    fun of(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean = false, interrupted: Set<String> = interruptedFooters(items)): List<TranscriptRow> {
+        val rows = cut(items, coordinatorMode, interrupted)
+        if (runActive) markLive(rows)
+        return openNewestGroup(rows)
+    }
+
+    /**
+     * The rows of [items] before the two words that belong to the transcript as a whole — the newest stretch live,
+     * the newest small group of events open (see [of]). A run of items that starts at a user message and ends before
+     * the next cuts into the same rows alone as within the whole: nothing here reads past a user message (the stretch
+     * closes at it), and [interrupted] carries the one fact that does, the footer the next message cut short. That
+     * is what lets [TranscriptPresenter] cut a long transcript a turn at a time.
+     */
+    internal fun cut(items: List<TimelineItem>, coordinatorMode: Boolean, interrupted: Set<String>): MutableList<TranscriptRow> {
         val rows = ArrayList<TranscriptRow>(items.size)
         val open = ArrayList<TranscriptRow.Entry>()
         // What follows the stretch as rows of its own once it closes: its pictures, then the question it waits on.
         val media = ArrayList<TranscriptRow>()
         val questions = ArrayList<TranscriptRow>()
-        val interrupted = interruptedFooters(items)
 
         fun flush() {
             if (open.isNotEmpty()) {
@@ -394,8 +406,7 @@ object TranscriptRows {
             }
         }
         flush()
-        if (runActive) markLive(rows)
-        return openNewestGroup(rows)
+        return rows
     }
 
     /**
@@ -431,11 +442,15 @@ object TranscriptRows {
      */
     private fun markLive(rows: MutableList<TranscriptRow>) {
         val last = rows.indexOfLast { it is TranscriptRow.Stretch }
-        if (last < 0) return
-        val stretch = rows[last] as TranscriptRow.Stretch
-        if (stretch.entries.lastOrNull() is TranscriptRow.Entry.Footer) return
-        if (rows.subList(last + 1, rows.size).any { it !is TranscriptRow.Media && it !is TranscriptRow.Question }) return
-        rows[last] = stretch.copy(live = true)
+        if (last < 0 || !isLiveCandidate(rows, last)) return
+        rows[last] = (rows[last] as TranscriptRow.Stretch).copy(live = true)
+    }
+
+    /** Whether the stretch at [index] — the newest — is still being written: no footer closes it, and only its pictures or question follow it. */
+    internal fun isLiveCandidate(rows: List<TranscriptRow>, index: Int): Boolean {
+        val stretch = rows[index] as TranscriptRow.Stretch
+        if (stretch.entries.lastOrNull() is TranscriptRow.Entry.Footer) return false
+        return rows.subList(index + 1, rows.size).none { it !is TranscriptRow.Media && it !is TranscriptRow.Question }
     }
 
     /**
@@ -488,17 +503,28 @@ object TranscriptRows {
 
     /** The newest group of events in the transcript opens on its own when it holds fewer than [OPEN_BELOW] events. */
     private fun openNewestGroup(rows: List<TranscriptRow>): List<TranscriptRow> {
+        val (r, stretch, e) = newestGroupToOpen(rows) ?: return rows
+        return rows.toMutableList().also { it[r] = withGroupOpen(stretch, e) }
+    }
+
+    /** The newest group of events, when it is small enough to open: its stretch's index, the stretch, and the entry's index within it. */
+    internal fun newestGroupToOpen(rows: List<TranscriptRow>): Triple<Int, TranscriptRow.Stretch, Int>? {
         for (r in rows.indices.reversed()) {
             val stretch = rows[r] as? TranscriptRow.Stretch ?: continue
             val e = stretch.entries.indexOfLast { it is TranscriptRow.Entry.Events }
             if (e < 0) continue
             val group = (stretch.entries[e] as TranscriptRow.Entry.Events).group
-            if (group.count >= OPEN_BELOW) return rows
-            val entries = stretch.entries.toMutableList()
-            entries[e] = TranscriptRow.Entry.Events(group.copy(startsOpen = true))
-            return rows.toMutableList().also { it[r] = stretch.copy(entries = entries) }
+            return if (group.count >= OPEN_BELOW || group.startsOpen) null else Triple(r, stretch, e)
         }
-        return rows
+        return null
+    }
+
+    /** [stretch] with the group at [entryIndex] marked as opening on its own. */
+    internal fun withGroupOpen(stretch: TranscriptRow.Stretch, entryIndex: Int): TranscriptRow.Stretch {
+        val group = (stretch.entries[entryIndex] as TranscriptRow.Entry.Events).group
+        val entries = stretch.entries.toMutableList()
+        entries[entryIndex] = TranscriptRow.Entry.Events(group.copy(startsOpen = true))
+        return stretch.copy(entries = entries)
     }
 
     /** A newest group with fewer events than this is shown open. */

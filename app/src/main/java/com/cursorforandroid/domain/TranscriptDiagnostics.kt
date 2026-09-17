@@ -109,6 +109,8 @@ object TranscriptDiagnostics {
         val placement: Pair<AgentParent?, LineageSignal>? = null,
         /** The load's own account of the chat (see [TranscriptLoadDiagnostics]); null when the chat has no entry. */
         val load: TranscriptLoadDiagnostics? = null,
+        /** What the pipeline cost since the chat was opened (see [TranscriptPerf]); null when it was never opened this process. */
+        val perf: TranscriptPerf.Snapshot? = null,
     )
 
     /** The decision the conversation screen makes, spelled out: which of its three words fired. */
@@ -144,6 +146,9 @@ object TranscriptDiagnostics {
         }
         appendLine("state: items=${state.items.size} loading=${state.isLoading} streaming=${state.isStreaming} reconnecting=${state.isReconnecting} run=${state.runStatus?.name ?: "-"} hasOlder=${state.hasOlder} transcriptUnavailable=${state.transcriptUnavailable} recordProjectMode=${state.recordProjectMode}" + (state.error?.let { " error=\"${redact(it)}\"" } ?: ""))
         input.load?.let { describe(it) }
+        // Where the time went: the open's moments, the publications and what the presenter, the markdown cache, the
+        // disk and the network cost for them (see [TranscriptPerf.Snapshot.render]).
+        input.perf?.let { appendLine(it.render()) }
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)

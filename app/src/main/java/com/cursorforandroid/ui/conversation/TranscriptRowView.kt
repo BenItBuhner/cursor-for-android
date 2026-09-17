@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
@@ -29,6 +31,8 @@ import com.cursorforandroid.ui.theme.CursorTheme
  */
 @Composable
 fun TranscriptRowView(row: TranscriptRow, modifier: Modifier = Modifier) {
+    // Each composition of a row, first or again, counted for the chat's diagnostics (see TranscriptPerf).
+    SideEffect { TranscriptPerf.focused?.rowComposed() }
     when (row) {
         is TranscriptRow.Item -> TimelineItemView(row.item, modifier)
         is TranscriptRow.Message -> CoordinatorMessageView(row.call, row.call.payload as ToolPayload.CoordinatorMessage, modifier)

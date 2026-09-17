@@ -710,4 +710,19 @@ class TimelineBuilderTest {
         assertThat(group.work).isSameInstanceAs(group.work)
         assertThat(group.leadingThoughts).isSameInstanceAs(group.leadingThoughts)
     }
+
+    @Test
+    fun `withUniqueIds answers the list itself when no id repeats, and suffixes repeats from the first on`() {
+        val distinct = listOf<TimelineItem>(UserMessage("a", "1"), AssistantMessage("b", "2"), RunFooter("c", "run", RunStatus.FINISHED, 1L, emptyList()))
+        with(TimelineBuilder) {
+            assertThat(distinct.withUniqueIds()).isSameInstanceAs(distinct)
+            assertThat(distinct.withUniqueIds(taken = setOf("z"))).isSameInstanceAs(distinct)
+            val repeated = listOf<TimelineItem>(UserMessage("a", "1"), AssistantMessage("a", "2"), AssistantMessage("a", "3"), UserMessage("b", "4"), UserMessage("b", "5"))
+            assertThat(repeated.withUniqueIds().map { it.id }).containsExactly("a", "a#2", "a#3", "b", "b#2").inOrder()
+            // Appended to a prefix that already holds the id, the tail's copy takes the next suffix — as one pass over the whole would give it.
+            assertThat(listOf<TimelineItem>(UserMessage("a", "x"), UserMessage("q", "y")).withUniqueIds(taken = setOf("a", "a#2")).map { it.id }).containsExactly("a#3", "q").inOrder()
+            val whole = (distinct + repeated).withUniqueIds()
+            assertThat(whole.map { it.id }).isEqualTo(distinct.map { it.id } + repeated.withUniqueIds(taken = distinct.map { it.id }.toSet()).map { it.id })
+        }
+    }
 }

@@ -17,6 +17,7 @@ import com.cursorforandroid.domain.StepShape
 import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
+import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TurnShape
@@ -47,6 +48,7 @@ object HeadlessTranscript {
      */
     suspend fun tailTurns(api: ConversationRecordApi, agentId: String, count: Int, pageSize: Int = PAGE_SIZE): List<Turn>? {
         if (count <= 0) return emptyList()
+        TranscriptPerf.session(agentId).network("record")
         val probe = api.fetch(agentId, startIndex = 0, limit = 1)
         val total = probe.totalResponses
         if (total <= 0) return null
@@ -56,6 +58,7 @@ object HeadlessTranscript {
         // A turn is whole once the prompt that starts it is in hand: [count] + 1 prompts bound [count] whole turns.
         while (start > 0 && pages < MAX_PAGES && steps.count { it.userMessage != null } <= count) {
             val from = (start - pageSize).coerceAtLeast(0)
+            TranscriptPerf.session(agentId).network("record")
             val page = api.fetch(agentId, startIndex = from, limit = start - from)
             if (page.steps.isEmpty() && from > 0) break
             page.steps.asReversed().forEach { steps.addFirst(it) }
