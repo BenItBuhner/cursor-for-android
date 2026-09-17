@@ -41,7 +41,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -52,7 +51,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.paneTitle
@@ -151,7 +149,6 @@ private class TransformFrames(
 private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerState.Session, loader: MediaLoader, autoHideControlsMillis: Long?) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val density = LocalDensity.current
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     val pagerState = rememberPagerState(initialPage = session.initialIndex) { session.entries.size }
     val presentations = remember { HashMap<Int, PagePresentation>() }
