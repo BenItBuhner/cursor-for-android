@@ -13,13 +13,11 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -251,36 +249,35 @@ internal fun readBoundedBytes(
     return out.toByteArray()
 }
 
-/** 40px thumbnails with a remove control, shown above the composer text once something is attached. */
+/**
+ * A pasted or shared-in image in the composer's attachment row ([ComposerAttachments]): a 40dp thumbnail with a
+ * remove badge over its top-end corner, in a 44dp slot so the badge has somewhere to overhang.
+ */
 @Composable
-fun AttachmentStrip(attachments: List<PendingAttachment>, onRemove: (PendingAttachment) -> Unit, modifier: Modifier = Modifier) {
+fun PendingImageThumbnail(attachment: PendingAttachment, onRemove: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    Row(modifier.padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        attachments.forEach { attachment ->
-            Box(Modifier.size(44.dp)) {
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .align(Alignment.BottomStart)
-                        .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.base),
-                ) {
-                    if (attachment.thumbnail != null) {
-                        Image(attachment.thumbnail, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    } else {
-                        Icon(CursorIcons.File, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp).align(Alignment.Center))
-                    }
-                }
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .size(16.dp)
-                        .background(colors.textPrimary, CircleShape)
-                        .pressable({ onRemove(attachment) }, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(9.dp).offset(0.dp, 0.dp))
-                }
+    Box(modifier.size(44.dp).testTag("image-thumb")) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .align(Alignment.BottomStart)
+                .cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.base),
+        ) {
+            if (attachment.thumbnail != null) {
+                Image(attachment.thumbnail, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+                Icon(CursorIcons.File, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp).align(Alignment.Center))
             }
+        }
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .size(16.dp)
+                .background(colors.textPrimary, CircleShape)
+                .pressable(onRemove, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(CursorIcons.Close, "Remove attachment", tint = colors.canvas, modifier = Modifier.size(9.dp).offset(0.dp, 0.dp))
         }
     }
 }

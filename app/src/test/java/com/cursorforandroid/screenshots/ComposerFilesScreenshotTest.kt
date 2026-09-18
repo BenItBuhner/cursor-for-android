@@ -16,9 +16,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -50,8 +52,8 @@ import java.io.File
 
 /**
  * Files of any type on a prompt (Extended mode): the composer's chips at rest — a gallery picture with its thumbnail,
- * a video, documents — and mid-upload, the "+" menu's two pickers in each mode, and the transcript's cards for the
- * files a prompt carried. Same device qualifiers as [AppScreenshotTest]; written to `screenshots/`, which CI
+ * a video, documents — and mid-upload, the attachment row overflowing and scrolled with its fades, the "+" menu's two
+ * pickers in each mode, and the transcript's cards for the files a prompt carried, in a row once there are more than two. Same device qualifiers as [AppScreenshotTest]; written to `screenshots/`, which CI
  * compares pixel for pixel.
  */
 @RunWith(AndroidJUnit4::class)
@@ -176,6 +178,70 @@ class ComposerFilesScreenshotTest {
     /** The default mode: Images alone, the image-only picker behind the documented `prompt.images[]`. */
     @Test
     fun composerMenuDefault() = captureMenu(ComposerMenuActions(onPickMedia = {}), "82_composer_plus_menu_default")
+
+    /**
+     * More attached than fits: one row, scrolling sideways — a picture beside the chips — its end dissolving into the
+     * composer where there is more past it, the start a hard edge; and the same row at its end, the fade moved to the start.
+     */
+    @Test
+    fun composerAttachmentRow() {
+        val notes = PendingFile("f4", PromptFile(ByteArray(900), "release-notes.md", "text/markdown"))
+        compose.setContent {
+            Scene {
+                ComposerBox(
+                    value = "Take this image and stitch it into the green screen in the recording; the spec says where.",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                    attachments = listOf(screenshot()),
+                    onRemoveAttachment = {},
+                    files = listOf(photo(), recording, spec, trace, notes),
+                    onRemoveFile = {},
+                    fileUploads = mapOf("f0" to FileUploadState.DONE, "f2" to FileUploadState(progress = 0.62f), "f1" to FileUploadState.DONE, "f3" to FileUploadState(failed = true), "f4" to FileUploadState.DONE),
+                    onRetryFile = {},
+                    sendHint = "Uploading 2 of 5…",
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "93_composer_attachment_row.png").path, RoborazziOptions())
+        compose.onNodeWithTag("attachment-row").performScrollToIndex(5)
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "94_composer_attachment_row_end.png").path, RoborazziOptions())
+    }
+
+    /** A prompt that carried more than two: its pictures and cards in the one row, dissolving where there is more. */
+    @Test
+    fun transcriptAttachmentRow() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dir = File(context.filesDir, "attachments/bc-demo/run-2").apply { mkdirs() }
+        val before = File(dir, "f0-before.png").apply { writeBytes(swatch(720, 1600, AndroidColor.rgb(52, 120, 246))) }
+        val after = File(dir, "f1-after.png").apply { writeBytes(swatch(1600, 900, AndroidColor.rgb(214, 108, 52))) }
+        val pdf = File(dir, "f2-Q3-billing-spec.pdf").apply { writeBytes(ByteArray(2_400 * 1024)) }
+        val har = File(dir, "f3-network-trace.har").apply { writeBytes(ByteArray(48 * 1024)) }
+        val scene = listOf(
+            UserMessage(
+                "u2",
+                "Before and after, the spec and the trace: find where the regression came in.",
+                timestampMillis = 1_736_949_600_000,
+                attachments = listOf(
+                    MessageAttachment(before.path, 720, 1600),
+                    MessageAttachment(after.path, 1600, 900),
+                    MessageAttachment.file(pdf.path, "Q3-billing-spec.pdf", "application/pdf", pdf.length()),
+                    MessageAttachment.file(har.path, "network-trace.har", "application/json", har.length()),
+                ),
+            ),
+            AssistantMessage("a2", "The after screenshot's total is what the HAR's `/checkout/confirm` response carries; the spec's rounding rule is what changed."),
+        )
+        compose.setContent { Scene { scene.forEach { TimelineItemView(it) } } }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 2 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "95_transcript_attachment_row.png").path, RoborazziOptions())
+    }
 
     @Test
     fun transcriptFileCards() {
