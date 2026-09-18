@@ -400,7 +400,10 @@ class ProjectRepository(
     private val countsFlow = MutableStateFlow<Map<String, Int>>(emptyMap())
 
     private fun publishCounts() {
-        countsFlow.value = extras.mapNotNull { (id, flow) -> flow.value.lastSync?.let { s -> id to s.workerCount + s.childCount } }.toMap()
+        // Recomputed inside the update: the roots' reads run a few at a time, and two of them publishing together
+        // could otherwise leave the counts as the one that computed first and wrote last saw them — without the
+        // other's root (a Project missing its count until the next pass).
+        countsFlow.update { extras.mapNotNull { (id, flow) -> flow.value.lastSync?.let { s -> id to s.workerCount + s.childCount } }.toMap() }
     }
 
     /**
@@ -468,12 +471,14 @@ class ProjectRepository(
             throw e
         } catch (t: Throwable) {
             flow.update { it.copy(isSyncing = false, hasSynced = true, lastSyncedAtMillis = now(), lineageNotice = describeLineageFailure(t), lastSync = LineageSyncRecord(false, false, describeLineageFailure(t))) }
+            publishCounts()
             return true
         }
         if (agents.token() != token) return false
         val notice = lineage.failure?.let(::describeLineageFailure)
         if (lineage.isUnread) {
             flow.update { it.copy(isSyncing = false, hasSynced = true, lastSyncedAtMillis = now(), lineageNotice = notice, lastSync = LineageSyncRecord(false, false, notice)) }
+            publishCounts()
             return true
         }
         // Each read's word is applied with its own signal, and releases only the kind of member it covered in full.

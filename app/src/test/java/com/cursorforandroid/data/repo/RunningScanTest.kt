@@ -115,6 +115,15 @@ class RunningScanTest {
             ),
         )
         assertThat(agents.runningScan.value.accountIds).containsExactly("bc-7", "bc-11")
+        // The account's later words merge into the set rather than replacing it: a record read by id that says bc-7
+        // has finished takes bc-7 off; one that says bc-13 runs adds bc-13; bc-11 stands on the list's word meanwhile.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-7", parent = AgentParent("bc-1", AgentParentKind.PROJECT_WORKER), status = RunStatus.FINISHED)))
+        assertThat(agents.runningScan.value.accountIds).containsExactly("bc-11")
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-13", status = RunStatus.RUNNING)))
+        assertThat(agents.runningScan.value.accountIds).containsExactly("bc-11", "bc-13")
+        // Back to the list's word for the rest of the test.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-7", parent = AgentParent("bc-1", AgentParentKind.PROJECT_WORKER), status = RunStatus.RUNNING), ComposerSnapshot("bc-13", status = RunStatus.FINISHED)))
+        assertThat(agents.runningScan.value.accountIds).containsExactly("bc-7", "bc-11")
         agents.reconcileRunning()
         assertThat(agents.state.value.agents.map { it.id }).containsExactly("bc-1", "bc-2", "bc-3", "bc-7", "bc-11")
         assertThat(agents.agent("bc-7")?.isProjectScopedByEvidence).isTrue()

@@ -347,12 +347,13 @@ class RefreshBenchmarkTest {
                 }
             }
         }
-        // The account's own chats — a thousand over three weeks, an eighth archived, one in nine running, most with
-        // a pull request — so the public window (500) and the account window (200) each hold a part of the account,
-        // as they do on a phone that has been in use for a while.
+        // The account's own chats — a thousand over three weeks, an eighth archived, most with a pull request, one
+        // in nine of the last two days' running (a run ends within hours; the server marks the ones that do not
+        // expired, so nothing weeks old runs) — so the public window (500) and the account window (200) each hold a
+        // part of the account, as they do on a phone that has been in use for a while.
         repeat(OWN_CHATS) { index ->
             val id = "bc-own-${index + 1}"
-            all += Chat(id, "Own chat ${index + 1}", now - index * 1_900_000L - 60_000L, running = index % 9 == 0, archived = index % 8 == 7, source = if (index % 3 == 0) AgentSource.EDITOR else null, prUrl = if (index % 3 != 1) "https://github.com/acme/app/pull/${100 + index}" else null)
+            all += Chat(id, "Own chat ${index + 1}", now - index * 1_900_000L - 60_000L, running = index % 9 == 0 && index < RUNNING_OWN_CHATS_WITHIN, archived = index % 8 == 7, source = if (index % 3 == 0) AgentSource.EDITOR else null, prUrl = if (index % 3 != 1) "https://github.com/acme/app/pull/${100 + index}" else null)
         }
         all += Chat("bc-codex", "Codex-Poly-Bot Scaling", now - 500 * 3_600_000L, running = true, source = AgentSource.EDITOR)
         all += Chat("bc-spawner-1", "Refactor with subagents", now - 50 * 60_000L, running = true, source = AgentSource.EDITOR)
@@ -650,5 +651,7 @@ class RefreshBenchmarkTest {
     private companion object {
         const val LATENCY_MS = 60L
         const val OWN_CHATS = 1_000
+        /** Own chats newer than this many (about two days at one every half hour) may be running; nothing older does. */
+        const val RUNNING_OWN_CHATS_WITHIN = 90
     }
 }
