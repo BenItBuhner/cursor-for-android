@@ -2607,8 +2607,9 @@ class ConversationRepository(
         return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
             .onFailure { t ->
                 // Refused as busy, the message is not lost: the caller queues it for the end of the turn. That is
-                // nothing for the chat to show as an error.
-                discardStaged(agentId, staged, t.userMessage().takeUnless { t.toCursorError()?.code == AGENT_BUSY })
+                // nothing for the chat to show as an error. Nor is any failure of a message whose bubble was never
+                // shown (a queued one): its card carries the reason, with a retry.
+                discardStaged(agentId, staged, t.userMessage().takeUnless { !showEcho || t.toCursorError()?.code == AGENT_BUSY })
             }
     }
 

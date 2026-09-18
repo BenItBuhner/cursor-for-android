@@ -157,6 +157,36 @@ class TranscriptDiagnosticsTest {
     }
 
     @Test
+    fun `the send block says what was decided from which source, what waits, and what came of each attempt`() {
+        val inputs = SendGate.Inputs(
+            rowLoaded = true, rowRunning = false, rowUpdatedAtMillis = 1_000_000L,
+            chatRunStatus = RunStatus.FINISHED, chatStreaming = false, chatReconnecting = false,
+            accountScanned = true, accountRunning = false, accountAtMillis = 1_002_000L,
+        )
+        val send = SendDiagnostics(
+            decision = SendGate.decide(inputs),
+            decidedAtIso = "2026-09-17T10:00:05Z",
+            queue = listOf(SendDiagnostics.QueueLine("…q-1", chars = 42, sending = false, steered = false, busyRefusals = 3, heldForMs = 83_000L, error = null, needsConfirmation = false)),
+            attempts = listOf(
+                SendDiagnostics.Attempt("2026-09-17T10:00:05Z", "…q-1", "runs", "busy", "Agent is busy."),
+                SendDiagnostics.Attempt("2026-09-17T10:00:06Z", "…q-1", "runs", "busy", "Agent is busy."),
+                SendDiagnostics.Attempt("2026-09-17T10:00:08Z", "…q-0", "runs", "accepted", "run-9"),
+            ),
+            accepted = listOf("…run-9"),
+        )
+        val report = TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = send),
+        )
+        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle accountAgeMs=-2000")
+        assertThat(report).contains("  queue: 1 […q-1 chars=42 busyRefusals=3 heldFor=83s]")
+        assertThat(report).contains("  attempts: 3 accepted=[…run-9]")
+        assertThat(report).contains("    2026-09-17T10:00:05Z …q-1 via=runs busy \"Agent is busy.\"")
+        assertThat(report).contains("    2026-09-17T10:00:08Z …q-0 via=runs accepted \"run-9\"")
+        // A chat nothing was sent or queued from has no block.
+        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList())))).doesNotContain("send:")
+    }
+
+    @Test
     fun `the decision names each of its words, and a chat never opened says so`() {
         assertThat(render(recordProjectMode = true)).contains("classification: COORDINATOR listProject=false recordProjectMode=true content=true")
         val none = TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = false, agentId = null, agent = null, state = null))
