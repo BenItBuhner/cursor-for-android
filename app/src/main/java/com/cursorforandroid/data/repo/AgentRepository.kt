@@ -1885,11 +1885,14 @@ class AgentRepository(
             if (generation.get() == startedIn) {
                 val now = AppClock.now()
                 _runningScan.update {
-                    it.copy(
-                        accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id },
-                        accountAtMillis = now,
-                        accountWord = it.accountWord + composers.filter { c -> c.status != null }.associate { c -> c.id to RunningScan.AccountWord(c.isRunning, now) },
-                    )
+                    // The account's latest word on each composer named, merged into what it said before: the running
+                    // set is every composer those words call running — the same set whichever batch came last, the
+                    // list's page of two hundred, a discovery pass's thousand or one record read by id. Taking each
+                    // batch's running composers as the set made it flap with the order the batches landed in (a
+                    // record read by id emptied it), and with it the running count and how many rows the next pass
+                    // fetched by id.
+                    val words = it.accountWord + composers.filter { c -> c.status != null }.associate { c -> c.id to RunningScan.AccountWord(c.isRunning, now) }
+                    it.copy(accountIds = words.filterValues { w -> w.running }.keys, accountAtMillis = now, accountWord = words)
                 }
             }
         }
