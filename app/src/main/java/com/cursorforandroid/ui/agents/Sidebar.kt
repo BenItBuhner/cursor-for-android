@@ -72,7 +72,6 @@ import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.GroupLabel
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.scrollEdgeFade
@@ -94,13 +93,19 @@ data class SidebarCallbacks(
     val onLoadMore: () -> Unit = {},
     /** Opens the Create Project sheet from the Projects group's header; null hides the plus (default mode, where Projects are the account's). */
     val onNewProject: (() -> Unit)? = null,
+    /**
+     * A group's header was tapped: fold it closed ([collapsed] true) or open. The fold is the device's to remember
+     * ([AgentListUiState.collapsedSections]); the sidebar reads it back from the state rather than keeping its own.
+     */
+    val onSectionCollapsed: (sectionKey: String, collapsed: Boolean) -> Unit = { _, _ -> },
 )
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
  * new-chat ("+") + search + filter + sidebar-toggle icons in one header row (the web's separate "Chats" label is
  * folded into it), Projects / Pinned / date groups of 32dp rows, and the account footer. A chat's workers, side chats
- * and subagents sit under it as a tree, closed until its count is tapped. Surface is `--cursor-sidebar` (#181818).
+ * and subagents sit under it as a tree, closed until its count is tapped. Each group folds closed from its header
+ * (see [SidebarSectionHeader]), and stays folded across restarts. Surface is `--cursor-sidebar` (#181818).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,7 +130,6 @@ fun Sidebar(
     // feeding it back here put the cursor at the start of the box on every keystroke — the next character then
     // inserted on the left, so a search could not be typed. Closing still clears both.
     var query by rememberSaveable { mutableStateOf("") }
-    var collapsedKeys by rememberSaveable { mutableStateOf(listOf<String>()) }
     // Chats whose nested chats — a Project's workers, side chats, subagents — are listed beneath them. Closed until
     // opened: a Project can have dozens of workers, and the row's count says they are there.
     var expandedParents by rememberSaveable { mutableStateOf(listOf<String>()) }
@@ -208,32 +212,17 @@ fun Sidebar(
                     item("error") { Text(err, style = type.small, color = colors.red, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
                 }
                 state.sections.forEach { section ->
-                    val expanded = section.key !in collapsedKeys
+                    // Folded groups are the device's memory, read back from the state; a search opens every group
+                    // for as long as it is typed, since its matches may sit behind a fold.
+                    val expanded = query.isNotBlank() || section.key !in state.collapsedSections
                     item("hdr-${section.key}") {
-                        val onNewProject = callbacks.onNewProject?.takeIf { section.key == AgentListOrganizer.PROJECTS_KEY }
-                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = if (onNewProject != null) 8.dp else 16.dp).height(CursorDimens.sidebarRow + CursorDimens.sidebarRowGap), verticalAlignment = Alignment.CenterVertically) {
-                            GroupLabel(
-                                section.title,
-                                Modifier.weight(1f),
-                                expanded = expanded,
-                                onToggle = {
-                                    collapsedKeys = if (expanded) collapsedKeys + section.key else collapsedKeys - section.key
-                                },
-                            )
-                            // The composer's plus, much smaller, right-aligned: a new Project, created the desktop's way.
-                            if (onNewProject != null) {
-                                Icon(
-                                    CursorIcons.Plus,
-                                    contentDescription = "New Project",
-                                    tint = colors.iconQuaternary,
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .pressable(onNewProject, CircleShape)
-                                        .padding(3.dp)
-                                        .testTag("new-project"),
-                                )
-                            }
-                        }
+                        SidebarSectionHeader(
+                            section = section,
+                            expanded = expanded,
+                            onToggle = { callbacks.onSectionCollapsed(section.key, expanded) },
+                            // The composer's plus, much smaller, beside the chevron: a new Project, created the desktop's way.
+                            onNewProject = callbacks.onNewProject?.takeIf { section.key == AgentListOrganizer.PROJECTS_KEY },
+                        )
                     }
                     if (expanded && section.key == AgentListOrganizer.PROJECTS_KEY && !extendedMode && !isDemo) {
                         // Without the account service only a coordinator's own transcript says which chats are its
