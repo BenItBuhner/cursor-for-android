@@ -245,8 +245,32 @@ class ProjectRepository(
     }
 
     @Volatile private var lastRootScanAtMillis = 0L
-    /** A pass of this process read the account list to its end (or as far as a pass may): the registry is the whole account's. */
-    @Volatile private var fullScanDone = false
+
+    /**
+     * Where a pass may stop: the last activity of the oldest live Project the registry knows, once every live root
+     * is dated — the undated ones (a Project created here, one an older build's disk restored) are asked for their
+     * record by id first, a few per pass. Null while one is still undated: that pass reads to the end.
+     */
+    private suspend fun floorOfRegistry(token: Int): Long? {
+        val live = agents.knownRoots.value.filter { !it.archived }
+        if (live.isEmpty()) return null
+        val undated = live.filter { it.activityAtMillis == null }.take(MAX_ROOTS_DATED_PER_PASS)
+        if (undated.isNotEmpty()) {
+            val records = undated.mapNotNull { root ->
+                try {
+                    api.record(root.id)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+            if (agents.token() != token) return null
+            if (records.isNotEmpty()) agents.applyAccountSnapshots(records, token)
+        }
+        val dated = agents.knownRoots.value.filter { !it.archived }
+        return dated.mapNotNull { it.activityAtMillis }.takeIf { it.isNotEmpty() && it.size == dated.size }?.minOrNull()
+    }
     private val discoveryMutex = Mutex()
     private val _lastRootScan = MutableStateFlow<RootScanRecord?>(null)
     /** What the last root discovery pass found, for the diagnostics; null before one. */
@@ -282,12 +306,14 @@ class ProjectRepository(
             // The list is read newest first; once a page is older than every live Project the registry knows, the
             // pages behind it can name no Project newer than those — only one older, which a deep refresh reads for.
             // Archived Projects are left out of the floor: they sit far down the list and are not what a pull is
-            // for. A registry with nothing dated (empty, or an older build's) reads to the end.
-            // The floor stands on a registry that has read the whole account before — restored from a session that
-            // did, or filled by a pass of this process that read to the end — never on what the first page happened
-            // to bring; the first pass of a fresh install reads everything.
-            val complete = agents.registryRestoredFromDisk || fullScanDone
-            val floor = if (deep || !complete) null else agents.knownRoots.value.filter { !it.archived }.let { live -> live.mapNotNull { it.activityAtMillis }.takeIf { it.isNotEmpty() && it.size == live.size }?.minOrNull() }
+            // for. The floor stands on a registry that has read the whole account before — the word kept on disk
+            // by the pass that did (see [AgentRepository.registryCompleteAtMillis]) — never on what the first page
+            // happened to bring: the first pass of a fresh install, and the first after an upgrade from a build
+            // that kept no such word, read everything, once. A live root the registry holds undated (created here,
+            // named by a membership, restored from an older build's disk) has its record read by id first, so one
+            // such root does not send every pass over the whole account.
+            val complete = agents.registryCompleteAtMillis != null
+            val floor = if (deep || !complete) null else floorOfRegistry(token)
             val scanStartedAt = now()
             val scan = try {
                 api.scanRoots(ROOT_SCAN_PAGES, floor)
@@ -304,16 +330,20 @@ class ProjectRepository(
                 agents.materializeRoots(token)
                 return
             }
-            // The Projects' records and the workers' records naming them: roots and placements, held or not — the
-            // pages read count whether or not the pass reached the end.
-            if (scan.roots.isNotEmpty() || scan.children.isNotEmpty()) agents.applyAccountSnapshots(scan.roots + scan.children, token)
+            // Every record the pages carried — the Projects' and the workers' naming them above all: roots and
+            // placements, held or not, and every other row's record, so the rows are placed and named from the
+            // pages read for the roots rather than asked for one by one. The pages read count whether or not the
+            // pass reached the end.
+            val records = scan.snapshots.ifEmpty { scan.roots + scan.children }
+            if (records.isNotEmpty()) agents.applyAccountSnapshots(records, token)
             // The pass is the account's word on every record it carried: a registry root among them that is neither
             // a Project nor a manager by its record is no root (what an older build admitted on a source or a hint).
             agents.revalidateRegistry(scan.seenIds, scan.roots.mapTo(HashSet()) { it.id }, scan.managers, token)
             // A pass that read to the end, as far as it is allowed to, or to the page older than every known Project
             // is done; one a page failed is tried again.
             val finished = scan.failure == null && (scan.complete || scan.truncated || scan.stoppedEarly)
-            if (scan.failure == null && (scan.complete || scan.truncated)) fullScanDone = true
+            // A pass that read the whole account (or as far as one may) makes the registry complete, on disk too.
+            if (scan.failure == null && (scan.complete || scan.truncated) && agents.token() == token) agents.markRegistryComplete(now())
             if (finished) {
                 lastRootScanAtMillis = now()
                 scanAttempts = 0
@@ -485,15 +515,9 @@ class ProjectRepository(
             if (record != null) agents.applyAccountSnapshots(listOf(record), token)
         }
         // Members the list does not hold (beyond its window, or created moments ago) are fetched by id so the view can
-        // list them — a few at a time, and not one a page has brought meanwhile.
+        // list them — through the list's own pool, so a Project of a hundred members never floods the host.
         val missing = lineage.members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)
-        coroutineScope {
-            missing.forEach { id ->
-                launch {
-                    if (agents.token() == token && agents.agent(id) == null) agents.loadDetail(id)
-                }
-            }
-        }
+        if (missing.isNotEmpty()) agents.fetchMissing(missing, token)
         return agents.token() == token
     }
 
@@ -761,7 +785,6 @@ class ProjectRepository(
     /** On sign-out or a backend switch: nothing fetched for the previous account counts for the next. */
     fun reset() {
         materialized.clear()
-        fullScanDone = false
         lastRootScanAtMillis = 0L
         _unavailableParents.value = emptyMap()
         extras.clear()
@@ -812,8 +835,10 @@ class ProjectRepository(
 
     companion object {
         private const val MAX_ROOTS_PER_SYNC = 20
-        /** Roots whose memberships are read at once (see [syncLineage]). */
-        private const val LINEAGE_POOL = 3
+        /** Undated live roots whose record is read by id before a pass, so the floor can stand (see [floorOfRegistry]). */
+        private const val MAX_ROOTS_DATED_PER_PASS = 8
+        /** Roots whose memberships are read at once (see [syncLineage]); each is two calls, which the account service's throttle spaces out. */
+        private const val LINEAGE_POOL = 2
         /** A root whose record has not moved is still re-read this often, for a membership change the record does not show. */
         const val LINEAGE_TTL_MS = 10 * 60_000L
         /** Pages of the account list the root discovery pass reads at most (see [discoverRoots]): five thousand records. */

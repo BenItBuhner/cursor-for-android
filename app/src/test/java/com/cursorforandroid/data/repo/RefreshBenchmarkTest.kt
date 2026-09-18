@@ -6,7 +6,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.AccountList
+import com.cursorforandroid.data.api.ApiThrottle
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.PinnedIds
 import com.cursorforandroid.data.api.PinsApi
@@ -37,6 +40,7 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,18 +82,67 @@ class RefreshBenchmarkTest {
     /** One recorded network call: what was asked, and when it went out and came back, in millis since the log began. */
     data class Call(val kind: String, val detail: String, val startMs: Long, val endMs: Long)
 
-    /** Every network call of the run, each answered after [latencyMs] — one round trip on a phone's network. */
-    class CallLog(val latencyMs: Long) {
+    /**
+     * The network as a phone sees it. [latencyMs] draws one round trip; [failureRate] of the calls fail transiently
+     * (a dropped connection, a 503); and each host refuses with a 429 and a `Retry-After` while more than its
+     * [Limiter.cap] calls are in flight — the account service (api2) and the public API each with their own.
+     */
+    class CallLog(
+        private val latencyMs: () -> Long,
+        private val failureRate: Double = 0.0,
+        private val api2Cap: Int = Int.MAX_VALUE,
+        private val publicCap: Int = Int.MAX_VALUE,
+        private val retryAfterMs: Long = 2_000L,
+        seed: Int = 11,
+    ) {
+        constructor(latencyMs: Long) : this({ latencyMs })
+
         private val t0 = System.nanoTime()
+        private val random = Random(seed)
         val calls = CopyOnWriteArrayList<Call>()
+        val refused = java.util.concurrent.atomic.AtomicInteger()
+        val failed = java.util.concurrent.atomic.AtomicInteger()
+        val peakApi2 = java.util.concurrent.atomic.AtomicInteger()
+        val peakPublic = java.util.concurrent.atomic.AtomicInteger()
+        private val api2 = Limiter(api2Cap, peakApi2)
+        private val public = Limiter(publicCap, peakPublic)
         fun nowMs(): Long = (System.nanoTime() - t0) / 1_000_000
-        suspend fun <T> record(kind: String, detail: String = "", block: suspend () -> T): T {
+
+        class Limiter(val cap: Int, private val peak: java.util.concurrent.atomic.AtomicInteger) {
+            val inFlight = java.util.concurrent.atomic.AtomicInteger()
+            fun enter(): Boolean {
+                val n = inFlight.incrementAndGet()
+                peak.updateAndGet { maxOf(it, n) }
+                return n <= cap
+            }
+            fun leave() { inFlight.decrementAndGet() }
+        }
+
+        /** A public API call (api.cursor.com): the same weather; a refusal is a [CursorApiException] 429. */
+        suspend fun <T> record(kind: String, detail: String = "", block: suspend () -> T): T = call(kind, detail, public, block) { CursorApiException(429, "rate_limited", "Too many requests.") }
+
+        /** An account service call (api2): a refusal is a [ConnectRpcException] 429 naming when to come back. */
+        suspend fun <T> api2(kind: String, detail: String = "", block: suspend () -> T): T = call(kind, detail, api2, block) { ConnectRpcException(429, "resource_exhausted", "Rate limited.", retryAfterMillis = retryAfterMs) }
+
+        private suspend fun <T> call(kind: String, detail: String, limiter: Limiter, block: suspend () -> T, refusal: () -> Throwable): T {
             val start = nowMs()
-            delay(latencyMs)
-            return try {
-                block()
+            val admitted = limiter.enter()
+            try {
+                // A refused call is answered fast, as a 429 is; an admitted one takes its round trip.
+                if (!admitted) {
+                    delay(latencyMs() / 4)
+                    refused.incrementAndGet()
+                    throw refusal()
+                }
+                delay(latencyMs())
+                if (failureRate > 0 && synchronized(random) { random.nextDouble() } < failureRate) {
+                    failed.incrementAndGet()
+                    throw java.io.IOException("connection reset")
+                }
+                return block()
             } finally {
-                calls += Call(kind, detail, start, nowMs())
+                limiter.leave()
+                calls += Call(kind + if (!admitted) " [429]" else "", detail, start, nowMs())
             }
         }
         fun counts(): Map<String, Int> = calls.groupingBy { it.kind }.eachCount().toSortedMap()
@@ -163,8 +216,9 @@ class RefreshBenchmarkTest {
     private val byId = HashMap<String, Chat>()
     private val memberships = HashMap<String, MutableList<WorkerMembership>>()
 
-    /** The account service in miniature, every call recorded and delayed like the public API's. */
-    private inner class Account(private val log: CallLog) : PinsApi, ProjectLineageApi {
+    /** The account service in miniature, every call recorded and delayed like the public API's, and through the process's throttle as every Connect call is. */
+    private inner class Account(private val log: CallLog, private val throttle: ApiThrottle) : PinsApi, ProjectLineageApi {
+        private suspend fun <T> api2(kind: String, detail: String = "", block: suspend () -> T): T = throttle.call { log.api2(kind, detail, block) }
         private val ordered get() = chats.sortedByDescending { it.activityMillis }
 
         private fun page(offset: Long?, size: Int): Pair<List<Chat>, Long?> {
@@ -181,12 +235,12 @@ class RefreshBenchmarkTest {
             nextCursor = next?.toString(),
         )
 
-        override suspend fun list(): AccountList = log.record("ListBackgroundComposers (account round)", "first") {
+        override suspend fun list(): AccountList = api2("ListBackgroundComposers (account round)", "first") {
             val (rows, next) = page(null, 200)
             list(rows, next, pins = true)
         }
 
-        override suspend fun listMore(cursor: String): AccountList = log.record("ListBackgroundComposers (account round)", cursor) {
+        override suspend fun listMore(cursor: String): AccountList = api2("ListBackgroundComposers (account round)", cursor) {
             val (rows, next) = page(cursor.toLong(), 200)
             list(rows, next, pins = false)
         }
@@ -195,12 +249,12 @@ class RefreshBenchmarkTest {
         override suspend fun unpin(ids: Collection<String>) = Unit
 
         override suspend fun workersForManager(managerId: String): List<WorkerMembership> =
-            log.record("ListWorkersForManager (per root)", managerId) { memberships[managerId].orEmpty() }
+            api2("ListWorkersForManager (per root)", managerId) { memberships[managerId].orEmpty() }
 
         override suspend fun children(parentId: String): List<ComposerSnapshot> =
-            log.record("ListBackgroundComposerChildren (per root)", parentId) { chats.filter { it.sideChatOf == parentId || it.subagentOf == parentId }.map { it.snapshot() } }
+            api2("ListBackgroundComposerChildren (per root)", parentId) { chats.filter { it.sideChatOf == parentId || it.subagentOf == parentId }.map { it.snapshot() } }
 
-        override suspend fun record(id: String): ComposerSnapshot? = log.record("account record by id", id) { byId[id]?.snapshot() }
+        override suspend fun record(id: String): ComposerSnapshot? = api2("account record by id", id) { byId[id]?.snapshot() }
 
         override suspend fun scanRoots(maxPages: Int): RootScan = scanRoots(maxPages, null)
 
@@ -213,11 +267,25 @@ class RefreshBenchmarkTest {
             var records = 0
             var complete = false
             var stoppedEarly = false
+            var failure: String? = null
+            val all = ArrayList<ComposerSnapshot>()
             do {
-                val (rows, next) = log.record("ListBackgroundComposers (discovery scan page)", "page ${pages + 1}") { page(offset, 200) }
+                val (rows, next) = try {
+                    api2("ListBackgroundComposers (discovery scan page)", "page ${pages + 1}") { page(offset, 200) }
+                } catch (t: java.io.IOException) {
+                    if (t is ConnectRpcException && t.httpCode < 500) { failure = "page ${pages + 1}: ${t.message}"; break }
+                    delay(750)
+                    try {
+                        api2("ListBackgroundComposers (discovery scan page)", "page ${pages + 1} (retry)") { page(offset, 200) }
+                    } catch (again: java.io.IOException) {
+                        failure = "page ${pages + 1}: ${again.message}"
+                        break
+                    }
+                }
                 pages++
                 records += rows.size
                 rows.map { it.snapshot() }.forEach { snap ->
+                    all += snap
                     if (snap.scope == AgentScope.PROJECT_ROOT) roots += snap
                     if (snap.parent != null) children += snap
                 }
@@ -229,7 +297,7 @@ class RefreshBenchmarkTest {
                 offset = next
                 if (offset == null) complete = true
             } while (offset != null && pages < maxPages)
-            return RootScan(roots, children, pages, complete, records, null, truncated = !complete && !stoppedEarly, stoppedEarly = stoppedEarly)
+            return RootScan(roots, children, pages, complete, records, failure, truncated = failure == null && !complete && !stoppedEarly, stoppedEarly = stoppedEarly, snapshots = all)
         }
     }
 
@@ -301,14 +369,18 @@ class RefreshBenchmarkTest {
 
     /** The graph's wiring, on one process: the list, the account round with its hooks, the Projects, the pull requests. */
     private inner class Process(val log: CallLog) {
+        /** The process's own scope: a process that has ended runs nothing on, and its collectors do not touch the disk the next one reads. */
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        fun end() = scope.cancel()
         val api = LoggingApi(fake, log)
-        val account = Account(log)
+        val throttle = ApiThrottle()
+        val account = Account(log, throttle)
         val stats = RefreshStats()
         val session = SessionManager(SecureKeyStore(context), prefs, CursorBackend(api, FakeRunStreamer(), isDemo = false), CursorBackend(api, FakeRunStreamer(), isDemo = true), capabilities = capabilities)
         val agents = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, recordOf = { id -> account.record(id) }, stats = stats)
         val projects = ProjectRepository(session, agents, account, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L), stats = stats).also { it.watchList() }
         val pullRequests = PullRequestRepository(
-            account = { url -> log.record("GetPullRequestMergeStatus (PR badge)", url) { PullRequestLookup.Found(PullRequestState.Open) } },
+            account = { url -> throttle.call { log.api2("GetPullRequestMergeStatus (PR badge)", url) { PullRequestLookup.Found(PullRequestState.Open) } } },
             demo = { PullRequestLookup.Unreadable },
             isDemo = { false },
             scope = scope,
@@ -332,14 +404,148 @@ class RefreshBenchmarkTest {
             pullRequests.refresh(agents.state.value.agents.take(24).mapNotNull { it.prUrl }, eager = true)
         }
 
+        /**
+         * The cold start as `AgentsViewModel` runs it: the disk copy first, then a silent refresh (there was something
+         * to show), and — the user pulling a moment later — a pull that joins the fetch in flight. Returns when the
+         * pull returns; the marks are on [log].
+         */
+        suspend fun coldStartThenPull(pullAfterMs: Long): ColdStartMarks {
+            val marks = ColdStartMarks()
+            val watcher = scope.launch {
+                var shown = false
+                agents.state.collect { s ->
+                    if (s.hasLoaded && marks.firstPaintMs < 0) marks.firstPaintMs = log.nowMs()
+                    if (s.isRefreshing) { shown = true; marks.spinnerShown = true }
+                    if (shown && !s.isRefreshing && marks.spinnerReleasedMs < 0) marks.spinnerReleasedMs = log.nowMs()
+                    if (marks.pulledAtMs >= 0 && !s.isRefreshing && !s.isSettling && s.agents.isNotEmpty() && marks.listSettledMs < 0 && log.nowMs() > marks.pulledAtMs + 50) marks.listSettledMs = log.nowMs()
+                }
+            }
+            agents.restoreFromCache()
+            // In program order, not by the clock: the disk copy is published when the restore returns, before the
+            // first fetch is even launched — so before any call could have gone out.
+            marks.diskShownBeforeNetwork = agents.state.value.hasLoaded && agents.state.value.agents.isNotEmpty() && log.calls.isEmpty()
+            pullRequests.restoreFromCache()
+            val silent = scope.launch { agents.refresh(silent = agents.state.value.hasLoaded) }
+            delay(pullAfterMs)
+            marks.pulledAtMs = log.nowMs()
+            pull()
+            marks.pullReturnedMs = log.nowMs()
+            silent.join()
+            settle()
+            marks.settledMs = log.lastEndMs()
+            marks.firstNetworkCallMs = log.calls.minOfOrNull { it.startMs } ?: -1
+            watcher.cancel()
+            return marks
+        }
+
         /** Waits until nothing has been on the wire for a while and the account round is over. */
-        suspend fun settle(quietMs: Long = 1_500, timeoutMs: Long = 120_000) = withTimeout(timeoutMs) {
+        suspend fun settle(quietMs: Long = 1_500, timeoutMs: Long = 600_000) = withTimeout(timeoutMs) {
             while (true) {
                 delay(100)
                 val quiet = log.nowMs() - log.lastEndMs() >= quietMs && log.calls.isNotEmpty()
-                if (quiet && !pins.state.value.isSyncing && !agents.state.value.isRefreshing) return@withTimeout
+                if (quiet && !pins.state.value.isSyncing && !agents.state.value.isRefreshing && !agents.state.value.isSettling && !projects.syncingLineage.value && projects.lastRootScan.value?.status != RootScanRecord.Status.Running) return@withTimeout
             }
         }
+    }
+
+    class ColdStartMarks {
+        var diskShownBeforeNetwork = false
+        var spinnerShown = false
+        var listSettledMs = -1L
+        var firstPaintMs = -1L
+        var firstNetworkCallMs = -1L
+        var pulledAtMs = -1L
+        var spinnerReleasedMs = -1L
+        var pullReturnedMs = -1L
+        var settledMs = -1L
+    }
+
+    /** The disk as 0.3.38 left it: the same rows and registry, but no root dated and no word that the registry is complete. */
+    private suspend fun ageDiskToPreviousBuild() {
+        val entry = cache.read() ?: error("nothing on disk")
+        val lineage = cache.readLineage() ?: error("no lineage on disk")
+        cache.write(entry.value, cache.token(), lineage.copy(roots = lineage.roots.map { it.copy(activityAtMillis = null) }, registryCompleteAtMillis = null))
+    }
+
+    private fun reportOf(title: String, marks: ColdStartMarks, log: CallLog, calls: List<Call>, process: Process): String = buildString {
+        appendLine(title)
+        appendLine("first paint (disk copy) at +${marks.firstPaintMs} ms; first network call at +${marks.firstNetworkCallMs} ms; pulled at +${marks.pulledAtMs} ms")
+        val spinner = when {
+            !marks.spinnerShown -> "not shown (the pull joined the cold start's fetch past its first page; the footer stood instead)"
+            marks.spinnerReleasedMs < 0 -> "never released"
+            else -> "released at +${marks.spinnerReleasedMs} ms (${marks.spinnerReleasedMs - marks.pulledAtMs} ms after the pull)"
+        }
+        appendLine("spinner $spinner; list's own tail settled (footer) at +${marks.listSettledMs} ms; refresh() returned at +${marks.pullReturnedMs} ms; last call landed at +${marks.settledMs} ms")
+        appendLine("calls: ${calls.size} (${calls.count { it.kind.endsWith("[429]") }} refused with 429, ${log.failed.get()} failed transiently); peak in flight: api2=${log.peakApi2.get()} public=${log.peakPublic.get()}")
+        calls.groupingBy { it.kind }.eachCount().toSortedMap().forEach { (kind, n) -> appendLine("  $n × $kind") }
+        val scan = process.projects.lastRootScan.value
+        appendLine("discovery scan: ${scan?.status} pages=${scan?.pagesRead} notice=${scan?.notice}")
+        appendLine("rows: ${process.agents.state.value.agents.size}; roots shown: ${process.agents.state.value.agents.count { it.isProjectRoot }}; registry: ${process.agents.knownRoots.value.size}; unresolved roots: ${process.agents.unresolvedRoots().size}; unresolved records: ${process.agents.unresolvedRecords().size}")
+    }
+
+    /**
+     * The same account, the network as a phone has it: 300–900 ms per round trip, one call in ten failing, and each
+     * host refusing with a 429 past a few calls in flight. Two cold starts: the first from the disk 0.3.38 left (no
+     * root dated, the registry not known complete), the second from what the first wrote.
+     */
+    @Test
+    fun `a cold start at a phone's conditions - slow, lossy, rate-limited`() = runBlocking<Unit> {
+        val warm = Process(CallLog(latencyMs = 0))
+        warm.pull()
+        warm.settle(quietMs = 400)
+        chats.filter { it.prUrl != null }.forEach { c -> warm.agents.patch(c.id) { it.copy(branches = listOf(GitBranch("github.com/acme/app", "cursor/${c.id}", c.prUrl))) } }
+        delay(300)
+        warm.agents.state.first { !it.isFromCache }
+        delay(300)
+        warm.end()
+        ageDiskToPreviousBuild()
+
+        fun weather(seed: Int) = CallLog(latencyMs = { 300L + Random(seed + System.nanoTime().toInt()).nextLong(0, 600) }, failureRate = 0.10, api2Cap = 4, publicCap = 6, retryAfterMs = 2_000L, seed = seed)
+
+        val log1 = weather(1)
+        val first = Process(log1)
+        val marks1 = first.coldStartThenPull(pullAfterMs = 1_000)
+        val calls1 = log1.calls.toList()
+        delay(400)
+        first.agents.state.first { !it.isFromCache }
+        delay(300)
+        first.end()
+
+        val log2 = weather(2)
+        val second = Process(log2)
+        val marks2 = second.coldStartThenPull(pullAfterMs = 1_000)
+        val calls2 = log2.calls.toList()
+
+        val report = buildString {
+            appendLine(reportOf("Cold start 1 — upgraded install's disk (0.3.38): 300–900 ms RTT, 10 % transient failures, 429 past 4 api2 / 6 public calls in flight", marks1, log1, calls1, first))
+            appendLine()
+            appendLine(reportOf("Cold start 2 — the disk the first start wrote", marks2, log2, calls2, second))
+            appendLine()
+            appendLine("refresh block (second start):")
+            appendLine(com.cursorforandroid.domain.ProjectDiagnostics.render(
+                com.cursorforandroid.domain.ProjectDiagnostics.Input(
+                    appVersion = "bench", nowIso = "-", extendedMode = true, projectsCapability = true, accountSession = true, listFromCache = false,
+                    lastRefreshedIso = null, agents = emptyList(), placementOf = { null }, rootSyncs = emptyMap(), refresh = second.stats.snapshot.value,
+                ),
+            ).substringAfter("refresh:").substringBefore("rows (").trimEnd())
+        }
+        println(report)
+        File(System.getProperty("user.dir"), "build/reports/refresh-benchmark-realistic.txt").apply { parentFile?.mkdirs() }.writeText(report)
+
+        // The disk copy is on screen before anything goes on the wire, on both starts.
+        assertThat(marks1.diskShownBeforeNetwork).isTrue()
+        assertThat(marks2.diskShownBeforeNetwork).isTrue()
+        // Every Project is a root, and its members its own, on both starts, whatever the weather.
+        for (process in listOf(first, second)) {
+            val rows = process.agents.state.value.agents
+            assertThat(rows.filter { it.isProjectRoot }.map { it.id }).containsAtLeastElementsIn(projects.filter { !it.archived }.map { it.id })
+            val members = chats.filter { it.manager != null || it.adoptedBy != null || it.sideChatOf != null || it.subagentOf != null }.mapTo(HashSet()) { it.id }
+            assertThat(rows.filter { it.scope == AgentScope.PRIMARY }.map { it.id }.filter { it in members }).isEmpty()
+        }
+        // The second start's discovery scan stops at the registry's oldest Project: the first start's full pass is the last.
+        assertWithMessage("first=${first.projects.lastRootScan.value} second=${second.projects.lastRootScan.value} complete=${second.agents.registryCompleteAtMillis} roots=${second.agents.knownRoots.value.map { it.id to it.activityAtMillis }}")
+            .that(second.projects.lastRootScan.value?.pagesRead ?: 0).isLessThan(first.projects.lastRootScan.value?.pagesRead ?: 0)
+        second.end()
     }
 
     @Test
@@ -357,6 +563,7 @@ class RefreshBenchmarkTest {
         delay(300)
 
         // The next morning: a fresh process, the disk copy, and a pull.
+        warm.end()
         val log = CallLog(latencyMs = LATENCY_MS)
         val process = Process(log)
         val spinner = AtomicLong(-1)
@@ -376,6 +583,7 @@ class RefreshBenchmarkTest {
         watcher.cancel()
         val coldCalls = log.calls.toList()
         val coldSettled = log.lastEndMs()
+        val coldSnapshot = process.stats.snapshot.value
 
         // A second pull a moment later, in the same process: what a refresh costs once the account has been read.
         val warmFrom = log.calls.size
@@ -409,15 +617,23 @@ class RefreshBenchmarkTest {
         println(report)
         File(System.getProperty("user.dir"), "build/reports/refresh-benchmark.txt").apply { parentFile?.mkdirs() }.writeText(report)
 
-        // What the refresh is held to from here on.
-        // The indicator is let go before any per-root or by-id call goes out: the first page and the status scan are all it waits for.
-        val firstTail = coldCalls.filter { it.kind.contains("per root") || it.kind.contains("by id") || it.kind.contains("PR badge") }.minOf { it.startMs }
-        assertThat(spinner.get()).isLessThan(firstTail)
+        // What the refresh is held to from here on — by counts and by the order the code records itself, never by
+        // how the wall clock happened to fall between two threads (the overlap-of-round-trips assertion this had
+        // flaked on about a third of runs).
+        // The indicator is let go before any pass of the tail starts: the release is recorded in the fetch before it
+        // launches the by-id passes, the memberships follow the completed fetch, the badges follow the pull.
+        val coldStats = coldSnapshot ?: error("no refresh recorded")
+        val tailStages = coldStats.stages.filter { it.name.contains("fetched by id") || it.name.contains("memberships") || it.name.contains("badges") || it.name.contains("records by id") }
+        assertThat(tailStages).isNotEmpty()
+        assertThat(coldStats.spinnerReleasedAtMillis).isNotNull()
+        tailStages.forEach { stage -> assertThat(stage.startedAtMillis).isAtLeast(coldStats.spinnerReleasedAtMillis!!) }
         // The discovery scan stops at the registry's oldest live Project rather than reading the whole account.
         assertThat(coldCalls.count { it.kind == "ListBackgroundComposers (discovery scan page)" }).isLessThan((chats.size + 199) / 200)
-        // Every membership read of a root goes out alongside another's, not one root after another.
-        val membershipReads = coldCalls.filter { it.kind == "ListWorkersForManager (per root)" }.sortedBy { it.startMs }
-        assertThat(membershipReads.zipWithNext().count { (a, b) -> b.startMs < a.endMs }).isAtLeast(membershipReads.size / 2)
+        // Never more on the wire at once than the account service and the public API are given: the throttle's
+        // three and the by-id pool's two plus the two lists' pages — and so nothing refused.
+        assertThat(log.peakApi2.get()).isAtMost(ApiThrottle.DEFAULT_MAX_IN_FLIGHT)
+        assertThat(log.peakPublic.get()).isAtMost(4)
+        assertThat(log.refused.get()).isEqualTo(0)
         // A second pull re-reads no memberships (no root's record moved), no discovery pages and no badge already fresh.
         assertThat(warmCalls.count { it.kind.contains("per root") }).isEqualTo(0)
         assertThat(warmCalls.count { it.kind.contains("discovery scan") }).isEqualTo(0)
@@ -429,7 +645,6 @@ class RefreshBenchmarkTest {
         assertThat(roots).containsAtLeastElementsIn(projects.filter { !it.archived }.map { it.id })
         val members = chats.filter { it.manager != null || it.adoptedBy != null || it.sideChatOf != null || it.subagentOf != null }.mapTo(HashSet()) { it.id }
         assertThat(rows.filter { it.scope == AgentScope.PRIMARY }.map { it.id }.filter { it in members }).isEmpty()
-        assertThat(spinner.get()).isAtLeast(0L)
     }
 
     private companion object {
