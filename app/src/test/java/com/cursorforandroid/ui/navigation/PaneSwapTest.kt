@@ -55,7 +55,8 @@ class PaneSwapTest {
                     graph = graph,
                     user = CursorUser("Demo", "demo@cursor.local", "Demo", "User", null),
                     isDemo = true,
-                    wide = wide,
+                    windowWidthDp = if (wide) 1000 else 411,
+                    windowHeightDp = if (wide) 720 else 914,
                     deepLinkAgentId = null,
                     onDeepLinkConsumed = {},
                 )

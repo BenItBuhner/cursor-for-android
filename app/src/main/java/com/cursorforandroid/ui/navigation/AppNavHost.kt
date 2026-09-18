@@ -1,8 +1,5 @@
 package com.cursorforandroid.ui.navigation
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -10,10 +7,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
-import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
-import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -24,7 +19,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -60,19 +55,11 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
-/** The hosting activity through any number of wrappers (a themed context, a display context); null outside one. */
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
-}
-
 /**
  * Same shell as the official app: the New Chat pane is home; the sidebar is a column on wide screens (a [SidebarRail],
  * collapsible with the drawer's slide) and an edge-swipe drawer on phones. Destinations live on a [NavStack] rendered
  * by [CursorNavHost].
  */
-@OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 fun AppNavHost(
     graph: AppGraph,
@@ -83,15 +70,15 @@ fun AppNavHost(
     newChatRequested: Boolean = false,
     onNewChatConsumed: () -> Unit = {},
 ) {
-    // The window size class is measured from the activity; without one (a wrapped context) the phone layout stands in
-    // rather than the cast bringing the app down.
-    val activity = LocalContext.current.findActivity()
-    val wide = if (activity == null) false else calculateWindowSizeClass(activity).widthSizeClass != WindowWidthSizeClass.Compact
+    // The window's size, as the configuration reports it: the activity handles size changes itself, so a Fold
+    // unfolding or a phone turning is a new configuration here, not a new activity (see WindowPosture).
+    val configuration = LocalConfiguration.current
     AppShell(
         graph = graph,
         user = user,
         isDemo = isDemo,
-        wide = wide,
+        windowWidthDp = configuration.screenWidthDp,
+        windowHeightDp = configuration.screenHeightDp,
         deepLinkAgentId = deepLinkAgentId,
         onDeepLinkConsumed = onDeepLinkConsumed,
         newChatRequested = newChatRequested,
@@ -99,13 +86,14 @@ fun AppNavHost(
     )
 }
 
-/** [AppNavHost] with the layout decision handed in, so a test can flip it without a configuration change. */
+/** [AppNavHost] with the window's size handed in, so a test can flip the layout without a configuration change. */
 @Composable
 internal fun AppShell(
     graph: AppGraph,
     user: CursorUser,
     isDemo: Boolean,
-    wide: Boolean,
+    windowWidthDp: Int,
+    windowHeightDp: Int,
     deepLinkAgentId: String?,
     onDeepLinkConsumed: () -> Unit,
     newChatRequested: Boolean = false,
@@ -121,9 +109,50 @@ internal fun AppShell(
     var customizeOpen by remember { mutableStateOf(false) }
     // The Project editor, opened from the Projects group's plus or a Project row's menu; kept up across a rotation.
     var projectEditor by rememberSaveable { mutableStateOf<ProjectEditorTarget?>(null) }
-    // Wide layout: the sidebar collapses like on the web, and the toggle moves into the detail pane header.
-    var sidebarCollapsed by rememberSaveable { mutableStateOf(false) }
     val colors = CursorTheme.colors
+
+    // The layout decision (see WindowPosture): the width class from the window, the rail's state from what the
+    // reader chose for windows of this class — kept for the composition and on disk, so folding a Fold back to its
+    // cover and out again finds the inner display's rail as it was — and the panel's width the same way.
+    val widthClass = WidthClass.of(windowWidthDp)
+    val wide = widthClass != WidthClass.Compact
+    val savedRails by graph.prefs.railStates.collectAsStateWithLifecycle(initialValue = emptyMap())
+    var railChoice by rememberSaveable { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val rail = (railChoice[widthClass.name] ?: savedRails[widthClass.name])?.let(RailState::parse) ?: WindowPosture.defaultRail(widthClass)
+    fun setRail(state: RailState) {
+        railChoice = railChoice + (widthClass.name to state.name)
+        scope.launch { graph.prefs.setRailState(widthClass.name, state.name) }
+    }
+    // The sidebar's width the same way, per width class: the drag moves it live (the composition's copy), the
+    // finger lifting writes it down.
+    val savedSidebarWidths by graph.prefs.sidebarWidths.collectAsStateWithLifecycle(initialValue = emptyMap())
+    var sidebarWidthChoice by rememberSaveable { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    val savedPanelWidth by graph.prefs.panelWidthDp.collectAsStateWithLifecycle(initialValue = null)
+    var panelWidthChoice by rememberSaveable { mutableStateOf<Int?>(null) }
+    val posture = WindowPosture(
+        widthClass = widthClass,
+        windowWidthDp = windowWidthDp,
+        compactHeight = windowHeightDp < WindowPosture.COMPACT_HEIGHT_MAX_DP,
+        rail = rail,
+        panelWidthDp = panelWidthChoice ?: savedPanelWidth ?: WindowPosture.PANEL_DEFAULT_DP,
+        sidebarWidthDp = sidebarWidthChoice[widthClass.name] ?: savedSidebarWidths[widthClass.name] ?: WindowPosture.SIDEBAR_DEFAULT_DP,
+    )
+    fun setPanelWidth(widthDp: Int) {
+        val clamped = WindowPosture.clampPanelWidth(widthDp, windowWidthDp)
+        panelWidthChoice = clamped
+        scope.launch { graph.prefs.setPanelWidthDp(clamped) }
+    }
+    fun setSidebarWidth(widthDp: Int, commit: Boolean) {
+        val clamped = WindowPosture.clampSidebarWidth(widthDp, windowWidthDp)
+        sidebarWidthChoice = sidebarWidthChoice + (widthClass.name to clamped)
+        if (commit) scope.launch { graph.prefs.setSidebarWidthDp(widthClass.name, clamped) }
+    }
+    // A drag that snapped the sidebar shut lifted on no width worth keeping: the composition's copy goes back to
+    // what was written down, so the sidebar returns at the width it had before the drag.
+    fun hideSidebarFromDrag() {
+        sidebarWidthChoice = sidebarWidthChoice - widthClass.name
+        setRail(RailState.Hidden)
+    }
 
     fun closeDrawer() {
         if (drawerState.isOpen) scope.launch { drawerState.close() }
@@ -135,7 +164,7 @@ internal fun AppShell(
     // than a drawer that opened on its own.
     LaunchedEffect(wide) {
         if (wide && drawerState.targetValue == DrawerValue.Open) {
-            sidebarCollapsed = false
+            setRail(RailState.Expanded)
             drawerState.snapTo(DrawerValue.Closed)
         }
     }
@@ -200,7 +229,7 @@ internal fun AppShell(
     val listOnScreen = topScreen == Screen.Home ||
         drawerState.isOpen ||
         drawerState.fraction > 0f ||
-        (wide && !sidebarCollapsed)
+        (wide && rail != RailState.Hidden)
     LifecycleStartEffect(listOnScreen) {
         val polling = if (listOnScreen) agentsViewModel.pollWhileVisible() else null
         onStopOrDispose { polling?.cancel() }
@@ -264,7 +293,8 @@ internal fun AppShell(
                 onNewChat = { navigateTop(Screen.Home) },
                 onSettings = { navigateTop(Screen.Settings) },
                 onCustomize = { customizeOpen = true },
-                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
+                // The sidebar's top-left toggle hides the column; the content header's brings it back.
+                onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ setRail(RailState.Hidden) }),
                 onRefresh = agentsViewModel::refresh,
                 rowActions = rowActions,
                 onLoadMore = { agentsViewModel.loadMore() },
@@ -276,7 +306,7 @@ internal fun AppShell(
 
     val openSidebar: (() -> Unit)? = when {
         !wide -> ({ scope.launch { drawerState.open() } })
-        sidebarCollapsed -> ({ sidebarCollapsed = false })
+        rail == RailState.Hidden -> ({ setRail(RailState.Expanded) })
         else -> null
     }
     val onBack: (() -> Unit)? = if (wide) null else ({ stack.pop() })
@@ -311,6 +341,7 @@ internal fun AppShell(
                         onOpenSidebar = if (pane.wide) pane.openSidebar else null,
                         onBack = pane.onBack,
                         onOpenAgent = ::openAgent,
+                        onPanelResize = pane.onPanelResize,
                     )
                 }
             }
@@ -326,27 +357,37 @@ internal fun AppShell(
         onOpenAgent = rowActions.onOpen,
         rowActions = rowActions,
         backEnabled = !drawerState.isOpen,
+        onPanelResize = ::setPanelWidth,
     )
 
-    // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
-    // figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane does.
-    MediaViewerHost(state = rememberMediaViewerState(), loader = graph.media) {
-        if (wide) {
-            Row(Modifier.fillMaxSize().background(colors.canvas)) {
-                SidebarRail(expanded = !sidebarCollapsed) {
-                    sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+    CompositionLocalProvider(LocalWindowPosture provides posture) {
+        // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
+        // figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane does.
+        MediaViewerHost(state = rememberMediaViewerState(), loader = graph.media) {
+            if (wide) {
+                Row(Modifier.fillMaxSize().background(colors.canvas)) {
+                    SidebarRail(
+                        state = rail,
+                        width = posture.expandedRailWidthDp.dp,
+                        onResize = { widthDp -> setSidebarWidth(widthDp, commit = false) },
+                        onResizeEnd = { widthDp -> setSidebarWidth(widthDp, commit = true) },
+                        // Dragged under the minimum, the sidebar snaps shut, as the web's does; its width stays for its return.
+                        onHide = ::hideSidebarFromDrag,
+                    ) {
+                        sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+                    }
+                    detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
                 }
-                detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
-            }
-        } else {
-            CursorDrawer(
-                state = drawerState,
-                drawerWidth = CursorDimens.sidebarWidth,
-                containerColor = colors.sidebar,
-                contentColor = colors.textPrimary,
-                drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
-            ) {
-                detailHost(Modifier.fillMaxSize(), pane)
+            } else {
+                CursorDrawer(
+                    state = drawerState,
+                    drawerWidth = CursorDimens.sidebarWidth,
+                    containerColor = colors.sidebar,
+                    contentColor = colors.textPrimary,
+                    drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
+                ) {
+                    detailHost(Modifier.fillMaxSize(), pane)
+                }
             }
         }
     }
@@ -399,4 +440,6 @@ private class DetailPane(
     val rowActions: AgentRowActions,
     /** False while the drawer is over the pane: the gesture is the drawer's to close, not the stack's to pop. */
     val backEnabled: Boolean,
+    /** The reader resized the panel's pane; the shell keeps the width. */
+    val onPanelResize: (Int) -> Unit,
 )

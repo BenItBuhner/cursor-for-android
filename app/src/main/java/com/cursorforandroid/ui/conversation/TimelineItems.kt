@@ -476,6 +476,11 @@ internal fun ThoughtText(text: String, modifier: Modifier = Modifier) {
 internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
     // A Project coordinator's call is a card or a row of its own (see CoordinatorContent.kt), never a bare line.
     if (CoordinatorStep(call, modifier)) return
+    // A task handed to a subagent is the web's Task card (see TaskRow), not a line that opens onto one.
+    if (call.kind == ToolKind.Task) {
+        TaskRow(call, modifier)
+        return
+    }
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val output = remember(call) { ToolOutput.of(call) }

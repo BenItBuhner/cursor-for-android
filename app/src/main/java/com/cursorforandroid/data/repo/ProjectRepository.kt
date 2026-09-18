@@ -140,6 +140,8 @@ class ProjectRepository(
     private val api: ProjectLineageApi,
     private val actions: ProjectActionsApi? = null,
     private val store: AgentStoreApi? = null,
+    /** The demo's in-memory stores, standing in for [store] in the demo; null leaves the demo without context. */
+    private val demoStore: AgentStoreApi? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val now: () -> Long = AppClock::now,
     private val maxRootsPerSync: Int = MAX_ROOTS_PER_SYNC,
@@ -520,7 +522,8 @@ class ProjectRepository(
         val available = session.isDemo || allowed.projects
         flow.update { it.copy(actionsAvailable = available) }
         if (session.isDemo) {
-            flow.update { it.copy(hasSynced = true, lineageNotice = null, context = if (it.context == ContextState.Idle) ContextState.NoStore else it.context) }
+            // With stores to stand in, the demo's context is read like the account's when the section asks for it.
+            flow.update { it.copy(hasSynced = true, lineageNotice = null, context = if (it.context == ContextState.Idle && demoStore == null) ContextState.NoStore else it.context) }
             return
         }
         if (!allowed.projects) {
@@ -631,17 +634,20 @@ class ProjectRepository(
     /** Reads the Project's shared context, root directory first; [relativePath] to open a directory of it. */
     suspend fun loadContext(projectId: String, relativePath: String = "") {
         val flow = extrasOf(projectId)
-        if (session.isDemo) {
-            flow.update { it.copy(context = ContextState.NoStore) }
-            return
-        }
-        if (!capabilities().projects) {
-            flow.update { it.copy(context = ContextState.Unavailable(NEEDS_EXTENDED_MODE)) }
-            return
-        }
-        val reads = store ?: run {
-            flow.update { it.copy(context = ContextState.Unavailable(NOT_WIRED)) }
-            return
+        val reads = when {
+            // The demo stands in for the account here too, when it has stores to stand in with.
+            session.isDemo -> demoStore ?: run {
+                flow.update { it.copy(context = ContextState.NoStore) }
+                return
+            }
+            !capabilities().projects -> {
+                flow.update { it.copy(context = ContextState.Unavailable(NEEDS_EXTENDED_MODE)) }
+                return
+            }
+            else -> store ?: run {
+                flow.update { it.copy(context = ContextState.Unavailable(NOT_WIRED)) }
+                return
+            }
         }
         // The store, once found, is kept across the folders opened in it; only the listing is read again.
         val knownStore = (flow.value.context as? ContextState.Loaded)?.context?.storeId
@@ -665,8 +671,8 @@ class ProjectRepository(
     suspend fun readContextFile(projectId: String, entry: ContextEntry): Result<String> {
         val storeId = (extrasOf(projectId).value.context as? ContextState.Loaded)?.context?.storeId
             ?: return Result.failure(IllegalStateException("The Project's context has not been opened."))
-        val reads = store ?: return Result.failure(IllegalStateException(NOT_WIRED))
-        if (!capabilities().projects) return Result.failure(IllegalStateException(NEEDS_EXTENDED_MODE))
+        val reads = if (session.isDemo) demoStore ?: return Result.failure(IllegalStateException(NOT_IN_DEMO)) else store ?: return Result.failure(IllegalStateException(NOT_WIRED))
+        if (!session.isDemo && !capabilities().projects) return Result.failure(IllegalStateException(NEEDS_EXTENDED_MODE))
         return runCatching { reads.readFile(storeId, entry.relativePath) }.recoverCatching { t ->
             if (t is CancellationException) throw t
             throw IOException(describeFailure(t), t)

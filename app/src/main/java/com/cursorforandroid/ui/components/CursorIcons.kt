@@ -120,6 +120,42 @@ object CursorIcons {
         }
     }
 
+    /** Lucide `maximize-2`: the panel's expand control. */
+    val Expand: ImageVector by lazy {
+        icon("Expand") {
+            path("M15 3h6v6")
+            path("M9 21H3v-6")
+            path("M21 3l-7 7")
+            path("M3 21l7-7")
+        }
+    }
+
+    /** Lucide `panel-right`: the panel toggle in the content header and the panel's own close control. */
+    val PanelRight: ImageVector by lazy {
+        icon("PanelRight") {
+            rect(3f, 3f, 18f, 18f, 2f)
+            path("M15 3v18")
+        }
+    }
+
+    /** Lucide `book-open`-free markdown glyph: the "M↓" mark the web's tabs put on a markdown document. */
+    val Markdown: ImageVector by lazy {
+        icon("Markdown") {
+            path("M3 7v10")
+            path("M3 7l4 5 4-5")
+            path("M11 7v10")
+            path("M17 7v10")
+            path("M14 14l3 3 3-3")
+        }
+    }
+
+    /** Lucide `folder-open`: the roots of the All Files tree. */
+    val FolderOpen: ImageVector by lazy {
+        icon("FolderOpen") {
+            path("m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2")
+        }
+    }
+
     val Filter: ImageVector by lazy {
         icon("Filter") {
             path("M2 5h20")

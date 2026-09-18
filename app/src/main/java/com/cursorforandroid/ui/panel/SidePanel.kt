@@ -164,20 +164,23 @@ fun SidePanelHost(
 /** The width the panel takes on a screen of [maxWidth]: most of a phone, a column on anything wider. */
 fun panelWidthFor(maxWidth: Dp): Dp = minOf(maxWidth - PanelMargin, PanelMaxWidth)
 
-/** A host that sizes the panel to its window; see [SidePanelHost]. */
+/** A host that sizes the panel to its window — the whole window when [expanded], the panel's expand control; see [SidePanelHost]. */
 @Composable
 fun SidePanel(
     state: SidePanelState,
     modifier: Modifier = Modifier,
     gesturesEnabled: Boolean = true,
+    expanded: Boolean = false,
+    containerColor: Color = CursorTheme.colors.sidebar,
     panelContent: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
     BoxWithConstraints(modifier) {
         SidePanelHost(
             state = state,
-            panelWidth = panelWidthFor(maxWidth),
+            panelWidth = if (expanded) maxWidth else panelWidthFor(maxWidth),
             gesturesEnabled = gesturesEnabled,
+            containerColor = containerColor,
             panelContent = panelContent,
             content = content,
         )

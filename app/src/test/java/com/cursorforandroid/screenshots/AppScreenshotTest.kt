@@ -513,13 +513,22 @@ class AppScreenshotTest {
         compose.onAllNodes(hasScrollToNodeAction() and hasAnyDescendant(hasText("PR #215 (usage aggregation) is", substring = true))).onFirst().performScrollToNode(hasTestTag("worker-card"))
         compose.waitForIdle()
         capture("39_project_coordinator_transcript")
-        // The Project itself is the chat's panel: its Project section, open by default, right under the Overview —
-        // the primaries with their status and menus, New primary and Adopt a chat (the demo stands in for the
-        // account, so its actions are offered), and the shared context as the named empty state.
+        // The Project itself is the chat's panel. A coordinator's opens on the Project panel (the notes, as on
+        // cursor.com); the chat's own sections are the panel's other surface, reached from the Agents pill, with the
+        // Project section open by default right under the Overview — the primaries with their status and menus, New
+        // primary and Adopt a chat (the demo stands in for the account, so its actions are offered), and the shared
+        // context a tap away.
         compose.onNodeWithContentDescription("Open panel").performClick()
+        compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("project-notes-tab")).fetchSemanticsNodes().isNotEmpty() }
+        waitForText("Shipping", 30_000)
+        // The chat's own sections are the panel's other surface: the Agents pill above the composer opens them on the
+        // Project section, as the web's pill opens the Project's agents.
+        compose.onNodeWithContentDescription("Close panel").performClick()
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("conversation-panel")).fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithTag("pill-agents").performClick()
         waitForText("Stripe webhook handler")
         waitForText("New primary")
-        waitForText("No shared context for this Project yet.")
+        waitForText("Show shared context")
         compose.onNodeWithTag("panel-sections").performScrollToNode(hasTestTag("section-Header"))
         compose.waitForIdle()
         capture("38_project_panel_section")

@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -145,8 +146,21 @@ class RichContentTest {
     fun `a subagent opens onto its transcript path`() {
         val subagent = ToolPayload.Subagent("Audit the tests", agentId = "bc-sub-1", transcriptPath = "/home/u/.cursor/projects/w/agent-transcripts/x.json", durationMs = 61_000, subagentType = "explore")
         show(group(call("t1", ToolKind.Task, "Audit the tests", detail = "Go through the suite", payload = subagent)))
-        openLine("Explored", "Completed task")
-        compose.onNodeWithTag("subagent-card").assertIsDisplayed()
+        // Behind the summary row the task is the web's Task card — its title, the cloud glyph, "Completed" (the time
+        // it ran is the stretch's, above) — which, with no screen to open the cloud agent on, opens onto the
+        // subagent's details.
+        compose.onNodeWithText("Explored").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("task-row")).fetchSemanticsNodes().isNotEmpty() }
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        assertThat(shown("Audit the tests")).isTrue()
+        assertThat(shown("Completed")).isTrue()
+        assertThat(shown("Completed · 1m 1s")).isFalse()
+        compose.onNodeWithTag("task-row").performClick()
+        compose.mainClock.advanceTimeBy(1_000)
+        compose.waitForIdle()
+        // The card sits inside the row's tap target, so it is one node with the row in the merged tree.
+        compose.onNodeWithTag("subagent-card", useUnmergedTree = true).assertIsDisplayed()
         assertThat(shown("explore subagent · ran 1m 1s")).isTrue()
         assertThat(shown("agent-transcripts/x.json")).isTrue()
     }
