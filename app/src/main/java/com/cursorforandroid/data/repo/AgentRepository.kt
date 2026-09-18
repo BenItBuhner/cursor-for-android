@@ -42,6 +42,7 @@ import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
 import com.cursorforandroid.domain.SlashCommands
@@ -70,6 +71,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.time.Instant
@@ -87,6 +89,12 @@ data class AgentListState(
     /** The server has agents older than the ones loaded: the next page is a scroll to the end of the list away (see [AgentRepository.loadMore]). */
     val hasMore: Boolean = false,
     val isLoadingMore: Boolean = false,
+    /**
+     * The pull-to-refresh indicator has been let go — the first page and the status scan landed — while the rest of
+     * the refresh still runs underneath: the older pages, the run records, the rows fetched by id. The sidebar shows
+     * a quiet footer for it rather than a spinner (see `AgentsViewModel`).
+     */
+    val isSettling: Boolean = false,
 )
 
 /**
@@ -253,6 +261,8 @@ class AgentRepository(
     private val runningScanPages: Int = RUNNING_SCAN_PAGES,
     /** How many agents the running scan named that no page holds are fetched by id per pass. */
     private val maxMaterializedRunning: Int = MAX_MATERIALIZED_RUNNING,
+    /** What each refresh cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
     /** How a launch whose reply was lost looks for its chat (see [launch]): reads of `GET /v1/agents/{id}`, and the wait between them. */
     private val lostReplyProbes: Int = LOST_REPLY_PROBES,
     private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
@@ -405,6 +415,7 @@ class AgentRepository(
 
     /** Forgets the list on sign-out, so the next account never sees the previous one's agents, not even from a fetch still in flight. */
     fun reset() {
+        registryRestoredFromDisk = false
         synchronized(publishLock) {
             generation.incrementAndGet()
             clear()
@@ -501,19 +512,18 @@ class AgentRepository(
      * a stand-in: a few per pass, each tried again after a while when it failed. A root the server says is gone
      * (404) leaves the registry: that is the record's own word, the one thing that drops a root.
      */
-    suspend fun materializeRoots(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_ROOTS) {
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
-        rootMutex.withLock {
+    suspend fun materializeRoots(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_ROOTS): Int {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return 0
+        return rootMutex.withLock {
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             val now = AppClock.now()
             val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(budget)
-            for (id in due) {
-                if (generation.get() != startedIn) return
+            byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     rootUnresolved.remove(id)
                     rootFailures.remove(id)
-                    continue
+                    return@byId
                 }
                 val failure = fetched.exceptionOrNull()
                 val gone = (failure as? CursorApiException)?.httpCode == 404
@@ -724,7 +734,9 @@ class AgentRepository(
                     lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
                     // Only entries whose record's flag was read with its fields come back: what an older build
                     // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
-                    lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
+                    val restoredRoots = lineage?.roots?.filter { it.isEvidencedStrictly }.orEmpty()
+                    restoredRoots.forEach { noteRoot(it) }
+                    if (restoredRoots.isNotEmpty()) registryRestoredFromDisk = true
                     // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
                     pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
@@ -745,6 +757,7 @@ class AgentRepository(
     suspend fun refresh(silent: Boolean = false, depth: RefreshDepth = RefreshDepth.Full) {
         val startedIn = token()
         restoreFromCache()
+        if (!silent) stats.begin()
         val (job, joined) = startOrJoin(silent, depth)
         if (joined && !silent) publish(null, startedIn) { it.copy(isRefreshing = true) }
         job.join()
@@ -866,10 +879,11 @@ class AgentRepository(
             val seen = HashSet<String>()
             val pages = pagesToFetch(depth)
             var legacyRead = LegacyRead()
+            val pagesStartedAt = AppClock.now()
             coroutineScope {
                 // The legacy list is read further than the window: its pages carry the one execution status per agent
                 // the documented API has, so the pass over them is also the running scan (see [RunningScan]).
-                val legacy = async { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) }
+                val legacy = async { stats.timed("status scan (v0 pages)", calls = { r: LegacyRead -> r.pagesRead }, note = { r -> "${r.running.size} running" + if (r.complete) ", end reached" else "" }) { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) } }
                 var cursor: String? = null
                 do {
                     val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
@@ -878,17 +892,41 @@ class AgentRepository(
                     page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
                     if (page.items.isNotEmpty()) {
                         if (pagesRead == 1) prime?.let { withTimeoutOrNull(ACCOUNT_WORD_WAIT_MS) { it.join() } }
-                        publish { it.withPage(page.items) }
+                        // Rows the earlier legacy read knew are enriched as their page lands, not only at the end;
+                        // the demo's account word — which chats are Projects, which hang off which — is local and
+                        // free, so its rows are published placed from the first page, as the account's are.
+                        val enrichment = legacyRead.rows
+                        publish { s ->
+                            s.withPage(page.items)
+                                .let { withRows -> if (enrichment.isNotEmpty()) withRows.withLegacy(enrichment) else withRows }
+                                .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
+                        }
+                    }
+                    if (pagesRead == 1) {
+                        // The first page is on screen and the status scan is about to land: the pull-to-refresh indicator
+                        // is let go here, and the rest of the pass — the older pages, the run records, the rows fetched
+                        // by id — settles underneath a quiet footer (see [AgentListState.isSettling]).
+                        legacyRead = legacy.await()
+                        if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
+                        if (legacyRead.pagesRead > 0) {
+                            _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
+                        }
+                        val more = page.nextCursor?.isNotBlank() == true && pagesRead < pages
+                        if (!silent) {
+                            publish { it.copy(isRefreshing = false, isSettling = true, hasMore = if (more) true else it.hasMore) }
+                            stats.spinnerReleased()
+                        }
                     }
                     cursor = page.nextCursor?.takeIf { it.isNotBlank() }
                 } while (cursor != null && pagesRead < pages)
                 truncated = cursor != null
                 lastCursor = cursor
                 legacyRead = legacy.await()
-                if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
+                if (pagesRead > 1 && legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
                 synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = legacyRead.windowCursor }
             }
-            verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) }
+            stats.stage("v1 pages", pagesRead, pagesStartedAt, note = "${seen.size} rows" + if (truncated) ", more behind" else "")
+            stats.timed("run records (verify)", calls = { n: Int -> n }) { verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) } }
             if (legacyRead.pagesRead > 0) {
                 _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
             }
@@ -905,11 +943,13 @@ class AgentRepository(
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
                     .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated)
             }
+            if (!silent) stats.spinnerReleased()
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
             // on, and the previous account's must not give it.
             if (landed) synchronized(publishLock) {
                 if (generation.get() == startedIn) {
                     lastRefreshedAt = AppClock.now()
+                    lastRefreshDepth = depth
                     pagesLoaded = pagesRead.coerceAtLeast(1)
                     nextCursor = lastCursor
                     pagedFloor = if (complete) Long.MIN_VALUE else windowFloor
@@ -917,20 +957,24 @@ class AgentRepository(
                 }
             }
             // The pass ends by reconciling the pages with what stands apart from them: the agents the running scan
-            // named that no page holds, and the pinned chats no page holds, are fetched by id.
+            // named that no page holds, the pinned chats no page holds and the roots the registry knows are fetched
+            // by id — the three passes side by side, each a few at a time (see [byId]), none waiting on another —
+            // and then every row still without its account record is asked for it, so the desktop's predicates
+            // place the rows the public endpoints brought bare.
             if (landed) {
-                materializeRunning(startedIn)
-                resolvePinned(startedIn)
-                materializeRoots(startedIn)
-                // Then every row still without its account record is asked for it, so the desktop's predicates
-                // place the rows the public endpoints brought bare.
-                materializeRecords(startedIn)
+                coroutineScope {
+                    launch { stats.timed("running scan: rows fetched by id", calls = { n: Int -> n }) { materializeRunning(startedIn) } }
+                    launch { stats.timed("pinned rows fetched by id", calls = { n: Int -> n }) { resolvePinned(startedIn) } }
+                    launch { stats.timed("registry roots fetched by id", calls = { n: Int -> n }) { materializeRoots(startedIn) } }
+                }
+                stats.timed("account records by id", calls = { n: Int -> n }) { materializeRecords(startedIn) }
             }
+            publish { it.copy(isSettling = false) }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->
                 val keepQuiet = silent && s.agents.isNotEmpty()
-                s.copy(isRefreshing = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
+                s.copy(isRefreshing = false, isSettling = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
             }
         }
     }
@@ -985,15 +1029,42 @@ class AgentRepository(
      * follow-up, a chat beyond the window — so the live tracking and the running count see it. A few per pass; the
      * next pass takes the rest.
      */
-    private suspend fun materializeRunning(startedIn: Int) {
+    private suspend fun materializeRunning(startedIn: Int): Int {
         val scan = _runningScan.value
         val held = _state.value.agents.mapTo(HashSet()) { it.id }
         val missing = scan.all.filter { it !in held }.take(maxMaterializedRunning)
-        for (id in missing) {
-            if (generation.get() != startedIn) return
-            loadDetail(id)
-        }
+        return byId(missing, startedIn) { id -> loadDetail(id) }
     }
+
+    /**
+     * Fetches by id, a few at a time rather than one after another: [ids] go through [fetch] under [BY_ID_POOL]
+     * concurrent calls, and an id whose row has landed meanwhile — brought by a page, by another pass fetching the
+     * same id — is not fetched again. Returns how many were fetched. Stops handing out ids once the list has been
+     * reset since [startedIn].
+     */
+    private suspend fun byId(ids: Collection<String>, startedIn: Int, fetch: suspend (String) -> Unit): Int {
+        if (ids.isEmpty()) return 0
+        val fetched = java.util.concurrent.atomic.AtomicInteger()
+        coroutineScope {
+            ids.distinct().forEach { id ->
+                launch {
+                    byIdPool.withPermit {
+                        if (generation.get() != startedIn) return@withPermit
+                        if (agent(id) != null) return@withPermit
+                        fetched.incrementAndGet()
+                        fetch(id)
+                    }
+                }
+            }
+        }
+        return fetched.get()
+    }
+
+    /** How many rows are fetched by id at once, across the passes that do (see [byId]). */
+    private val byIdPool = kotlinx.coroutines.sync.Semaphore(BY_ID_POOL)
+
+    /** Fetches by id in flight, so two passes asking for the same row share one read (see [loadDetail]). */
+    private val inFlightById = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<Agent>>>()
 
     /**
      * A pinned chat is always shown, whatever page it would have been on, whatever it runs on and whatever it was
@@ -1001,21 +1072,20 @@ class AgentRepository(
      * will not give it (a chat the public API does not know), stood in from its account record where there is one.
      * A chat that could not be fetched is asked for again after [PINNED_RETRY_MS]; the diagnostics name it meanwhile.
      */
-    suspend fun resolvePinned(startedIn: Int = token()) {
+    suspend fun resolvePinned(startedIn: Int = token()): Int {
         // The demo's list is its whole dataset: nothing of it is beyond a page.
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return
-        pinnedMutex.withLock {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache) return 0
+        return pinnedMutex.withLock {
             val pinned = prefs.localAgentState.first().pinnedIds
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             pinnedUnresolved.keys.retainAll(pinned)
             val now = AppClock.now()
             val due = pinned.filter { it !in held && (pinnedUnresolved[it]?.let { tried -> now >= tried } ?: true) }
-            for (id in due) {
-                if (generation.get() != startedIn) return
+            byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     pinnedUnresolved.remove(id)
-                    continue
+                    return@byId
                 }
                 val record = runCatching { recordOf(id) }.getOrNull()
                 if (record != null && generation.get() == startedIn) {
@@ -1042,30 +1112,41 @@ class AgentRepository(
      * per pass, the next pass takes the rest; a chat the account gave no record for is asked again after
      * [RECORD_RETRY_MS]. Nothing is asked in default mode or in the demo.
      */
-    suspend fun materializeRecords(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_RECORDS) {
-        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache || !capabilities().accountSession) return
-        recordMutex.withLock {
+    suspend fun materializeRecords(startedIn: Int = token(), budget: Int = MAX_MATERIALIZED_RECORDS): Int {
+        if (session.isDemo || !_state.value.hasLoaded || _state.value.isFromCache || !capabilities().accountSession) return 0
+        return recordMutex.withLock {
             val now = AppClock.now()
             val due = _state.value.agents
                 .filter { it.record == null && it.id !in pendingLaunches && (recordUnresolved[it.id]?.let { until -> now >= until } ?: true) }
                 .sortedWith(compareByDescending<Agent> { it.isRunning }.thenByDescending { it.updatedAtMillis })
                 .take(budget)
-            for (row in due) {
-                if (generation.get() != startedIn) return
-                val record = try {
-                    recordOf(row.id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Throwable) {
-                    recordUnresolved[row.id] = now + PINNED_RETRY_MS
-                    continue
+            val asked = java.util.concurrent.atomic.AtomicInteger()
+            coroutineScope {
+                due.forEach { row ->
+                    launch {
+                        byIdPool.withPermit {
+                            if (generation.get() != startedIn) return@withPermit
+                            // A page or another pass may have brought the record meanwhile.
+                            if (agent(row.id)?.record != null) return@withPermit
+                            asked.incrementAndGet()
+                            val record = try {
+                                recordOf(row.id)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Throwable) {
+                                recordUnresolved[row.id] = now + PINNED_RETRY_MS
+                                return@withPermit
+                            }
+                            if (record == null) {
+                                recordUnresolved[row.id] = now + RECORD_RETRY_MS
+                                return@withPermit
+                            }
+                            applyAccountSnapshots(listOf(record), startedIn)
+                        }
+                    }
                 }
-                if (record == null) {
-                    recordUnresolved[row.id] = now + RECORD_RETRY_MS
-                    continue
-                }
-                applyAccountSnapshots(listOf(record), startedIn)
             }
+            asked.get()
         }
     }
 
@@ -1124,9 +1205,9 @@ class AgentRepository(
      * A quiet row with no status is left at rest: `updatedAt` going quiet is what a finished run looks like, and
      * reading hundreds of old records would gain nothing. A record that cannot be read leaves its row as it is.
      */
-    private suspend fun verifyRunStatuses(api: CursorApi, before: Map<String, Agent>, startedAt: Long, publish: ((AgentListState) -> AgentListState) -> Boolean) {
+    private suspend fun verifyRunStatuses(api: CursorApi, before: Map<String, Agent>, startedAt: Long, publish: ((AgentListState) -> AgentListState) -> Boolean): Int {
         // A fetch that can no longer publish (backend switch, sign-out) has no rows of its own to settle.
-        if (!publish { it }) return
+        if (!publish { it }) return 0
         fun recent(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_RECENT_WINDOW_MS
         fun justActive(agent: Agent) = agent.updatedAtMillis >= startedAt - VERIFY_JUST_ACTIVE_WINDOW_MS
         fun newTurn(agent: Agent) = before[agent.id]?.latestRunId.let { it != null && it != agent.latestRunId }
@@ -1136,7 +1217,7 @@ class AgentRepository(
             .sortedWith(compareByDescending<Agent> { newTurn(it) }.thenByDescending { it.isRunning }.thenByDescending { it.updatedAtMillis })
             .take(MAX_VERIFIED_RUNS)
             .toList()
-        if (candidates.isEmpty()) return
+        if (candidates.isEmpty()) return 0
         coroutineScope {
             candidates.map { agent ->
                 async {
@@ -1145,6 +1226,7 @@ class AgentRepository(
                 }
             }.awaitAll()
         }
+        return candidates.size
     }
 
     /**
@@ -1230,7 +1312,27 @@ class AgentRepository(
      * Loads the full agent record plus its latest run and folds them into the cached row. A [knownRun] the caller
      * already holds (from the runs list) is used instead of fetching it again when it is still the latest.
      */
-    suspend fun loadDetail(id: String, knownRun: RunDto? = null): Result<Agent> = runCatching {
+    suspend fun loadDetail(id: String, knownRun: RunDto? = null): Result<Agent> {
+        // Two passes asking for the same row at once — the running scan's and the pin's, a root's and a
+        // membership's — share one read rather than each making its own.
+        if (knownRun == null) {
+            inFlightById[id]?.let { return it.await() }
+            val deferred = kotlinx.coroutines.CompletableDeferred<Result<Agent>>()
+            val prior = inFlightById.putIfAbsent(id, deferred)
+            if (prior != null) return prior.await()
+            return try {
+                fetchDetail(id, null).also { deferred.complete(it) }
+            } catch (t: Throwable) {
+                deferred.complete(Result.failure(t))
+                throw t
+            } finally {
+                inFlightById.remove(id, deferred)
+            }
+        }
+        return fetchDetail(id, knownRun)
+    }
+
+    private suspend fun fetchDetail(id: String, knownRun: RunDto?): Result<Agent> = runCatching {
         val startedIn = token()
         val api = session.current.api
         val dto = api.getAgent(id)
@@ -1591,7 +1693,7 @@ class AgentRepository(
         var kept = false
         composers.forEach { snap ->
             if (snap.scope == AgentScope.PROJECT_ROOT) {
-                noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}")))
+                noteRoot(KnownRoot(snap.id, snap.name, snap.projectAppearance, snap.archived == true, LineageSignal.ACCOUNT_RECORD, now, flagged = true, record = snap.record ?: RecordFields(projectMetadata = "{}"), activityAtMillis = snap.activityAtMillis))
             } else if (rootRecords[snap.id]?.flagged == true) {
                 revalidateRoot(snap.id, flagged = false)
             }
@@ -1646,8 +1748,23 @@ class AgentRepository(
         source = source?.name,
     )
 
-    /** [materializeRunning] for the pin sync's round, once the account list has landed. */
-    suspend fun reconcileRunning(startedIn: Int = token()) = materializeRunning(startedIn)
+    /** [materializeRunning] for the pin sync's round, once the account list has landed; how many rows it fetched. */
+    suspend fun reconcileRunning(startedIn: Int = token()): Int = materializeRunning(startedIn)
+
+    /**
+     * The root registry came back from the disk with Projects in it: what an earlier session's discovery pass read
+     * of the whole account. Only then may a pass stop at the page older than the oldest of them (see
+     * `ProjectRepository.discoverRoots`); a registry that is only what this process has read so far is not complete.
+     */
+    @Volatile var registryRestoredFromDisk: Boolean = false
+        private set
+
+    /**
+     * How deep the last completed fetch went: a [RefreshDepth.Deep] one — the user asking for everything — is the cue
+     * for the account layer to read the whole account list rather than stopping at the registry's oldest Project.
+     */
+    @Volatile var lastRefreshDepth: RefreshDepth = RefreshDepth.Full
+        private set
 
     private fun AgentListState.withAccountSnapshots(composers: List<ComposerSnapshot>): AgentListState {
         if (composers.isEmpty()) return this
@@ -1777,6 +1894,8 @@ class AgentRepository(
         private const val MAX_MATERIALIZED_ROOTS = 8
         /** Rows without an account record, asked for one by id per pass (see [materializeRecords]). */
         private const val MAX_MATERIALIZED_RECORDS = 16
+        /** Fetches by id in flight at once, across the passes (see [byId]): a phone's connection pool without hogging it. */
+        private const val BY_ID_POOL = 4
         /** Records of chats the list does not hold, kept for the rows to come (see [pendingRecords]). */
         private const val MAX_PENDING_RECORDS = 3_000
         /** A row the account gave no record for is asked again after this long. */

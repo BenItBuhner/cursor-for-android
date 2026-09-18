@@ -84,6 +84,7 @@ import com.cursorforandroid.data.repo.Onboarding
 import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
+import com.cursorforandroid.data.repo.RefreshDepth
 import com.cursorforandroid.data.repo.PromptUploader
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
@@ -98,6 +99,7 @@ import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.ContextEntry
@@ -320,6 +322,7 @@ class AppGraph(
         override suspend fun children(parentId: String): List<ComposerSnapshot> = lazyProjectApi.value.children(parentId)
         override suspend fun record(id: String): ComposerSnapshot? = lazyAccountAgents.value.record(id)
         override suspend fun scanRoots(maxPages: Int): RootScan = lazyAccountAgents.value.scanRoots(maxPages)
+        override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = lazyAccountAgents.value.scanRoots(maxPages, stopBelowActivityMillis)
         override suspend fun createWorker(managerId: String, launch: WorkerLaunch): ComposerSnapshot = lazyProjectApi.value.createWorker(managerId, launch)
         override suspend fun setWorkerManager(workerId: String, managerId: String, spawnKind: WorkerSpawnKind) = lazyProjectApi.value.setWorkerManager(workerId, managerId, spawnKind)
         override suspend fun clearWorkerManager(workerId: String) = lazyProjectApi.value.clearWorkerManager(workerId)
@@ -402,6 +405,9 @@ class AppGraph(
         ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
     }
 
+    /** What the last refresh cost, stage by stage, across the list, the account round, the Projects and the badges (see [RefreshStats]). */
+    val refreshStats = RefreshStats()
+
     private val lazyAgents = lazy {
         AgentRepository(
             session,
@@ -412,6 +418,7 @@ class AppGraph(
             demoComposers = DemoData.composers,
             account = accountAgents,
             capabilities = capabilities,
+            stats = refreshStats,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
             start = { lazyAgentStart.value },
@@ -441,6 +448,7 @@ class AppGraph(
             demo = DemoPullRequests,
             isDemo = { session.isDemo },
             cache = caches.pullRequests,
+            stats = refreshStats,
         )
     }
     val pullRequests: PullRequestRepository get() = lazyPullRequests.value
@@ -460,11 +468,13 @@ class AppGraph(
                 pullRequests.seed(list.pullRequests)
                 // Each Project's memberships follow the list read, the way the Agents Window polls them; off the
                 // round, so the pins do not wait on a Project with many workers.
-                // The root registry is filled from the whole account list (a few times an hour), the memberships
-                // read after; the Projects group is drawn from the registry, not from the pages the sidebar holds.
-                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id })
+                // The root registry is filled from the account list — to the page older than every Project it
+                // knows, or the whole list on a deep refresh and a few times an hour — the memberships read after;
+                // the Projects group is drawn from the registry, not from the pages the sidebar holds.
+                projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep)
             },
             capabilities = capabilities,
+            stats = refreshStats,
         )
     }
     val pins: PinRepository get() = lazyPins.value
@@ -474,7 +484,7 @@ class AppGraph(
      * out of the chat list — from the account in Extended mode, from the public record of a parent the list names but
      * lacks in either — and, in Extended mode, what a Project's view shows and does.
      */
-    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities) }
+    private val lazyProjects = lazy { ProjectRepository(session, agents, projectAccount, actions = projectAccount, store = projectAccount, capabilities = capabilities, stats = refreshStats) }
     val projects: ProjectRepository get() = lazyProjects.value
 
     /** Creating a Project and editing its name and look, from the sidebar, the panel and the Project's own view (Extended mode). */
@@ -842,6 +852,7 @@ class AppGraph(
                 rootFailures = agents.rootFailures(),
                 notificationPrefs = prefs.projectNotifications.first(),
                 managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
+                refresh = refreshStats.snapshot.value,
             ),
         )
     }

@@ -254,6 +254,19 @@ class ProjectFilterScreenshotTest {
         capture("58_sidebar_all_projects")
     }
 
+    /**
+     * A pull's indicator is let go once the first page and the status scan have landed; while the older pages, the
+     * rows fetched by id and the account's round settle underneath, the list ends in a quiet "Still syncing older
+     * items…" footer rather than holding the spinner.
+     */
+    @Test
+    fun sidebarStillSyncingOlderItems() {
+        val state = state(ListPreferences()).copy(isSyncingOlder = true)
+        show(state)
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Still syncing older items\u2026").fetchSemanticsNodes().isNotEmpty() }
+        capture("88_sidebar_still_syncing")
+    }
+
     private companion object {
         /** Wednesday 2025-01-15 14:00 UTC, the walkthrough's clock; ages read "15m" against it. */
         const val NOW = 1_736_949_600_000L

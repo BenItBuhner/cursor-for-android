@@ -368,6 +368,25 @@ class SidebarSectionsTest {
     private val folds = mutableListOf<Pair<String, Boolean>>()
 
     private fun keyOf(title: String): String = if (title == "Pinned") "pinned" else "date:$title"
+    /**
+     * The pull's indicator is let go once the first page is on screen; while the rest of the refresh settles the list
+     * says so in a quiet footer, and says nothing once it has settled. The rows on screen are reported to the view
+     * model, which reads their pull request badges — not every row's.
+     */
+    @Test
+    fun `while older items still sync the list shows a quiet footer, and reports the rows on screen`() {
+        var visible: List<String> = emptyList()
+        showSidebar(isSyncingOlder = true, onVisibleRows = { visible = it })
+        compose.onNodeWithText("Still syncing older items\u2026").assertIsDisplayed()
+        compose.waitForIdle()
+        assertThat(visible).containsExactly("pin", "today", "yday").inOrder()
+    }
+
+    @Test
+    fun `once the refresh has settled the footer is gone`() {
+        showSidebar(isSyncingOlder = false)
+        compose.onNodeWithText("Still syncing older items\u2026").assertDoesNotExist()
+    }
 
     private fun showSidebar(
         isDemo: Boolean = true,
@@ -378,8 +397,10 @@ class SidebarSectionsTest {
         ),
         collapsed: Set<String> = emptySet(),
         onNewProject: (() -> Unit)? = null,
+        isSyncingOlder: Boolean = false,
+        onVisibleRows: (List<String>) -> Unit = {},
     ) {
-        listState = AgentListUiState(sections = sections, hasLoaded = true, collapsedSections = collapsed)
+        listState = AgentListUiState(sections = sections, hasLoaded = true, collapsedSections = collapsed, isSyncingOlder = isSyncingOlder)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
@@ -402,6 +423,7 @@ class SidebarSectionsTest {
                             folds += key to folded
                             listState = listState.copy(collapsedSections = if (folded) listState.collapsedSections + key else listState.collapsedSections - key)
                         },
+                        onVisibleRows = onVisibleRows,
                     ),
                 )
             }
