@@ -70,12 +70,25 @@ data class QueuedFollowUp(
     val error: String? = null,
     /** Files of any type (Extended mode); a queued message that carries one goes out through the account's follow-up. */
     val files: List<DraftFile> = emptyList(),
+    /**
+     * The server refused the last attempt as busy while nothing here called the agent busy — its previous turn still
+     * winding down on its side — and the message waits, with a growing pause between attempts, until it takes it or
+     * the account's queue does (Extended mode). Said on the card, quietly; not a failure.
+     */
+    val heldSinceMillis: Long? = null,
+    /** How many attempts the server has refused as busy in a row; the pause between attempts grows with it. */
+    val busyRefusals: Int = 0,
+    /** The server's own words for the refusal, kept from the third refusal in a row on, for the card to show. */
+    val serverReason: String? = null,
 ) {
     /** The text a card shows: the message itself, or what the request will say for an attachment-only follow-up. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(images.size, files.size) }
 
     /** What the card warns about: why the last attempt failed, or that this one may be on the agent already. */
     val warning: String? get() = error ?: MAY_HAVE_BEEN_SENT.takeIf { needsConfirmation }
+
+    /** The message is waiting on a server that keeps calling the agent busy (see [heldSinceMillis]); its card says so, steadily, attempts included. */
+    val isHeld: Boolean get() = heldSinceMillis != null && warning == null
 
     companion object {
         /** What an image-only follow-up says in its prompt, the same as when the composer sends one directly. */
@@ -86,6 +99,8 @@ data class QueuedFollowUp(
 
         /** Said of a message whose send the app did not live to see the end of; see [needsConfirmation]. */
         const val MAY_HAVE_BEEN_SENT = "This may already have been sent. Check the chat before sending it again."
+        /** Said under a message the server keeps refusing as busy (see [heldSinceMillis]); the time waited follows it. */
+        const val WAITING_FOR_AGENT = "Waiting for the agent to finish its last turn"
     }
 }
 

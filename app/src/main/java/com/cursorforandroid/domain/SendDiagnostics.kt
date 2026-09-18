@@ -1,0 +1,47 @@
+package com.cursorforandroid.domain
+
+/**
+ * The send path's own account of one chat, for the transcript diagnostics' `send:` block: the last decision between
+ * sending and queueing and every input it read (see [SendGate]), the device's queue as it stands, and the attempts
+ * made — when, through which request, and what came of each: accepted (with the run or followup id the server
+ * named), refused as busy, failed with the server's words, or lost in transit and settled by asking the server.
+ * No message text; the server's words are redacted like every other error in the export.
+ */
+data class SendDiagnostics(
+    val decision: SendGate.Decision?,
+    val decidedAtIso: String?,
+    val queue: List<QueueLine>,
+    val attempts: List<Attempt>,
+    /** The ids the server answered a send with — a run's, or a followup's in the account's queue — newest last. */
+    val accepted: List<String>,
+) {
+    data class QueueLine(val idTail: String, val chars: Int, val sending: Boolean, val steered: Boolean, val busyRefusals: Int, val heldForMs: Long?, val error: String?, val needsConfirmation: Boolean)
+
+    /** One request to the server for one queued (or steered) message. */
+    data class Attempt(val atIso: String, val idTail: String, val via: String, val outcome: String, val detail: String? = null)
+
+    fun render(): String = buildString {
+        append("send: decision=")
+        val d = decision
+        if (d == null) {
+            append("none")
+        } else {
+            val i = d.inputs
+            append(if (d.busy) "queue" else "send").append(" by=").append(d.source.name.lowercase())
+            append(" at=").append(decidedAtIso ?: "-")
+            append(" row=").append(if (!i.rowLoaded) "none" else if (i.rowRunning) "running" else "idle")
+            append(" chat=").append(i.chatRunStatus?.name ?: "-")
+            append(" streaming=").append(i.chatStreaming).append(" reconnecting=").append(i.chatReconnecting)
+            append(" account=").append(if (!i.accountScanned) "unread" else if (i.accountRunning) "running" else "idle")
+            append(" accountAgeMs=").append(if (i.accountAtMillis > 0 && i.rowUpdatedAtMillis > 0) i.rowUpdatedAtMillis - i.accountAtMillis else "-")
+        }
+        appendLine()
+        appendLine("  queue: ${queue.size}" + queue.joinToString("") { q ->
+            " [${q.idTail} chars=${q.chars}" + (if (q.sending) " sending" else "") + (if (q.steered) " steered" else "") +
+                (if (q.busyRefusals > 0) " busyRefusals=${q.busyRefusals}" else "") + (q.heldForMs?.let { " heldFor=${it / 1000}s" } ?: "") +
+                (if (q.needsConfirmation) " needsConfirmation" else "") + (q.error?.let { " error=\"$it\"" } ?: "") + "]"
+        })
+        appendLine("  attempts: ${attempts.size}" + (if (accepted.isNotEmpty()) " accepted=[${accepted.joinToString(",")}]" else ""))
+        attempts.forEach { a -> appendLine("    ${a.atIso} ${a.idTail} via=${a.via} ${a.outcome}" + (a.detail?.let { " \"$it\"" } ?: "")) }
+    }
+}

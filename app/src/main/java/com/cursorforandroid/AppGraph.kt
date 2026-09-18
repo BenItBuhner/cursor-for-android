@@ -546,6 +546,19 @@ class AppGraph(
                 )
                 steering.sendFollowup(agentId, followup).getOrThrow()
             },
+            // A queued message the server refuses as busy against every word here goes to the account's queue
+            // (Extended mode), which sends it when the agent is free — where the composer said it would go.
+            accountQueue = { agentId, item ->
+                val followup = AccountFollowup(
+                    text = item.previewText,
+                    images = item.images.map { it.image },
+                    files = emptyList(),
+                    mode = AgentMode.ofPlanMode(item.planMode),
+                    modelId = item.modelId,
+                )
+                steering.sendFollowup(agentId, followup).getOrThrow()
+            },
+            accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             store = followUpStore,
             persist = { !session.isDemo },
         )
@@ -828,6 +841,7 @@ class AppGraph(
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
+                send = agentId?.let { if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(it) else null },
             ),
         )
     }

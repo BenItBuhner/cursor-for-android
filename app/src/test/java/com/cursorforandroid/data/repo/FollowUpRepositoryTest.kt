@@ -19,10 +19,12 @@ import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -99,7 +101,6 @@ class FollowUpRepositoryTest {
 
     private fun repository(
         persist: Boolean = false,
-        busyRecheckMs: Long = 20_000,
         idleSettleMs: Long = 20_000,
         retryBaseMs: Long = 20,
         scope: CoroutineScope = this.scope,
@@ -110,7 +111,6 @@ class FollowUpRepositoryTest {
         persist = { true },
         scope = scope,
         draftSaveDelayMs = 10,
-        busyRecheckMs = busyRecheckMs,
         idleSettleMs = idleSettleMs,
         retryBaseMs = retryBaseMs,
     )
@@ -186,14 +186,15 @@ class FollowUpRepositoryTest {
 
         followUps.enqueue("bc-1", "Go on")
 
-        // One attempt, refused; the message is neither gone nor marked failed, and the row takes the server's word.
+        // One attempt, refused; the message is neither gone nor marked failed. The row is not patched to running on
+        // the server's say-so: the message waits, its card saying so.
         awaitUntil { api.runRequests.size == 1 }
-        awaitUntil { agents.agent("bc-1")?.isRunning == true }
-        delay(200)
-        assertThat(api.runRequests).hasSize(1)
+        awaitUntil { followUps.state("bc-1").value.queue.single().isHeld }
+        assertThat(agents.agent("bc-1")?.isRunning).isFalse()
         val waiting = followUps.state("bc-1").value.queue.single()
         assertThat(waiting.error).isNull()
         assertThat(waiting.isSending).isFalse()
+        assertThat(waiting.busyRefusals).isAtLeast(1)
 
         // The turn ends (a refresh says so): the message goes out.
         api.busyCreateRun = false
@@ -289,8 +290,8 @@ class FollowUpRepositoryTest {
         followUps.enqueue("bc-1", "Go on")
 
         awaitUntil { api.runRequests.size == 1 }
-        awaitUntil { agents.agent("bc-1")?.isRunning == true }
-        delay(200)
+        awaitUntil { followUps.state("bc-1").value.queue.single().isHeld }
+        assertThat(agents.agent("bc-1")?.isRunning).isFalse()
         val waiting = followUps.state("bc-1").value.queue.single()
         assertThat(waiting.error).isNull()
         assertThat(waiting.isSending).isFalse()
@@ -304,32 +305,116 @@ class FollowUpRepositoryTest {
     }
 
     @Test
-    fun `a busy answer with no row to wait on is asked again after a while, and a row that says running ends the hold`() = runBlocking<Unit> {
-        // The list has not loaded the chat, so nothing can be marked running when the server says it is busy.
+    fun `a message the server keeps refusing as busy waits with a growing pause, says so, and never marks the row running`() = runBlocking<Unit> {
+        // The list has not loaded the chat, and the server calls it busy against every word here: the row is not
+        // patched to running on the server's say-so (that status, undone by the next read of the record, is what
+        // made the card flap between queued and sending — Bennett, v0.3.33). The message waits, its card saying so.
         api.busyCreateRun = true
-        val followUps = repository(busyRecheckMs = 400)
+        val followUps = repository(retryBaseMs = 50)
         followUps.enqueue("bc-1", "Go on")
 
         awaitUntil { api.runRequests.size == 1 }
+        awaitUntil { followUps.state("bc-1").value.queue.single().isHeld }
+        val held = followUps.state("bc-1").value.queue.single()
+        assertThat(held.error).isNull()
+        assertThat(held.isSending).isFalse()
+        assertThat(held.busyRefusals).isEqualTo(1)
+        assertThat(held.serverReason).isNull()
+        assertThat(agents.agent("bc-1")?.isRunning ?: false).isFalse()
+        // Asked again after a pause that doubles each time — 50, 100, 200 ms here — and from the third refusal the
+        // server's own words go on the card.
+        awaitUntil { followUps.state("bc-1").value.queue.single().busyRefusals >= 3 }
+        val thrice = followUps.state("bc-1").value.queue.single()
+        assertThat(thrice.serverReason).isEqualTo("Agent is busy.")
+        assertThat(thrice.isHeld).isTrue()
+        assertThat(thrice.heldSinceMillis).isEqualTo(held.heldSinceMillis)
+        // The pauses have grown: after the fourth refusal the next attempt is 400 ms away.
+        awaitUntil { followUps.state("bc-1").value.queue.single().busyRefusals >= 4 }
+        val refusals = followUps.state("bc-1").value.queue.single().busyRefusals
+        val asked = api.runRequests.size
         delay(200)
-        // Held back rather than asked again at once...
-        assertThat(api.runRequests).hasSize(1)
-        assertThat(followUps.state("bc-1").value.queue.single().error).isNull()
-        // ...and asked again once the recheck interval is up, for as long as nothing says when the turn ends.
-        awaitUntil { api.runRequests.size >= 2 }
+        assertThat(api.runRequests.size).isEqualTo(asked)
 
-        // The row arrives and says running: the hold ends there and then, and the message waits on the row.
+        // The row arrives and says running: the message waits on the row, asking nothing.
         api.addRunningAgent("bc-1", "Agent", "run-1")
         agents.refresh()
         awaitUntil { agents.agent("bc-1")?.isRunning == true }
-        val asked = api.runRequests.size
-        delay(1_000)
-        assertThat(api.runRequests.size).isAtMost(asked + 1)
-        // The turn ends: the message goes out.
+        awaitUntil { api.runRequests.size >= asked }
+        val askedWithRow = api.runRequests.size
+        delay(1_500)
+        assertThat(api.runRequests.size).isAtMost(askedWithRow + 1)
+        assertThat(followUps.state("bc-1").value.queue.single().busyRefusals).isAtLeast(refusals)
+        // The turn ends: the message goes out, once, and the wait is over.
         api.busyCreateRun = false
         awaitUntil { streamer.connections.contains("run-1") }
         finish("run-1")
         awaitUntil { sent().last() == "Go on" && followUps.state("bc-1").value.queue.isEmpty() }
+        // The diagnostics carry the attempts — the refusals, then the one acceptance — and the run the server named.
+        val diagnostics = followUps.sendDiagnostics("bc-1")!!
+        assertThat(diagnostics.attempts.count { it.outcome == "busy" }).isAtLeast(3)
+        assertThat(diagnostics.attempts.count { it.outcome == "accepted" }).isEqualTo(1)
+        assertThat(diagnostics.attempts.last().outcome).isEqualTo("accepted")
+        assertThat(diagnostics.accepted).hasSize(1)
+        assertThat(diagnostics.render()).contains("send: decision=")
+    }
+
+    @Test
+    fun `a busy refusal in Extended mode hands the message to the account's queue, once`() = runBlocking<Unit> {
+        api.busyCreateRun = true
+        val handed = mutableListOf<String>()
+        val followUps = FollowUpRepository(
+            conversations, agents, hub,
+            mcpServers = { emptyList() },
+            accountQueue = { _, item -> handed += item.previewText; null },
+            accountQueueAvailable = { true },
+            scope = scope,
+            draftSaveDelayMs = 10,
+            idleSettleMs = 20_000,
+            retryBaseMs = 20,
+        )
+        followUps.enqueue("bc-1", "Go on")
+
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(handed).containsExactly("Go on")
+        assertThat(api.runRequests).hasSize(1)
+        delay(300)
+        // Nothing is sent again: the account has it.
+        assertThat(api.runRequests).hasSize(1)
+        assertThat(handed).hasSize(1)
+        val diagnostics = followUps.sendDiagnostics("bc-1")!!
+        assertThat(diagnostics.attempts.map { it.outcome }).containsExactly("busy", "queued-on-account").inOrder()
+    }
+
+    @Test
+    fun `an idle chat sends at once, whichever order its status sources arrived in`() = runBlocking<Unit> {
+        // Two hundred orderings of the sources the decision reads — the row (idle), the account's running set (read,
+        // empty), the run record (finished), a stream that only tries to reconnect — none of which calls the agent
+        // busy: the message goes out on the first attempt, with no pause and no second request, every time.
+        val random = java.util.Random(7)
+        repeat(200) { round ->
+            val id = "bc-idle-$round"
+            // Newest first in the list, so the round's chat is on the first page whatever came before it.
+            api.addFinishedAgent(id, "Agent $round", Triple("run-$round", "Earlier", "Done."), firstRunAt = java.time.Instant.parse("2026-04-13T18:30:00Z").plusSeconds(3600L * round).toString())
+            val steps = mutableListOf<suspend () -> Unit>(
+                { agents.refresh(); awaitUntil { agents.agent(id) != null } },
+                // The account's word (Extended mode): this chat finished; another one runs.
+                { agents.applyAccountSnapshots(listOf(ComposerSnapshot(id, status = RunStatus.FINISHED), ComposerSnapshot("bc-other", status = RunStatus.RUNNING))) },
+                { conversations.attach(id); awaitUntil { conversations.state(id).value.runStatus == RunStatus.FINISHED } },
+            )
+            steps.shuffle(random)
+            // Some of the sources may not have spoken at all when the message is queued.
+            steps.take(1 + random.nextInt(steps.size)).forEach { it() }
+            val followUps = repository(retryBaseMs = 5_000)
+            val before = api.runRequests.size
+            val queuedAt = System.nanoTime()
+            followUps.enqueue(id, "Now $round")
+            awaitUntil(5_000) { api.runRequests.size == before + 1 }
+            awaitUntil(5_000) { followUps.state(id).value.queue.isEmpty() }
+            val took = (System.nanoTime() - queuedAt) / 1_000_000
+            assertWithMessage("round $round took ${took}ms").that(took).isLessThan(2_000)
+            assertThat(api.runRequests.last().prompt.text).isEqualTo("Now $round")
+            assertThat(followUps.sendDiagnostics(id)!!.decision!!.busy).isFalse()
+        }
     }
 
     @Test

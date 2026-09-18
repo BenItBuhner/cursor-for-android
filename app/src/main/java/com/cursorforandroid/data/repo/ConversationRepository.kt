@@ -136,6 +136,11 @@ class StagedFollowUp internal constructor(
     val text: String,
     internal val attachments: StagedAttachments,
     internal val stagedAt: Long,
+    /** The bubble is on screen ahead of the request; false for a queued message, whose card is what the reader sees until the server has it. */
+    internal val shown: Boolean = true,
+    /** The message the echo stands for, kept so a bubble not shown ahead can be shown once the server accepts. */
+    internal val message: V0ConversationMessageDto,
+    internal val placeholder: RunDto,
 )
 
 /**
@@ -482,6 +487,8 @@ class ConversationRepository(
         }
         /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
         var reportedWorkers: Set<String>? = null
+        /** The stamp of the last prompt staged from here, so two staged in one millisecond get distinct ids (see [stageFollowUp]). */
+        var lastLocalStamp = 0L
         /** When the items were last rebuilt and published (monotonic millis), and the trailing publish a burst is waiting on (see [publishCoalesced]). */
         var lastPublishAtMs = 0L
         var pendingPublish: Job? = null
@@ -2588,9 +2595,15 @@ class ConversationRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
-    ): Result<Unit> {
+        /**
+         * Show the prompt in the transcript before the server has answered (the composer's send). A queued message
+         * passes false: its card above the composer is what the reader sees until the server accepts it, so a
+         * refusal does not flash a bubble on and off (see `FollowUpRepository`).
+         */
+        showEcho: Boolean = true,
+    ): Result<RunDto> {
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
-        val staged = stageFollowUp(agentId, text, images)
+        val staged = stageFollowUp(agentId, text, images, show = showEcho)
         return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
             .onFailure { t ->
                 // Refused as busy, the message is not lost: the caller queues it for the end of the turn. That is
@@ -2629,23 +2642,27 @@ class ConversationRepository(
      * [sendFollowUp] so a queued message that is steered can be on screen while the turn it interrupts is still being
      * cancelled.
      */
-    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), files: List<PromptFile> = emptyList()): StagedFollowUp {
+    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), files: List<PromptFile> = emptyList(), show: Boolean = true): StagedFollowUp {
         val e = entry(agentId)
         val trimmed = text.trim()
         val now = AppClock.now()
-        val localId = "$LOCAL_RUN_PREFIX$now"
+        // Two prompts staged in the same millisecond (a burst from the queue) must not share an id.
+        val localId = synchronized(e) { "$LOCAL_RUN_PREFIX${maxOf(now, e.lastLocalStamp + 1).also { e.lastLocalStamp = it }}" }
         val placeholder = e.placeholderRun(localId, now)
         // Written before the request so the bubble shows its images and files from the first frame, like the text.
         // Storage trouble costs the previews, never the send.
         val staged = runCatching { attachments.stage(images, files) }.getOrDefault(StagedAttachments.EMPTY)
-        e.publish(
-            mutate = {
-                local = local + LocalPrompt(V0ConversationMessageDto(localId, USER_MESSAGE, trimmed), placeholder)
-                if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
-            },
-            transform = { copy(error = null) },
-        )
-        return StagedFollowUp(localId, trimmed, staged, now)
+        val message = V0ConversationMessageDto(localId, USER_MESSAGE, trimmed)
+        if (show) {
+            e.publish(
+                mutate = {
+                    local = local + LocalPrompt(message, placeholder)
+                    if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
+                },
+                transform = { copy(error = null) },
+            )
+        }
+        return StagedFollowUp(localId, trimmed, staged, now, shown = show, message = message, placeholder = placeholder)
     }
 
     /**
@@ -2662,7 +2679,7 @@ class ConversationRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
-    ): Result<Unit> {
+    ): Result<RunDto> {
         val e = entry(agentId)
         return agents.followUp(
             agentId,
@@ -2673,7 +2690,7 @@ class ConversationRepository(
             modelId = modelId,
             modelParams = modelParams,
             modelDisplayName = modelDisplayName,
-        ).map { run -> accepted(e, agentId, staged, run) }
+        ).map { run -> accepted(e, agentId, staged, run); run }
     }
 
     /**
@@ -2731,8 +2748,9 @@ class ConversationRepository(
             mutate = {
                 // A reload that raced the request may already list this run. The local copy stays all the
                 // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
-                // for as long as only the run list does; the next load prunes it once both have caught up.
-                local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                // for as long as only the run list does; the next load prunes it once both have caught up. A
+                // prompt not shown ahead of the request (a queued message's) is shown now, filed under its run.
+                local = if (local.any { it.run.id == localId }) local.map { if (it.run.id == localId) it.copy(run = run) else it } else local + LocalPrompt(staged.message, run)
                 promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
                 inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
             },
