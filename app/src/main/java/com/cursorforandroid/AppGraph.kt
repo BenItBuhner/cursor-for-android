@@ -68,6 +68,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
 import com.cursorforandroid.data.repo.ChatLauncher
@@ -386,6 +387,10 @@ class AppGraph(
     private val lazyPromptUploads = lazy { PromptUploader(lazyPromptUploadApi.value, lazyAccountClient.value) }
     val promptUploads: PromptUploader get() = lazyPromptUploads.value
 
+    /** The composers' attached files going up the moment they are attached, so a send waits on no upload (see [AttachmentUploads]). */
+    private val lazyAttachmentUploads = lazy { AttachmentUploads(uploader = { promptUploads }) }
+    val attachmentUploads: AttachmentUploads get() = lazyAttachmentUploads.value
+
     /** A new chat started on the account service, for the first prompt that carries files (see [ConnectAgentStartApi]). */
     private val lazyAgentStart = lazy {
         ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
@@ -532,11 +537,12 @@ class AppGraph(
             agents = agents,
             hub = liveRuns,
             mcpServers = { mcpServers.enabled() },
-            // A queued message with files goes out through the account's follow-up: its files uploaded first, then
-            // `AddAsyncFollowupBackgroundComposer` with them as `selected_documents[]` — or `selected_images[]` for an image — (Extended mode).
+            // A queued message with files goes out through the account's follow-up: `AddAsyncFollowupBackgroundComposer`
+            // with them as `selected_documents[]` — or `selected_images[]` for an image — by the references their
+            // uploads settled on when they were attached; a file without one is uploaded here (Extended mode).
             accountSend = { agentId, item ->
                 if (!capabilities().promptFiles || session.isDemo) throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED)
-                val uploaded = promptUploads.upload(item.files.map { it.file })
+                val uploaded = promptUploads.ensure(item.files.map { it.file })
                 val followup = AccountFollowup(
                     text = item.previewText,
                     images = item.images.map { it.image },

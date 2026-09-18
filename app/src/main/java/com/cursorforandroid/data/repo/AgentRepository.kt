@@ -1357,9 +1357,10 @@ class AgentRepository(
     }
 
     /**
-     * A launch whose prompt carries files, the way the desktop starts one: the files go up through the account's
-     * prompt uploads, then `StartBackgroundComposerFromSnapshot` carries them as `selected_documents[]` beside the
-     * inline images (see [ConnectAgentStartApi][com.cursorforandroid.data.api.ConnectAgentStartApi]). The chat is then
+     * A launch whose prompt carries files, the way the desktop starts one: the files are up already, from the moment
+     * they were attached (see [AttachmentUploads]), and `StartBackgroundComposerFromSnapshot` carries them by their
+     * references as `selected_documents[]` — an image as a `SelectedImage` — beside the inline images (see
+     * [ConnectAgentStartApi][com.cursorforandroid.data.api.ConnectAgentStartApi]); a file without one is uploaded here first. The chat is then
      * read back through the documented API under the id the request minted — the account answers with its record,
      * not a run, and the list and the transcript are built from `GET /v1/agents/{id}` like every other chat's; the
      * first run is read once it is named, asked for a few times as [recoverLostReply] does. A machine or pool is
@@ -1371,7 +1372,8 @@ class AgentRepository(
         val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
         if (!capabilities().promptFiles) throw IllegalStateException(FILES_NEED_EXTENDED)
         if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
-        val uploaded = uploader().upload(request.files, progress)
+        // The files went up when they were attached and carry their references; one that did not is uploaded here.
+        val uploaded = uploader().ensure(request.files, progress)
         startApi().start(
             StartRequest(
                 agentId = id,

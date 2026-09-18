@@ -60,8 +60,17 @@ class PendingAttachment(
          * so not for the main thread then.
          */
         fun of(image: PromptImage, id: String, thumbnail: ImageBitmap? = null): PendingAttachment =
-            PendingAttachment(id = id, image = image, thumbnail = thumbnail ?: thumbnailOf(image))
+            PendingAttachment(id = id, image = image.encoded(), thumbnail = thumbnail ?: thumbnailOf(image))
     }
+}
+
+/**
+ * [this] with its request form ready: the base64 the documented `prompt.images[]` carries is computed now, on the
+ * picker's thread, so the send that follows has nothing left to encode. The same object; the encoding is kept on it.
+ */
+internal fun PromptImage.encoded(): PromptImage {
+    base64
+    return this
 }
 
 /** A small (≈160px) bitmap of [image] for a strip or a card. Decodes, so not for the main thread. */
@@ -167,8 +176,9 @@ internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String)
     if (bytes.size > PromptImage.MAX_BYTES) error(TooLargeMessage)
     val mime = resolveImageMime(declaredMime, bytes)
         ?: error("Unsupported image type (${declaredMime ?: "unknown"}). Use PNG, JPEG, GIF or WebP.")
-    // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
-    val image = AttachmentImages.prepare(bytes, mime)
+    // Downscaled and base64-encoded here, once, so the request — and the one the composer retries — carries only
+    // what the model uses and has nothing left to compute when it goes out.
+    val image = AttachmentImages.prepare(bytes, mime).encoded()
     PendingAttachment(id = id, image = image, thumbnail = thumbnailOf(image))
 }
 

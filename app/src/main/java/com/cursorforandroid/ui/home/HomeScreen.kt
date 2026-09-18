@@ -185,6 +185,9 @@ fun HomeScreen(
                         onAttachmentError = viewModel::reportError,
                         files = state.files,
                         onRemoveFile = viewModel::removeFile,
+                        fileUploads = state.fileUploads,
+                        onRetryFile = viewModel::retryFile,
+                        sendHint = state.uploadHint,
                         modelLabel = state.modelLabel,
                         onModel = { modelSheet = true },
                         // Plan mode is a pill beside "+" rather than a suffix on the model chip, as on cursor.com/agents.

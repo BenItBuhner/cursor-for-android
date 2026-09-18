@@ -159,7 +159,7 @@ class SteeringApi(
     override suspend fun addFollowup(agentId: String, followup: AccountFollowup, synchronous: Boolean): String? {
         val text = followup.text.trim()
         val inlineImages = followup.images.map { image ->
-            SelectedImageDto(data = Base64.getEncoder().encodeToString(image.bytes), mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
+            SelectedImageDto(data = image.base64, mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
         }
         val images = (inlineImages + followup.files.filter { it.isImage }.map(::selectedImageDto)).takeIf { it.isNotEmpty() }
         val documents = followup.files.filterNot { it.isImage }.takeIf { it.isNotEmpty() }?.map(::selectedDocumentDto)

@@ -10,6 +10,7 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.UploadRef
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -119,6 +120,26 @@ class FollowUpStoreTest {
         store.write("bc-1", FollowUpDraft("Look at these"), emptyList())
         assertThat(agentDir("bc-1").listFiles()!!.map { it.name }).containsExactly("state.json")
         assertThat(store.read("bc-1")!!.draft.files).isEmpty()
+    }
+
+    /**
+     * A file whose upload completed before the restart — in the draft or in a queued message — comes back with its
+     * reference, so it is sent by that reference rather than uploaded again; one still going up comes back without.
+     */
+    @Test
+    fun `a completed upload's reference rides with the file, in the draft and in the queue, across a restart`() = runBlocking<Unit> {
+        val ref = UploadRef("upl_9", "s3-abc", "uuid-9")
+        val up = DraftFile("f1", PromptFile(byteArrayOf(1), "spec.pdf", "application/pdf", ref))
+        val notYet = DraftFile("f2", PromptFile(byteArrayOf(2), "notes.txt", "text/plain"))
+        val queuedRef = UploadRef("upl_10", "s3-def", "uuid-10")
+        val queued = DraftFile("f3", PromptFile(byteArrayOf(3), "bundle.zip", "application/zip", queuedRef))
+        store.write("bc-2", FollowUpDraft("Read", files = listOf(up, notYet)), listOf(QueuedFollowUp("q", "", files = listOf(queued), queuedAtMillis = 1L)))
+
+        val read = FollowUpStore(context).read("bc-2")!!
+        val (spec, notes) = read.draft.files
+        assertThat(spec.file.upload).isEqualTo(ref)
+        assertThat(notes.file.upload).isNull()
+        assertThat(read.queue.single().files.single().file.upload).isEqualTo(queuedRef)
     }
 
     @Test

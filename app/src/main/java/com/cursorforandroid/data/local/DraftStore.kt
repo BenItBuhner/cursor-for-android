@@ -5,6 +5,7 @@ import android.util.Log
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.UploadRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -59,9 +60,24 @@ class DraftStore(context: Context) {
     @Serializable
     data class Image(val file: String, val mimeType: String)
 
-    /** One attached file: its bytes' name in the draft directory, and the name and type the request carries. */
+    /**
+     * One attached file: its bytes' name in the draft directory, the name and type the request carries, and — once
+     * its upload has been completed — the reference the prompt names it by, so a restart sends what is already up.
+     */
     @Serializable
-    data class StoredFile(val file: String, val name: String, val mimeType: String)
+    data class StoredFile(
+        val file: String,
+        val name: String,
+        val mimeType: String,
+        val uploadId: String? = null,
+        val s3UploadId: String? = null,
+        val uploadUuid: String? = null,
+    ) {
+        val ref: UploadRef? get() = uploadId?.takeIf { it.isNotBlank() }?.let { UploadRef(it, s3UploadId.orEmpty(), uploadUuid ?: it) }
+
+        /** The same record naming [ref] — the bytes on disk are untouched, so a completed upload costs no rewrite. */
+        fun withRef(ref: UploadRef?): StoredFile = copy(uploadId = ref?.uploadId, s3UploadId = ref?.s3UploadId, uploadUuid = ref?.uuid)
+    }
 
     suspend fun read(): Draft? = withContext(Dispatchers.IO) {
         if (!file.isFile) return@withContext null
@@ -100,14 +116,14 @@ class DraftStore(context: Context) {
                     dir.mkdirs()
                     val name = UUID.randomUUID().toString()
                     File(dir, name).writeBytes(file.bytes)
-                    StoredFile(name, file.name, file.mimeType)
+                    StoredFile(name, file.name, file.mimeType).withRef(file.upload)
                 }.onFailure { Log.w(TAG, "Draft file could not be written", it) }.getOrNull()
             }
         }
     }
 
     suspend fun readFile(stored: StoredFile): PromptFile? = withContext(Dispatchers.IO) {
-        runCatching { PromptFile(File(dir, stored.file).readBytes(), stored.name, stored.mimeType) }.getOrNull()
+        runCatching { PromptFile(File(dir, stored.file).readBytes(), stored.name, stored.mimeType, stored.ref) }.getOrNull()
     }
 
     /** Saves [draft] and deletes the image files it no longer references. Written whole, so a kill cannot halve it. */
