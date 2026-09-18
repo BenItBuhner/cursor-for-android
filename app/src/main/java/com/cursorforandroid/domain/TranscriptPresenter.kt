@@ -79,6 +79,8 @@ class TranscriptPresenter {
     private var liveOutput: TranscriptRow.Stretch? = null
     private var openedInput: TranscriptRow.Stretch? = null
     private var openedOutput: TranscriptRow.Stretch? = null
+    private var failureInput: TranscriptRow.Stretch? = null
+    private var failureOutput: List<TranscriptRow>? = null
 
     /**
      * Presents [items]. [coordinatorMode] is the word of the list or the record; the content decides too, as the
@@ -192,8 +194,9 @@ class TranscriptPresenter {
     }
 
     /**
-     * The two passes that read the whole: the newest stretch live while the run writes, the newest small group of
-     * events open. Each remembers its last answer, so a tail that has not changed keeps its row instances.
+     * The three passes that read the whole: the newest stretch live while the run writes, the failure of the newest
+     * run lifted out to its own row while the conversation has not moved past it, the newest small group of events
+     * open. Each remembers its last answer, so a tail that has not changed keeps its row instances.
      */
     private fun tailPasses(rows: List<TranscriptRow>, runActive: Boolean): List<TranscriptRow> {
         var out: MutableList<TranscriptRow>? = null
@@ -203,6 +206,12 @@ class TranscriptPresenter {
                 val stretch = rows[last] as TranscriptRow.Stretch
                 val live = if (liveInput === stretch) liveOutput!! else stretch.copy(live = true).also { liveInput = stretch; liveOutput = it }
                 out = rows.toMutableList().also { it[last] = live }
+            }
+        } else {
+            TranscriptRows.currentFailureStretch(rows)?.let { (index, stretch) ->
+                // The lift's answer for this stretch: the stretch without its line (or nothing, for a footer alone) and the row.
+                val lifted = if (failureInput === stretch) failureOutput!! else TranscriptRows.liftCurrentFailure(listOf(stretch), runActive = false).also { failureInput = stretch; failureOutput = it }
+                out = rows.toMutableList().also { it.removeAt(index); it.addAll(index, lifted) }
             }
         }
         val opened = TranscriptRows.newestGroupToOpen(out ?: rows) ?: return out ?: rows

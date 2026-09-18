@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.EventLine
 import com.cursorforandroid.domain.NoticeTone
+import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.SystemNotification
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.ui.components.CursorCard
@@ -170,6 +171,73 @@ internal fun EventRow(item: SystemNotification, count: Int = 1, modifier: Modifi
         }
     }
 }
+
+/**
+ * A run the server's status says failed, as one line in the event row's shape: the warning glyph, "Run failed", the
+ * server's reason (or, without one, how long the run had worked), and when it ended. Where it stands says how much
+ * it matters: after its stretch as a row of its own while the conversation has not moved past it, inside the
+ * stretch once it has (see [TranscriptRow.Failure], [TranscriptRow.Entry.Failure]). Press and hold copies the
+ * reason; tapping opens the whole of a reason the line had to cut short.
+ */
+@Composable
+internal fun RunFailureRow(footer: RunFooter, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val reason = footer.reason?.trim()?.takeIf { it.isNotEmpty() }
+    val duration = TimeFormat.duration(footer.durationMs)
+    val tail = reason ?: duration?.let { "after $it" }
+    var expanded by rememberSaveable(footer.id) { mutableStateOf(false) }
+    var tailCut by remember(reason) { mutableStateOf(false) }
+    val chevron by animateFloatAsState(if (expanded) 180f else 0f, tween(180), label = "chevron")
+    val opens = reason != null && (tailCut || reason.contains('\n'))
+    Column(modifier.fillMaxWidth().testTag("run-failure")) {
+        MessageActions(
+            text = listOfNotNull(RUN_FAILED, reason).joinToString(": "),
+            onClick = if (opens) ({ expanded = !expanded }) else null,
+            modifier = Modifier.offset(x = (-6).dp).clip(CursorTheme.shapes.base),
+        ) {
+            Row(Modifier.heightIn(min = 28.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(7.dp))
+                SubjectAndTail(
+                    modifier = Modifier.weight(1f, fill = false),
+                    subject = { Text(RUN_FAILED, style = type.base, color = colors.textSecondary, maxLines = 1) },
+                    tail = {
+                        if (tail != null) {
+                            Text(
+                                " \u00B7 ${tail.lineSequence().first()}",
+                                style = type.base,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                onTextLayout = { tailCut = it.hasVisualOverflow },
+                                modifier = Modifier.testTag("run-failure-reason"),
+                            )
+                        }
+                    },
+                )
+                footer.endedAtMillis?.let { at ->
+                    Spacer(Modifier.width(8.dp))
+                    Text(TimeFormat.relativeShort(at), style = type.small.copy(fontFeatureSettings = "tnum"), color = colors.textQuaternary, maxLines = 1, modifier = Modifier.testTag("run-failure-time"))
+                }
+                if (opens) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(CursorIcons.ChevronDown, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp).rotate(chevron))
+                }
+            }
+        }
+        if (opens && reason != null) {
+            AnimatedVisibility(visible = expanded) {
+                CursorCard(Modifier.fillMaxWidth().padding(top = 6.dp), fill = colors.fillFaint, border = Color.Transparent) {
+                    Text(reason, style = type.base, color = colors.textSecondary, modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp).testTag("run-failure-reason-full"))
+                }
+            }
+        }
+    }
+}
+
+/** The failure line's subject. */
+internal const val RUN_FAILED = "Run failed"
 
 /**
  * The subject of a line and the tail after it, sharing the width the row gives them: the tail is measured for what

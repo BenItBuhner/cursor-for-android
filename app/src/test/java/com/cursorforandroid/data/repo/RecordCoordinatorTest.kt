@@ -24,6 +24,7 @@ import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolPayload
@@ -323,6 +324,106 @@ class RecordCoordinatorTest {
         }
         val injectedLine = diagnostics.runs.first { it.idTail.contains("nj-") }
         assertThat(injectedLine.message).isEqualTo("record=none rendered=none via=log")
+    }
+
+    /**
+     * Bennett's v0.3.39 coordinator (`record_error_continued.json`): an infrastructure error ("Tool result not
+     * found") logged mid-tool-call. In turn A the run went on and the server says it finished: nothing says failed.
+     * In turn B the run ended on it and the server says it failed: the failure is the footer's, with the record's
+     * error as the reason — and since the conversation went on (turn C), it is a line inside B's stretch, the summary
+     * ending "· failed", not a banner and not a row; the chat stands as its newest run does. The diagnostics' status
+     * line says which run failed, by whose word, with what reason, and that the chat moved past it.
+     */
+    @Test
+    fun `a run that logged an error and finished is no failure, one the server says failed is a line inside its stretch once the chat moved on`() = runBlocking<Unit> {
+        val fixture = CoordinatorFixtures.json("record_error_continued.json")
+        served = fixture.getValue("responses").jsonArray.map { it.jsonObject }
+        val prompts = served.mapNotNull { it["humanMessage"]?.jsonObject?.get("text")?.jsonPrimitive?.content }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.mapIndexed { i, p -> Triple("run-${'A' + i}", p, "") }.toTypedArray(), firstRunAt = Instant.ofEpochMilli(now - 4 * 3_600_000L).toString())
+        // The server's word on each run: A finished (the error was on the way), B failed on it, C finished.
+        api.runs["run-A"] = api.runs.getValue("run-A").copy(durationMs = 253_000, result = null)
+        api.runs["run-B"] = api.runs.getValue("run-B").copy(status = "ERROR", durationMs = 41_000, result = null)
+        api.runs["run-C"] = api.runs.getValue("run-C").copy(durationMs = 30_000, result = null)
+        agents.refresh()
+        // The logs are gone: the record is what there is (B, without the coordinator's word, is asked for its log).
+        listOf("run-A", "run-B", "run-C").forEach { id ->
+            streamer.emit(id, RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>().size == 3 }
+        awaitUntil { !conversations.state(agentId).value.traceStatus.let { it.pending > 0 } }
+        val state = conversations.state(agentId).value
+        // No banner anywhere; the chat stands as its newest run does.
+        assertThat(state.items.filterIsInstance<NoticeCard>()).isEmpty()
+        assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(state.messages()).hasSize(2)
+        val footers = state.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>()
+        assertThat(footers.map { it.status }).containsExactly(RunStatus.FINISHED, RunStatus.ERROR, RunStatus.FINISHED).inOrder()
+        // Turn A: the error was logged and the run went on — no failure, no reason.
+        assertThat(footers[0].reason).isNull()
+        // Turn B: the server says it failed; the record's error is the reason; its end is the record's time.
+        assertThat(footers[1].reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(footers[1].endedAtMillis).isNotNull()
+
+        val rows = state.rows()
+        assertThat(rows.none { it is TranscriptRow.Failure }).isTrue()
+        val stretches = rows.filterIsInstance<TranscriptRow.Stretch>().filter { it.single == null }
+        // Turn A's stretches say what was done and nothing of a failure; turn B's ends on the word, its line inside.
+        assertThat(stretches.map { it.summary.text }).containsExactly(
+            "2 agents · 1 note",
+            "Worked 4m 13s · 1 note",
+            "Worked 41s · 1 agent · 1 note · failed",
+            "1 note",
+        ).inOrder()
+        val failed = stretches[2]
+        assertThat(failed.failures.single().footer.reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(failed.listed.last()).isInstanceOf(TranscriptRow.Entry.Failure::class.java)
+        assertThat(stretches.filterIndexed { i, _ -> i != 2 }.none { it.failures.isNotEmpty() }).isTrue()
+
+        val status = conversations.loadDiagnostics(agentId)!!.status!!
+        assertThat(status.shown).isEqualTo("FINISHED")
+        assertThat(status.failure!!.text).isEqualTo("run=run-B source=run-record+account-record current=false reason=\"Tool result not found for toolu_status_01\"")
+    }
+
+    /**
+     * The same chat before turn C: the failed run is the newest and the chat idle, so the failure is the chat's
+     * state — a compact row of its own after the stretch, with the reason and the time — and the diagnostics say so.
+     */
+    @Test
+    fun `the newest run's failure, the chat idle, is a row of its own with the server's reason and the chat's state`() = runBlocking<Unit> {
+        val fixture = CoordinatorFixtures.json("record_error_continued.json")
+        val all = fixture.getValue("responses").jsonArray.map { it.jsonObject }
+        val starts = fixture.getValue("turnStarts").jsonArray.map { it.jsonPrimitive.int }
+        served = all.take(starts[2])
+        val prompts = served.mapNotNull { it["humanMessage"]?.jsonObject?.get("text")?.jsonPrimitive?.content }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.mapIndexed { i, p -> Triple("run-${'A' + i}", p, "") }.toTypedArray(), firstRunAt = Instant.ofEpochMilli(now - 4 * 3_600_000L).toString())
+        api.runs["run-A"] = api.runs.getValue("run-A").copy(durationMs = 253_000, result = null)
+        api.runs["run-B"] = api.runs.getValue("run-B").copy(status = "ERROR", durationMs = 41_000, result = null)
+        agents.refresh()
+        listOf("run-A", "run-B").forEach { id ->
+            streamer.emit(id, RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>().size == 2 }
+        awaitUntil { !conversations.state(agentId).value.traceStatus.let { it.pending > 0 } }
+        val state = conversations.state(agentId).value
+        assertThat(state.items.filterIsInstance<NoticeCard>()).isEmpty()
+        // The server's status for the newest run, nothing newer, nothing running: the chat reads as failed.
+        assertThat(state.runStatus).isEqualTo(RunStatus.ERROR)
+        val rows = state.rows()
+        val failure = rows.last() as TranscriptRow.Failure
+        assertThat(failure.footer.reason).isEqualTo("Tool result not found for toolu_status_01")
+        assertThat(failure.footer.endedAtMillis).isNotNull()
+        assertThat((rows[rows.lastIndex - 1] as TranscriptRow.Stretch).summary.text).isEqualTo("Worked 41s · 1 agent · 1 note")
+        val status = conversations.loadDiagnostics(agentId)!!.status!!
+        assertThat(status.shown).isEqualTo("ERROR")
+        assertThat(status.failure!!.text).isEqualTo("run=run-B source=run-record+account-record current=true reason=\"Tool result not found for toolu_status_01\"")
     }
 
     @Test

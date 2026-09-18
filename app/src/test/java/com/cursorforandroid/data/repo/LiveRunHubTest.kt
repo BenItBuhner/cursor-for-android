@@ -197,10 +197,12 @@ class LiveRunHubTest {
 
         awaitUntil { snapshot()?.finished == true }
         assertThat(current().status).isEqualTo(RunStatus.ERROR)
-        val notice = current().items.filterIsInstance<NoticeCard>().single()
-        assertThat(notice.title).isEqualTo("Run failed")
-        assertThat(notice.subtitle).isEqualTo("Worker disconnected")
-        assertThat((current().items.last() as RunFooter).durationMs).isEqualTo(9_000L)
+        // The failure is the footer's to say, with the stream's reason — no banner among the items.
+        assertThat(current().items.filterIsInstance<NoticeCard>()).isEmpty()
+        val footer = current().items.last() as RunFooter
+        assertThat(footer.isFailure).isTrue()
+        assertThat(footer.reason).isEqualTo("Worker disconnected")
+        assertThat(footer.durationMs).isEqualTo(9_000L)
         subscription.cancel()
     }
 
