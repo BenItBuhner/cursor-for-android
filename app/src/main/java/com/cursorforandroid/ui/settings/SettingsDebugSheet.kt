@@ -36,8 +36,9 @@ object SettingsDebugCopy {
 /**
  * Behind a long press on the version row: what support asks for and what the build is made of, kept off the
  * settings list itself. The two diagnostics exports (each one tap to the share sheet, see [ProjectDiagnosticsRow]
- * and [TranscriptDiagnosticsRow]), the About rows — which APIs this build speaks, the documentation, the source and
- * its releases, the notes of the release the updater last found — and the licenses of what the app bundles.
+ * and [TranscriptDiagnosticsRow]) and the tap that writes both into the Cursor for Android Project's context store
+ * ([SendDiagnosticsRow]), the About rows — which APIs this build speaks, the documentation, the source and its
+ * releases, the notes of the release the updater last found — and the licenses of what the app bundles.
  *
  * [extendedMode] is the screen's reading of the mode (see [SettingsScreen]); the updater's state is a `StateFlow`,
  * read at once. So the sheet holds nothing that could still be on its way when it is first drawn.
@@ -57,6 +58,8 @@ fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, 
                 ProjectDiagnosticsRow(graph)
                 HairlineDivider()
                 TranscriptDiagnosticsRow(graph)
+                HairlineDivider()
+                SendDiagnosticsRow(graph)
                 HairlineDivider()
                 DeepRefreshRow(graph)
             }

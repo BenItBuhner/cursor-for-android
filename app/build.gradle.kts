@@ -293,6 +293,33 @@ tasks.register("printAppVersion") {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// tools/transcript-verify
+//
+// The verification harness (tools/transcript-verify/run.sh): the app's own transcript pipeline — the session exchange,
+// the Connect and REST clients, the record pager, the run list, the SSE follower, the trace cache, the presenter, the
+// rows, the send gate — run on this JVM against a real account (the API key read from a file named on the command
+// line) or, with --replay, against the recorded fixtures. Its sources live in src/test and it runs on the unit-test
+// classpath (Robolectric stands in for the Android types the stores need), so nothing of it is in the APK. Options go
+// through --args; `--help` documents every call it makes.
+// ---------------------------------------------------------------------------------------------------------------------
+afterEvaluate {
+    val unitTest = tasks.named<Test>("testDebugUnitTest").get()
+    tasks.register<JavaExec>("transcriptVerify") {
+        group = "verification"
+        description = "Runs tools/transcript-verify: the app's transcript pipeline against an account or the fixtures. Options with --args; see --help."
+        dependsOn(unitTest.taskDependencies)
+        classpath = unitTest.classpath + unitTest.testClassesDirs
+        mainClass.set("com.cursorforandroid.tools.transcriptverify.TranscriptVerifyMainKt")
+        systemProperties(unitTest.systemProperties)
+        jvmArgs(unitTest.jvmArgs)
+        maxHeapSize = unitTest.maxHeapSize ?: "3g"
+        workingDir = unitTest.workingDir
+        standardInput = System.`in`
+        outputs.upToDateWhen { false }
+    }
+}
+
 // `packageRelease` and `signReleaseBundle` are the two tasks that apply a signing config, so this is exact: it does not
 // fire for `lintRelease` or `testReleaseUnitTest`, which need no key.
 if (releaseSigning == null) {
