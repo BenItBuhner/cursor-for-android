@@ -25,6 +25,7 @@ import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.UploadRef
 import com.cursorforandroid.domain.RunStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
@@ -267,6 +268,30 @@ class AgentRepositoryLaunchTest {
         // The files were kept for the transcript under the run, beside the image.
         val kept = AttachmentStore(ApplicationProvider.getApplicationContext()).forAgent(id).getValue("run-server-1")
         assertThat(kept.filter { it.isFile }.map { it.name }).containsExactly("spec.pdf")
+    }
+
+    /**
+     * The composer uploads a file the moment it is attached (see [AttachmentUploads]); the launch then meets files
+     * carrying their references and puts them in the start request as they are — no presign, no bytes on the wire.
+     */
+    @Test
+    fun `a launch whose files were uploaded on attach sends their references and uploads nothing`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val uploads = FakeUploads()
+        val agents = withAccountStart(start, uploads)
+        val ref = UploadRef("upl_spec", "s3-spec", "uuid-spec")
+        val withFiles = request.copy(files = listOf(PromptFile(byteArrayOf(1, 2, 3), "spec.pdf", "application/pdf", ref)))
+        val id = LaunchIdempotency.agentId(withFiles, "nonce")
+        start.onStart = { api.addRunningAgent(it.agentId, "Sync merge and chat state", "run-server-1") }
+
+        agents.launch(withFiles.copy(agentId = id), "Auto").getOrThrow()
+
+        val sent = start.requests.single().files.single()
+        assertThat(sent.uploadId).isEqualTo("upl_spec")
+        assertThat(sent.s3UploadId).isEqualTo("s3-spec")
+        assertThat(sent.uuid).isEqualTo("uuid-spec")
+        assertThat(sent.data).isNull()
+        assertThat(uploads.presigned).isEmpty()
     }
 
     @Test

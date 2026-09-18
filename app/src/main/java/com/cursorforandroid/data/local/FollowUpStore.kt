@@ -10,6 +10,7 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.UploadRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -38,9 +39,22 @@ class FollowUpStore(context: Context) {
     @Serializable
     private data class StoredImage(val id: String, val file: String, val mimeType: String)
 
-    /** A file of any type: its bytes under [file], and the name and type the request carries. */
+    /**
+     * A file of any type: its bytes under [file], the name and type the request carries, and — once its upload has
+     * been completed — the reference the prompt names it by, so a restart sends what is already up rather than uploading again.
+     */
     @Serializable
-    private data class StoredFile(val id: String, val file: String, val name: String, val mimeType: String)
+    private data class StoredFile(
+        val id: String,
+        val file: String,
+        val name: String,
+        val mimeType: String,
+        val uploadId: String? = null,
+        val s3UploadId: String? = null,
+        val uploadUuid: String? = null,
+    ) {
+        val ref: UploadRef? get() = uploadId?.takeIf { it.isNotBlank() }?.let { UploadRef(it, s3UploadId.orEmpty(), uploadUuid ?: it) }
+    }
 
     @Serializable
     private data class StoredDraft(val text: String = "", val images: List<StoredImage> = emptyList(), val files: List<StoredFile> = emptyList())
@@ -110,7 +124,8 @@ class FollowUpStore(context: Context) {
             referenced += name
             val file = File(dir, name)
             if (!file.isFile) file.writeBytes(draftFile.file.bytes)
-            return StoredFile(draftFile.id, name, draftFile.file.name, draftFile.file.mimeType)
+            val ref = draftFile.file.upload
+            return StoredFile(draftFile.id, name, draftFile.file.name, draftFile.file.mimeType, uploadId = ref?.uploadId, s3UploadId = ref?.s3UploadId, uploadUuid = ref?.uuid)
         }
         val stored = Stored(
             draft = StoredDraft(draft.text, draft.images.map(::store), draft.files.map(::storeFile)),
@@ -156,7 +171,7 @@ class FollowUpStore(context: Context) {
 
     private fun StoredFile.load(dir: File): DraftFile? {
         val bytes = File(dir, file).takeIf { it.isFile }?.readBytes() ?: return null
-        return DraftFile(id, PromptFile(bytes, name, mimeType))
+        return DraftFile(id, PromptFile(bytes, name, mimeType, ref))
     }
 
     /** Like [fileNameFor] for an image, with the file's own extension so what is on disk still reads as what it is. */
