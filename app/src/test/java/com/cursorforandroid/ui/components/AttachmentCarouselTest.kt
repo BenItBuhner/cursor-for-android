@@ -1,5 +1,10 @@
 package com.cursorforandroid.ui.components
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
+import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
@@ -8,10 +13,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -35,6 +41,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlin.math.abs
 
 /**
  * The composer's attachments as one row that scrolls sideways (Bennett's frame `attachment-chips-wrap.png`: a
@@ -48,7 +55,7 @@ import org.robolectric.annotation.GraphicsMode
 class AttachmentCarouselTest {
 
     @get:Rule
-    val compose = createComposeRule()
+    val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val image = PendingAttachment("img", PromptImage(ByteArray(64), "image/png"), thumbnail = ImageBitmap(4, 4))
     private val spec = PendingFile("f1", PromptFile(ByteArray(2_400 * 1024), "Q3-billing-spec.pdf", "application/pdf"))
@@ -115,6 +122,59 @@ class AttachmentCarouselTest {
         compose.onNodeWithText("release-notes.md").assertIsDisplayed()
         compose.onAllNodesWithContentDescription("Remove attachment").onLast().performClick()
         assertThat(removed.map { it.id }).containsExactly("f4")
+    }
+
+    /**
+     * The fade as painted: with more past the end, the row's last column of pixels is the composer's own colour —
+     * the chip under it fully covered — while its first column is chip; scrolled to the end, the two swap. Read off
+     * the rendered row, not the state, so the paint itself is what is asserted.
+     */
+    @Test
+    fun `the painted fade covers the cut edge in the composer's colour, and only that edge`() {
+        val state = LazyListState()
+        var surface = Color.Unspecified
+        compose.setContent {
+            Narrow {
+                surface = CursorTheme.colors.elevated
+                Box(Modifier.background(surface)) {
+                    ComposerAttachments(
+                        images = listOf(image),
+                        onRemoveImage = {},
+                        files = listOf(spec, recording, trace, notes),
+                        onRemoveFile = {},
+                        surface = surface,
+                        uploads = mapOf("f1" to FileUploadState.DONE, "f2" to FileUploadState.DONE, "f3" to FileUploadState.DONE, "f4" to FileUploadState.DONE),
+                        state = state,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val row = compose.onNodeWithTag("attachment-row")
+
+        // The content view drawn into a bitmap, as Roborazzi draws it under native graphics, cropped to the row.
+        fun rendered(): Bitmap {
+            val content = compose.activity.findViewById<View>(android.R.id.content)
+            val whole = Bitmap.createBitmap(content.width, content.height, Bitmap.Config.ARGB_8888)
+            compose.runOnUiThread { content.draw(Canvas(whole)) }
+            val bounds = row.fetchSemanticsNode().boundsInRoot
+            return Bitmap.createBitmap(whole, bounds.left.toInt(), bounds.top.toInt(), bounds.width.toInt(), bounds.height.toInt())
+        }
+        fun Bitmap.column(x: Int): Color = Color(getPixel(x, height / 2))
+        fun Color.isSurface() = abs(red - surface.red) < 0.02f && abs(green - surface.green) < 0.02f && abs(blue - surface.blue) < 0.02f
+
+        var shot = rendered()
+        val width = shot.width
+        // At the start: the last column is covered — the composer's colour — and the first is the thumbnail's slot, not.
+        assertThat(shot.column(width - 1).isSurface()).isTrue()
+        assertThat(shot.column(0).isSurface()).isFalse()
+
+        row.performScrollToIndex(4)
+        compose.waitForIdle()
+        shot = rendered()
+        // At the end: the first column is covered, the last — the last chip's own edge — is not.
+        assertThat(shot.column(0).isSurface()).isTrue()
+        assertThat(shot.column(width - 1).isSurface()).isFalse()
     }
 
     /** A row that fits has nothing past either end: neither fades, and nothing scrolls. */
