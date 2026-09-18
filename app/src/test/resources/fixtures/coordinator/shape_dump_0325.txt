@@ -1,5 +1,5 @@
 shapes: newest 4 turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):
-turn@4021 steps=8 prompt=user project=true calls=1
+turn@4021 steps=8 prompt=user project=true calls=1 sendMessage=recovered result=yes
   4021 human_message {humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT,createdAt:str(13)}}
   4022 text {text:str(89)}
   4023 tool_call[id=toolCallId name=name args=piece] {toolCall:{tool:CLIENT_SIDE_TOOL_V2_UNSPECIFIED,toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true,isLastMessage:false,modelCallId:str(24)}}
@@ -9,12 +9,12 @@ turn@4021 steps=8 prompt=user project=true calls=1
   4027 blank(message_done) {text:str(0),isMessageDone:true}
   4028 blank(status) {status:{type:STATUS_TYPE_GENERIC,message:str(8),isComplete:true}}
   call …Pieces SendMessage steps=3 args=recovered(repaired,3) result=true
-turn@4029 steps=4 prompt=injected project=true calls=0
+turn@4029 steps=4 prompt=injected project=true calls=0 sendMessage=none
   4029 human_message {humanMessage:{text:str(248),agentMode:AGENT_MODE_PROJECT,createdAt:str(13)}}
   4030 text {text:str(39)}
   4031 blank(message_done) {text:str(0),isMessageDone:true}
   4032 blank(status) {status:{type:STATUS_TYPE_GENERIC,message:str(8),isComplete:true}}
-turn@4033 steps=7 prompt=user project=true calls=2
+turn@4033 steps=7 prompt=user project=true calls=2 sendMessage=recovered result=yes
   4033 human_message {humanMessage:{text:str(154),agentMode:AGENT_MODE_PROJECT,createdAt:str(13)}}
   4034 tool_call[id=toolCallId name=name args=none] {toolCall:{tool:CLIENT_SIDE_TOOL_V2_UNSPECIFIED,toolCallId:str(18),name:SendMessage,rawArgs:str(0)}}
   4035 streamed_back_tool_call[id=modelCallId name=blank args=piece] {streamedBackToolCall:{tool:CLIENT_SIDE_TOOL_V2_UNSPECIFIED,modelCallId:str(24),rawArgs:str(33),isStreaming:true}}
@@ -24,7 +24,7 @@ turn@4033 steps=7 prompt=user project=true calls=2
   4039 blank(status) {status:{type:STATUS_TYPE_GENERIC,message:str(8),isComplete:true}}
   call …Named0 SendMessage steps=1 args=recovered(json,2) result=true
   call …00001b <blank> steps=2 args=absorbed result=false
-turn@4040 steps=3 prompt=user project=true calls=0
+turn@4040 steps=3 prompt=user project=true calls=0 sendMessage=none
   4040 human_message {humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT,createdAt:str(13)}}
   4041 error {error:{message:str(78)}}
   4042 blank(status) {status:{type:STATUS_TYPE_GENERIC,message:str(8),isComplete:false}}

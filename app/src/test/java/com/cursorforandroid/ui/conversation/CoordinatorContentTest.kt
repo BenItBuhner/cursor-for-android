@@ -228,13 +228,35 @@ class CoordinatorContentTest {
     }
 
     @Test
-    fun `a coordinator's message whose body did not reach the device says so, dimmed, in the reply's place`() {
+    fun `a coordinator's message whose body did not reach the device says so in the reply's place, with Reload beside it`() {
+        var reloads = 0
         val missing = ToolCall("k6", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
-        show(ActivityGroup("g", listOf(missing)))
+        show(ActivityGroup("g", listOf(missing)), TranscriptControls(onOpenAgent = { opened += it }, agentById = { live[it] }, onReloadTranscript = { reloads++ }))
         compose.onNodeWithTag("coordinator-message-missing", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        compose.onNodeWithText(MISSING_MESSAGE_DETAIL).assertIsDisplayed()
+        // Never a bare word that a message was sent: no "Sent message" line, no success marker.
         assertThat(compose.onAllNodesWithText("Coordinator").fetchSemanticsNodes()).isEmpty()
         assertThat(compose.onAllNodesWithText("Sent message", substring = true).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithTag("coordinator-message-reload", useUnmergedTree = true).performClick()
+        assertThat(reloads).isEqualTo(1)
+    }
+
+    @Test
+    fun `a coordinator's message still being written waits as an empty reply, and one without a reload to offer says what it is alone`() {
+        val running = ToolCall("k7", "sendMessage", ToolKind.Coordinator, "running", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
+        show(ActivityGroup("g", listOf(running)))
+        compose.onNodeWithTag("coordinator-message-pending", useUnmergedTree = true).assertExists()
+        assertThat(compose.onAllNodesWithText(MISSING_MESSAGE).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodes(hasTestTag("coordinator-message-reload")).fetchSemanticsNodes()).isEmpty()
+    }
+
+    @Test
+    fun `a coordinator's message whose text is unavailable and no reload at hand still says so`() {
+        val missing = ToolCall("k8", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("", missing = true))
+        show(ActivityGroup("g", listOf(missing)), TranscriptControls())
+        compose.onNodeWithText(MISSING_MESSAGE).assertIsDisplayed()
+        assertThat(compose.onAllNodes(hasTestTag("coordinator-message-reload")).fetchSemanticsNodes()).isEmpty()
     }
 
     @Test

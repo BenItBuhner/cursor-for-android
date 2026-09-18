@@ -46,6 +46,25 @@ object CoordinatorTranscript {
      */
     fun hasRecoveredMessage(items: List<TimelineItem>): Boolean = calls(items).any { (it.payload as? ToolPayload.CoordinatorMessage)?.recovered == true }
 
+    /**
+     * What [items] hold of the coordinator's word to the user, for the diagnostics: `body` (a message with its
+     * text), `recovered` (its text read leniently out of a record that did not give it whole), `missing` (the call
+     * without its text), `none` (no message call among them); and, after it, whether the call's result was recorded
+     * (`result=yes` once the call is completed, `result=no` while it runs or was interrupted).
+     */
+    fun messageStage(items: List<TimelineItem>): String {
+        val calls = calls(items).map(::reinterpret).filter(::isUserMessageCall).toList()
+        if (calls.isEmpty()) return "none"
+        val payloads = calls.mapNotNull { it.payload as? ToolPayload.CoordinatorMessage }
+        val stage = when {
+            payloads.any { !it.missing && it.message.isNotBlank() && !it.recovered } -> "body"
+            payloads.any { it.recovered && it.message.isNotBlank() } -> "recovered"
+            else -> "missing"
+        }
+        val result = if (calls.any { it.status == ToolCall.STATUS_COMPLETED || it.isError }) "yes" else "no"
+        return "$stage result=$result"
+    }
+
     /** The distinct names of the calls that make [hasCoordinatorContent] true, in order of first appearance: the evidence. */
     fun evidence(items: List<TimelineItem>): List<String> = calls(items).filter(::isCoordinatorCall).map { it.name }.distinct().toList()
 

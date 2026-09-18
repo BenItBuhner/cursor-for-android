@@ -27,6 +27,12 @@ data class TranscriptControls(
      * text it produced between tool calls is its working notes, folded away under "Background" unless opened.
      */
     val coordinatorMode: Boolean = false,
+    /**
+     * Throws the chat's copies away and reads it again from the server (see `ConversationRepository.reloadTranscript`):
+     * what a coordinator's message shown without its text offers, since the run's log or the record read afresh is
+     * where the text would come from. Null where the rows are rendered without a chat behind them.
+     */
+    val onReloadTranscript: (() -> Unit)? = null,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

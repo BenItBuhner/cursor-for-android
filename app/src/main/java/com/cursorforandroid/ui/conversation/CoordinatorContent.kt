@@ -305,16 +305,26 @@ internal fun WorkerActionRow(call: ToolCall, action: ToolPayload.WorkerAction, m
 @Composable
 internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.CoordinatorMessage, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
-    // A message whose body this copy lacks (the stream left it out, or an earlier build did) says so, dimmed,
-    // rather than standing bare, until the turn is asked for again.
     val missing = payload.missing && payload.message.isBlank()
-    if (!payload.recovered || missing) {
+    if (missing) {
+        // A message whose text this copy lacks. While the call still runs the text is on its way (the stream names
+        // the call before its arguments): the row waits as an empty reply being written. Once the call is over,
+        // the row says what it is — a message whose text did not reach this device — and offers the reload that
+        // reads the run's log or the record again: never a bare word that a message was sent with nothing under it.
+        if (call.isRunning) {
+            ReplyMessage(markdown = "", isStreaming = true, modifier = modifier.testTag("coordinator-message-pending"), text = "")
+        } else {
+            UnavailableMessageRow(modifier)
+        }
+        return
+    }
+    if (!payload.recovered) {
         ReplyMessage(
-            markdown = if (missing) MISSING_MESSAGE else payload.message,
+            markdown = payload.message,
             isStreaming = call.isRunning,
-            modifier = modifier.testTag(if (missing) "coordinator-message-missing" else "coordinator-message"),
+            modifier = modifier.testTag("coordinator-message"),
             text = payload.message,
-            color = if (missing) colors.textTertiary else colors.textPrimary,
+            color = colors.textPrimary,
         )
         return
     }
@@ -332,8 +342,37 @@ internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.Coordin
     }
 }
 
-/** What a coordinator's message row says when the body did not reach this device. */
-internal const val MISSING_MESSAGE = "This message's text didn't reach this device. It reloads with the turn when the run's log or the account's record is read again."
+/**
+ * The row of a coordinator's message whose text did not reach this device: what it is, in the reply's place, with
+ * the one thing the reader can do about it — Reload transcript, which reads the run's log and the account's record
+ * again — beside it when the screen can offer it.
+ */
+@Composable
+private fun UnavailableMessageRow(modifier: Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val reload = LocalTranscriptControls.current.onReloadTranscript
+    Column(modifier.fillMaxWidth().testTag("coordinator-message-missing")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(MISSING_MESSAGE, style = type.base, color = colors.textTertiary, modifier = Modifier.weight(1f))
+            if (reload != null) {
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    RELOAD_MESSAGE,
+                    style = type.base,
+                    color = colors.link,
+                    modifier = Modifier.pressable(reload, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 2.dp).testTag("coordinator-message-reload"),
+                )
+            }
+        }
+        Text(MISSING_MESSAGE_DETAIL, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(top = 2.dp))
+    }
+}
+
+/** What a coordinator's message row says when the body did not reach this device, and the action beside it. */
+internal const val MISSING_MESSAGE = "Message text unavailable"
+internal const val MISSING_MESSAGE_DETAIL = "The coordinator sent a message whose text did not reach this device. Reload reads the run's log and the account's record again."
+internal const val RELOAD_MESSAGE = "Reload"
 
 /** The line under a message whose body was read out of a record that did not give it whole. */
 internal const val RECOVERED_MESSAGE = "Recovered from a partial record \u00B7 may be incomplete"
