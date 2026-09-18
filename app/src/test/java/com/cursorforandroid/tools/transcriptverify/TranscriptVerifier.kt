@@ -549,6 +549,7 @@ class TranscriptVerifier(
         is TranscriptRow.Worker -> "worker ${row.call.name} linked=${row.call.linkedAgentIds.size}"
         is TranscriptRow.Media -> "media calls=${row.group.calls.count { it.hasMedia }}"
         is TranscriptRow.Question -> "question ${row.call.name} answered=${(row.call.payload as? ToolPayload.Question)?.isAnswered}"
+        is TranscriptRow.Failure -> "FAILURE run=${tail(row.footer.runId)} status=${row.footer.status} reason=${row.footer.reason?.length ?: 0}ch"
         is TranscriptRow.Stretch -> "stretch \"${row.summary.text}\" live=${row.live} entries=${row.entries.size} [${describeEntries(row.entries)}]"
     }
 
@@ -571,6 +572,7 @@ class TranscriptVerifier(
         is TranscriptRow.Entry.Call -> "call(${entry.call.name}:${entry.call.status}${if (entry.call.isError) ":error" else ""})"
         is TranscriptRow.Entry.Note -> "note(${entry.message.markdown.length}ch)"
         is TranscriptRow.Entry.Footer -> "footer(${entry.footer.status}${entry.footer.durationMs?.let { ",${it / 1000}s" } ?: ""}${if (entry.interrupted) ",interrupted" else ""})"
+        is TranscriptRow.Entry.Failure -> "failure(${entry.footer.status})"
         is TranscriptRow.Entry.Line -> "line"
         is TranscriptRow.Entry.Event -> "event(${entry.row.notification.kind})"
         is TranscriptRow.Entry.Events -> "events(${entry.group.count})"
