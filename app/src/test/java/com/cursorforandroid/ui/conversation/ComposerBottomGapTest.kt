@@ -25,11 +25,15 @@ import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.RetryOnLeakedExceptions
 import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Before
+import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 import org.robolectric.annotation.Config
 
 /**
@@ -46,10 +50,16 @@ import org.robolectric.annotation.Config
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = PHONE)
+// By name, so the phone runs first: it shares the configuration of the classes before this one, and the fold and
+// tablet each open a fresh Robolectric configuration — a pause that a coroutine leaked by an earlier test can land in.
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class ComposerBottomGapTest {
 
+    private val compose = createAndroidComposeRule<ComponentActivity>()
+
+    /** The compose rule, run again should a test before this one have left an exception for it to open on. */
     @get:Rule
-    val compose = createAndroidComposeRule<ComponentActivity>()
+    val rules: RuleChain = RuleChain.outerRule(RetryOnLeakedExceptions()).around(compose)
 
     private lateinit var graph: AppGraph
     private val density: Float get() = compose.activity.resources.displayMetrics.density
@@ -153,13 +163,13 @@ class ComposerBottomGapTest {
 
     @Test
     @Config(sdk = [35], qualifiers = FOLD)
-    fun `fold inner screen - bottom gap clears the gutter in every navigation mode`() {
+    fun `wide - fold inner screen - bottom gap clears the gutter in every navigation mode`() {
         assertBottomClearsSides("fold w841dp")
     }
 
     @Test
     @Config(sdk = [35], qualifiers = TABLET)
-    fun `tablet - bottom gap clears the gutter in every navigation mode`() {
+    fun `wider - tablet - bottom gap clears the gutter in every navigation mode`() {
         assertBottomClearsSides("tablet w1000dp")
     }
 
