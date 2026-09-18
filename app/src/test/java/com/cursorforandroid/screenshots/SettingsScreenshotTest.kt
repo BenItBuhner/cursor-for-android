@@ -5,16 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -151,16 +150,24 @@ class SettingsScreenshotTest {
         capture("67_settings_extended_on")
     }
 
-    /** A long press on the version row: the exports, the About rows (the API row names the account service while the mode is on) and the credits. */
+    /**
+     * A long press on the version row: the exports, the About rows (the API row names the account service while the
+     * mode is on) and the credits. The sheet is opened through the row's long-press action, as TalkBack would, rather
+     * than a touch held on the row: no press is in flight — and nothing of it mid-fade — while the sheet comes up;
+     * the touch path is SettingsScreenTest's. Everything the sheet shows it takes from the screen (the mode, already
+     * read on the switch above) or reads at once (the updater's state), so once the sheet exists and the harness is
+     * idle — its enter animation played out — the frame is settled: what follows asserts, and does not wait.
+     */
     @Test
     fun debugSheet() {
         turnExtendedModeOn()
         composeSettings()
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
-        compose.onNodeWithTag(SettingsTags.VERSION_ROW).performTouchInput { longClick() }
+        compose.onNodeWithTag(SettingsTags.VERSION_ROW).performSemanticsAction(SemanticsActions.OnLongClick)
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.DEBUG_SHEET)).fetchSemanticsNodes().isNotEmpty() }
-        compose.waitUntil(30_000) { compose.onAllNodes(hasText("Cloud Agents v1 · v0 transcript · Cursor account service")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onNodeWithText("Cloud Agents v1 · v0 transcript · Cursor account service").assertIsDisplayed()
         compose.onNodeWithText(SettingsDebugCopy.TITLE).assertIsDisplayed()
         compose.onNodeWithText(ProjectDiagnosticsCopy.TITLE).assertIsDisplayed()
         capture("68_settings_debug_sheet")

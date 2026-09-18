@@ -38,13 +38,15 @@ object SettingsDebugCopy {
  * settings list itself. The two diagnostics exports (each one tap to the share sheet, see [ProjectDiagnosticsRow]
  * and [TranscriptDiagnosticsRow]), the About rows — which APIs this build speaks, the documentation, the source and
  * its releases, the notes of the release the updater last found — and the licenses of what the app bundles.
+ *
+ * [extendedMode] is the screen's reading of the mode (see [SettingsScreen]); the updater's state is a `StateFlow`,
+ * read at once. So the sheet holds nothing that could still be on its way when it is first drawn.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, open: (String) -> Unit, onDismiss: () -> Unit) {
+fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, open: (String) -> Unit, onDismiss: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val update by graph.updates.state.collectAsStateWithLifecycle()
     CursorSheet(onDismiss = onDismiss) { _ ->
         SheetHeader(SettingsDebugCopy.TITLE)

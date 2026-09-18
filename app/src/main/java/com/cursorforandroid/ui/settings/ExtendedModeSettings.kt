@@ -34,6 +34,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -85,14 +86,18 @@ object ExtendedModeTags {
  * acknowledgment dialog, which is the only way the setting can come on; once acknowledged it flips like any other
  * switch, and turning it off is immediate. Everything the mode adds follows the switch — the pins sync with the
  * account exactly while it is on — so there is no option here that could do nothing.
+ *
+ * [enabled] is the screen's reading of the mode, collected once by the screen and shared with everything on it that
+ * shows the mode (the debug sheet's API row), so the two can never disagree for a frame.
  */
 @Composable
-fun ExtendedModeRows(graph: AppGraph) {
+fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val scope = rememberCoroutineScope()
-    val enabled by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
-    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = null)
+    // On the main dispatcher, as the screen's reading of the mode is (see SettingsScreen): written from the store's IO
+    // thread, a first value can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
+    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     var dialogOpen by rememberSaveable { mutableStateOf(false) }
 
     fun setEnabled(on: Boolean) {
