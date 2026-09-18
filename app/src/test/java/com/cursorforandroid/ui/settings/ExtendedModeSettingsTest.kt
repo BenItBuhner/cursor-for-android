@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.settings
 import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -19,6 +20,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -50,7 +52,9 @@ class ExtendedModeSettingsTest {
     fun setUp() {
         graph = AppGraph(ApplicationProvider.getApplicationContext<Context>())
         compose.setContent {
-            CursorTheme(mode = ThemeMode.Dark) { Column { ExtendedModeRows(graph) } }
+            // The screen collects the mode once and hands it down; here the card stands alone, so it collects itself.
+            val enabled by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+            CursorTheme(mode = ThemeMode.Dark) { Column { ExtendedModeRows(graph, enabled = enabled) } }
         }
     }
 
