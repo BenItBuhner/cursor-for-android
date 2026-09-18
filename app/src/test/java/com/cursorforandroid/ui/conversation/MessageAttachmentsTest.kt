@@ -3,10 +3,16 @@ package com.cursorforandroid.ui.conversation
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -54,6 +60,28 @@ class MessageAttachmentsTest {
     }
 
     private fun countOf(description: String) = compose.onAllNodesWithContentDescription(description).fetchSemanticsNodes().size
+
+    /**
+     * Up to two attachments lay out as before; more than two go into the one scrolling row the composer uses, images
+     * and file cards together, rather than stacking into a block as tall as the bubble.
+     */
+    @Test
+    fun `a prompt carrying more than two attachments puts them in one scrolling row`() {
+        val har = File(folder.root, "trace.har").apply { writeBytes(ByteArray(48 * 1024)) }
+        val card = MessageAttachment.file(har.path, "network-trace.har", "application/json", har.length())
+        var item by mutableStateOf(UserMessage("m3", "Compare these against the trace", attachments = listOf(shot("a.jpg", 720, 1600), shot("b.jpg", 1600, 900), card)))
+        compose.setContent { CursorTheme(mode = ThemeMode.Dark) { TimelineItemView(item) } }
+        compose.waitUntil(10_000) { countOf("Attached image") == 2 }
+        // The bubble's press-and-hold merges what is under it, so the row is looked for in the unmerged tree.
+        compose.onAllNodesWithTag("attachment-row", useUnmergedTree = true).assertCountEquals(1)
+        compose.onNodeWithTag("attachment-file-card").assertIsDisplayed()
+        compose.onNodeWithText("network-trace.har").assertIsDisplayed()
+
+        item = UserMessage("m4", "Just these two", attachments = listOf(shot("c.jpg", 720, 1600), card))
+        compose.waitUntil(10_000) { countOf("Attached image") == 1 }
+        compose.onAllNodesWithTag("attachment-row", useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithTag("attachment-file-card").assertIsDisplayed()
+    }
 
     @Test
     fun `a prompt with images shows every one of them above its text`() {

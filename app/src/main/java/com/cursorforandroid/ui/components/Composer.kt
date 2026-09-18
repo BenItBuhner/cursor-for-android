@@ -108,8 +108,9 @@ import kotlinx.coroutines.withContext
  * The field is a [TextFieldState] editor so Android can paste images into it — from the clipboard, the keyboard
  * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files. In
  * Extended mode the "+" menu also attaches [files] of any type ([PendingFile]), shown as chips with their name, kind
- * and size under the image strip; each goes up the moment it is attached, its chip filling meanwhile, and the owner
- * holds send — saying why in [sendHint] — only while one is still going up.
+ * and size. Images and files share one row above the text ([ComposerAttachments]) that scrolls sideways, its ends
+ * fading, once it runs past the composer's width; each file goes up the moment it is attached, its chip filling
+ * meanwhile, and the owner holds send — saying why in [sendHint] — only while one is still going up.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -133,7 +134,7 @@ fun ComposerBox(
     /** Clipboard / IME image paste; null leaves the field text-only. */
     onAddAttachments: ((List<PendingAttachment>) -> Unit)? = null,
     onAttachmentError: ((String) -> Unit)? = null,
-    /** Files of any type attached in Extended mode, as chips under the image strip; see [FileChips]. */
+    /** Files of any type attached in Extended mode, as chips in the attachment row beside the images; see [FileChip]. */
     files: List<PendingFile> = emptyList(),
     onRemoveFile: ((PendingFile) -> Unit)? = null,
     /** Where each file's upload stands, by [PendingFile.id], from the moment it is attached; a failed one offers [onRetryFile]. */
@@ -286,11 +287,20 @@ fun ComposerBox(
             .cursorSurface(colors.elevated, border, shape)
             .padding(start = pad, end = pad, top = pad, bottom = pad - 2.dp),
     ) {
-        if (attachments.isNotEmpty() && onRemoveAttachment != null) {
-            AttachmentStrip(attachments, onRemoveAttachment)
-        }
-        if (files.isNotEmpty() && onRemoveFile != null) {
-            FileChips(files, onRemove = onRemoveFile, uploads = fileUploads, onRetry = onRetryFile, modifier = Modifier.padding(bottom = 8.dp))
+        // Everything attached, in one row that scrolls sideways past the composer's width; nothing at all when nothing is.
+        val shownImages = if (onRemoveAttachment != null) attachments else emptyList()
+        val shownFiles = if (onRemoveFile != null) files else emptyList()
+        if (shownImages.isNotEmpty() || shownFiles.isNotEmpty()) {
+            ComposerAttachments(
+                images = shownImages,
+                onRemoveImage = { onRemoveAttachment?.invoke(it) },
+                files = shownFiles,
+                onRemoveFile = { onRemoveFile?.invoke(it) },
+                surface = colors.elevated,
+                uploads = fileUploads,
+                onRetryFile = onRetryFile,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
         // The Box is the popover's anchor: it drops from the text, over the footer, like the web's.
         // The extra inset is on the Box so the popover stays under the glyphs, not under the corner,

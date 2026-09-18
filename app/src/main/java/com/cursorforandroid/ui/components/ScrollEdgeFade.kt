@@ -95,15 +95,27 @@ fun Modifier.scrollEdgeFade(
 }
 
 /**
- * [scrollEdgeFade] for content that scrolls sideways — a table wider than the message: each side dissolves while
- * there is more table past it, so a flat cut at the card edge never passes for the last column.
+ * [scrollEdgeFade] for a lazy row — the attachments of a prompt: each end dissolves while the row has more past it,
+ * so a chip cut by the edge reads as more to come rather than the last one. [surface] as for the vertical fade.
  */
 @Composable
-fun Modifier.horizontalScrollEdgeFade(clippedAtStart: Boolean, clippedAtEnd: Boolean, fadeWidth: Dp = CursorDimens.scrollFade): Modifier {
+fun Modifier.horizontalScrollEdgeFade(state: LazyListState, fadeWidth: Dp = CursorDimens.scrollFade, surface: Color = Color.Unspecified): Modifier =
+    horizontalScrollEdgeFade(clippedAtStart = state.canScrollBackward, clippedAtEnd = state.canScrollForward, fadeWidth = fadeWidth, surface = surface)
+
+/**
+ * [scrollEdgeFade] for content that scrolls sideways — a table wider than the message, a row of attachments wider
+ * than the composer: each side dissolves while there is more past it, so a flat cut at the edge never passes for
+ * the last column. Painted over in [surface] when one is given, as the vertical fade is (see there for the two ways
+ * and their cost); dissolved offscreen into whatever is behind otherwise.
+ */
+@Composable
+fun Modifier.horizontalScrollEdgeFade(clippedAtStart: Boolean, clippedAtEnd: Boolean, fadeWidth: Dp = CursorDimens.scrollFade, surface: Color = Color.Unspecified): Modifier {
     val start by animateFloatAsState(if (clippedAtStart) 1f else 0f, tween(FADE_DURATION_MS), label = "startFade")
     val end by animateFloatAsState(if (clippedAtEnd) 1f else 0f, tween(FADE_DURATION_MS), label = "endFade")
+    val painted = surface.isSpecified
+    val blend = if (painted) BlendMode.SrcOver else BlendMode.DstIn
     return this
-        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .then(if (painted) Modifier else Modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen })
         .drawWithContent {
             drawContent()
             val depth = fadeWidth.toPx().coerceAtMost(size.width / 2f)
@@ -113,17 +125,17 @@ fun Modifier.horizontalScrollEdgeFade(clippedAtStart: Boolean, clippedAtEnd: Boo
             val right = if (rtl) start else end
             if (left > 0f) {
                 drawRect(
-                    brush = Brush.horizontalGradient(*edgeStops(left, outerFirst = true), startX = 0f, endX = depth),
+                    brush = Brush.horizontalGradient(*edgeStops(left, outerFirst = true, surface), startX = 0f, endX = depth),
                     size = Size(depth, size.height),
-                    blendMode = BlendMode.DstIn,
+                    blendMode = blend,
                 )
             }
             if (right > 0f) {
                 drawRect(
-                    brush = Brush.horizontalGradient(*edgeStops(right, outerFirst = false), startX = size.width - depth, endX = size.width),
+                    brush = Brush.horizontalGradient(*edgeStops(right, outerFirst = false, surface), startX = size.width - depth, endX = size.width),
                     topLeft = Offset(size.width - depth, 0f),
                     size = Size(depth, size.height),
-                    blendMode = BlendMode.DstIn,
+                    blendMode = blend,
                 )
             }
         }

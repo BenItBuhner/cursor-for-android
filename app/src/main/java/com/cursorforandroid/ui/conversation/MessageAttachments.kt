@@ -14,12 +14,15 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,6 +47,7 @@ import androidx.core.content.FileProvider
 import com.cursorforandroid.domain.MessageAttachment
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
+import com.cursorforandroid.ui.components.AttachmentCarousel
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.cursorSurface
@@ -60,15 +64,27 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * The images of a prompt, shown inside its bubble: 88dp-tall thumbnails at their own aspect ratio (clamped so a
- * phone screenshot still reads as a tall strip and a panorama cannot swallow the bubble), wrapping onto further
- * lines when they do not fit. Tapping one opens it full screen.
+ * The attachments of a prompt, shown inside its bubble: 88dp-tall thumbnails at their own aspect ratio (clamped so a
+ * phone screenshot still reads as a tall strip and a panorama cannot swallow the bubble), and a card per file. Up
+ * to two of them lay out as they always have — thumbnails wrapping onto further lines, cards one under another;
+ * more than two go into one row that scrolls sideways with its ends fading ([AttachmentCarousel], the composer's
+ * row), rather than a block of cards as tall as the bubble. Tapping a thumbnail opens it full screen.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MessageAttachments(attachments: List<MessageAttachment>, modifier: Modifier = Modifier, alpha: Float = 1f) {
     val images = attachments.filterNot { it.isFile }
     val files = attachments.filter { it.isFile }
+    if (attachments.size > CAROUSEL_FROM) {
+        // The pictures set the row's height, a card beside them fills it; among files alone a card keeps its own.
+        // The fade dissolves offscreen: the bubble's fill is translucent, so there is no flat colour to paint it in.
+        val withImages = images.isNotEmpty()
+        AttachmentCarousel(if (withImages) modifier.height(THUMB_HEIGHT) else modifier, verticalAlignment = Alignment.CenterVertically, spacing = 6.dp) {
+            items(images, key = { it.path }) { attachment -> AttachmentThumbnail(attachment, alpha = alpha) }
+            items(files, key = { it.path }) { attachment -> AttachmentFileCard(attachment, alpha = alpha, modifier = if (withImages) Modifier.fillMaxHeight() else Modifier) }
+        }
+        return
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (images.isNotEmpty()) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -271,3 +287,5 @@ private const val MAX_DECODE_BYTES = 32L * 1024 * 1024
 private val THUMB_HEIGHT = 88.dp
 private val THUMB_MIN_WIDTH = 44.dp
 private val THUMB_MAX_WIDTH = 160.dp
+/** Attachments beyond this many go into the scrolling row. */
+private const val CAROUSEL_FROM = 2

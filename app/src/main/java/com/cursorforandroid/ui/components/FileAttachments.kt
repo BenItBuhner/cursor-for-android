@@ -8,7 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -300,28 +299,14 @@ fun PromptFileKind.icon(): ImageVector = when (this) {
 }
 
 /**
- * The composer's chips for attached files, one per file: its kind's glyph — an image's own thumbnail — its name and
- * its size, and a remove cross — as the desktop's `context-pill` names a document, with the size the desktop's guard
- * checks made visible. From the moment a file is attached its glyph is a ring filling with the upload, the cross
- * cancelling it; up, the chip is the file at rest; a file that did not get up shows a warning and a retry of the upload.
+ * The composer's chip for an attached file, one per file in the attachment row ([ComposerAttachments]): its kind's
+ * glyph — an image's own thumbnail — its name and its size, and a remove cross — as the desktop's `context-pill`
+ * names a document, with the size the desktop's guard checks made visible. From the moment a file is attached its
+ * glyph is a ring filling with the upload, the cross cancelling it; up, the chip is the file at rest; a file that did
+ * not get up shows a warning and a retry of the upload.
  */
 @Composable
-fun FileChips(
-    files: List<PendingFile>,
-    onRemove: (PendingFile) -> Unit,
-    modifier: Modifier = Modifier,
-    uploads: Map<String, FileUploadState> = emptyMap(),
-    onRetry: ((PendingFile) -> Unit)? = null,
-) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        files.forEach { file ->
-            FileChip(file, upload = uploads[file.id], onRemove = { onRemove(file) }, onRetry = onRetry?.let { retry -> { retry(file) } })
-        }
-    }
-}
-
-@Composable
-private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -> Unit, onRetry: (() -> Unit)?) {
+internal fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -> Unit, onRetry: (() -> Unit)?) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val kind = file.file.kind
