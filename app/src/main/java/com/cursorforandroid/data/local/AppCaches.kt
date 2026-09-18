@@ -113,6 +113,12 @@ data class CachedLineage(
     val roots: List<KnownRoot> = emptyList(),
     /** The account's records of chats no row on disk holds, for the pages that bring them (see `AgentRepository.pendingRecords`). */
     val records: List<CachedRecord> = emptyList(),
+    /**
+     * When a discovery pass last read the whole account list (to its end, or as far as a pass may): the registry is
+     * the account's, and a later pass may stop at the page older than every Project it knows (see
+     * `ProjectRepository.discoverRoots`). Null until one has, and on a disk an older build wrote.
+     */
+    val registryCompleteAtMillis: Long? = null,
 )
 
 /** One chat's placement: under [parentId] in the capacity of [kind], by [signal]'s word ([parentId] null is an older build's root placement, read no more). */
@@ -129,6 +135,10 @@ class AgentListCache(private val cache: JsonDiskCache) {
 
     /** The lineage kept with the list (see [CachedLineage]); null when the list was written without one. */
     suspend fun readLineage(): CachedLineage? = cache.read(KEY, CachedAgentList.serializer(), VERSION)?.value?.lineage
+
+    /** The rows and the registry's words in one read of the file (see [read] and [readLineage]). */
+    suspend fun readWithLineage(): Pair<JsonDiskCache.Entry<List<Agent>>, CachedLineage?>? =
+        cache.read(KEY, CachedAgentList.serializer(), VERSION)?.let { JsonDiskCache.Entry(it.value.agents, it.savedAtMillis) to it.value.lineage }
 
     suspend fun write(agents: List<Agent>, token: Int = cache.token(), lineage: CachedLineage? = null) {
         cache.write(KEY, CachedAgentList.serializer(), VERSION, CachedAgentList(agents, lineage), token)

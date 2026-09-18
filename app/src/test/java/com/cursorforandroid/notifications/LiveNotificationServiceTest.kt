@@ -72,9 +72,13 @@ class LiveNotificationServiceTest {
         assertThat(armed.minLatencyMillis).isEqualTo(FinishWatchdogJobService.WHILE_SERVICE_ALIVE_MS)
 
         // The headline counts all three as soon as the list is reconciled; the third detail line follows once every
-        // tracker has reported, so wait for the steady state rather than the title alone.
+        // tracker has reported, so wait for the steady state rather than the title alone — three lines is not it
+        // while the third still reads "+1 more" for a tracker that has yet to report.
         awaitOnMain(10_000) {
-            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { it.title() == "3 agents running" && it.bigText()?.lines()?.size == 3 } == true
+            manager.getNotification(LiveNotificationRenderer.LIVE_ID)?.let { live ->
+                val body = live.bigText()
+                live.title() == "3 agents running" && body?.lines()?.size == 3 && !body.contains("more")
+            } == true
         }
         val live = manager.getNotification(LiveNotificationRenderer.LIVE_ID)
         assertThat(live.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)

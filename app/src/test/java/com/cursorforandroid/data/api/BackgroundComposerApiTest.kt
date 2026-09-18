@@ -256,6 +256,8 @@ class BackgroundComposerApiTest {
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{"appearance":{"icon":"lightning","colorId":"default"}},"lastMessageActivityAtMs":"1700000009000"},{"bcId":"bc-w1","managerAgentId":"bc-r1","lastMessageActivityAtMs":"1700000008000"}],"hasMore":true,"nextPageToken":"page-2"}"""))
         // A meta-agent source makes no root; the flag does. bc-m is a record among the pages, and nothing else.
         server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r2","projectMetadata":{"appearance":{"icon":"rocket","colorId":"blue"}},"lastMessageActivityAtMs":"1700000007000"},{"bcId":"bc-m","source":"BACKGROUND_COMPOSER_SOURCE_CLOUD_META_AGENT","lastMessageActivityAtMs":"1700000006500"},{"bcId":"bc-x","lastMessageActivityAtMs":"1700000006000"}],"hasMore":true}"""))
+        // The third page fails in passing, and once more on the single retry a passing failure gets.
+        server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
         server.enqueue(MockResponse().setResponseCode(500).setBody("boom"))
         val partial = api.scanRoots(maxPages = 10)
         assertThat(partial.roots.map { it.id }).containsExactly("bc-r1", "bc-r2").inOrder()
@@ -271,10 +273,13 @@ class BackgroundComposerApiTest {
         assertThat(first["pageToken"]).isNull()
         val second = server.takeRequest().json()
         assertThat(second["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
-        // No token came back with the second page: the third is asked for by the page's oldest activity.
+        // No token came back with the second page: the third is asked for by the page's oldest activity — twice, the
+        // second time after a moment, before the pass gives the page up.
         val third = server.takeRequest().json()
         assertThat(third["pageToken"]).isNull()
         assertThat(third["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000006000")
+        val thirdAgain = server.takeRequest().json()
+        assertThat(thirdAgain["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.content).isEqualTo("1700000006000")
 
         // The pass again: to the end this time, a repeated page being the end whatever the flag says.
         // `projectMetadata: {}` is a root by the desktop's predicate; `startedAsNewProject` alone is not.

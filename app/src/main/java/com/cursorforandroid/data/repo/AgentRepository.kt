@@ -5,6 +5,7 @@ import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
 import com.cursorforandroid.data.api.StartRequest
 import com.cursorforandroid.data.api.RecordFields
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.AgentDto
@@ -62,6 +63,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
@@ -230,6 +232,7 @@ data class Launched(val agent: Agent, val run: RunDto?)
  * shown. The server's `updatedAt` is the row's activity time; a stamp made here survives a refresh only while the
  * server is about to confirm it (see `reconcileUpdatedAt`).
  */
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class AgentRepository(
     private val session: SessionManager,
     private val prefs: PreferencesStore,
@@ -403,10 +406,13 @@ class AgentRepository(
         }
         scope.launch {
             // A row without its account record — brought by a page, the running scan, a pin, a fetch by id — is
-            // asked for it (see [materializeRecords]) as soon as it shows, so it is placed the way the desktop
-            // would place it and not the way the public API's bare row reads.
+            // asked for it (see [materializeRecords]), so it is placed the way the desktop would place it and not
+            // the way the public API's bare row reads. After a pause: the account's pages, read for the roots in
+            // the same moments (see `ProjectRepository.discoverRoots`), carry most of these records two hundred at
+            // a time, and a row asked for one by one before they land is a call spent for nothing.
             _state.filter { it.hasLoaded && !it.isFromCache }.map { st -> st.agents.filter { it.record == null }.mapTo(HashSet()) { it.id } }
                 .distinctUntilChanged()
+                .debounce(RECORD_DEBOUNCE_MS)
                 .collect { bare -> if (bare.isNotEmpty()) materializeRecords() }
         }
     }
@@ -415,7 +421,7 @@ class AgentRepository(
 
     /** Forgets the list on sign-out, so the next account never sees the previous one's agents, not even from a fetch still in flight. */
     fun reset() {
-        registryRestoredFromDisk = false
+        registryCompleteAtMillis = null
         synchronized(publishLock) {
             generation.incrementAndGet()
             clear()
@@ -535,7 +541,7 @@ class AgentRepository(
                 when {
                     record != null && generation.get() == startedIn -> {
                         upsert(record.toStandIn(), startedIn)
-                        rootUnresolved[id] = now + PINNED_RETRY_MS
+                        rootUnresolved[id] = now + retryDelayFor(failure)
                         rootFailures[id] = "stood in from the account record; public API: ${failure?.describe() ?: "-"}"
                     }
                     gone && accountAnswered -> {
@@ -550,7 +556,7 @@ class AgentRepository(
                         }
                     }
                     else -> {
-                        rootUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                        rootUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else retryDelayFor(failure)
                         rootFailures[id] = failure?.describe() ?: "failed"
                     }
                 }
@@ -559,6 +565,21 @@ class AgentRepository(
     }
 
     private fun Throwable.describe(): String = "${javaClass.simpleName}: ${message ?: "-"}"
+
+    /**
+     * How long a row that could not be fetched waits before it is asked for again: the wait the server named on a
+     * refusal (429), a short while for a passing failure (a dropped connection, a 5xx, a refusal that named none),
+     * and [PINNED_RETRY_MS] for a definite answer — a 4xx about the row itself — that asking again soon would not change.
+     */
+    private fun retryDelayFor(failure: Throwable?): Long = when {
+        failure == null -> PINNED_RETRY_MS
+        failure is CursorApiException && failure.isRateLimited -> TRANSIENT_RETRY_MS
+        failure is ConnectRpcException && failure.isRateLimited -> failure.retryAfterMillis?.coerceIn(TRANSIENT_RETRY_MS / 6, PINNED_RETRY_MS) ?: TRANSIENT_RETRY_MS
+        failure is CursorApiException && failure.httpCode in 400..499 -> PINNED_RETRY_MS
+        failure is ConnectRpcException && failure.httpCode in 400..499 -> PINNED_RETRY_MS
+        failure is java.io.IOException -> TRANSIENT_RETRY_MS
+        else -> PINNED_RETRY_MS
+    }
 
     /** The roots the registry knows and the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedRoots(): Set<String> = rootUnresolved.keys.toSet()
@@ -695,7 +716,9 @@ class AgentRepository(
             val startedIn = token()
             restoredFor = backend
             dropForeignList(backend)
-            val entry = cache.read() ?: return
+            // One read of the file: the rows and the registry's words come together (a second parse of a list of a
+            // thousand rows with its records is a second or more on a phone).
+            val (entry, lineage) = cache.readWithLineage() ?: return
             // Sources the account list gave the rows were written to disk with them; with Extended mode off (no
             // account session, so no list read) they are not this install's to show, whichever earlier launch or
             // build learned them.
@@ -713,8 +736,6 @@ class AgentRepository(
                 }
             }
             val rows = if (accountSession) kept else kept.withoutAccountSources(prefs.localAgentState.first().launchedHereIds)
-            // The words kept with the list about chats no row carries (see [persist]).
-            val lineage = cache.readLineage()
             val landed = publish(backend, startedIn) { s ->
                 // A fetch that finished in the meantime wins over the disk.
                 if (s.agents.isNotEmpty() || s.hasLoaded) s else {
@@ -734,9 +755,9 @@ class AgentRepository(
                     lineage?.records?.forEach { pendingRecords[it.id] = it.fields }
                     // Only entries whose record's flag was read with its fields come back: what an older build
                     // admitted on a bare flag, a membership, a transcript or a source is re-learned from the account.
-                    val restoredRoots = lineage?.roots?.filter { it.isEvidencedStrictly }.orEmpty()
-                    restoredRoots.forEach { noteRoot(it) }
-                    if (restoredRoots.isNotEmpty()) registryRestoredFromDisk = true
+                    lineage?.roots?.filter { it.isEvidencedStrictly }?.forEach { noteRoot(it) }
+                    // The disk's word that a pass once read the whole account: only then may the next pass stop short.
+                    registryCompleteAtMillis = lineage?.registryCompleteAtMillis
                     // The refresh re-reads about as deep as the disk copy reaches, so what it shows is what it refreshes.
                     pagesLoaded = ((rows.size + PAGE_SIZE - 1) / PAGE_SIZE).coerceIn(1, MAX_PAGES)
                     s.copy(agents = rows, hasLoaded = true, isFromCache = true)
@@ -759,9 +780,14 @@ class AgentRepository(
         restoreFromCache()
         if (!silent) stats.begin()
         val (job, joined) = startOrJoin(silent, depth)
-        if (joined && !silent) publish(null, startedIn) { it.copy(isRefreshing = true) }
+        // A pull that joins a fetch already past its first page and status scan (the cold start's own silent fetch,
+        // most often) has nothing to hold the indicator for: the rest settles under the footer, as its own would.
+        if (joined && !silent) publish(null, startedIn) { if (firstPageLanded) it.copy(isSettling = true) else it.copy(isRefreshing = true) }
         job.join()
     }
+
+    /** The fetch in flight has published its first page and the status scan (see [fetch]); false between fetches' starts. */
+    @Volatile private var firstPageLanded = false
 
     /**
      * Fetches the page after the window's last one, on both endpoints, and adds its rows to the list: for the reader
@@ -869,6 +895,7 @@ class AgentRepository(
         // Everything published by this fetch belongs to the backend and session it started against; a demo / real
         // switch or a sign-out half-way through must not leak the old list into the new one.
         fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
+        firstPageLanded = false
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
         try {
             var truncated = false
@@ -912,7 +939,10 @@ class AgentRepository(
                             _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
                         }
                         val more = page.nextCursor?.isNotBlank() == true && pagesRead < pages
-                        if (!silent) {
+                        // Whether this fetch showed the indicator or a pull joined it and did: it is let go here, and
+                        // the footer stands for the rest. A silent fetch nobody pulled on shows neither.
+                        firstPageLanded = true
+                        if (_state.value.isRefreshing) {
                             publish { it.copy(isRefreshing = false, isSettling = true, hasMore = if (more) true else it.hasMore) }
                             stats.spinnerReleased()
                         }
@@ -1060,8 +1090,18 @@ class AgentRepository(
         return fetched.get()
     }
 
-    /** How many rows are fetched by id at once, across the passes that do (see [byId]). */
+    /**
+     * Fetches by id in flight at once, across the passes that do (see [byId]) — each a `GET /v1/agents/{id}`, its run
+     * record and its account record — few enough that the list's own pages, the transcripts and the account service
+     * are never queued behind them (OkHttp gives a host five connections), and that the host does not refuse them.
+     */
     private val byIdPool = kotlinx.coroutines.sync.Semaphore(BY_ID_POOL)
+
+    /**
+     * Fetches by id the rows of [ids] the list does not hold, through the same pool as every other pass: for a
+     * Project's members its memberships named that no page brought. Returns how many were fetched.
+     */
+    suspend fun fetchMissing(ids: Collection<String>, startedIn: Int = token()): Int = byId(ids.filter { agent(it) == null }, startedIn) { id -> loadDetail(id) }
 
     /** Fetches by id in flight, so two passes asking for the same row share one read (see [loadDetail]). */
     private val inFlightById = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<Agent>>>()
@@ -1095,7 +1135,7 @@ class AgentRepository(
                     // Tried again after a while (offline, a server that is down); a chat the server says is gone,
                     // much later — the account may still come to know it once Extended mode is on.
                     val gone = (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404
-                    pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else PINNED_RETRY_MS
+                    pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else retryDelayFor(fetched.exceptionOrNull())
                 }
             }
         }
@@ -1133,8 +1173,8 @@ class AgentRepository(
                                 recordOf(row.id)
                             } catch (e: CancellationException) {
                                 throw e
-                            } catch (_: Throwable) {
-                                recordUnresolved[row.id] = now + PINNED_RETRY_MS
+                            } catch (t: Throwable) {
+                                recordUnresolved[row.id] = now + retryDelayFor(t)
                                 return@withPermit
                             }
                             if (record == null) {
@@ -1218,11 +1258,14 @@ class AgentRepository(
             .take(MAX_VERIFIED_RUNS)
             .toList()
         if (candidates.isEmpty()) return 0
+        // Through the by-id pool: a dozen run records at once queued the list's own pages behind them on a phone.
         coroutineScope {
             candidates.map { agent ->
                 async {
-                    val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@async
-                    publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(run) else it }) }
+                    byIdPool.withPermit {
+                        val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@withPermit
+                        publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(run) else it }) }
+                    }
                 }
             }.awaitAll()
         }
@@ -1303,7 +1346,7 @@ class AgentRepository(
             val held = s.agents.mapTo(HashSet()) { it.id }
             val words = placements.entries.filter { (id, _) -> id !in held }.take(MAX_PERSISTED_PLACEMENTS).map { (id, p) -> CachedPlacement(id, p.parent.id, p.parent.kind, p.signal) }
             val records = pendingRecords.entries.filter { (id, _) -> id !in held }.map { (id, fields) -> CachedRecord(id, fields) }
-            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records))
+            Triple(cache.token(), s.agents.filterNot { it.id in pendingLaunches }, CachedLineage(words, roots = rootRecords.values.sortedByDescending { it.lastSeenMillis }.take(MAX_PERSISTED_PLACEMENTS), records = records, registryCompleteAtMillis = registryCompleteAtMillis))
         }
         cache.write(agents, token, lineage)
     }
@@ -1752,12 +1795,20 @@ class AgentRepository(
     suspend fun reconcileRunning(startedIn: Int = token()): Int = materializeRunning(startedIn)
 
     /**
-     * The root registry came back from the disk with Projects in it: what an earlier session's discovery pass read
-     * of the whole account. Only then may a pass stop at the page older than the oldest of them (see
-     * `ProjectRepository.discoverRoots`); a registry that is only what this process has read so far is not complete.
+     * When a discovery pass last read the whole account list (to its end, or as far as a pass may), this process or
+     * an earlier one (kept on disk with the registry, see [persist]). Only then is the registry the account's, and
+     * only then may a pass stop at the page older than the oldest Project it knows (see
+     * `ProjectRepository.discoverRoots`); null on a fresh install, on a disk an older build wrote, and after a reset.
      */
-    @Volatile var registryRestoredFromDisk: Boolean = false
+    @Volatile var registryCompleteAtMillis: Long? = null
         private set
+
+    /** A discovery pass read the whole account list: the registry is complete from here on, on disk too. */
+    fun markRegistryComplete(atMillis: Long = AppClock.now()) {
+        registryCompleteAtMillis = atMillis
+        // The registry's persistence cue: the flag goes to the disk with the next write.
+        registryChanges.update { it + 1 }
+    }
 
     /**
      * How deep the last completed fetch went: a [RefreshDepth.Deep] one — the user asking for everything — is the cue
@@ -1894,8 +1945,12 @@ class AgentRepository(
         private const val MAX_MATERIALIZED_ROOTS = 8
         /** Rows without an account record, asked for one by id per pass (see [materializeRecords]). */
         private const val MAX_MATERIALIZED_RECORDS = 16
-        /** Fetches by id in flight at once, across the passes (see [byId]): a phone's connection pool without hogging it. */
-        private const val BY_ID_POOL = 4
+        /** Fetches by id in flight at once, across the passes (see [byId]). */
+        private const val BY_ID_POOL = 2
+        /** A row whose fetch failed in passing — a refusal, a dropped connection — is asked for again after this long. */
+        const val TRANSIENT_RETRY_MS = 30_000L
+        /** How long the rows without a record wait for the account's pages before being asked for one by one. */
+        const val RECORD_DEBOUNCE_MS = 4_000L
         /** Records of chats the list does not hold, kept for the rows to come (see [pendingRecords]). */
         private const val MAX_PENDING_RECORDS = 3_000
         /** A row the account gave no record for is asked again after this long. */
