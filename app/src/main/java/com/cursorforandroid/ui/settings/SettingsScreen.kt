@@ -57,6 +57,7 @@ import com.cursorforandroid.domain.AppRelease
 import com.cursorforandroid.domain.CredentialInfo
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.domain.ProjectNotificationPrefs
+import com.cursorforandroid.domain.ReleaseNotes
 import com.cursorforandroid.domain.SignInMethod
 import com.cursorforandroid.domain.UpdatePhase
 import com.cursorforandroid.domain.UpdateState
@@ -108,6 +109,7 @@ object SettingsTags {
     const val ACCOUNT_SHEET = "settings_account_sheet"
     const val SIGN_OUT = "settings_sign_out"
     const val VERSION_ROW = "settings_version"
+    const val WHATS_NEW_ROW = "settings_whats_new"
     const val DEBUG_SHEET = "settings_debug_sheet"
 }
 
@@ -126,6 +128,8 @@ fun SettingsScreen(
     onOpenSidebar: (() -> Unit)?,
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    /** Opens the What's new page, from the row beneath the version while the installed version's notes are unread. */
+    onOpenWhatsNew: () -> Unit = {},
 ) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
@@ -213,7 +217,7 @@ fun SettingsScreen(
 
             Group(SettingsCopy.GROUP_UPDATES)
             CursorCard(Modifier.fillMaxWidth().widthIn(max = 640.dp)) {
-                UpdateRows(graph, uriHandler::openUri, onDebug = { debugOpen = true })
+                UpdateRows(graph, uriHandler::openUri, onDebug = { debugOpen = true }, onOpenWhatsNew = onOpenWhatsNew)
                 HairlineDivider()
                 CrashReportRows(graph)
             }
@@ -401,13 +405,13 @@ private fun ToggleRow(title: String, checked: Boolean, onCheckedChange: (Boolean
 
 /**
  * The in-app updater: the installed version with what the last check found and the one action that follows from it
- * (check, download, install, retry), the two preferences, and — until the user has allowed it — the system page
- * where installing from this app is permitted. The permission is re-read when the screen resumes. A long press on
- * the version row is the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a
- * button.
+ * (check, download, install, retry); beneath it, while they are unread, the installed version's release notes
+ * ([onOpenWhatsNew]); the two preferences; and — until the user has allowed it — the system page where installing
+ * from this app is permitted. The permission is re-read when the screen resumes. A long press on the version row is
+ * the way into the debug sheet ([onDebug]); a tap does nothing, so the row is not announced as a button.
  */
 @Composable
-private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> Unit) {
+private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> Unit, onOpenWhatsNew: () -> Unit) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val scope = rememberCoroutineScope()
@@ -416,6 +420,9 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
     val state by updates.state.collectAsStateWithLifecycle()
     val autoUpdate by updates.autoUpdate.collectAsStateWithLifecycle(initialValue = true)
     val includePreReleases by updates.includePreReleases.collectAsStateWithLifecycle(initialValue = false)
+    // On the main dispatcher for the reason the Extended mode switch is (see SettingsScreen): the value comes from
+    // the store's thread, and the row must not miss the write that would show it.
+    val whatsNew by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     var resumeCount by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         resumeCount++
@@ -464,6 +471,11 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
             is UpdateState.Failed ->
                 CursorButton(if (s.phase == UpdatePhase.Check) "Check again" else "Retry", onClick = updates::retry, height = 30.dp)
         }
+    }
+    // What this version brought, until it has been read: directly under the version it is about.
+    whatsNew?.let { notes ->
+        HairlineDivider()
+        WhatsNewRow(notes, onClick = onOpenWhatsNew)
     }
     // A signer mismatch is the one outcome the user has to act on outside the app, so it gets a sentence rather than a
     // status line: Android cannot replace an install signed with a different key, whatever the updater does.
@@ -588,6 +600,30 @@ private fun StatusRow(title: String, subtitle: String, warning: Boolean, icon: I
             Text(title, style = type.base, color = colors.textPrimary)
             Text(subtitle, style = type.small, color = colors.textTertiary)
         }
+    }
+}
+
+/**
+ * "What's new in 0.3.37" with the notes' lead line under it (their release date when they have none), leading to the
+ * What's new page. The accent glyph is the sidebar card's, so the two surfaces read as one thing.
+ */
+@Composable
+private fun WhatsNewRow(notes: ReleaseNotes, onClick: () -> Unit) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Row(
+        Modifier.fillMaxWidth().pressable(onClick, CursorTheme.shapes.lg).testTag(SettingsTags.WHATS_NEW_ROW).padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(CursorIcons.Sparkle, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(WhatsNewCopy.title(notes.versionName), style = type.base, color = colors.textPrimary)
+            val detail = notes.lead ?: notes.publishedAtMs.takeIf { it > 0 }?.let(WhatsNewCopy::released)
+            if (detail != null) Text(detail, style = type.small, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(12.dp))
+        Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(16.dp))
     }
 }
 
