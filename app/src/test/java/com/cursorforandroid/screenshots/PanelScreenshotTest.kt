@@ -5,12 +5,16 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.graphics.Paint
+import android.view.View
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
@@ -19,6 +23,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
@@ -29,6 +34,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
@@ -122,7 +130,7 @@ class PanelScreenshotTest {
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun Panel(state: PanelState) {
+    private fun Panel(state: PanelState, systemBars: Boolean = false) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { AssetApi() })) }
         val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
@@ -133,9 +141,33 @@ class PanelScreenshotTest {
                     Box(Modifier.align(Alignment.CenterEnd).width(363.dp).fillMaxHeight().background(CursorTheme.colors.sidebar)) {
                         ConversationPanel(state, PanelActions.None, onClose = {})
                     }
+                    if (systemBars) {
+                        // Where the window's bars are, as translucent bands, so the picture shows the chrome clearing them.
+                        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().height(SystemBarDp.dp).background(Color.White.copy(alpha = 0.22f)))
+                        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(SystemBarDp.dp).background(Color.White.copy(alpha = 0.22f)))
+                    }
                 }
             }
         }
+    }
+
+    /** The window's insets as the platform reports them: a status bar and a gesture navigation bar, [SystemBarDp] each. */
+    private fun dispatchSystemBars() {
+        val px = (SystemBarDp * compose.activity.resources.displayMetrics.density).toInt()
+        val insets = WindowInsetsCompat.Builder()
+            .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.of(0, px, 0, 0))
+            .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, px))
+            .setVisible(WindowInsetsCompat.Type.statusBars(), true)
+            .setVisible(WindowInsetsCompat.Type.navigationBars(), true)
+            .build()
+        fun find(view: View): View? {
+            if (view.javaClass.name == "androidx.compose.ui.platform.AndroidComposeView") return view
+            if (view is ViewGroup) for (i in 0 until view.childCount) find(view.getChildAt(i))?.let { return it }
+            return null
+        }
+        val target = checkNotNull(find(compose.activity.findViewById(android.R.id.content)))
+        compose.runOnUiThread { ViewCompat.dispatchApplyWindowInsets(target, insets) }
+        compose.waitForIdle()
     }
 
     private fun toggle(section: PanelSectionId) {
@@ -152,6 +184,20 @@ class PanelScreenshotTest {
     private fun capture(name: String) {
         compose.waitForIdle()
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
+    }
+
+    /**
+     * The panel under the window's bars: the header's row starts under the status bar and the sections end above the
+     * navigation bar, while the panel's surface runs under both. The bars are the platform's 24dp each, dispatched to
+     * the view as the window does it and drawn as bands so the picture says where they are.
+     */
+    @Test
+    fun underTheSystemBars() {
+        compose.setContent { Panel(PanelFixtures.loaded(), systemBars = true) }
+        dispatchSystemBars()
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag("changed-file")).fetchSemanticsNodes().isNotEmpty() }
+        scrollToTop()
+        capture("87_panel_under_system_bars")
     }
 
     /** Default mode, as the panel opens on a finished chat with a pull request: the sections it has something for, nothing else. */
@@ -363,5 +409,10 @@ class PanelScreenshotTest {
         compose.setContent { Panel(PanelFixtures.loaded().copy(browser = PanelFixtures.loaded().browser.copy(file = FileView.Repository(file)))) }
         compose.waitUntil(10_000) { compose.onAllNodes(hasText("fun ThemeToggle", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         capture("44_panel_file_viewer")
+    }
+
+    private companion object {
+        /** The status bar and the gesture navigation bar of the reference device, in dp. */
+        const val SystemBarDp = 24
     }
 }

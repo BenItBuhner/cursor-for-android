@@ -1,9 +1,12 @@
 package com.cursorforandroid.ui.components
 
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
@@ -51,3 +54,26 @@ fun Modifier.composerDockPadding(): Modifier = this
     .padding(horizontal = CursorDimens.composerGutter)
     .padding(bottom = CursorDimens.composerBottomGap)
     .keyboardInsetPadding()
+
+/**
+ * The one inset consumption of the conversation's right-side panel, applied at the panel's root — the content both
+ * of its hosts compose, whether the panel is a sheet slid in over the chat or a pane pinned beside it — so every
+ * surface inside (the title row, the file viewer's header, a tab strip, the sections) starts under the status bar
+ * and ends above the navigation bar or the keyboard, while the host's surface behind them runs edge to edge.
+ *
+ * [WindowInsets.safeDrawing] is the system bars, the display cutout and the keyboard together, so a cutout in the
+ * top corner or a navigation bar standing at the end edge in landscape are covered along with the status bar and
+ * the bottom bar. The start side is left alone on purpose: the panel rests against the end edge of the window, and
+ * a cutout or bar on the start side lies over the chat beside it, not over the panel; `windowInsetsPadding` pads by
+ * the window's inset wherever the composable sits, so consuming that side would push the panel's content in for a
+ * bar it does not touch.
+ *
+ * Consumption is what keeps this to one padding. A [CursorHeader] inside pads for the status bar itself, and a
+ * chat composed inside pads for the keyboard and the bar (`composerDockPadding`), and each finds those insets
+ * already consumed here and adds nothing; the same holds the other way round, so a host that has consumed the
+ * insets before the panel — a shell whose column already sits under the status bar — leaves this modifier with
+ * nothing to add.
+ */
+@Composable
+fun Modifier.panelInsetPadding(): Modifier =
+    this.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.End + WindowInsetsSides.Bottom))

@@ -32,12 +32,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.RepoFile
 import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.lineStatsOf
+import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
@@ -57,17 +57,18 @@ internal fun FileViewerScreen(view: FileView, onBack: () -> Unit, onOpenUrl: (St
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     Column(modifier.fillMaxSize().testTag("file-viewer")) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            FlatIconButton(CursorIcons.ChevronLeft, "Back to the panel", onClick = onBack)
-            Spacer(Modifier.width(4.dp))
-            Column(Modifier.weight(1f)) {
-                Text(ToolNames.basename(view.path), style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(subtitleOf(view), style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            (view as? FileView.Repository)?.file?.downloadUrl?.let { url ->
-                FlatIconButton(CursorIcons.ExternalLink, "Open in browser", onClick = { onOpenUrl(url) })
-            }
-        }
+        // The pane header every screen wears, so the file's name sits under the status bar wherever the viewer is
+        // composed: here inside the panel, whose root has consumed that inset already, and the header adds nothing.
+        CursorHeader(
+            title = ToolNames.basename(view.path),
+            subtitle = subtitleOf(view),
+            leading = { FlatIconButton(CursorIcons.ChevronLeft, "Back to the panel", onClick = onBack) },
+            trailing = {
+                (view as? FileView.Repository)?.file?.downloadUrl?.let { url ->
+                    FlatIconButton(CursorIcons.ExternalLink, "Open in browser", onClick = { onOpenUrl(url) })
+                }
+            },
+        )
         HairlineDivider()
         when (view) {
             is FileView.Loading -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
