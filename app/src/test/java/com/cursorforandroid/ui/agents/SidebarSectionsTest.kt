@@ -7,14 +7,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.performClick
@@ -60,9 +65,127 @@ class SidebarSectionsTest {
         compose.onNodeWithText("Morning standup").assertDoesNotExist()
         compose.onNodeWithText("Old chat").assertIsDisplayed()
         compose.onNodeWithText("Today").assertIsDisplayed()
+        // The fold is reported by key, for the device to remember; the sidebar reads it back from the state.
+        assertThat(folds).containsExactly("date:Today" to true)
 
         compose.onNodeWithText("Today").performClick()
         compose.onNodeWithText("Morning standup").assertIsDisplayed()
+        assertThat(folds.last()).isEqualTo("date:Today" to false)
+    }
+
+    @Test
+    fun `every group header carries a chevron that folds the group like the row does, and a folded header keeps its count`() {
+        showSidebar()
+        // A chevron on each header, saying which way it will fold; down while open (nothing is hovered here).
+        listOf("Pinned", "Today", "Yesterday").forEach { title ->
+            compose.onNodeWithContentDescription("Collapse $title").assertIsDisplayed()
+            compose.onNodeWithTag("section-count-${keyOf(title)}", useUnmergedTree = true).assertDoesNotExist()
+        }
+
+        // The chevron alone folds the group: its rows go, the header stays with the count of what it hides.
+        compose.onNodeWithContentDescription("Collapse Yesterday").performClick()
+        compose.onNodeWithText("Old chat").assertDoesNotExist()
+        compose.onNodeWithText("Yesterday").assertIsDisplayed()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertIsDisplayed().assertTextEquals(" · 1")
+        compose.onNodeWithContentDescription("Expand Yesterday").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Collapse Yesterday").assertDoesNotExist()
+        compose.onNodeWithTag("section-date:Yesterday").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed"))
+        // The other groups are untouched.
+        compose.onNodeWithText("Morning standup").assertIsDisplayed()
+        compose.onNodeWithText("Pinned chat").assertIsDisplayed()
+
+        // And opens it again, the count going with the fold.
+        compose.onNodeWithContentDescription("Expand Yesterday").performClick()
+        compose.onNodeWithText("Old chat").assertIsDisplayed()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("section-date:Yesterday").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+        assertThat(folds).containsExactly("date:Yesterday" to true, "date:Yesterday" to false).inOrder()
+    }
+
+    @Test
+    fun `a folded header shows a dot while one of its rows is unread, and none once they are read`() {
+        showSidebar(
+            sections = listOf(
+                AgentSection("date:Today", "Today", listOf(row("a", "Read one"), row("b", "Unread one", unread = true), row("c", "Another read"))),
+                AgentSection("date:Yesterday", "Yesterday", listOf(row("d", "Old chat"))),
+            ),
+        )
+        // Open, the rows speak for themselves: no dot on any header.
+        compose.onNodeWithTag("section-unread-date:Today", useUnmergedTree = true).assertDoesNotExist()
+
+        compose.onNodeWithText("Today").performClick()
+        compose.onNodeWithTag("section-count-date:Today", useUnmergedTree = true).assertTextEquals(" · 3")
+        compose.onNodeWithContentDescription("Unread chats in Today").assertIsDisplayed()
+        // A folded group with nothing unread carries no dot.
+        compose.onNodeWithText("Yesterday").performClick()
+        compose.onNodeWithTag("section-unread-date:Yesterday", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertIsDisplayed()
+
+        // The unread row is read (a new list lands): the dot goes, the fold stays.
+        listState = listState.copy(sections = listState.sections.map { s -> s.copy(rows = s.rows.map { it.copy(isUnread = false, indicator = AgentIndicator.Read) }) })
+        compose.waitForIdle()
+        compose.onNodeWithTag("section-unread-date:Today", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithText("Unread one").assertDoesNotExist()
+    }
+
+    @Test
+    fun `the Projects header pairs the plus with the chevron, same size and side by side, and only the chevron folds`() {
+        var created = 0
+        val project = row("proj", "Billing launch", isProject = true, children = listOf(row("w1", "Webhook worker")))
+        showSidebar(
+            sections = listOf(AgentSection(AgentListOrganizer.PROJECTS_KEY, "Projects", listOf(project)), AgentSection("date:Today", "Today", listOf(row("today", "Morning standup")))),
+            onNewProject = { created++ },
+        )
+        val plus = compose.onNodeWithTag("new-project").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val chevron = compose.onNodeWithTag("section-chevron-projects").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        // The title's own text node: merged, "Projects" is the whole header row.
+        val title = compose.onNode(hasText("Projects"), useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        // The same size, centred on one line, the plus immediately to the left of the chevron.
+        assertThat(plus.width).isWithin(0.5f).of(chevron.width)
+        assertThat(plus.height).isWithin(0.5f).of(chevron.height)
+        assertThat(plus.center.y).isWithin(0.5f).of(chevron.center.y)
+        assertThat(plus.right).isAtMost(chevron.left)
+        with(compose.density) { assertThat((chevron.left - plus.right)).isAtMost(8.dp.toPx()) }
+        // Right-aligned: the chevron is the header's last thing, with room after it, and the title stands well clear.
+        assertThat(chevron.left).isGreaterThan(title.right)
+        with(compose.density) { assertThat(chevron.width).isWithin(0.5f).of(HeaderGlyphButtonSize.toPx()) }
+        // Every other header's chevron is the same button.
+        val today = compose.onNodeWithTag("section-chevron-date:Today").fetchSemanticsNode().boundsInRoot
+        assertThat(today.width).isWithin(0.5f).of(chevron.width)
+        assertThat(today.right).isWithin(0.5f).of(chevron.right)
+
+        // The plus creates; it never folds the group. The chevron folds; it never creates.
+        compose.onNodeWithTag("new-project").performClick()
+        assertThat(created).isEqualTo(1)
+        assertThat(folds).isEmpty()
+        compose.onNodeWithText("Billing launch").assertIsDisplayed()
+        compose.onNodeWithTag("section-chevron-projects").performClick()
+        assertThat(created).isEqualTo(1)
+        assertThat(folds).containsExactly("projects" to true)
+        compose.onNodeWithText("Billing launch").assertDoesNotExist()
+        // Folded, the Projects header still offers the plus.
+        compose.onNodeWithTag("new-project").assertIsDisplayed()
+        compose.onNodeWithTag("section-count-projects", useUnmergedTree = true).assertTextEquals(" · 1")
+    }
+
+    @Test
+    fun `a search opens folded groups for as long as it is typed`() {
+        showSidebar(collapsed = setOf("date:Yesterday"))
+        compose.onNodeWithText("Old chat").assertDoesNotExist()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("Search chats").performClick()
+        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("old")
+        compose.waitForIdle()
+        // The fold is still the device's; only the view opens while the search is up.
+        compose.onNodeWithText("Old chat").assertIsDisplayed()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertDoesNotExist()
+        assertThat(listState.collapsedSections).containsExactly("date:Yesterday")
+
+        compose.onNodeWithContentDescription("Close search").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Old chat").assertDoesNotExist()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertIsDisplayed()
     }
 
     @Test
@@ -102,6 +225,7 @@ class SidebarSectionsTest {
         compose.onNodeWithText("Pinned").performClick()
         compose.onNodeWithText("Pinned chat").assertDoesNotExist()
         compose.onNodeWithText("Morning standup").assertIsDisplayed()
+        assertThat(folds).containsExactly("pinned" to true)
     }
 
     @OptIn(ExperimentalTestApi::class)
@@ -237,6 +361,14 @@ class SidebarSectionsTest {
         query = "",
     )
 
+    /** The sidebar's state as the view model would hold it; the folds reported through the callback are written back here. */
+    private var listState by mutableStateOf(AgentListUiState())
+
+    /** Every fold reported, in order: the section key and whether it was folded closed. */
+    private val folds = mutableListOf<Pair<String, Boolean>>()
+
+    private fun keyOf(title: String): String = if (title == "Pinned") "pinned" else "date:$title"
+
     private fun showSidebar(
         isDemo: Boolean = true,
         sections: List<AgentSection> = listOf(
@@ -244,11 +376,14 @@ class SidebarSectionsTest {
             AgentSection("date:Today", "Today", listOf(row("today", "Morning standup"))),
             AgentSection("date:Yesterday", "Yesterday", listOf(row("yday", "Old chat"))),
         ),
+        collapsed: Set<String> = emptySet(),
+        onNewProject: (() -> Unit)? = null,
     ) {
+        listState = AgentListUiState(sections = sections, hasLoaded = true, collapsedSections = collapsed)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
-                    state = AgentListUiState(sections = sections, hasLoaded = true),
+                    state = listState,
                     user = CursorUser("key", "a@b.com", "Demo", "User", 1),
                     isDemo = isDemo,
                     selectedAgentId = null,
@@ -261,13 +396,19 @@ class SidebarSectionsTest {
                         onToggleSidebar = null,
                         onRefresh = {},
                         rowActions = AgentRowActions({}, {}, {}, {}, { _, _ -> }, { _, _ -> }, {}),
+                        onNewProject = onNewProject,
+                        // What the view model does: the fold is remembered and comes back through the state.
+                        onSectionCollapsed = { key, folded ->
+                            folds += key to folded
+                            listState = listState.copy(collapsedSections = if (folded) listState.collapsedSections + key else listState.collapsedSections - key)
+                        },
                     ),
                 )
             }
         }
     }
 
-    private fun row(id: String, name: String, pinned: Boolean = false, isProject: Boolean = false, children: List<AgentRow> = emptyList()) = AgentRow(
+    private fun row(id: String, name: String, pinned: Boolean = false, isProject: Boolean = false, children: List<AgentRow> = emptyList(), unread: Boolean = false) = AgentRow(
         agent = Agent(
             id = id,
             name = name,
@@ -283,9 +424,9 @@ class SidebarSectionsTest {
             startingRef = null,
             isProject = isProject,
         ),
-        indicator = AgentIndicator.Read,
+        indicator = if (unread) AgentIndicator.Unread else AgentIndicator.Read,
         isPinned = pinned,
-        isUnread = false,
+        isUnread = unread,
         launchedFromThisDevice = false,
         children = children,
     )

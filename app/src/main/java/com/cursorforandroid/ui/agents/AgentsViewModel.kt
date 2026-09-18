@@ -65,6 +65,11 @@ data class AgentListUiState(
     val unreadCount: Int = 0,
     val runningCount: Int = 0,
     /**
+     * The sidebar groups folded closed, by [AgentSection.key], as the device remembers them across restarts (see
+     * [AgentsViewModel.setSectionCollapsed]); a closed group's header still carries its count and its unread dot.
+     */
+    val collapsedSections: Set<String> = emptySet(),
+    /**
      * The clock the state was computed against, refreshed every minute while the list is on screen. Rows format their
      * relative ages ("now", "4m") and the date groups ("Today", "Yesterday") against this, so a row does not go on
      * saying "now" for as long as nothing else about it happens to change.
@@ -86,6 +91,8 @@ private class DeviceState(
     val knownRoots: List<KnownRoot> = emptyList(),
     /** The account's member count per Project, for the rows' counts. */
     val memberCounts: Map<String, Int> = emptyMap(),
+    /** The sidebar groups the reader folded closed (see [AgentListUiState.collapsedSections]). */
+    val collapsedSections: Set<String> = emptySet(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -107,8 +114,12 @@ class AgentsViewModel(
         local.copy(pullRequests = states)
     }
 
-    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, graph.projects.memberCounts) { local, failed, unavailable, roots, counts ->
-        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts)
+    /** The two smallest device facts, paired so the device combine stays within its arity. */
+    private val countsAndFolds: Flow<Pair<Map<String, Int>, Set<String>>> =
+        combine(graph.projects.memberCounts, graph.prefs.collapsedSidebarSections) { counts, folds -> counts to folds }
+
+    private val device: Flow<DeviceState> = combine(localState, actionError, graph.projects.unavailableParents, graph.agents.knownRoots, countsAndFolds) { local, failed, unavailable, roots, (counts, folds) ->
+        DeviceState(local = local, actionError = failed, unavailableProjects = unavailable.keys, knownRoots = roots, memberCounts = counts, collapsedSections = folds)
     }
 
     /** Ticks once a minute so everything relative to "now" is recomputed even while the data stands still. */
@@ -167,6 +178,7 @@ class AgentsViewModel(
             error = device.actionError ?: list.error,
             unreadCount = rows.count { it.isUnread },
             runningCount = rows.count { it.indicator == AgentIndicator.Running },
+            collapsedSections = device.collapsedSections,
             nowMillis = now,
         )
     }
@@ -289,6 +301,9 @@ class AgentsViewModel(
     fun togglePinned(agentId: String) = viewModelScope.launch { graph.pins.toggle(agentId) }
 
     fun markRead(agent: Agent) = viewModelScope.launch { graph.prefs.markRead(agent.id, agent.listedAtMillis) }
+
+    /** Folds a sidebar group closed or open, remembered on the device across restarts (see [AgentListUiState.collapsedSections]). */
+    fun setSectionCollapsed(sectionKey: String, collapsed: Boolean) = viewModelScope.launch { graph.prefs.setSidebarSectionCollapsed(sectionKey, collapsed) }
 
     /** Marks every loaded conversation read at its current `updatedAt`, the same stamp opening a chat would write. */
     fun markAllRead() = viewModelScope.launch {

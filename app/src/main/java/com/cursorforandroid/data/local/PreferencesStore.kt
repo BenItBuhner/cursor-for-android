@@ -148,6 +148,8 @@ class PreferencesStore(
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
         val crashReports = booleanPreferencesKey("crash_reports")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
+        /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
+        val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -315,6 +317,20 @@ class PreferencesStore(
             val next = if (modelId in current) current - modelId else listOf(modelId) + current
             if (next.isEmpty()) p.remove(Keys.pinnedModels) else p[Keys.pinnedModels] = CursorJson.encodeToString(ListSerializer(String.serializer()), next)
         }
+    }
+
+    /**
+     * The sidebar's groups the reader has folded closed, by section key. A device preference like the theme: it
+     * survives restarts and sign-outs alike, since which groups sit closed is about how this reader reads the list,
+     * not about the account.
+     */
+    val collapsedSidebarSections: Flow<Set<String>> = data.map { it[Keys.collapsedSidebarSections] ?: emptySet() }
+
+    /** Folds the sidebar group [sectionKey] closed, or opens it again; idempotent, so a repeated tap settles rather than flips. */
+    suspend fun setSidebarSectionCollapsed(sectionKey: String, collapsed: Boolean) = edit { p ->
+        val current = p[Keys.collapsedSidebarSections] ?: emptySet()
+        val next = if (collapsed) current + sectionKey else current - sectionKey
+        if (next.isEmpty()) p.remove(Keys.collapsedSidebarSections) else p[Keys.collapsedSidebarSections] = next
     }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
