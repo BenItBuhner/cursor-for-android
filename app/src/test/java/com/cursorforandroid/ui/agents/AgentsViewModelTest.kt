@@ -105,8 +105,9 @@ class AgentsViewModelTest {
         return listCallReached[index]
     }
 
+    /** The list once a fetch has settled: the indicator let go, and nothing still syncing underneath it. */
     private suspend fun AgentsViewModel.loaded(): AgentListUiState =
-        uiState.first { it.hasLoaded && !it.isRefreshing && it.recentRows.isNotEmpty() }
+        uiState.first { it.hasLoaded && !it.isRefreshing && !it.isSyncingOlder && it.recentRows.isNotEmpty() }
 
     private suspend fun awaitRefresh(after: Long = graph.agents.refreshCompleted.value) {
         graph.agents.refreshCompleted.first { it > after }
@@ -282,6 +283,37 @@ class AgentsViewModelTest {
         } finally {
             polling.cancel()
         }
+    }
+
+    /**
+     * The pull request badges are read for the rows on screen, as the sidebar reports them — not for every row the
+     * list holds: a row the reader has not scrolled to costs nothing until they do. (Before the sidebar has said
+     * what is on screen, a screenful of the newest rows is read; the demo fits in one, so this drives the sidebar's
+     * report by hand.)
+     */
+    @Test
+    fun `pull request badges are read for the rows on screen, not for every row`() = runTest {
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
+        val vm = AgentsViewModel(graph)
+        // The sidebar's first report lands before the list does: one row with a PR is on screen.
+        val all = graph.agents.state.first { it.hasLoaded }.agents
+        val withPr = all.filter { it.prUrl != null }
+        assertThat(withPr.size).isAtLeast(3)
+        val onScreen = withPr.first()
+        vm.rowsVisible(listOf(onScreen.id))
+        advanceUntilIdle()
+        vm.loaded()
+        graph.pullRequests.statuses.first { onScreen.prUrl in it.keys }
+        // Only that row's badge was read: the rows off screen keep theirs unread.
+        assertThat(graph.pullRequests.statuses.value.keys).containsExactly(onScreen.prUrl)
+
+        // The reader scrolls: another row with a PR comes on screen, and its badge is read then.
+        val scrolledTo = withPr[1]
+        vm.rowsVisible(listOf(onScreen.id, scrolledTo.id))
+        advanceTimeBy(AgentsViewModel.VISIBLE_DEBOUNCE_MS + 1)
+        runCurrent()
+        graph.pullRequests.statuses.first { scrolledTo.prUrl in it.keys }
+        assertThat(graph.pullRequests.statuses.value.keys).containsExactly(onScreen.prUrl, scrolledTo.prUrl)
     }
 
     @Test

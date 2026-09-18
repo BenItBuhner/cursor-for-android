@@ -7,8 +7,10 @@ import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -81,6 +83,8 @@ class PinRepository(
      * the pins are this device's — [toggle] flips them here and nothing is recorded as owed to a server.
      */
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
+    /** What each round cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
 ) {
     private val _state = MutableStateFlow(PinSyncState())
     val state: StateFlow<PinSyncState> = _state.asStateFlow()
@@ -271,9 +275,12 @@ class PinRepository(
             val agentsToken = agents.token()
             val list = primed?.takeIf { now() - it.atMillis < PRIME_FRESH_MS }?.list?.also { primed = null } ?: readList(startedIn) ?: return Result.success(Unit)
             // The account's statuses named what is running; whatever of it no page holds is fetched by id now, and
-            // the pins the list does not hold are resolved whether or not the pins themselves are synced.
-            agents.reconcileRunning(agentsToken)
-            agents.resolvePinned(agentsToken)
+            // the pins the list does not hold are resolved whether or not the pins themselves are synced — side by
+            // side, each a few at a time.
+            coroutineScope {
+                launch { stats.timed("account round: running rows fetched by id", calls = { n: Int -> n }) { agents.reconcileRunning(agentsToken) } }
+                launch { stats.timed("account round: pinned rows fetched by id", calls = { n: Int -> n }) { agents.resolvePinned(agentsToken) } }
+            }
             if (!pinsEnabled) return Result.success(Unit)
             val server = list.pinned
             if (server.loaded) {
@@ -304,7 +311,7 @@ class PinRepository(
      */
     private suspend fun readList(startedIn: Int): AccountList? {
         val agentsToken = agents.token()
-        val list = api.list()
+        val list = stats.timed("account round (ListBackgroundComposers)", calls = { _: AccountList -> 1 }, note = { "${it.composers.size} records" }) { api.list() }
         if (generation.get() != startedIn) return null
         accountCursor = list.nextCursor
         agents.applyAccountSnapshots(list.composers, agentsToken)

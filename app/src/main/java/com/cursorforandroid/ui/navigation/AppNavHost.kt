@@ -270,6 +270,7 @@ internal fun AppShell(
                 onLoadMore = { agentsViewModel.loadMore() },
                 onNewProject = if (isDemo || extendedMode) ({ closeDrawer(); projectEditor = ProjectEditorTarget.Create }) else null,
                 onSectionCollapsed = agentsViewModel::setSectionCollapsed,
+                onVisibleRows = agentsViewModel::rowsVisible,
             ),
             modifier = modifier,
         )

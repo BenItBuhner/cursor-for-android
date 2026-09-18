@@ -151,6 +151,8 @@ data class RootScan(
     val truncated: Boolean = false,
     /** Every record the pages carried, by id: what the registry is re-validated against (a record seen as neither a Project nor a manager). */
     val seenIds: Set<String> = emptySet(),
+    /** The pass stopped at the first page older than every known Project (see [RootScanApi.scanRoots] with a floor): read no further, and nothing failed. */
+    val stoppedEarly: Boolean = false,
 ) {
     /** The coordinators the workers' records name, whether or not their own record was among the pages. */
     val managers: Set<String> get() = children.mapNotNullTo(LinkedHashSet()) { it.parent?.takeIf { p -> p.kind == AgentParentKind.PROJECT_WORKER }?.id }
@@ -159,6 +161,14 @@ data class RootScan(
 /** The root discovery pass over the account list (see [RootScan]). */
 interface RootScanApi {
     suspend fun scanRoots(maxPages: Int): RootScan
+
+    /**
+     * The same pass, stopped early: the list is read newest first, and once a page's oldest record was last active
+     * before [stopBelowActivityMillis] — older than every Project the registry already knows — the pages behind it
+     * are not read; the pass ends there, [RootScan.stoppedEarly]. Null reads to the end as [scanRoots] does. Sources
+     * that cannot date their pages read as before.
+     */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = scanRoots(maxPages)
 }
 
 interface PinsApi {
@@ -210,7 +220,9 @@ class BackgroundComposerApi(
      * Projects' own records and every record that hangs off another chat. Independent of how far the sidebar has
      * paged; what the Projects group is drawn from, so a Project whose row no page holds is listed all the same.
      */
-    override suspend fun scanRoots(maxPages: Int): RootScan {
+    override suspend fun scanRoots(maxPages: Int): RootScan = scanRoots(maxPages, null)
+
+    override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan {
         val roots = ArrayList<ComposerSnapshot>()
         val children = ArrayList<ComposerSnapshot>()
         val seen = HashSet<String>()
@@ -219,6 +231,7 @@ class BackgroundComposerApi(
         var complete = false
         var records = 0
         var failure: String? = null
+        var stoppedEarly = false
         do {
             // Each page stands on its own: a page that fails leaves the ones before it read and the pass to be
             // finished later, rather than throwing away what the account already said.
@@ -232,13 +245,24 @@ class BackgroundComposerApi(
             }
             pages++
             var added = 0
+            var oldest: Long? = null
             for (composer in response.composers) {
                 val snap = snapshot(composer) ?: continue
                 records++
+                snap.activityAtMillis?.let { oldest = minOf(oldest ?: it, it) }
                 if (!seen.add(snap.id)) continue
                 added++
                 if (snap.scope == AgentScope.PROJECT_ROOT) roots += snap
                 if (snap.parent != null) children += snap
+            }
+            // The list is newest first: once a page's oldest record was last active before every Project the registry
+            // knows, the pages behind it hold nothing newer, and the next page is not asked for. A page that dates
+            // nothing is read as before.
+            val floor = stopBelowActivityMillis
+            if (floor != null && oldest != null && oldest!! < floor && pages < maxPages && response.hasMore) {
+                stoppedEarly = true
+                cursor = null
+                break
             }
             when {
                 !response.hasMore -> { cursor = null; complete = true }
@@ -250,7 +274,7 @@ class BackgroundComposerApi(
                 }
             }
         } while (cursor != null && pages < maxPages)
-        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null, seenIds = seen)
+        return RootScan(roots.distinctBy { it.id }, children.distinctBy { it.id }, pages, complete, records, failure, truncated = cursor != null && failure == null, seenIds = seen, stoppedEarly = stoppedEarly)
     }
 
     override suspend fun list(): AccountList = accountList(page(null), first = true)

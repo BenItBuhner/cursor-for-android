@@ -74,6 +74,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
+import kotlinx.coroutines.flow.distinctUntilChanged
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -98,6 +99,8 @@ data class SidebarCallbacks(
      * ([AgentListUiState.collapsedSections]); the sidebar reads it back from the state rather than keeping its own.
      */
     val onSectionCollapsed: (sectionKey: String, collapsed: Boolean) -> Unit = { _, _ -> },
+    /** The rows on screen, by agent id, as the list scrolls: what the pull request badges are read for (see `AgentsViewModel.rowsVisible`). */
+    val onVisibleRows: (List<String>) -> Unit = {},
 )
 
 /**
@@ -187,6 +190,12 @@ fun Sidebar(
             // narrow filter the loaded pages may match little, and the ones behind them are where more matches are.
             val hasMore = state.hasMore
             val isLoadingMore = state.isLoadingMore
+            // The rows on screen, reported as the list settles: their keys are `<section>:<agent id>`.
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? String)?.takeIf { key -> key.contains(':') && !key.startsWith("hdr-") }?.substringAfterLast(':') } }
+                    .distinctUntilChanged()
+                    .collect { callbacks.onVisibleRows(it) }
+            }
             LaunchedEffect(listState, hasMore, isLoadingMore) {
                 if (!hasMore || isLoadingMore) return@LaunchedEffect
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
@@ -261,6 +270,17 @@ fun Sidebar(
                 // Past the last row, while the server has older agents: the page being fetched, or a tap away.
                 if (state.hasLoaded && hasMore) {
                     item("more") { MoreAgentsRow(isLoading = isLoadingMore, onLoad = callbacks.onLoadMore) }
+                }
+                // The pull's indicator is let go once the first page is on screen; the rest of the refresh — the
+                // older pages, the rows fetched by id, the account's round — says so quietly here until it settles.
+                if (state.isSyncingOlder) {
+                    item("syncing") {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("syncing-older"), verticalAlignment = Alignment.CenterVertically) {
+                            SpinnerRing()
+                            Spacer(Modifier.width(8.dp))
+                            Text("Still syncing older items\u2026", style = type.small, color = colors.textQuaternary)
+                        }
+                    }
                 }
             }
         }
