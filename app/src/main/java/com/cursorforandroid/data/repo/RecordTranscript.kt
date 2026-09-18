@@ -40,6 +40,12 @@ class RecordTurn(
      * a turn restored from disk.
      */
     val shape: TurnShape? = null,
+    /**
+     * The last error the record logged for the turn (`error.message`, see `HeadlessTranscript.errorMessage`): the
+     * server's account of what went wrong, which is the footer's reason when — and only when — the run's own record
+     * says the run failed. A turn that logged one and went on is not a failure for it.
+     */
+    val errorMessage: String? = null,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
@@ -233,7 +239,7 @@ object RecordTranscript {
             // The newest turns' shapes, from the steps as they were just read — reused items or not: the shapes are
             // the diagnostics' account of the record as this read found it.
             val shape = if (i >= kept.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
-            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape)
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn))
         }
         return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now)
     }
@@ -259,7 +265,7 @@ object RecordTranscript {
         val olderTurns = kept.map { cutTurn ->
             val turn = cutTurn.first
             val stepIndex = cutTurn.second
-            RecordTurn(stepIndex, turn.steps.size + (if (turn.prompt != null) 1 else 0), turn.prompt, turn.projectMode, build(turn, RecordTurn.traceKey(stepIndex)))
+            RecordTurn(stepIndex, turn.steps.size + (if (turn.prompt != null) 1 else 0), turn.prompt, turn.projectMode, build(turn, RecordTurn.traceKey(stepIndex)), errorMessage = HeadlessTranscript.errorMessage(turn))
         }
         return RecordWindow(window.total, firstStep, olderTurns + window.turns, leading, window.state, now)
     }

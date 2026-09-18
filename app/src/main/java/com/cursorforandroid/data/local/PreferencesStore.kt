@@ -139,6 +139,8 @@ class PreferencesStore(
         val updateLastCheckedAt = longPreferencesKey("update_last_checked_at")
         val pendingUpdateVersionCode = intPreferencesKey("update_pending_version_code")
         val notifiedUpdateVersionCode = intPreferencesKey("update_notified_version_code")
+        /** The versionName whose What's new page has been opened on this device. */
+        val whatsNewReadVersion = stringPreferencesKey("whats_new_read_version")
         val pinsMigrated = booleanPreferencesKey("pins_migrated")
         val pendingPins = stringPreferencesKey("pending_pin_changes")
         val pinnedModels = stringPreferencesKey("pinned_model_ids")
@@ -215,6 +217,15 @@ class PreferencesStore(
     suspend fun setNotifiedUpdateVersionCode(versionCode: Int?) = edit { p ->
         if (versionCode == null) p.remove(Keys.notifiedUpdateVersionCode) else p[Keys.notifiedUpdateVersionCode] = versionCode
     }
+
+    /**
+     * The version whose What's new page has been opened on this device (`0.3.37`), or null when none has. One value,
+     * not a set: the installed version only ever moves on, and the surfaces that lead to the page show while the
+     * installed version is not this one — so they come back, by themselves, with the next release installed.
+     */
+    val whatsNewReadVersion: Flow<String?> = data.map { it[Keys.whatsNewReadVersion] }
+
+    suspend fun setWhatsNewReadVersion(versionName: String) = edit { it[Keys.whatsNewReadVersion] = versionName }
 
     // ---- Extended mode (device-level; deliberately untouched by clearSession) ------------------------------------
 

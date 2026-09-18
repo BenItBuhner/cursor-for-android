@@ -67,6 +67,16 @@ sealed interface TranscriptRow {
     }
 
     /**
+     * The failure of the newest run, which the conversation has not moved past: one compact line of its own after
+     * the run's stretch — "Run failed · <the server's reason> · <when>" — for a run the server's status says failed
+     * ([RunFooter.isFailure]) with no newer run or turn after it and nothing running. Once the conversation moves on
+     * the same failure reads inside its stretch instead (see [Entry.Failure]); see [TranscriptRows.liftCurrentFailure].
+     */
+    data class Failure(val footer: RunFooter) : TranscriptRow {
+        override val key: String get() = "failure:${footer.id}"
+    }
+
+    /**
      * Everything between two messages the reader sees, behind one summary: the agent's thoughts, its tool calls, a
      * coordinator's working notes, the turns Cursor injected (as their event rows, a run of them behind one line),
      * and the footers of the runs it spans. [live] while the run is still writing into it: the summary then reads
@@ -76,12 +86,24 @@ sealed interface TranscriptRow {
     data class Stretch(val entries: List<Entry>, val live: Boolean = false) : TranscriptRow {
         override val key: String get() = "stretch:${entries.first().key}"
 
-        val single: Entry? get() = entries.singleOrNull()?.takeUnless { it is Entry.Note || it is Entry.Events }
+        /**
+         * The one entry a stretch of one step is drawn as, or null for a stretch worth a summary. A failed run with
+         * nothing else in its stretch — its footer and its failure line — is its failure line: the footer's duration
+         * is the line's to say, there being no summary to carry it.
+         */
+        val single: Entry? get() {
+            val alone = entries.singleOrNull()
+                ?: entries.takeIf { it.size == 2 && it[0] is Entry.Footer && it[1] is Entry.Failure && (it[1] as Entry.Failure).footer.id == (it[0] as Entry.Footer).footer.id }?.get(1)
+            return alone?.takeUnless { it is Entry.Note || it is Entry.Events }
+        }
 
         val summary: StretchSummary by lazy { StretchSummary.of(this) }
 
         /** The entries the open stretch lists: the footers are not among them, the summary already carries them. */
         val listed: List<Entry> get() = entries.filterNot { it is Entry.Footer }
+
+        /** The failed runs the stretch holds, as their lines (see [Entry.Failure]). */
+        val failures: List<Entry.Failure> get() = entries.filterIsInstance<Entry.Failure>()
 
         /** How many injected turns the stretch holds, a repeated one counted each time it came. */
         val eventCount: Int get() = entries.sumOf { entry ->
@@ -112,6 +134,16 @@ sealed interface TranscriptRow {
          */
         data class Footer(val footer: RunFooter, val interrupted: Boolean = false) : Entry {
             override val key: String get() = footer.id
+        }
+
+        /**
+         * A run the server's status says failed, as one line inside its stretch — "Run failed · <the server's
+         * reason> · <when>" — listed with the steps when the stretch opens; the summary ends "· failed" for it. The
+         * demoted form of [TranscriptRow.Failure]: the conversation moved past the failure (a newer turn, a newer
+         * run, the chat running), so it is an event of its turn, not a banner over the chat.
+         */
+        data class Failure(val footer: RunFooter) : Entry {
+            override val key: String get() = "failure:${footer.id}"
         }
 
         data class Line(val row: SummaryRow) : Entry {
@@ -185,18 +217,22 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
             val rest = if (footer != null || stretch.live) counts else counts.drop(1)
             // The reader's next message cut the run short: said at the end of the line, quietly, never as a warning.
             val interrupted = INTERRUPTED.takeIf { !stretch.live && footerEntries.any { it.interrupted } }
-            val details = (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted)).joinToString(" \u00B7 ").ifEmpty { null }
+            // A run the server says failed: its line is inside the stretch (see Entry.Failure), and the summary's last
+            // word says it is there — the verb stays what the run did ("Worked 2m 3s"), the failure is not a banner.
+            val runFailed = FAILED.takeIf { !stretch.live && stretch.entries.any { it is TranscriptRow.Entry.Failure } }
+            val details = (rest.take(MAX_COUNTS) + listOfNotNull(failure.takeIf { action != failure }, interrupted, runFailed)).joinToString(" \u00B7 ").ifEmpty { null }
             return StretchSummary(action, details, work.lineStats, busy = stretch.live)
         }
 
         /**
-         * The footer's own line: "Worked 1m 48s", "Failed after 2m 3s", "Cancelled", "Expired". A run the reader's
-         * next message cut short ([interrupted]) worked until then: "Worked 11m 34s", the interruption being the
-         * summary's last word (see [of]) rather than the verb.
+         * The footer's own line: "Worked 1m 48s", "Cancelled after 2m 3s", "Expired". A run the reader's next
+         * message cut short ([interrupted]) worked until then: "Worked 11m 34s", the interruption being the summary's
+         * last word (see [of]) rather than the verb; so did a run that failed, whose failure is a line of its own with
+         * the server's reason (see [TranscriptRow.Failure], [TranscriptRow.Entry.Failure]) — the verb never says
+         * "Failed" for it, and the summary ends "· failed" when the line is inside.
          */
         fun footerLabel(footer: RunFooter, interrupted: Boolean = false): String {
             val ending = when (footer.status) {
-                RunStatus.ERROR -> "Failed"
                 RunStatus.CANCELLED -> if (interrupted) null else "Cancelled"
                 RunStatus.EXPIRED -> "Expired"
                 else -> null
@@ -210,6 +246,9 @@ data class StretchSummary(val action: String, val details: String?, val lineStat
 
         /** The summary's word for a run the reader's next message cut short. */
         const val INTERRUPTED = "interrupted"
+
+        /** The summary's word for a run the server says failed, whose line is inside the stretch. */
+        const val FAILED = "failed"
 
         private fun plural(count: Int, one: String, many: String = "${one}s"): String? =
             if (count <= 0) null else "$count ${if (count == 1) one else many}"
@@ -328,7 +367,7 @@ object TranscriptRows {
     fun of(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean = false, interrupted: Set<String> = interruptedFooters(items)): List<TranscriptRow> {
         val rows = cut(items, coordinatorMode, interrupted)
         if (runActive) markLive(rows)
-        return openNewestGroup(rows)
+        return openNewestGroup(liftCurrentFailure(rows, runActive))
     }
 
     /**
@@ -344,6 +383,8 @@ object TranscriptRows {
         // What follows the stretch as rows of its own once it closes: its pictures, then the question it waits on.
         val media = ArrayList<TranscriptRow>()
         val questions = ArrayList<TranscriptRow>()
+        // The reason a banner an earlier build wrote for a failed run carried, for the footer that follows it.
+        var legacyReason: String? = null
 
         fun flush() {
             if (open.isNotEmpty()) {
@@ -357,11 +398,30 @@ object TranscriptRows {
         }
 
         for (item in items) {
+            if (item !is RunFooter && item !is NoticeCard) legacyReason = null
             when (item) {
-                // A cancel is not an error: the notice earlier builds wrote for it is not drawn (the footer says it, quietly).
-                is NoticeCard -> if (!item.isLegacyCancelNotice) {
-                    flush()
-                    rows += TranscriptRow.Item(item)
+                // A cancel is not an error: the notice earlier builds wrote for it is not drawn (the footer says it,
+                // quietly). Nor is the banner they wrote for a failure: the footer's line says it, with the reason the
+                // banner carried (see RunFooter.reason).
+                is NoticeCard -> when {
+                    item.isLegacyCancelNotice -> Unit
+                    item.isLegacyFailureNotice -> {
+                        val reason = item.subtitle?.trim()?.takeIf { it.isNotEmpty() }
+                        // Written before its footer by every build that wrote one; a copy that has it after is read too.
+                        val failure = open.lastOrNull() as? TranscriptRow.Entry.Failure
+                        if (failure != null && failure.footer.reason == null && reason != null) {
+                            val given = failure.footer.copy(reason = reason)
+                            open[open.lastIndex] = TranscriptRow.Entry.Failure(given)
+                            val at = open.indexOfLast { it is TranscriptRow.Entry.Footer && it.footer.id == given.id }
+                            if (at >= 0) open[at] = (open[at] as TranscriptRow.Entry.Footer).copy(footer = given)
+                        } else {
+                            legacyReason = reason
+                        }
+                    }
+                    else -> {
+                        flush()
+                        rows += TranscriptRow.Item(item)
+                    }
                 }
                 is UserMessage -> {
                     flush()
@@ -376,7 +436,14 @@ object TranscriptRows {
                     rows += TranscriptRow.Item(item)
                 }
                 // The footer closes its run, not the stretch: a silent turn and the next read as one until a message.
-                is RunFooter -> open += TranscriptRow.Entry.Footer(item, interrupted = item.id in interrupted)
+                // A run the server says failed has its line inside the stretch as well, with the reason and the
+                // time; the newest such line, with nothing after it, is lifted to a row of its own (see [liftCurrentFailure]).
+                is RunFooter -> {
+                    val footer = if (item.isFailure && item.reason == null && legacyReason != null) item.copy(reason = legacyReason) else item
+                    legacyReason = null
+                    open += TranscriptRow.Entry.Footer(footer, interrupted = footer.id in interrupted)
+                    if (footer.isFailure) open += TranscriptRow.Entry.Failure(footer)
+                }
                 is SummaryRow -> open += TranscriptRow.Entry.Line(item)
                 is ActivityGroup -> {
                     val pictures = ArrayList<ToolCall>()
@@ -437,6 +504,40 @@ object TranscriptRows {
     const val INTERRUPTION_WINDOW_MS = 10 * 60_000L
 
     /**
+     * The failure the conversation has not moved past, as a row of its own: the newest stretch ends on a failed
+     * run's line — nothing after it but the run's own pictures or question, no newer turn, and nothing running
+     * ([runActive]) — so the line is lifted out to stand after the stretch, where the reader sees it without opening
+     * anything ([TranscriptRow.Failure]). Every other failure, and this one once the chat moves on, stays inside its
+     * stretch (see [TranscriptRow.Entry.Failure]). A stretch left with the run's footer alone goes: the line says
+     * what the footer would ("Run failed after 2m 3s" when the server gave no reason).
+     */
+    internal fun liftCurrentFailure(rows: List<TranscriptRow>, runActive: Boolean): List<TranscriptRow> {
+        if (runActive) return rows
+        val (index, stretch) = currentFailureStretch(rows) ?: return rows
+        val failure = stretch.entries.last() as TranscriptRow.Entry.Failure
+        val rest = stretch.entries.dropLast(1)
+        val out = rows.toMutableList()
+        if (rest.size == 1 && rest[0] is TranscriptRow.Entry.Footer) {
+            out.removeAt(index)
+            out.add(index, TranscriptRow.Failure(failure.footer))
+        } else {
+            out[index] = stretch.copy(entries = rest)
+            out.add(index + 1, TranscriptRow.Failure(failure.footer))
+        }
+        return out
+    }
+
+    /** The newest stretch and its index when it ends on a failed run's line with only pictures or a question after it; else null. */
+    internal fun currentFailureStretch(rows: List<TranscriptRow>): Pair<Int, TranscriptRow.Stretch>? {
+        val last = rows.indexOfLast { it is TranscriptRow.Stretch }
+        if (last < 0) return null
+        val stretch = rows[last] as TranscriptRow.Stretch
+        if (stretch.live || stretch.entries.lastOrNull() !is TranscriptRow.Entry.Failure) return null
+        if (rows.subList(last + 1, rows.size).any { it !is TranscriptRow.Media && it !is TranscriptRow.Question }) return null
+        return last to stretch
+    }
+
+    /**
      * The newest stretch is the one still being written, unless its run has already closed with a footer. An
      * earlier run's footer inside it — a silent turn's, before the injected turn now running — is not the end of it.
      */
@@ -449,7 +550,8 @@ object TranscriptRows {
     /** Whether the stretch at [index] — the newest — is still being written: no footer closes it, and only its pictures or question follow it. */
     internal fun isLiveCandidate(rows: List<TranscriptRow>, index: Int): Boolean {
         val stretch = rows[index] as TranscriptRow.Stretch
-        if (stretch.entries.lastOrNull() is TranscriptRow.Entry.Footer) return false
+        // A footer closes the run; so does the failure line that follows a failed run's footer.
+        if (stretch.entries.lastOrNull().let { it is TranscriptRow.Entry.Footer || it is TranscriptRow.Entry.Failure }) return false
         return rows.subList(index + 1, rows.size).none { it !is TranscriptRow.Media && it !is TranscriptRow.Question }
     }
 

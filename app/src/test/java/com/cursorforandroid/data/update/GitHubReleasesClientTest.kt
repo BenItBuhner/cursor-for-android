@@ -278,4 +278,43 @@ class GitHubReleasesClientTest {
         withTimeout(5_000) { while (folder.root.listFiles()!!.isNotEmpty()) delay(20) }
         assertThat(target.exists()).isFalse()
     }
+
+    @Test
+    fun `one release is read by its tag with GitHub's headers, and a tag with no release reads as none`() = runBlocking {
+        server.enqueue(MockResponse().setBody(WhatsNewFixtures.releaseJson()))
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"message":"Not Found"}"""))
+
+        val release = client.releaseByTag(WhatsNewFixtures.TAG)!!
+        assertThat(release.tagName).isEqualTo(WhatsNewFixtures.TAG)
+        assertThat(release.body).isEqualTo(WhatsNewFixtures.BODY)
+        assertThat(release.publishedAt).isEqualTo(WhatsNewFixtures.PUBLISHED_AT)
+        assertThat(release.htmlUrl).isEqualTo(WhatsNewFixtures.HTML_URL)
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/repos/BenItBuhner/cursor-for-android/releases/tags/${WhatsNewFixtures.TAG}")
+        assertThat(request.getHeader("Accept")).isEqualTo("application/vnd.github+json")
+        assertThat(request.getHeader("X-GitHub-Api-Version")).isEqualTo("2022-11-28")
+        assertThat(request.getHeader("Authorization")).isNull()
+
+        assertThat(client.releaseByTag("v0.3.38-dev.4+gabc1234")).isNull()
+        assertThat(server.takeRequest().path).isEqualTo("/repos/BenItBuhner/cursor-for-android/releases/tags/v0.3.38-dev.4+gabc1234")
+    }
+
+    @Test
+    fun `a release by tag shares the recorded rate limit and refuses a body that is not a release`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "0").setBody("""{"message":"API rate limit exceeded"}"""))
+        val limited = runCatching { client.releaseByTag(WhatsNewFixtures.TAG) }.exceptionOrNull()
+        assertThat(limited).isInstanceOf(UpdateCheckException::class.java)
+        assertThat(limited!!.message).contains("Try again in an hour")
+
+        // Nothing more goes out while the wait stands — not the list, not another release.
+        assertThat(runCatching { client.releaseByTag(WhatsNewFixtures.TAG) }.exceptionOrNull()).isInstanceOf(UpdateCheckException::class.java)
+        assertThat(runCatching { client.listReleases(null) }.exceptionOrNull()).isInstanceOf(UpdateCheckException::class.java)
+        assertThat(server.requestCount).isEqualTo(1)
+
+        now += 60 * 60 * 1000L
+        server.enqueue(MockResponse().setResponseCode(200).setBody("<html>not json</html>"))
+        assertThat(runCatching { client.releaseByTag(WhatsNewFixtures.TAG) }.exceptionOrNull()!!.message).contains("couldn't read")
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertThat(runCatching { client.releaseByTag(WhatsNewFixtures.TAG) }.exceptionOrNull()!!.message).contains("error (500)")
+    }
 }
