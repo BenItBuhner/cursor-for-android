@@ -11,7 +11,8 @@ class ReleaseNotesFormatTest {
         val curated = ReleaseNotesFormat.curated(WhatsNewFixtures.BODY)
 
         assertThat(curated).isEqualTo(WhatsNewFixtures.CURATED)
-        assertThat(curated).startsWith("## Coordinator chats")
+        assertThat(curated).startsWith("## Goals")
+        assertThat(curated).contains("(`/goal …`)")
         listOf("versionCode", "Signing certificate", "**Install:**", "Upgrading from v0.1.0", "uninstall Cursor", "Release notes generated", "What's Changed", "Full Changelog", "pull/202")
             .forEach { assertThat(curated).doesNotContain(it) }
     }

@@ -19,13 +19,17 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
+import com.cursorforandroid.data.local.PreferencesStore
+import com.cursorforandroid.data.update.WhatsNewFixtures
 import com.cursorforandroid.domain.CursorUser
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
@@ -43,6 +47,9 @@ class SettingsScreenTest {
 
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule
+    val folder = TemporaryFolder()
 
     private lateinit var graph: AppGraph
 
@@ -101,6 +108,39 @@ class SettingsScreenTest {
         compose.onAllNodes(hasText("License", substring = true)).assertCountEquals(0)
         compose.onAllNodes(hasText("Anysphere", substring = true)).assertCountEquals(1)
         assertThat(debugSheetShown()).isFalse()
+        // Without the installed version's notes there is no What's new row to offer.
+        compose.onAllNodes(hasTestTag(SettingsTags.WHATS_NEW_ROW)).assertCountEquals(0)
+    }
+
+    @Test
+    fun `the What's new row sits directly beneath the version row while the notes are unread, opens them, and goes once they are read`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val version = BuildConfig.VERSION_NAME
+        val notes = WhatsNewFixtures.repository(PreferencesStore(context), folder.newFolder(), versionName = version, notes = WhatsNewFixtures.notes(version))
+        graph = AppGraph(context, releaseNotes = notes)
+        var opened = 0
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                SettingsScreen(graph, USER, isDemo = false, onOpenSidebar = null, onBack = {}, onOpenWhatsNew = { opened++ })
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(SettingsTags.WHATS_NEW_ROW)).fetchSemanticsNodes().isNotEmpty() }
+
+        val title = WhatsNewCopy.title(version)
+        compose.onNodeWithText(title).assertExists()
+        // The lead line is the row's detail.
+        compose.onNodeWithText(WhatsNewFixtures.LEAD).assertExists()
+        assertThat(top("Version $version")).isLessThan(top(title))
+        assertThat(top(title)).isLessThan(top("Automatic updates"))
+
+        compose.onNodeWithTag(SettingsTags.WHATS_NEW_ROW).assertHasClickAction().performClick()
+        assertThat(opened).isEqualTo(1)
+
+        // Opening the page reads the notes (the page does that); here the read is what the row follows.
+        runBlocking { notes.markRead() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasTestTag(SettingsTags.WHATS_NEW_ROW)).fetchSemanticsNodes().isEmpty() }
+        assertAbsent(title)
+        compose.onNodeWithText("Check for updates").assertExists()
     }
 
     @Test

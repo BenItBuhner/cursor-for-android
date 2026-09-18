@@ -11,8 +11,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * A release as GitHub publishes it for this repository: the workflow's header table and install line, the curated
- * notes (v0.3.37's, verbatim), the reinstall notice, and the generated commit list. What the parser has to cut
- * around, and what the What's new page and its two surfaces are shown with.
+ * notes (v0.3.11's Goals section, verbatim — a bold lead, a code span, bullets), the reinstall notice, and the
+ * generated commit list. What the parser has to cut around, and what the What's new page and its two surfaces are
+ * shown with.
  */
 object WhatsNewFixtures {
     const val VERSION = "0.3.37"
@@ -34,17 +35,16 @@ object WhatsNewFixtures {
         **Install:** download `cursor-for-android-0.3.37.apk`, then `adb install -r cursor-for-android-0.3.37.apk` (or open it on the device). `SHA256SUMS.txt` holds the checksums of the APK and AAB; `*-mapping.txt` is the R8 mapping for de-obfuscating stack traces. Installs of **v0.2.0 and later** update in place — same signing key.
     """.trimIndent()
 
-    const val LEAD = "Project coordinator replies show up again in busy Projects (the app stopped after the first 20 runs)."
+    const val LEAD = "Active Goals are shown above the composer with the objective, active time and status, and as events in the transcript."
 
     val CURATED = """
-        ## Coordinator chats
+        ## Goals
 
-        **Project coordinator replies show up again in busy Projects (the app stopped after the first 20 runs).** Under Extended mode the record path read one page of runs and never paged further, while the record's window kept widening; a coordinator's turn behind more injected worker reports than that first page paired with no run, so its reply — which lives in the run's log — never arrived and a stretch showed its narration with no message above it.
+        **Active Goals are shown above the composer with the objective, active time and status, and as events in the transcript.** A chat running in Cursor's goal mode (`/goal …`) used to give no sign of it — the goal calls sat as bare "Created goal" / "Updated goal" steps behind an activity header, and nothing said a goal was active, for how long, or that it had finished.
 
-        - **The run list is paged until it covers the record's window**, in the background on open and inline before older pages, so every turn on screen pairs with its run and gets its footer and its reply from the run's log.
-        - **Record growth re-reads the newest runs**, so a turn finished while the phone was not following lines up and has its log replayed instead of pairing with the wrong run.
-        - **A message whose text did not reach the device** is an explicit row — "Message text unavailable" with the reason and **Reload** beside it — never a bare success marker; an empty reply still being written shows as pending.
-        - Transcript diagnostics say, per coordinator turn, what the record had of the message and what reached the screen from where.
+        - **Goal strip.** While a goal is active or paused, a strip above the composer (in the same surface as the queue rows, ordered as the desktop's tray) shows the status with the active time ticking and the objective verbatim on one line; a tap opens the whole objective, what the status means and the continuation count.
+        - **Goal events in the transcript.** Each goal change is lifted out of its activity dropdown into its own row where it happened: "Goal set · objective", "Goal paused", "Goal resumed", "Goal completed", and "Goal not set · reason" when the call was refused. Timing follows the desktop's: pause stops the count, resume restarts it.
+        - **Default mode reads only documented data** — the goal tool calls on the stream under every spelling, and the "Goal continued" turns' objective — so the strip and the rows work for every account. **Extended mode** adds the account's own goal state for the exact status and objective when the transcript alone cannot say.
     """.trimIndent()
 
     val REINSTALL_NOTICE = """
