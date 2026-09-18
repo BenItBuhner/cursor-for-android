@@ -143,6 +143,7 @@ fun ConversationScreen(
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
     val files by viewModel.pendingFiles.collectAsStateWithLifecycle()
     val fileUploads by viewModel.fileUploads.collectAsStateWithLifecycle()
+    val uploadHint by viewModel.uploadHint.collectAsStateWithLifecycle()
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
@@ -545,7 +546,8 @@ fun ConversationScreen(
                     else -> "Follow up…"
                 },
                 onSend = viewModel::send,
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived,
+                // Held only while an attached file is still going up: once every file carries its reference the send is instant.
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived && uploadHint == null,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
@@ -559,6 +561,7 @@ fun ConversationScreen(
                 onRemoveFile = viewModel::removeFile,
                 fileUploads = fileUploads,
                 onRetryFile = viewModel::retryFile,
+                sendHint = uploadHint,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,

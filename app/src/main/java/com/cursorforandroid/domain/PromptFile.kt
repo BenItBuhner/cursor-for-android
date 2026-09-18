@@ -16,9 +16,18 @@ class PromptFile(
     val name: String,
     /** The provider's type, or one read off the extension; `application/octet-stream` when neither says. */
     val mimeType: String,
+    /**
+     * Where the bytes already are on the account, once the upload that started when the file was attached has been
+     * completed: the prompt then carries this reference and no upload waits on the send. Null until then, and for a
+     * file the account has no upload path for, which travels inline.
+     */
+    val upload: UploadRef? = null,
 ) {
     val sizeBytes: Int get() = bytes.size
     val kind: PromptFileKind get() = PromptFileKind.of(name, mimeType)
+
+    /** The same file, carrying [ref] (or none). */
+    fun withUpload(ref: UploadRef?): PromptFile = if (ref == upload) this else PromptFile(bytes, name, mimeType, ref)
 
     companion object {
         /** How many files one prompt may carry — the desktop's `cloudMaxDocumentAttachmentsPerRequest`. */
@@ -110,6 +119,13 @@ class PromptFile(
         }
     }
 }
+
+/**
+ * A completed prompt upload as the account knows it: the `PresignPromptUpload` id the prompt references
+ * (`prompt_upload_ref {upload_id}`), the S3 upload id `AbortPromptUpload` takes to drop it again, and the `uuid` the
+ * `SelectedImage` / `SelectedDocument` is minted with — kept with the draft so a restart sends what is already up.
+ */
+data class UploadRef(val uploadId: String, val s3UploadId: String, val uuid: String)
 
 /**
  * What a file reads as, for its chip's glyph and card: the desktop's `xWa` buckets (image, document, video) widened

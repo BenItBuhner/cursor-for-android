@@ -103,7 +103,7 @@ class ConnectAgentStartApi(
         val text = request.text.trim()
         val mode = (if (request.planMode) AgentMode.PLAN else AgentMode.AGENT).wireName
         val inlineImages = request.images.map { image ->
-            SelectedImageDto(data = Base64.getEncoder().encodeToString(image.bytes), mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
+            SelectedImageDto(data = image.base64, mimeType = image.mimeType.lowercase(), uuid = UUID.randomUUID().toString())
         }
         val uploadedImages = request.files.filter { it.isImage }.map { file ->
             SelectedImageDto(

@@ -60,6 +60,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextLayoutResult
@@ -107,7 +108,8 @@ import kotlinx.coroutines.withContext
  * The field is a [TextFieldState] editor so Android can paste images into it — from the clipboard, the keyboard
  * clipboard, or an IME `commitContent`. Those become [PendingAttachment]s through the same path as Files. In
  * Extended mode the "+" menu also attaches [files] of any type ([PendingFile]), shown as chips with their name, kind
- * and size under the image strip, filling with the upload while the prompt goes out.
+ * and size under the image strip; each goes up the moment it is attached, its chip filling meanwhile, and the owner
+ * holds send — saying why in [sendHint] — only while one is still going up.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -134,9 +136,14 @@ fun ComposerBox(
     /** Files of any type attached in Extended mode, as chips under the image strip; see [FileChips]. */
     files: List<PendingFile> = emptyList(),
     onRemoveFile: ((PendingFile) -> Unit)? = null,
-    /** Where each file's upload stands while a send is under way, by [PendingFile.id]; a failed one offers [onRetryFile]. */
+    /** Where each file's upload stands, by [PendingFile.id], from the moment it is attached; a failed one offers [onRetryFile]. */
     fileUploads: Map<String, FileUploadState> = emptyMap(),
     onRetryFile: ((PendingFile) -> Unit)? = null,
+    /**
+     * Why send is held, in a few words beside the model chip — "Uploading 2 of 3…" while a file is still going up;
+     * null when nothing holds it. The owner turns [canSend] off for the same reason.
+     */
+    sendHint: String? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     /**
@@ -380,6 +387,16 @@ fun ComposerBox(
                 }
                 Spacer(Modifier.weight(1f))
                 footerExtra?.invoke(this)
+                if (sendHint != null) {
+                    Text(
+                        sendHint,
+                        style = type.small,
+                        color = colors.textTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(end = 6.dp).testTag("send-hint"),
+                    )
+                }
                 if (modelLabel != null) {
                     SelectorChip(modelLabel, onClick = onModel ?: {}, enabled = onModel != null, showChevron = onModel != null)
                 }

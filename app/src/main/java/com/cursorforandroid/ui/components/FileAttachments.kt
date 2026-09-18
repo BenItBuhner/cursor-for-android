@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
@@ -67,9 +68,22 @@ class PendingFile(val id: String, val file: PromptFile, val thumbnail: ImageBitm
     }
 }
 
-/** Where one file's upload stands while the prompt is being sent: how much of it is up, or that it did not get there. */
-data class FileUploadState(val progress: Float = 0f, val failed: Boolean = false) {
-    val isUploading: Boolean get() = !failed
+/**
+ * Where one file's upload stands, from the moment it is attached: how much of it is up, that it is up ([done]) and the
+ * prompt will carry its reference, or that it did not get there.
+ */
+data class FileUploadState(val progress: Float = 0f, val failed: Boolean = false, val done: Boolean = false) {
+    val isUploading: Boolean get() = !failed && !done
+
+    companion object {
+        val DONE = FileUploadState(progress = 1f, done = true)
+
+        fun of(status: AttachmentUploads.Status): FileUploadState = when (status) {
+            is AttachmentUploads.Status.Uploading -> FileUploadState(progress = status.progress)
+            is AttachmentUploads.Status.Done -> DONE
+            is AttachmentUploads.Status.Failed -> FileUploadState(failed = true)
+        }
+    }
 }
 
 /** Images (the strip's, and the image files) and other files attached so far, for the pickers' slot counts. */
@@ -288,8 +302,8 @@ fun PromptFileKind.icon(): ImageVector = when (this) {
 /**
  * The composer's chips for attached files, one per file: its kind's glyph — an image's own thumbnail — its name and
  * its size, and a remove cross — as the desktop's `context-pill` names a document, with the size the desktop's guard
- * checks made visible. While the prompt is going out the glyph gives way to a ring filling with the upload; a file
- * that did not get up shows a warning and turns its cross into a retry.
+ * checks made visible. From the moment a file is attached its glyph is a ring filling with the upload, the cross
+ * cancelling it; up, the chip is the file at rest; a file that did not get up shows a warning and a retry of the upload.
  */
 @Composable
 fun FileChips(
@@ -312,10 +326,13 @@ private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -
     val type = CursorTheme.typography
     val kind = file.file.kind
     val size = PromptFile.formatSize(file.file.sizeBytes.toLong())
+    // At rest — nothing known of an upload, or one that is done — the chip is the file: glyph or thumbnail, kind, size.
+    val atRest = upload == null || upload.done
+    val failed = upload?.failed == true
     val status = when {
-        upload == null -> null
-        upload.failed -> "not uploaded"
-        else -> "uploading ${(upload.progress * 100).toInt()}%"
+        atRest -> null
+        failed -> "not uploaded"
+        else -> "uploading ${(upload!!.progress * 100).toInt()}%"
     }
     Row(
         Modifier
@@ -327,17 +344,17 @@ private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -
             .semantics { contentDescription = listOfNotNull("Attached file ${file.file.name}", "${kind.label}, $size", status).joinToString(", ") },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(if (file.thumbnail != null && upload == null) 28.dp else 18.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(if (file.thumbnail != null && atRest) 28.dp else 18.dp), contentAlignment = Alignment.Center) {
             when {
-                upload == null && file.thumbnail != null -> Image(
+                atRest && file.thumbnail != null -> Image(
                     file.thumbnail,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.size(28.dp).clip(CursorTheme.shapes.sm),
                 )
-                upload == null -> Icon(kind.icon(), null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
-                upload.failed -> Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(15.dp))
-                else -> ProgressRing(progress = upload.progress, size = 15.dp, color = colors.accent)
+                atRest -> Icon(kind.icon(), null, tint = colors.iconSecondary, modifier = Modifier.size(16.dp))
+                failed -> Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(15.dp))
+                else -> ProgressRing(progress = upload!!.progress, size = 15.dp, color = colors.accent)
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -345,28 +362,25 @@ private fun FileChip(file: PendingFile, upload: FileUploadState?, onRemove: () -
             Text(file.file.name, style = type.base, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 when {
-                    upload == null -> "${kind.label} · $size"
-                    upload.failed -> "Upload failed · tap to retry"
-                    else -> "Uploading · ${(upload.progress * 100).toInt()}%"
+                    atRest -> "${kind.label} · $size"
+                    failed -> "Upload failed · tap to retry"
+                    else -> "Uploading · ${(upload!!.progress * 100).toInt()}%"
                 },
                 style = type.small,
-                color = if (upload?.failed == true) colors.red else colors.textTertiary,
+                color = if (failed) colors.red else colors.textTertiary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.width(4.dp))
-        if (upload?.failed == true && onRetry != null) {
+        if (failed && onRetry != null) {
             TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRetry) {
                 Icon(CursorIcons.Refresh, "Retry upload", tint = colors.iconPrimary, modifier = Modifier.size(14.dp))
             }
         }
-        if (upload == null || upload.failed) {
-            TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRemove) {
-                Icon(CursorIcons.Close, "Remove attachment", tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
-            }
-        } else {
-            Spacer(Modifier.width(8.dp))
+        // The cross stays through the upload: taking the file off cancels it.
+        TouchTarget(size = 24.dp, touchSize = 36.dp, shape = CircleShape, onClick = onRemove) {
+            Icon(CursorIcons.Close, "Remove attachment", tint = colors.iconTertiary, modifier = Modifier.size(12.dp))
         }
     }
 }

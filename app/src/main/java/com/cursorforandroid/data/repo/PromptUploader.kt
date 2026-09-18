@@ -7,6 +7,7 @@ import com.cursorforandroid.data.api.PromptUploadCompletion
 import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.data.api.await
 import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.UploadRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -52,6 +53,27 @@ class PromptUploader(
     /** Every file in turn, so the chips fill one after another; the first failure stops the rest. */
     suspend fun upload(files: List<PromptFile>, progress: UploadProgress = UploadProgress.NONE): List<UploadedFile> =
         files.mapIndexed { index, file -> upload(file) { done, total -> progress.onProgress(index, done, total) } }
+
+    /**
+     * What the prompt names each of [files] as: the reference a file already carries ([PromptFile.upload], its upload
+     * having run when it was attached), so nothing is sent for it here, else the upload made now. With every file
+     * already up this makes no call at all — the send goes out at once.
+     */
+    suspend fun ensure(files: List<PromptFile>, progress: UploadProgress = UploadProgress.NONE): List<UploadedFile> =
+        files.mapIndexed { index, file ->
+            file.upload?.let { ref -> UploadedFile.of(file, ref) } ?: upload(file) { done, total -> progress.onProgress(index, done, total) }
+        }
+
+    /** Drops a staged upload the prompt will not reference after all (`AbortPromptUpload`); best effort, like the desktop's `CKy`. */
+    suspend fun abort(ref: UploadRef) {
+        try {
+            api.abort(ref.uploadId, ref.s3UploadId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // The staged parts expire on their own.
+        }
+    }
 
     suspend fun upload(file: PromptFile, progress: (uploadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }): UploadedFile {
         val mimeType = file.mimeType.ifBlank { PromptFile.OCTET_STREAM }
@@ -99,7 +121,7 @@ class PromptUploader(
             abortQuietly(presigned)
             throw PromptUploadException(file.name, "Couldn't upload ${file.name}: ${e.message ?: "the connection failed"}", e)
         }
-        return UploadedFile(file.name, mimeType, uploadId = presigned.uploadId)
+        return UploadedFile(file.name, mimeType, uploadId = presigned.uploadId, s3UploadId = presigned.s3UploadId)
     }
 
     /** One part: `PUT <url>` with the slice as its body, no type, bounded in time like the desktop's 120 s `AbortSignal.timeout`. */
