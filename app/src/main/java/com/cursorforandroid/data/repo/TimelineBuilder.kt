@@ -100,13 +100,25 @@ object TimelineBuilder {
      * gives the same result as making the whole thing unique in one pass.
      */
     fun List<TimelineItem>.withUniqueIds(taken: Set<String> = emptySet()): List<TimelineItem> {
-        val seen: HashSet<String> = if (taken.isEmpty()) HashSet(size) else HashSet(taken)
-        return map { item ->
+        val seen: HashSet<String> = if (taken.isEmpty()) HashSet(size * 2) else HashSet(taken)
+        // The usual case — no id repeats — is answered with the list itself: the callers keep it as it is, and what
+        // reads it downstream can tell an unchanged item by identity.
+        var first = -1
+        for (i in indices) {
+            if (!seen.add(this[i].id)) { first = i; break }
+        }
+        if (first < 0) return this
+        // From the first repeat on: its id is in [seen] already, so the loop below gives it its suffix.
+        val out = ArrayList<TimelineItem>(size)
+        for (i in 0 until first) out += this[i]
+        for (i in first until size) {
+            val item = this[i]
             var id = item.id
             var n = 1
             while (!seen.add(id)) id = "${item.id}#${++n}"
-            if (id == item.id) item else item.withId(id)
+            out += if (id == item.id) item else item.withId(id)
         }
+        return out
     }
 
     private fun TimelineItem.withId(id: String): TimelineItem = when (this) {
@@ -125,6 +137,8 @@ object TimelineBuilder {
         status = run.statusEnum(),
         durationMs = run.durationMs,
         branches = run.git.toBranches(),
+        // A run that is over was last written to when it ended; a run still going has no end yet.
+        endedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 && run.statusEnum().isTerminal },
     )
 
     /** The [ToolCall] a `tool_call` event shows as; see [ToolCallMapper] for the wording and for what is not kept. */
@@ -373,16 +387,19 @@ object TimelineBuilder {
             val finalText = event.text?.trim().orEmpty()
             placeFinalReply(finalText)
             if (event.status == RunStatus.ERROR) {
-                // The record has no reason of its own for a failed run; the stream's last error is the only account.
+                // A failure is the server's: the reason is the final text, else the last error the stream (or the
+                // account's record, see HeadlessTranscript) gave; the notice carries it. A cancel is the user's —
+                // their next message, their stop — and gets no notice: the footer says so, quietly (see TranscriptRows).
                 val reason = finalText.ifBlank { streamError?.message?.ifBlank { null } ?: streamError?.code }
                 items += NoticeCard(nextId("notice"), "Run failed", reason, NoticeTone.Error)
             }
-            if (event.status == RunStatus.CANCELLED) items += NoticeCard(nextId("notice"), "Run cancelled", null, NoticeTone.Warning)
             // The duration is the outcome's own. Only a run the stream itself saw finish, watched from its start,
             // gets the clock's word when the outcome carries none. Never an outcome read off a record, and never an
             // end other than finished: "Cancelled after 30s" was this device's clock — from opening the stream to
             // reading a stale record — read as the turn's.
             val elapsed = startedAtMillis?.takeIf { timed && it > 0 && !event.fromRecord && event.status == RunStatus.FINISHED }?.let { nowProvider() - it }?.takeIf { it > 0 }
+            // No end time here: the run record's `updatedAt` gives it when the chat is read again (see [footer]),
+            // and a footer stamped with this device's clock would differ from the record's copy of the same run.
             items += RunFooter(nextId("run"), runId, event.status, event.durationMs ?: elapsed, event.git.toBranches())
         }
 

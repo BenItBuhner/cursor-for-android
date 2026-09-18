@@ -1,6 +1,8 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AccountModel
+import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectAppearance
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -89,6 +91,12 @@ class ProjectCreationApiTest {
         assertThat(history["pastChatsExplicitlySet"]?.jsonPrimitive?.content).isEqualTo("true")
         assertThat(body["skills"]?.jsonArray).isEmpty()
         assertThat(body["repositoryInfo"]?.jsonObject).isEmpty()
+        // No model chosen: the desktop's `default` (Auto) as the one `requested_models` entry, and no legacy `model_details`.
+        val requested = body["requestedModels"]!!.jsonArray.map { it.jsonObject }
+        assertThat(requested.map { it["modelId"]?.jsonPrimitive?.content }).containsExactly("default")
+        assertThat(requested.single()["maxMode"]).isNull()
+        assertThat(requested.single()["parameters"]).isNull()
+        assertThat(body["modelDetails"]).isNull()
         // The record that comes back is the Project's: flagged, with the look, dated.
         assertThat(record.id).isEqualTo("bc-p1")
         assertThat(record.isProject).isTrue()
@@ -157,6 +165,43 @@ class ProjectCreationApiTest {
         assertThat(server.takeRequest().json()["snapshotNameOrId"]?.jsonPrimitive?.content).isEqualTo("env|env-new")
     }
 
+    /**
+     * The account refuses a start that names no model ("At least one model details is required" — what the first
+     * build of the sheet was told). The desktop's dialog always names one: `requested_models[0]` is the picked model
+     * with its max mode and parameters (`_buildStartRequestModelFields`), or `default` for Auto (`PQp`).
+     */
+    @Test
+    fun `a named model goes out as the desktop's requested_models, with its parameters and max mode`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody(COMPOSER_P6))
+
+        api.createProject(
+            ProjectDraft(
+                "Tuned", ProjectAppearance("flag", "green"), listOf("https://github.com/acme/app"),
+                model = AccountModel("claude-4.5-sonnet", listOf(ModelParam("effort", "high"), ModelParam("", "dropped")), maxMode = true),
+                projectId = "bc-p6",
+            ),
+        )
+
+        server.takeRequest()
+        val body = server.takeRequest().json()
+        val requested = body["requestedModels"]!!.jsonArray.map { it.jsonObject }
+        assertThat(requested).hasSize(1)
+        assertThat(requested.single()["modelId"]?.jsonPrimitive?.content).isEqualTo("claude-4.5-sonnet")
+        assertThat(requested.single()["maxMode"]?.jsonPrimitive?.content).isEqualTo("true")
+        val parameters = requested.single()["parameters"]!!.jsonArray.map { it.jsonObject }
+        assertThat(parameters.map { it["id"]?.jsonPrimitive?.content to it["value"]?.jsonPrimitive?.content }).containsExactly("effort" to "high")
+        assertThat(body["modelDetails"]).isNull()
+
+        // Auto picked on purpose is the same `default` as nothing picked; a blank id is Auto too.
+        server.enqueue(MockResponse().setBody(COMPOSER_P6))
+        api.createProject(ProjectDraft("Auto", ProjectAppearance("flag", "green"), listOf("https://github.com/acme/app"), model = AccountModel("default"), projectId = "bc-p7"))
+        assertThat(server.takeRequest().json()["requestedModels"]!!.jsonArray.single().jsonObject["modelId"]?.jsonPrimitive?.content).isEqualTo("default")
+        server.enqueue(MockResponse().setBody(COMPOSER_P6))
+        api.createProject(ProjectDraft("Blank", ProjectAppearance("flag", "green"), listOf("https://github.com/acme/app"), model = AccountModel("  "), projectId = "bc-p8"))
+        assertThat(server.takeRequest().json()["requestedModels"]!!.jsonArray.single().jsonObject["modelId"]?.jsonPrimitive?.content).isEqualTo("default")
+    }
+
     @Test
     fun `an answer without the record stands the Project in from what was asked`() = runBlocking<Unit> {
         server.enqueue(session("s"))
@@ -198,6 +243,10 @@ class ProjectCreationApiTest {
     }
 
     private fun session(token: String) = MockResponse().setBody("""{"accessToken":"$token","refreshToken":"rt"}""")
+
+    private companion object {
+        const val COMPOSER_P6 = """{"composer":{"bcId":"bc-p6","projectMetadata":{}}}"""
+    }
 
     private fun RecordedRequest.json() = Json.parseToJsonElement(body.readUtf8()).jsonObject
 }

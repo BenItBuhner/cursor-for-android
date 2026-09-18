@@ -49,11 +49,14 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("  assistant chars=34")
         assertThat(report).contains("  activity steps=6 coordination=true grouped=false")
         assertThat(report).contains("    thinking chars=35")
-        assertThat(report).contains("    tool sendToAgent · Coordinator · completed · worker_action(messaged,workers=1,reported=false) · args=[toolCallId,agentId,message,delivery,title] · linked=1 · truncated=-")
-        assertThat(report).contains("    tool SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=-")
-        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(${secret.length} chars) · args=[text] · linked=0 · truncated=-")
-        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=args")
-        assertThat(report).contains("    tool edit · Edit · completed · - · args=[path] · linked=0 · truncated=-")
+        assertThat(report).contains("    tool sendToAgent · Coordinator · completed · worker_action(messaged,workers=1,reported=false) · args=[toolCallId,agentId,message,delivery,title] · linked=1 · truncated=- · id=c1")
+        assertThat(report).contains("    tool SendMessage · Other→Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=- · id=c2")
+        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(${secret.length} chars) · args=[text] · linked=0 · truncated=- · id=c3")
+        assertThat(report).contains("    tool sendMessage · Coordinator · completed · coordinator_message(missing) · args=[] · linked=0 · truncated=args · id=c4")
+        assertThat(report).contains("    tool edit · Edit · completed · - · args=[path] · linked=0 · truncated=- · id=c5")
+        // A body read leniently out of a record says so; a long id is cut to its tail.
+        val recovered = ToolCall("toolu_01SendPieces", "SendMessage", ToolKind.Coordinator, "completed", "", payload = ToolPayload.CoordinatorMessage("The phone worker has the Fold8", recovered = true), argKeys = listOf("text"))
+        assertThat(TranscriptDiagnostics.describe(recovered)).isEqualTo("SendMessage · Coordinator · completed · coordinator_message(30 chars,recovered) · args=[text] · linked=0 · truncated=- · id=…Pieces")
         assertThat(report).contains("  footer status=FINISHED duration=81000 branches=0")
         // Nothing the user or the coordinator wrote, and no whole id.
         assertThat(report).doesNotContain("hunter2")
@@ -87,6 +90,16 @@ class TranscriptDiagnosticsTest {
             lastError = null, transcriptError = "Cursor took too long to respond. https://api.cursor.com/v0/agents/bc-1234/conversation", transcriptUnavailable = false,
             source = "record", record = TranscriptLoadDiagnostics.RecordLine(total = 8_320, firstStep = 8_060, turnsLoaded = 10, turnCount = 320, stateRead = true, empty = false, error = null),
             status = TranscriptLoadDiagnostics.StatusLine(shown = "RUNNING", latestRun = "CANCELLED", streaming = false, rowRunning = false, accountRunning = true, rowNewerThanRecordMs = 600_000L),
+            shapes = listOf(
+                TurnShape(
+                    stepIndex = 8_301, prompt = "user", projectMode = true,
+                    steps = listOf(
+                        StepShape(8_301, "human_message", "{humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT}}"),
+                        StepShape(8_302, "tool_call[id=toolCallId name=name args=piece]", "{toolCall:{toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true}}"),
+                    ),
+                    calls = listOf(CallShape("…Pieces", "SendMessage", steps = 3, args = "recovered(repaired,3)", result = true)),
+                ),
+            ),
         )
         val report = TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input("0.3.15", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668", agent = null, state = TranscriptDiagnostics.State(items), load = load),
@@ -101,6 +114,76 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("live: run=…un-160 following=true stream=events:3,status:RUNNING,reconnecting:false,expired:false,finished:false,items:2")
         assertThat(report).contains("errors: last=- transcript=\"Cursor took too long to respond. <url>\" transcriptUnavailable=false")
         assertThat(report).doesNotContain("bc-1234")
+        // The shape dump: the newest turns step by step, then their calls.
+        assertThat(report).contains("shapes: newest 1 turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
+        assertThat(report).contains("turn@8301 steps=2 prompt=user project=true calls=1")
+        assertThat(report).contains("  8301 human_message {humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT}}")
+        assertThat(report).contains("  8302 tool_call[id=toolCallId name=name args=piece] {toolCall:{toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true}}")
+        assertThat(report).contains("  call …Pieces SendMessage steps=3 args=recovered(repaired,3) result=true")
+    }
+
+    @Test
+    fun `the perf block says what the open cost, and what the presenter, the markdown cache, the disk and the network did`() {
+        var nanos = 0L
+        TranscriptPerf.useClock { nanos }
+        try {
+            val session = TranscriptPerf.opened("bc-perf")
+            nanos = 120_000_000L
+            session.publication(items = 12, whole = false, buildNanos = 4_000_000L)
+            nanos = 340_000_000L
+            session.publication(items = 40, whole = true, buildNanos = 9_000_000L)
+            session.presenterRun(2_500_000L, built = 10, reused = 0)
+            session.presenterRun(400_000L, built = 1, reused = 9)
+            session.rowComposed(); session.rowComposed()
+            session.markdownParsed(3_000_000L); session.markdownHit(); session.markdownHit()
+            session.turnBuilt(20_000_000L); session.turnRendered(); session.turnRenderReused()
+            session.conversationRead(); session.traceRead(files = 39, nanos = 87_000_000L)
+            session.network("record"); session.network("record"); session.network("runs"); session.network("state")
+            nanos = 2_000_000_000L
+            val report = TranscriptDiagnostics.render(
+                TranscriptDiagnostics.Input("0.3.32", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-perf", agent = null, state = TranscriptDiagnostics.State(items), perf = session.snapshot()),
+            )
+            assertThat(report).contains("perf: open=2000ms firstContent=120ms newestPageWhole=340ms publications=2 (2.0/min, lastMinute=2) itemsRebuilt=13.0ms (max 9.0ms)")
+            assertThat(report).contains("  presenter: runs=2 total=2.9ms avg=1.5ms max=2.5ms rowsMaterialized=11 rowsReused=9 rowsComposed=2 turnsBuilt=1 (20.0ms) turnsReused=0 turnsRendered=1 turnRendersReused=1")
+            assertThat(report).contains("  markdown: parses=1 cacheHits=2 parseTime=3.0ms")
+            assertThat(report).contains("  disk: conversationReads=1 traceFileReads=39 (87.0ms)")
+            assertThat(report).contains("  network: total=4 (4.0/min, lastMinute=4) record=2 runs=1 state=1")
+            // A chat never opened this process has no block; nothing else of the report changes.
+            assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.32", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-perf", agent = null, state = TranscriptDiagnostics.State(items)))).doesNotContain("perf:")
+        } finally {
+            TranscriptPerf.useClock(System::nanoTime)
+            TranscriptPerf.clearAll()
+        }
+    }
+
+    @Test
+    fun `the send block says what was decided from which source, what waits, and what came of each attempt`() {
+        val inputs = SendGate.Inputs(
+            rowLoaded = true, rowRunning = false, rowUpdatedAtMillis = 1_000_000L,
+            chatRunStatus = RunStatus.FINISHED, chatStreaming = false, chatReconnecting = false,
+            accountScanned = true, accountRunning = false, accountAtMillis = 1_002_000L,
+        )
+        val send = SendDiagnostics(
+            decision = SendGate.decide(inputs),
+            decidedAtIso = "2026-09-17T10:00:05Z",
+            queue = listOf(SendDiagnostics.QueueLine("…q-1", chars = 42, sending = false, steered = false, busyRefusals = 3, heldForMs = 83_000L, error = null, needsConfirmation = false)),
+            attempts = listOf(
+                SendDiagnostics.Attempt("2026-09-17T10:00:05Z", "…q-1", "runs", "busy", "Agent is busy."),
+                SendDiagnostics.Attempt("2026-09-17T10:00:06Z", "…q-1", "runs", "busy", "Agent is busy."),
+                SendDiagnostics.Attempt("2026-09-17T10:00:08Z", "…q-0", "runs", "accepted", "run-9"),
+            ),
+            accepted = listOf("…run-9"),
+        )
+        val report = TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = send),
+        )
+        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle accountAgeMs=-2000")
+        assertThat(report).contains("  queue: 1 […q-1 chars=42 busyRefusals=3 heldFor=83s]")
+        assertThat(report).contains("  attempts: 3 accepted=[…run-9]")
+        assertThat(report).contains("    2026-09-17T10:00:05Z …q-1 via=runs busy \"Agent is busy.\"")
+        assertThat(report).contains("    2026-09-17T10:00:08Z …q-0 via=runs accepted \"run-9\"")
+        // A chat nothing was sent or queued from has no block.
+        assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList())))).doesNotContain("send:")
     }
 
     @Test

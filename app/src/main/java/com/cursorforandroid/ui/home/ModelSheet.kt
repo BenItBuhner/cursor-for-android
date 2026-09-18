@@ -78,7 +78,8 @@ internal fun ModelSheet(
     autoCreatePr: Boolean,
     loading: Boolean,
     unavailable: Boolean,
-    onPlanMode: (Boolean) -> Unit,
+    /** Null hides "Plan mode" (and, with no [onAutoCreatePr], the Options section): a Project's coordinator has neither. */
+    onPlanMode: ((Boolean) -> Unit)?,
     onAutoCreatePr: ((Boolean) -> Unit)?,
     onRetry: () -> Unit,
     onSelect: (ModelOption?, ModelVariant?) -> Unit,
@@ -98,7 +99,7 @@ internal fun ModelSheet(
         val listState = rememberLazyListState()
         LaunchedEffect(selectedModel?.id, noModelRow != null, ordered.isNotEmpty()) {
             if (selectedModel == null || ordered.isEmpty()) return@LaunchedEffect
-            val offset = (if (noModelRow != null) 1 else 0) + 1 + 1
+            val offset = (if (noModelRow != null) 1 else 0) + (if (onPlanMode != null || onAutoCreatePr != null) 1 else 0) + 1
             listState.scrollToItem(offset)
         }
         SheetHeader("Model") {
@@ -115,11 +116,13 @@ internal fun ModelSheet(
                     HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
                 }
             }
-            item("options") {
-                SheetSectionLabel("Options")
-                OptionRow("Plan mode", planMode, onPlanMode)
-                if (onAutoCreatePr != null) OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
-                HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+            if (onPlanMode != null || onAutoCreatePr != null) {
+                item("options") {
+                    SheetSectionLabel("Options")
+                    if (onPlanMode != null) OptionRow("Plan mode", planMode, onPlanMode)
+                    if (onAutoCreatePr != null) OptionRow("Auto-create PR", autoCreatePr, onAutoCreatePr)
+                    HairlineDivider(Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
+                }
             }
             if (models.isEmpty()) {
                 when {

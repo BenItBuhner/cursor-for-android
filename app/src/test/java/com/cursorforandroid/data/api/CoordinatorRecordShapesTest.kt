@@ -155,10 +155,12 @@ class CoordinatorRecordShapesTest {
         assertThat((calls.getValue("toolu_back").payload as ToolPayload.CoordinatorMessage).message).isEqualTo("Streamed back.")
         assertThat(calls.getValue("model_only").payload).isInstanceOf(ToolPayload.WorkerAction::class.java)
         assertThat(calls.getValue("model_only").kind).isEqualTo(ToolKind.Coordinator)
-        // The pieces that never came whole: the call stands, its body said to be missing, not nothing.
+        // The pieces that never came whole: the call stands with what the pieces held, read leniently and marked as
+        // recovered (see MessageRecovery), rather than as nothing or as a body that is missing.
         val cut = calls.getValue("toolu_cut")
-        assertThat((cut.payload as ToolPayload.CoordinatorMessage).missing).isTrue()
+        assertThat(cut.payload).isEqualTo(ToolPayload.CoordinatorMessage("All four shard", recovered = true))
         assertThat(cut.kind).isEqualTo(ToolKind.Coordinator)
+        assertThat(cut.truncated).isNull()
         // One step per call in the trace: the pieces did not multiply the row.
         assertThat(calls.keys).containsExactly("toolu_pieces", "toolu_back", "model_only", "toolu_cut")
     }

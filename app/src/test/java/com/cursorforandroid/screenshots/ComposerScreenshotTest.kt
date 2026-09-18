@@ -116,7 +116,7 @@ private fun ComposerPreview(value: String, placeholder: String, minLines: Int) {
             onValueChange = {},
             placeholder = placeholder,
             onSend = {},
-            plusMenu = ComposerMenuActions(onPickFiles = {}),
+            plusMenu = ComposerMenuActions(onPickMedia = {}),
             modelLabel = "Claude Fable 5.1",
             onModel = {},
             minLines = minLines,

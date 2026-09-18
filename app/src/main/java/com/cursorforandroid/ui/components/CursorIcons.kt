@@ -149,17 +149,6 @@ object CursorIcons {
         }
     }
 
-    /** Lucide `file-text`: a text document in the All Files tree and its toggle. */
-    val FileText: ImageVector by lazy {
-        icon("FileText") {
-            path("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z")
-            path("M14 2v4a2 2 0 0 0 2 2h4")
-            path("M10 9H8")
-            path("M16 13H8")
-            path("M16 17H8")
-        }
-    }
-
     /** Lucide `folder-open`: the roots of the All Files tree. */
     val FolderOpen: ImageVector by lazy {
         icon("FolderOpen") {
@@ -363,6 +352,38 @@ object CursorIcons {
         }
     }
 
+    /** A page with lines: a text or document attachment. */
+    val FileText: ImageVector by lazy {
+        icon("FileText") {
+            path("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z")
+            path("M14 2v4a2 2 0 0 0 2 2h4")
+            path("M10 9H8")
+            path("M16 13H8")
+            path("M16 17H8")
+        }
+    }
+
+    /** A page with a zip seam: an archive attachment. */
+    val FileArchive: ImageVector by lazy {
+        icon("FileArchive") {
+            path("M10 12v-1")
+            path("M10 18v-2")
+            path("M10 7V6")
+            path("M14 2v4a2 2 0 0 0 2 2h4")
+            path("M15.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v16a2 2 0 0 0 .274 1.01")
+            circle(10f, 20f, 2f)
+        }
+    }
+
+    /** A pair of notes: an audio attachment. */
+    val Music: ImageVector by lazy {
+        icon("Music") {
+            path("M9 18V5l12-2v13")
+            circle(6f, 18f, 3f)
+            circle(18f, 16f, 3f)
+        }
+    }
+
     val Pencil: ImageVector by lazy {
         icon("Pencil") {
             path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z")
@@ -550,6 +571,54 @@ object CursorIcons {
             path("M20.97 5c0 2.1-1.6 3.8-3.5 4")
             path("M22 13h-4")
             path("M17.2 17c2.1.1 3.8 1.9 3.8 4")
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------------------------
+    // The media viewer's chrome
+    // ------------------------------------------------------------------------------------------------------------
+
+    /** Lucide `share`: the viewer's share action. */
+    val Share: ImageVector by lazy {
+        icon("Share") {
+            path("M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8")
+            path("m16 6-4-4-4 4")
+            path("M12 2v13")
+        }
+    }
+
+    /** Lucide `download`: saving a picture or recording to the device's gallery. */
+    val Download: ImageVector by lazy {
+        icon("Download") {
+            path("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4")
+            path("m7 10 5 5 5-5")
+            path("M12 15V3")
+        }
+    }
+
+    /** Lucide `volume-2`: a recording playing with its sound. */
+    val Volume: ImageVector by lazy {
+        icon("Volume") {
+            path("M11 5 6 9H2v6h4l5 4z")
+            path("M15.54 8.46a5 5 0 0 1 0 7.07")
+            path("M19.07 4.93a10 10 0 0 1 0 14.14")
+        }
+    }
+
+    /** Lucide `volume-x`: the recording muted. */
+    val VolumeOff: ImageVector by lazy {
+        icon("VolumeOff") {
+            path("M11 5 6 9H2v6h4l5 4z")
+            path("m22 9-6 6")
+            path("m16 9 6 6")
+        }
+    }
+
+    /** Lucide `pause`, filled like [Play]: the two share the disc over a playing recording. */
+    val PauseFilled: ImageVector by lazy {
+        icon("PauseFilled") {
+            fill("M6 4.5A1.5 1.5 0 0 1 7.5 3h2A1.5 1.5 0 0 1 11 4.5v15A1.5 1.5 0 0 1 9.5 21h-2A1.5 1.5 0 0 1 6 19.5z")
+            fill("M13 4.5A1.5 1.5 0 0 1 14.5 3h2A1.5 1.5 0 0 1 18 4.5v15a1.5 1.5 0 0 1-1.5 1.5h-2A1.5 1.5 0 0 1 13 19.5z")
         }
     }
 

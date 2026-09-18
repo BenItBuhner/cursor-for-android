@@ -35,10 +35,12 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.ProjectDiagnostics
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.RunOrder
 import com.cursorforandroid.domain.TranscriptLoadDiagnostics
+import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.SystemNotifications
@@ -134,6 +136,11 @@ class StagedFollowUp internal constructor(
     val text: String,
     internal val attachments: StagedAttachments,
     internal val stagedAt: Long,
+    /** The bubble is on screen ahead of the request; false for a queued message, whose card is what the reader sees until the server has it. */
+    internal val shown: Boolean = true,
+    /** The message the echo stands for, kept so a bubble not shown ahead can be shown once the server accepts. */
+    internal val message: V0ConversationMessageDto,
+    internal val placeholder: RunDto,
 )
 
 /**
@@ -235,6 +242,34 @@ class ConversationRepository(
     }
 
     /**
+     * Everything one record turn's rendering is read from (see `Entry.recordItems`). Two turns render the same when
+     * these agree: the turn's own steps and prompt (its items by identity — a re-read that reuses them is the same
+     * turn, whatever object carries it), its run and how this device reads the run's status, its timing, the
+     * prompt's images, the trace or the live story standing in for the body (by identity: either is replaced
+     * whole when it changes), whether it is the live newest turn, and the word on a missing body.
+     */
+    private class TurnInputs(
+        val turn: RecordTurn,
+        val run: RunDto?,
+        val runStatus: RunStatus?,
+        val timing: TurnTiming?,
+        val attachments: List<MessageAttachment>?,
+        val complete: List<TimelineItem>?,
+        val liveItems: List<TimelineItem>?,
+        val liveNewest: Boolean,
+        val notice: NoticeCard?,
+    ) {
+        fun sameAs(other: TurnInputs): Boolean =
+            turn.stepIndex == other.turn.stepIndex && turn.stepCount == other.turn.stepCount && turn.items === other.turn.items &&
+                turn.projectMode == other.turn.projectMode && turn.prompt == other.turn.prompt &&
+                run == other.run && runStatus == other.runStatus && timing == other.timing && attachments == other.attachments &&
+                complete === other.complete && liveItems === other.liveItems && liveNewest == other.liveNewest && notice == other.notice
+    }
+
+    /** A record turn's items as last rendered, with the inputs they were rendered from. */
+    private class RenderedTurn(val inputs: TurnInputs, val items: List<TimelineItem>)
+
+    /**
      * How the transcript's messages line up with the runs shown. `/v0/agents/{id}/conversation` pairs its user
      * messages with the runs by position, oldest first; the window renders the newest runs, so the messages shown
      * start at the prompt of the first of them.
@@ -321,6 +356,14 @@ class ConversationRepository(
         /** The transcript is built from the account's record (see [recordWindow]). */
         val fromRecord: Boolean get() = recordWindow != null
         /**
+         * The record's page before the window, read ahead of the reader's next scroll up once they have scrolled up
+         * once (see [prefetchOlderRecord]): a page of two hundred steps with their payloads is megabytes over a phone's
+         * connection, and read when asked for it was the seconds of "Loading older…" at the top. One page, the
+         * screen's alone: it goes with the screen.
+         */
+        var prefetchedOlder: RecordPager.Raw? = null
+        var prefetchJob: Job? = null
+        /**
          * The story so far of the run [streamJob] is following, shown in place of the transcript it does not have
          * yet. The job owns it: it goes when following stops, and a snapshot from a job that is no longer the
          * follower is ignored. Left behind, it would keep standing in for a run that has since finished — hiding the
@@ -393,6 +436,15 @@ class ConversationRepository(
         }
 
         /**
+         * [run]'s record as this device knows it: the run it cancelled reads cancelled, whatever a record written
+         * before the cancel says. What the agent's row is patched from (see `Agent.withLatestRun`): a load whose run
+         * page was read before the Stop, landing after it, put the row back to running for the very run this device
+         * had stopped — after the run's own end had already settled it, so nothing settled it again until the
+         * follow-up queue's busy recheck, twenty seconds on.
+         */
+        fun known(run: RunDto): RunDto = if (statusOf(run) == run.statusEnum()) run else run.copy(status = RunStatus.CANCELLED.name)
+
+        /**
          * The chat's status as the screen shows it, the freshest word first. A run being streamed is running,
          * whatever any record says of it. Next the agent's row: when the account calls the chat running and its
          * word is at least as new as the latest run record's, the chat is running — a record that says cancelled
@@ -435,6 +487,8 @@ class ConversationRepository(
         }
         /** The workers last reported to the agent list from this transcript (see [coordinatorLineage]); null before any. */
         var reportedWorkers: Set<String>? = null
+        /** The stamp of the last prompt staged from here, so two staged in one millisecond get distinct ids (see [stageFollowUp]). */
+        var lastLocalStamp = 0L
         /** When the items were last rebuilt and published (monotonic millis), and the trailing publish a burst is waiting on (see [publishCoalesced]). */
         var lastPublishAtMs = 0L
         var pendingPublish: Job? = null
@@ -488,7 +542,11 @@ class ConversationRepository(
          */
         private fun recordItems(window: RecordWindow): List<TimelineItem> {
             val ordered = allRuns()
-            val trailing = local.filter { !window.holds(it) }
+            // The prompts sent from here the record has not caught up with. Each stands where its run's creation puts
+            // it among the record's turns — before the first turn that started after it, when the account's timings
+            // say so, else after them all: a reply is never shown above the prompt it answers, whichever source each
+            // came from (see [turnOf], and the order this keeps, `LocalEchoOrderTest`).
+            val trailing = local.filter { window.turnOf(it) == null }
             val trailingIds = trailing.mapTo(HashSet()) { it.run.id }
             val paired = ordered.filter { it.id !in trailingIds }
             val offset = paired.size - window.turns.size
@@ -497,48 +555,97 @@ class ConversationRepository(
             // stale run record says of it.
             val latest = latestRun()
             val chatRunning = chatStatus(latest)?.isActive == true
-            val items = ArrayList<TimelineItem>()
-            for ((i, turn) in window.turns.withIndex()) {
-                val run = paired.getOrNull(offset + i)
-                val timing = window.timing(i)
-                val startedAt = run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } }
-                    ?: timing?.timestampMs?.let { end -> end - (timing.durationMs ?: 0L) }?.takeIf { it > 0 }
-                turn.prompt?.let { text ->
-                    val promptId = "rec-prompt-${turn.stepIndex}"
-                    items += SystemNotifications.parse(promptId, text, startedAt)?.items
-                        ?: listOf(UserMessage(promptId, text, startedAt, attachments = run?.let { promptImages[it.id] } ?: emptyList()))
-                }
-                // The newest turn of the record is the live one while the chat runs and nothing sent from here trails it.
-                val newest = i == window.turns.lastIndex && trailing.isEmpty()
-                val complete = run?.let { traces[it.id] }
-                when {
-                    // The trace the stream gave, whole: its own footer included.
-                    complete != null -> { items += complete; continue }
-                    // The story the stream tells so far — unless it has told nothing yet (a stream that will not
-                    // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
-                    run != null && current?.runId == run.id && current.items.isNotEmpty() -> { items += current.items; continue }
-                    turn.hasBody -> items += turn.items
-                    // The record has the turn without its steps: the run's log stands in when it has been replayed
-                    // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
-                    else -> {
-                        items += turn.items
-                        if (!(newest && chatRunning)) turnBodyNotice(turn, run)?.let { items += it }
-                    }
-                }
-                // The footer: the run's when known and over, else the timing's for a turn that is over. Its id is the
-                // turn's whichever gives it, so the row keeps its place when the run list lands.
-                when {
-                    newest && chatRunning -> Unit
-                    run != null -> if (!statusOf(run).isActive) items += TimelineBuilder.footer(run).copy(id = "rec-footer-${turn.stepIndex}")
-                    timing?.durationMs != null ->
-                        items += RunFooter("rec-footer-${turn.stepIndex}", "rec-${turn.stepIndex}", RunStatus.FINISHED, timing.durationMs, emptyList())
-                }
-            }
+            val items = ArrayList<TimelineItem>(window.turns.size * 4 + 8)
+            val shown = HashSet<Int>(window.turns.size * 2)
+            val perf = TranscriptPerf.session(agentId)
             val pending = trailing.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
-            trailing.forEach { prompt ->
-                items += TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
+            fun echo(prompt: LocalPrompt): List<TimelineItem> =
+                TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
+            fun startOf(i: Int): Long? {
+                val run = paired.getOrNull(offset + i)
+                return run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } } ?: window.turnStartedAt(i)
             }
+            // Where each trailing prompt goes: the index of the first turn that started after its run was created, or null for the end.
+            val insertBefore: Map<LocalPrompt, Int?> = trailing.associateWith { prompt ->
+                val sentAt = if (prompt.filed) parseIsoMillis(prompt.run.createdAt).takeIf { it > 0 } else null
+                if (sentAt == null) null else window.turns.indices.firstOrNull { i -> (startOf(i) ?: Long.MIN_VALUE) > sentAt }
+            }
+            val appended = trailing.filter { insertBefore[it] == null }
+            for ((i, turn) in window.turns.withIndex()) {
+                trailing.forEach { prompt -> if (insertBefore[prompt] == i) items += echo(prompt) }
+                val run = paired.getOrNull(offset + i)
+                // The newest turn of the record is the live one while the chat runs and nothing sent from here trails it.
+                val newest = i == window.turns.lastIndex && appended.isEmpty()
+                val complete = run?.let { traces[it.id] }
+                val liveItems = if (complete == null && run != null && current?.runId == run.id && current.items.isNotEmpty()) current.items else null
+                val liveNewest = newest && chatRunning
+                val inputs = TurnInputs(
+                    turn = turn,
+                    run = run,
+                    runStatus = run?.let { statusOf(it) },
+                    timing = window.timing(i),
+                    attachments = run?.let { promptImages[it.id] },
+                    complete = complete,
+                    liveItems = liveItems,
+                    liveNewest = liveNewest,
+                    notice = if (complete == null && liveItems == null && !turn.hasBody && !liveNewest) turnBodyNotice(turn, run) else null,
+                )
+                // A turn whose inputs have not moved is the items it was last rendered to — the same instances, so
+                // everything downstream (the rows, the screen's rows) can tell it has not changed without reading it.
+                val rendered = renderedTurns[turn.stepIndex]?.takeIf { it.inputs.sameAs(inputs) }?.also { perf.turnRenderReused() }
+                    ?: RenderedTurn(inputs, renderTurn(inputs)).also { renderedTurns[turn.stepIndex] = it; perf.turnRendered() }
+                items.addAll(rendered.items)
+                shown += turn.stepIndex
+            }
+            // The cache holds the window's turns and nothing else: a turn paged out (see [trimWindow]) leaves it.
+            if (renderedTurns.size > shown.size) renderedTurns.keys.retainAll(shown)
+            appended.forEach { prompt -> items += echo(prompt) }
             return items.withUniqueIds()
+        }
+
+        /** The rendered items of the window's turns, by step index; see [recordItems]. Under the entry's monitor. */
+        private val renderedTurns = HashMap<Int, RenderedTurn>()
+
+        /**
+         * One turn of the record as the transcript shows it: its prompt (an injected turn as its rows), then its
+         * trace — the stream's complete one, the story so far of the run being followed, the record's own body, or
+         * the record's turn with the word on its missing body — and its footer where one belongs (see [renderTurn]).
+         */
+        private fun renderTurn(inputs: TurnInputs): List<TimelineItem> {
+            val turn = inputs.turn
+            val run = inputs.run
+            val timing = inputs.timing
+            val items = ArrayList<TimelineItem>((inputs.complete ?: inputs.liveItems ?: turn.items).size + 4)
+            val startedAt = run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } }
+                ?: timing?.timestampMs?.let { end -> end - (timing.durationMs ?: 0L) }?.takeIf { it > 0 }
+            turn.prompt?.let { text ->
+                val promptId = "rec-prompt-${turn.stepIndex}"
+                items += SystemNotifications.parse(promptId, text, startedAt)?.items
+                    ?: listOf(UserMessage(promptId, text, startedAt, attachments = inputs.attachments ?: emptyList()))
+            }
+            when {
+                // The trace the stream gave, whole: its own footer included.
+                inputs.complete != null -> { items += inputs.complete; return items }
+                // The story the stream tells so far — unless it has told nothing yet (a stream that will not
+                // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
+                inputs.liveItems != null -> { items += inputs.liveItems; return items }
+                turn.hasBody -> items += turn.items
+                // The record has the turn without its steps: the run's log stands in when it has been replayed
+                // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
+                else -> {
+                    items += turn.items
+                    inputs.notice?.let { items += it }
+                }
+            }
+            // The footer: the run's when known and over, else the timing's for a turn that is over. Its id is the
+            // turn's whichever gives it, so the row keeps its place when the run list lands.
+            when {
+                inputs.liveNewest -> Unit
+                run != null -> if (inputs.runStatus?.isActive == false) items += TimelineBuilder.footer(run).copy(id = "rec-footer-${turn.stepIndex}")
+                timing?.durationMs != null ->
+                    items += RunFooter("rec-footer-${turn.stepIndex}", "rec-${turn.stepIndex}", RunStatus.FINISHED, timing.durationMs, emptyList())
+            }
+            return items
         }
 
         /**
@@ -565,22 +672,59 @@ class ConversationRepository(
         fun recordTurnsNeedingReplay(): List<RunDto> {
             val window = recordWindow ?: return emptyList()
             val ordered = allRuns()
-            val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+            val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
             val paired = ordered.filter { it.id !in trailing }
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
                 val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
                 // Without a body; or, in a coordinator's chat, with a body but without the coordinator's word to the
-                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has it whole.
-                val wanting = !turn.hasBody || (projectMode && !turn.hasUserMessage)
+                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has
+                // it whole — or with that word read leniently out of pieces (see `MessageRecovery`), which the log has as sent.
+                val wanting = !turn.hasBody || (projectMode && (!turn.hasUserMessage || turn.hasRecoveredMessage))
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }
 
-        /** True when the record's newest turns include this prompt sent from here: the record has caught up with it. */
-        fun RecordWindow.holds(prompt: LocalPrompt): Boolean {
-            val text = prompt.message.text.trim()
-            return turns.asReversed().take(local.size + 1).any { it.prompt?.trim() == text }
+        /**
+         * The window's turn that is [prompt]'s — the record has caught up with the prompt sent from here — or null.
+         *
+         * Until 0.3.33 the record held a prompt when its text was among the window's newest `local.size + 1` turns.
+         * A Project coordinator's workers report in as injected turns, dozens in a minute, so by the time the record
+         * was read again the user's turn was far from its end: the echo was never matched, never pruned, and stood
+         * trailing behind every turn the record had — the reply above the question, restart after restart (Bennett's
+         * v0.3.32 frames). Now the whole window is searched for a turn of the user's (never an injected one) whose
+         * prompt reads the same once whitespace is normalised — the server trims and reflows what the phone sent.
+         * One such turn is the prompt's; among several (the same words sent twice) the one that started closest to
+         * the run's creation, when the account's timings say, else the newest. The text is the whole criterion: a
+         * turn that merely started around the time the prompt was sent is another question asked a moment before or
+         * after, and taking it for this one would make that question disappear.
+         */
+        fun RecordWindow.turnOf(prompt: LocalPrompt): RecordTurn? {
+            val text = normalizePrompt(prompt.message.text)
+            if (text.isEmpty()) return null
+            val sentAt = if (prompt.filed) parseIsoMillis(prompt.run.createdAt).takeIf { it > 0 } else null
+            var match: RecordTurn? = null
+            var matchDelta = Long.MAX_VALUE
+            for (i in turns.indices.reversed()) {
+                val turn = turns[i]
+                val recorded = turn.prompt ?: continue
+                if (SystemNotifications.isInjected(recorded) || normalizePrompt(recorded) != text) continue
+                // Newest first: an older match replaces the newer only when the timings put it closer to the send.
+                val startedAt = turnStartedAt(i)
+                val delta = if (sentAt != null && startedAt != null) kotlin.math.abs(startedAt - sentAt) else null
+                if (match == null || (delta != null && delta < matchDelta)) {
+                    match = turn
+                    matchDelta = delta ?: matchDelta
+                }
+            }
+            return match
+        }
+
+        /** When the [i]th loaded turn started, by the account's timing of it (its end less its duration), when read. */
+        private fun RecordWindow.turnStartedAt(i: Int): Long? {
+            val timing = timing(i) ?: return null
+            val end = timing.timestampMs ?: return null
+            return (end - (timing.durationMs ?: 0L)).takeIf { it > 0 }
         }
 
         /**
@@ -834,6 +978,8 @@ class ConversationRepository(
                 record = if (window != null || e.recordEmpty || e.recordError != null) {
                     TranscriptLoadDiagnostics.RecordLine(window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError)
                 } else null,
+                // The newest turns' steps and calls as the record gave them this session, keys and value types only.
+                shapes = window?.turns?.mapNotNull { it.shape }.orEmpty(),
                 status = run {
                     val latest = e.latestRun()
                     val row = agents.agent(agentId)
@@ -871,6 +1017,7 @@ class ConversationRepository(
         val e = entry(agentId)
         lastOpened.value = agentId
         val firstScreen = synchronized(e) {
+            if (e.attached == 0) TranscriptPerf.opened(agentId)
             e.attached++
             // A screen attaching can see the chat, whatever the last one that left had done.
             e.paused = false
@@ -908,6 +1055,9 @@ class ConversationRepository(
                 e.runPagingJob = null
                 e.keepFollowingJob?.cancel()
                 e.keepFollowingJob = null
+                e.prefetchJob?.cancel()
+                e.prefetchJob = null
+                e.prefetchedOlder = null
                 e.loadingOlder = false
                 e.stopFollowing()
                 e.trimWindow()
@@ -965,6 +1115,9 @@ class ConversationRepository(
         runPagingJob?.cancel()
         keepFollowingJob?.cancel()
         keepFollowingJob = null
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetchedOlder = null
         publish(
             mutate = {
                 messages = emptyList()
@@ -1113,6 +1266,7 @@ class ConversationRepository(
         val workers = synchronized(this) {
             mutate()
             lastPublishAtMs = monotonicMillis()
+            val buildStartedAt = System.nanoTime()
             val items = items()
             val window = recordWindow
             val (older, status) = if (window != null) {
@@ -1121,6 +1275,8 @@ class ConversationRepository(
                 layout().let { (it.olderCount > 0) to traceStatus(it) }
             }
             state.update { it.copy(items = items, hasOlder = older, traceStatus = status).transform() }
+            // The newest page counts as whole once nothing shown is still being read or replayed.
+            TranscriptPerf.session(agentId).publication(items.size, whole = status.pending == 0, buildNanos = System.nanoTime() - buildStartedAt)
             coordinatorLineage(items)
         }
         if (workers != null) {
@@ -1161,7 +1317,7 @@ class ConversationRepository(
      */
     private fun Entry.recordTraceStatus(window: RecordWindow): TraceStatus {
         val ordered = allRuns()
-        val trailing = local.filter { !window.holds(it) }.mapTo(HashSet()) { it.run.id }
+        val trailing = local.filter { window.turnOf(it) == null }.mapTo(HashSet()) { it.run.id }
         val paired = ordered.filter { it.id !in trailing }
         val offset = paired.size - window.turns.size
         var shown = 0
@@ -1258,10 +1414,10 @@ class ConversationRepository(
         }
         try {
             coroutineScope {
-                val conversation = async { runCatching { api.conversationV0(agentId) } }
+                val conversation = async { net(agentId, "transcript"); runCatching { api.conversationV0(agentId) } }
                 // The newest runs, one page: enough to render the window; the rest of the records follow behind the
                 // cursor (see [pageOlderRuns]) rather than holding the first frame up.
-                val runPage = async { runCatching { api.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
+                val runPage = async { net(agentId, "runs"); runCatching { api.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
                 val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
                 // The runs and their traces render first: the `/v0` transcript is the whole chat in one answer,
                 // megabytes for a long one, and a slow connection takes its time over it. Whichever lands first is
@@ -1338,17 +1494,20 @@ class ConversationRepository(
                 }
                 // The latest run is the row's execution state (a turn that ended in an error is only visible here),
                 // so the sidebar reflects it right away. The full agent record then enriches the row (repo, PR,
-                // duration); it never holds up the transcript, and reuses this run, saving a round-trip.
-                latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
-                launch { agents.loadDetail(agentId, latest) }
+                // duration); it never holds up the transcript, and reuses this run, saving a round-trip. As this
+                // device knows the run (see [Entry.known]): a record read before a Stop does not put the row back to running.
+                val knownLatest = latest?.let { e.known(it) }
+                knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+                launch { agents.loadDetail(agentId, knownLatest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
                     persist(e, backend, tokens)
                     val active = latest?.takeIf { it.statusEnum().isActive }
                     if (active != null) {
                         // Already followed when the runs rendered ahead of the transcript (see [publishRunsFirst]): the
-                        // stream is not opened a second time for the same run.
-                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
+                        // stream is not opened a second time for the same run. And only while it is still the chat's
+                        // latest: a follow-up accepted since (the persist above is a suspension) is followed already.
+                        if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
                     } else {
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
@@ -1393,9 +1552,9 @@ class ConversationRepository(
             // Still loading: the transcript is on its way. The screen shows what there is meanwhile.
             transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest)) },
         )
-        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(e.known(run)) } }
         val active = latest?.takeIf { it.statusEnum().isActive }
-        if (active != null) startStreaming(e, agentId, active)
+        if (active != null) startStreaming(e, agentId, active, unlessMovedOn = true)
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
     }
 
@@ -1412,8 +1571,8 @@ class ConversationRepository(
         val cursorApi = backend.api
         val (known, wantTurns) = synchronized(e) { e.recordWindow to e.window }
         val tail = async { runCatching { RecordPager.tail(api, agentId, wantTurns, known?.total) } }
-        val stateRead = async { runCatching { api.state(agentId) } }
-        val runPage = async { runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
+        val stateRead = async { net(agentId, "state"); runCatching { api.state(agentId) } }
+        val runPage = async { net(agentId, "runs"); runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
         val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
         val raw = tail.await()
         val onDevice = stored.await()
@@ -1438,7 +1597,7 @@ class ConversationRepository(
         } else {
             val sink = images?.forAgent(agentId)
             val now = AppClock.now()
-            val built = RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+            val built = RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
             var project = false
             e.publish(
                 mutate = {
@@ -1483,11 +1642,12 @@ class ConversationRepository(
                     copy(activeRunId = latest?.id, runStatus = if (following) runStatus else e.chatStatus(latest), isStreaming = following && isStreaming, isReconnecting = following && isReconnecting)
                 },
             )
-            latest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
-            launch { agents.loadDetail(agentId, latest) }
+            val knownLatest = latest?.let { e.known(it) }
+            knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+            launch { agents.loadDetail(agentId, knownLatest) }
             val active = latest?.takeIf { it.statusEnum().isActive }
             if (active != null) {
-                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active)
+                if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
             } else {
                 val followed = synchronized(e) { e.live?.runId }
                 if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
@@ -1584,11 +1744,13 @@ class ConversationRepository(
         val api = session.current.api
         // The agent's record, read for its latest run alone: the row is left as it is (a record a poll behind a
         // finish the stream saw would otherwise put the spinner back on the finished run).
+        net(agentId, "agent")
         val detail = runCatching { api.getAgent(agentId) }.getOrElse { t -> if (t is CancellationException) throw t; null }
         val latestId = (detail?.latestRunId ?: agents.agent(agentId)?.latestRunId)?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) || it == endedRunId } ?: return false
         val known = synchronized(e) { e.runById(latestId) }
-        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
-        if (!run.statusEnum().isActive) return false
+        val run = known?.takeIf { it.statusEnum().isActive } ?: runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return false
+        // Active as this device knows it: the run it stopped is not the next one to follow, whatever its record says yet.
+        if (!e.statusOf(run).isActive) return false
         var follow = false
         e.publish(mutate = {
             if (runs.none { it.id == run.id }) runs = listOf(run) + runs
@@ -1611,8 +1773,9 @@ class ConversationRepository(
         val wantTurns = synchronized(e) { e.window }
         val raw = runCatching { RecordPager.tail(api, e.agentId, wantTurns, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: return
         val sink = images?.forAgent(e.agentId)
-        val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
-        e.publish(mutate = { if (recordWindow === known) recordWindow = built })
+        val built = RecordTranscript.window(raw, known, state = null, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
+        // The record has grown: the prompts sent from here it now holds hand over to it (see [pruneLocal]).
+        e.publish(mutate = { if (recordWindow === known) recordWindow = built; pruneLocal() })
         persistRecord(e, built, known, session.current, cacheTokens())
     }
 
@@ -1621,16 +1784,43 @@ class ConversationRepository(
         val api = record ?: return
         val backend = session.current
         val tokens = cacheTokens()
-        val older = RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
+        // The page read ahead, when it is the one before this window; else read now.
+        val older = synchronized(e) { e.prefetchedOlder?.takeIf { it.isPageBefore(window) }?.also { e.prefetchedOlder = null } }
+            ?: RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS)
         val sink = images?.forAgent(e.agentId)
-        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS) { turn, key -> HeadlessTranscript.body(turn, key, sink) }
+        val built = RecordTranscript.prepend(window, older, AppClock.now(), wantTurns = WINDOW_RUNS, build = turnBuilder(e.agentId, sink))
         e.publish(mutate = {
             // Only onto the window this was asked for: a re-read since replaced it, and its turns stand.
             if (recordWindow === window || recordWindow?.firstStep == window.firstStep) recordWindow = built
             this.window += WINDOW_RUNS
+            // The page may hold the turn of a prompt sent from here that the newest turns did not: the echo hands over to it.
+            pruneLocal()
         })
+        prefetchOlderRecord(e, built)
         persistRecord(e, built, window, backend, tokens)
         loadTraces(e, e.agentId, e.shownRuns())
+    }
+
+    /** Whether this page ends exactly where [window] begins: the page before it. */
+    private fun RecordPager.Raw.isPageBefore(window: RecordWindow): Boolean = steps.isNotEmpty() && firstStep + steps.size == window.firstStep
+
+    /**
+     * Reads the record's page before [window] ahead of the reader's next scroll up, so the next [loadOlderFromRecord]
+     * has it in hand (see [Entry.prefetchedOlder]). One read at a time, only while a screen shows the chat, and only
+     * once the reader has scrolled up once — a reader who never leaves the newest turns costs nothing more.
+     */
+    private fun prefetchOlderRecord(e: Entry, window: RecordWindow) {
+        val api = record ?: return
+        synchronized(e) {
+            if (!window.hasOlder || e.attached == 0 || e.paused || e.prefetchJob?.isActive == true) return
+            if (e.prefetchedOlder?.isPageBefore(window) == true) return
+            e.prefetchedOlder = null
+            e.prefetchJob = e.scope.launch {
+                val raw = runCatching { RecordPager.before(api, e.agentId, window.firstStep, WINDOW_RUNS) }
+                    .getOrElse { t -> if (t is CancellationException) throw t; null } ?: return@launch
+                synchronized(e) { if (e.attached > 0 && e.recordWindow?.firstStep == window.firstStep) e.prefetchedOlder = raw }
+            }
+        }
     }
 
     /**
@@ -1717,7 +1907,7 @@ class ConversationRepository(
             var next: String? = cursor
             var pages = 1
             while (next != null && pages < MAX_RUN_PAGES) {
-                val more = runCatching { api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = next) }.getOrElse { t ->
+                val more = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = next) }.getOrElse { t ->
                     if (t is CancellationException) throw t
                     null
                 } ?: break
@@ -1737,7 +1927,7 @@ class ConversationRepository(
             }
         }
         if (latestId != null && page.items.none { it.id == latestId }) {
-            val latest = runCatching { api.getRun(agentId, latestId) }.getOrElse { t ->
+            val latest = runCatching { net(agentId, "run"); api.getRun(agentId, latestId) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 null
             }
@@ -1783,7 +1973,7 @@ class ConversationRepository(
         var fetched = 0
         for (i in 0 until pages) {
             val cursor = synchronized(e) { e.olderRunsCursor.takeUnless { e.runsComplete } } ?: break
-            val page = runCatching { backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
+            val page = runCatching { net(agentId, "runs"); backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 break
             }
@@ -1878,8 +2068,15 @@ class ConversationRepository(
         if (local.isEmpty()) return
         val listed = runs.mapTo(HashSet()) { it.id }
         recordWindow?.let { window ->
-            // The record has the prompt's turn and the list its run: the server reports it in full.
-            local = local.filter { prompt -> !(window.holds(prompt) && prompt.run.id in listed) }
+            // The record has the prompt's turn: the server reports it in full, and the echo goes. A prompt the server
+            // has not answered for (a placeholder run) is kept until it has. The turn pairs with its run once the echo
+            // is gone, so a run the list has not reached yet (a coordinator's injected turns fill the first page)
+            // joins the list from the answer the server gave when the prompt was sent.
+            val held = local.filter { prompt -> prompt.filed && window.turnOf(prompt) != null }
+            if (held.isEmpty()) return
+            val missing = held.map { it.run }.filter { it.id !in listed }
+            if (missing.isNotEmpty()) runs = runs + missing
+            local = local - held
             return
         }
         val ordered = allRuns()
@@ -1928,31 +2125,54 @@ class ConversationRepository(
         // The record's window (Extended mode): its turns' items come from their own files, one read per turn. Only
         // while the record is the transcript's source; with the mode off the documented copy below renders.
         cached.record?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript }?.let { saved ->
-            val files = readTraces(agentId, saved.turns.map { RecordTurn.traceKey(it.stepIndex) })
             val state = saved.turnCount.takeIf { it > 0 }?.let { count ->
                 RecordState(count, saved.timings.map { TurnTiming(it.durationMs, it.timestampMs) }, pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
             }
-            val turns = saved.turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList()) }
-            val restored = RecordWindow(saved.total, saved.firstStep, turns, emptyList(), state, readAtMillis = 0L)
-            var project = false
-            e.publish(
-                mutate = {
-                    recordWindow = restored
-                    if (turns.any { it.projectMode }) projectMode = true
-                    project = projectMode
-                },
-                transform = { copy(isProjectConversation = project) },
-            )
+            // The newest turns' files first — the ones the screen opens on — and the rest of the saved window behind
+            // them: a window of thirty turns is megabytes of JSON, and the reader should not wait on the twenty they
+            // have to scroll up to before the ten in front of them show their tool calls.
+            val newest = saved.turns.takeLast(WINDOW_RUNS)
+            val older = saved.turns.dropLast(newest.size)
+            var restored: RecordWindow? = null
+            fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
+                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList()) }
+                val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L)
+                var project = false
+                e.publish(
+                    mutate = {
+                        // Only over what this restore put there: the network may have answered meanwhile, and its
+                        // window — built on the newest turns restored, the older ones read again — stands.
+                        if (onlyOver == null || recordWindow === onlyOver) {
+                            recordWindow = window
+                            restored = window
+                        }
+                        if (built.any { it.projectMode }) projectMode = true
+                        project = projectMode
+                    },
+                    transform = { copy(isProjectConversation = project) },
+                )
+            }
+            val newestFiles = readTraces(agentId, newest.map { RecordTurn.traceKey(it.stepIndex) })
+            publishRestored(newest, newestFiles, onlyOver = null)
+            if (older.isNotEmpty()) {
+                val olderFiles = readTraces(agentId, older.map { RecordTurn.traceKey(it.stepIndex) })
+                publishRestored(older + newest, olderFiles + newestFiles, onlyOver = restored)
+            }
             // The turns the record holds without their steps: the traces their runs' logs gave last time, from disk.
             val replayed = readTraces(agentId, e.shownRuns().map { it.id })
             if (replayed.isNotEmpty()) e.publish(mutate = { traces = replayed.mapValues { it.value.items } + traces })
             return
         }
         // The window's traces come straight from their files — one small read per run, nothing of the older turns —
-        // so the chat is whole, tool calls and payloads included, before the network has said a word.
+        // so the chat is whole, tool calls and payloads included, before the network has said a word. The newest
+        // runs' files first, the rest of the window behind them, for the same reason as above.
         val shown = e.shownRuns().filter { it.statusEnum().isTerminal }
-        val saved = readTraces(agentId, shown.map { it.id })
-        if (saved.isNotEmpty()) {
+        val newestRuns = shown.takeLast(WINDOW_RUNS)
+        val olderRuns = shown.dropLast(newestRuns.size)
+        for (batch in listOf(newestRuns, olderRuns)) {
+            if (batch.isEmpty()) continue
+            val saved = readTraces(agentId, batch.map { it.id })
+            if (saved.isEmpty()) continue
             e.publish(mutate = {
                 traces = saved.mapValues { it.value.items } + traces
                 // A file from an earlier build without the coordinator's messages or the goal's objective is shown,
@@ -1962,8 +2182,18 @@ class ConversationRepository(
         }
     }
 
+    /** One network call of [kind] for the chat's counters (see [TranscriptPerf]). */
+    private fun net(agentId: String, kind: String) = TranscriptPerf.session(agentId).network(kind)
+
+    /** Builds a record turn's items (see [HeadlessTranscript.body]), timed for the chat's counters. */
+    private fun turnBuilder(agentId: String, sink: GeneratedImageSink?): (HeadlessTranscript.Turn, String) -> List<TimelineItem> = { turn, key ->
+        val startedAt = System.nanoTime()
+        HeadlessTranscript.body(turn, key, sink).also { TranscriptPerf.session(agentId).turnBuilt(System.nanoTime() - startedAt) }
+    }
+
     private suspend fun readCache(agentId: String): CachedConversation? {
         val store = cache?.takeIf { !session.isDemo } ?: return null
+        TranscriptPerf.session(agentId).conversationRead()
         val cached = store.read(agentId)?.value
         diskIndex[agentId] = cached?.agentUpdatedAtMillis ?: ABSENT
         return cached
@@ -1973,7 +2203,9 @@ class ConversationRepository(
     private suspend fun readTraces(agentId: String, runIds: Collection<String>): Map<String, CachedTrace> {
         if (runIds.isEmpty()) return emptyMap()
         val store = traceCache?.takeIf { !session.isDemo } ?: return emptyMap()
+        val startedAt = System.nanoTime()
         return runCatching { store.read(agentId, runIds) }.getOrDefault(emptyMap())
+            .also { TranscriptPerf.session(agentId).traceRead(runIds.size, System.nanoTime() - startedAt) }
     }
 
     /**
@@ -2086,6 +2318,7 @@ class ConversationRepository(
                                     synchronized(e) { e.expiredRuns += run.id; e.traceInFlight.remove(run.id) }
                                     continue
                                 }
+                                net(agentId, "replay")
                                 val snapshot = hub.replay(agentId, run.id, createdAt.takeIf { it > 0 })
                                 when {
                                     snapshot.hasTrace -> {
@@ -2185,8 +2418,13 @@ class ConversationRepository(
         return CachedTrace(run.id, parseIsoMillis(run.createdAt), items)
     }
 
-    private fun startStreaming(e: Entry, agentId: String, run: RunDto) {
-        e.streamJob?.cancel()
+    /**
+     * Follows [run]: its stream's snapshots become the chat's live turn (see [Entry.applyLive]). [unlessMovedOn] is
+     * for a run a load read as the chat's latest: it is followed only while it still is — a follow-up sent from here
+     * while the load was in flight is the newer run, already followed, and a load landing after it must not put the
+     * chat back on the turn it had moved past (which showed a cancelled run, not streaming, over a follow-up under way).
+     */
+    private fun startStreaming(e: Entry, agentId: String, run: RunDto, unlessMovedOn: Boolean = false) {
         // Started only once it is the entry's follower, so not even its first snapshot can be taken for a stale one.
         val job = e.scope.launch(start = CoroutineStart.LAZY) {
             val self = currentCoroutineContext()[Job]
@@ -2215,6 +2453,9 @@ class ConversationRepository(
                 }
         }
         val following = synchronized(e) {
+            // The chat has moved past this run since the load read it: the follow it has stands.
+            if (unlessMovedOn && e.latestRun()?.id != run.id) return@synchronized false
+            e.streamJob?.cancel()
             // The last screen may have left, or the one still attached been covered, while the load that got here
             // was wrapping up: then nobody is looking, and the next attach or resume decides afresh.
             if (e.attached == 0 || e.paused) return@synchronized false
@@ -2354,14 +2595,21 @@ class ConversationRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
-    ): Result<Unit> {
+        /**
+         * Show the prompt in the transcript before the server has answered (the composer's send). A queued message
+         * passes false: its card above the composer is what the reader sees until the server accepts it, so a
+         * refusal does not flash a bubble on and off (see `FollowUpRepository`).
+         */
+        showEcho: Boolean = true,
+    ): Result<RunDto> {
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
-        val staged = stageFollowUp(agentId, text, images)
+        val staged = stageFollowUp(agentId, text, images, show = showEcho)
         return sendStaged(agentId, staged, images, mcpServers, planMode, modelId, modelParams, modelDisplayName)
             .onFailure { t ->
                 // Refused as busy, the message is not lost: the caller queues it for the end of the turn. That is
-                // nothing for the chat to show as an error.
-                discardStaged(agentId, staged, t.userMessage().takeUnless { t.toCursorError()?.code == AGENT_BUSY })
+                // nothing for the chat to show as an error. Nor is any failure of a message whose bubble was never
+                // shown (a queued one): its card carries the reason, with a retry.
+                discardStaged(agentId, staged, t.userMessage().takeUnless { !showEcho || t.toCursorError()?.code == AGENT_BUSY })
             }
     }
 
@@ -2395,23 +2643,27 @@ class ConversationRepository(
      * [sendFollowUp] so a queued message that is steered can be on screen while the turn it interrupts is still being
      * cancelled.
      */
-    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList()): StagedFollowUp {
+    suspend fun stageFollowUp(agentId: String, text: String, images: List<PromptImage> = emptyList(), files: List<PromptFile> = emptyList(), show: Boolean = true): StagedFollowUp {
         val e = entry(agentId)
         val trimmed = text.trim()
         val now = AppClock.now()
-        val localId = "$LOCAL_RUN_PREFIX$now"
+        // Two prompts staged in the same millisecond (a burst from the queue) must not share an id.
+        val localId = synchronized(e) { "$LOCAL_RUN_PREFIX${maxOf(now, e.lastLocalStamp + 1).also { e.lastLocalStamp = it }}" }
         val placeholder = e.placeholderRun(localId, now)
-        // Written before the request so the bubble shows its images from the first frame, like the text. Storage
-        // trouble costs the previews, never the send.
-        val staged = runCatching { attachments.stage(images) }.getOrDefault(StagedAttachments.EMPTY)
-        e.publish(
-            mutate = {
-                local = local + LocalPrompt(V0ConversationMessageDto(localId, USER_MESSAGE, trimmed), placeholder)
-                if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
-            },
-            transform = { copy(error = null) },
-        )
-        return StagedFollowUp(localId, trimmed, staged, now)
+        // Written before the request so the bubble shows its images and files from the first frame, like the text.
+        // Storage trouble costs the previews, never the send.
+        val staged = runCatching { attachments.stage(images, files) }.getOrDefault(StagedAttachments.EMPTY)
+        val message = V0ConversationMessageDto(localId, USER_MESSAGE, trimmed)
+        if (show) {
+            e.publish(
+                mutate = {
+                    local = local + LocalPrompt(message, placeholder)
+                    if (staged.attachments.isNotEmpty()) promptImages = promptImages + (localId to staged.attachments)
+                },
+                transform = { copy(error = null) },
+            )
+        }
+        return StagedFollowUp(localId, trimmed, staged, now, shown = show, message = message, placeholder = placeholder)
     }
 
     /**
@@ -2428,7 +2680,7 @@ class ConversationRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
-    ): Result<Unit> {
+    ): Result<RunDto> {
         val e = entry(agentId)
         return agents.followUp(
             agentId,
@@ -2439,7 +2691,7 @@ class ConversationRepository(
             modelId = modelId,
             modelParams = modelParams,
             modelDisplayName = modelDisplayName,
-        ).map { run -> accepted(e, agentId, staged, run) }
+        ).map { run -> accepted(e, agentId, staged, run); run }
     }
 
     /**
@@ -2452,14 +2704,30 @@ class ConversationRepository(
         agentId: String,
         text: String,
         images: List<PromptImage> = emptyList(),
+        files: List<PromptFile> = emptyList(),
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
         send: suspend () -> String?,
     ): Result<Unit> {
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
+        val staged = stageFollowUp(agentId, text, images, files)
+        return sendStagedVia(agentId, staged, modelId, modelParams, modelDisplayName, send)
+    }
+
+    /**
+     * [sendFollowUpVia] for a prompt already [stageFollowUp]ed — a queued message that carries files, which only the
+     * account's follow-up can take. The bubble comes down with the reason when [send] fails, as it does there.
+     */
+    suspend fun sendStagedVia(
+        agentId: String,
+        staged: StagedFollowUp,
+        modelId: String? = null,
+        modelParams: List<ModelParam> = emptyList(),
+        modelDisplayName: String? = null,
+        send: suspend () -> String?,
+    ): Result<Unit> {
         val e = entry(agentId)
-        val staged = stageFollowUp(agentId, text, images)
         return agents.followUpVia(agentId, modelId, modelParams, modelDisplayName, send)
             .map { run ->
                 if (run != null) {
@@ -2481,8 +2749,9 @@ class ConversationRepository(
             mutate = {
                 // A reload that raced the request may already list this run. The local copy stays all the
                 // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
-                // for as long as only the run list does; the next load prunes it once both have caught up.
-                local = local.map { if (it.run.id == localId) it.copy(run = run) else it }
+                // for as long as only the run list does; the next load prunes it once both have caught up. A
+                // prompt not shown ahead of the request (a queued message's) is shown now, filed under its run.
+                local = if (local.any { it.run.id == localId }) local.map { if (it.run.id == localId) it.copy(run = run) else it } else local + LocalPrompt(staged.message, run)
                 promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (run.id to kept) }
                 inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
             },
@@ -2527,9 +2796,9 @@ class ConversationRepository(
         val now = AppClock.now()
         val localId = "$LOCAL_RUN_PREFIX$now"
         val placeholder = e.placeholderRun(localId, now)
-        // Staged before anything is shown, so the bubble has its images from its first frame. Storage trouble costs
-        // the previews, never the launch.
-        val staged = runCatching { attachments.stage(request.images) }.getOrDefault(StagedAttachments.EMPTY)
+        // Staged before anything is shown, so the bubble has its images and files from its first frame. Storage
+        // trouble costs the previews, never the launch.
+        val staged = runCatching { attachments.stage(request.images, request.files) }.getOrDefault(StagedAttachments.EMPTY)
         agents.beginLaunch(request, modelDisplayName)
         e.publish(
             mutate = {
@@ -2719,8 +2988,8 @@ class ConversationRepository(
                     val latest = page.items.maxByOrNull { parseIsoMillis(it.createdAt) }
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
-                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(run) } }
                     val e = entry(agent.id)
+                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(e.known(run)) } }
                     // A screen that opened it in the meantime owns the entry now.
                     if (e.attached == 0 && e.streamJob == null) {
                         e.publish(
@@ -2771,6 +3040,10 @@ class ConversationRepository(
         const val MAX_RUN_PAGES = 8
         /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */
         const val PUBLISH_COALESCE_MS = 80L
+        private val PROMPT_WHITESPACE = Regex("""\s+""")
+
+        /** A prompt's text as the server and the phone agree on it: runs of whitespace as one space, trimmed. */
+        fun normalizePrompt(text: String): String = text.replace(PROMPT_WHITESPACE, " ").trim()
         /** The pauses between looks for the next run and reads of the record's growth while the account runs on (see [keepFollowing]). */
         const val KEEP_FOLLOWING_BASE_MS = 2_000L
         const val KEEP_FOLLOWING_MAX_MS = 15_000L

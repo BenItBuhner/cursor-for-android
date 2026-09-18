@@ -12,6 +12,8 @@ import com.cursorforandroid.data.api.AgentFilesApi
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.ConnectAgentStartApi
+import com.cursorforandroid.data.api.ConnectPromptUploadApi
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.HeadlessPage
@@ -67,6 +69,7 @@ import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.ArtifactRepository
+import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.CatalogRepository
 import com.cursorforandroid.data.repo.CapabilityGatedPullRequestSource
 import com.cursorforandroid.data.repo.ChatLauncher
@@ -83,6 +86,7 @@ import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ProjectEditor
 import com.cursorforandroid.data.repo.ProjectRepository
 import com.cursorforandroid.data.repo.AgentStoreRepository
+import com.cursorforandroid.data.repo.PromptUploader
 import com.cursorforandroid.data.repo.PullRequestRepository
 import com.cursorforandroid.data.repo.PullRequestSource
 import com.cursorforandroid.data.repo.RemoteRepository
@@ -94,6 +98,7 @@ import com.cursorforandroid.data.repo.WorkspaceRepository
 import com.cursorforandroid.domain.AgentDiff
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
+import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
@@ -185,7 +190,13 @@ class AppGraph(
     }
     private val realBackend = real ?: CursorBackend(isDemo = false, parts = realParts)
     /** Seeded when the demo is entered, so a launch into a real account never pays for the dataset. */
-    private val demoParts = lazy { DemoBackendFactory.create() }
+    private val perfSeeds = BuildConfig.DEBUG && com.cursorforandroid.data.demo.DemoPerfSeeds.enabled(app.cacheDir)
+    private val demoParts = lazy { DemoBackendFactory.create(perfSeeds = perfSeeds) }
+
+    init {
+        // A debug build measuring the transcript on a device: the `perf:` block after each presentation, in logcat.
+        if (perfSeeds) com.cursorforandroid.domain.TranscriptPerf.logger = { android.util.Log.i("TranscriptPerf", it) }
+    }
     private val demoBackend = demo ?: CursorBackend(isDemo = true, parts = demoParts)
 
     /**
@@ -372,6 +383,23 @@ class AppGraph(
         capabilities = capabilities,
     )
 
+    /**
+     * A prompt's files of any type, staged the way the desktop stages them (`PresignPromptUpload`, the parts `PUT`,
+     * `CompletePromptUpload`) and referenced from the account's follow-up or start (Extended mode, `promptFiles`).
+     */
+    private val lazyPromptUploadApi = lazy { ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyPromptUploads = lazy { PromptUploader(lazyPromptUploadApi.value, lazyAccountClient.value) }
+    val promptUploads: PromptUploader get() = lazyPromptUploads.value
+
+    /** The composers' attached files going up the moment they are attached, so a send waits on no upload (see [AttachmentUploads]). */
+    private val lazyAttachmentUploads = lazy { AttachmentUploads(uploader = { promptUploads }) }
+    val attachmentUploads: AttachmentUploads get() = lazyAttachmentUploads.value
+
+    /** A new chat started on the account service, for the first prompt that carries files (see [ConnectAgentStartApi]). */
+    private val lazyAgentStart = lazy {
+        ConnectAgentStartApi(lazyAccountRpc.value, lazySessionTokens.value, noRepoEnvironment = { lazyProjectCreation.value.noRepoEnvironmentPublicId() })
+    }
+
     private val lazyAgents = lazy {
         AgentRepository(
             session,
@@ -384,6 +412,8 @@ class AppGraph(
             capabilities = capabilities,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
+            start = { lazyAgentStart.value },
+            uploads = { promptUploads },
         ).also { repo ->
             // The account layer — the pin repository's round: the account's list with its names, looks, sources,
             // lineage fields and running statuses, the pins, the pull request states, and off it the root discovery
@@ -518,6 +548,34 @@ class AppGraph(
             agents = agents,
             hub = liveRuns,
             mcpServers = { mcpServers.enabled() },
+            // A queued message with files goes out through the account's follow-up: `AddAsyncFollowupBackgroundComposer`
+            // with them as `selected_documents[]` — or `selected_images[]` for an image — by the references their
+            // uploads settled on when they were attached; a file without one is uploaded here (Extended mode).
+            accountSend = { agentId, item ->
+                if (!capabilities().promptFiles || session.isDemo) throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED)
+                val uploaded = promptUploads.ensure(item.files.map { it.file })
+                val followup = AccountFollowup(
+                    text = item.previewText,
+                    images = item.images.map { it.image },
+                    files = uploaded,
+                    mode = AgentMode.ofPlanMode(item.planMode),
+                    modelId = item.modelId,
+                )
+                steering.sendFollowup(agentId, followup).getOrThrow()
+            },
+            // A queued message the server refuses as busy against every word here goes to the account's queue
+            // (Extended mode), which sends it when the agent is free — where the composer said it would go.
+            accountQueue = { agentId, item ->
+                val followup = AccountFollowup(
+                    text = item.previewText,
+                    images = item.images.map { it.image },
+                    files = emptyList(),
+                    mode = AgentMode.ofPlanMode(item.planMode),
+                    modelId = item.modelId,
+                )
+                steering.sendFollowup(agentId, followup).getOrThrow()
+            },
+            accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             store = followUpStore,
             persist = { !session.isDemo },
         )
@@ -802,6 +860,8 @@ class AppGraph(
                 },
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
+                perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
+                send = agentId?.let { if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(it) else null },
             ),
         )
     }

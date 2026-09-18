@@ -79,6 +79,20 @@ object CursorDimens {
     val composerMaxWidth = 768.dp
     val composerPadding = 12.dp
     /**
+     * Air around the follow-up composer where it docks at the bottom of a chat: this much between the box and each
+     * side of the window (and the queue and goal strips above it share the same edges)…
+     */
+    val composerGutter = 12.dp
+    /**
+     * …and this much between the box and whatever is under it — the navigation bar, the keyboard, or the window's
+     * own edge on a device that hides its bar — on top of that inset, so the visible gap is the same in every
+     * navigation mode. A little more than the sides rather than exactly them: the box's own bottom padding is
+     * `composerPadding - 2dp` against `composerPadding` at its sides, so with 2dp more outside it, the footer's
+     * discs end up as far from the window's edge as the text is from the sides; and a bottom margin equal to the
+     * sides reads as the tighter of the two against the display's rounded lower corners.
+     */
+    val composerBottomGap = composerGutter + 2.dp
+    /**
      * Extra inset on the composer field, on top of [composerPadding], applied on every side. The 24dp
      * corner eats the 12dp ring the footer discs sit in, so the placeholder and typed text would otherwise
      * start in the throat of the arc — closer to the stroke than the "+" and send glyphs, which sit centred

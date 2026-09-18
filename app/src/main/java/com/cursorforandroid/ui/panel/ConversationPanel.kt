@@ -6,13 +6,9 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
@@ -25,7 +21,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -33,7 +28,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
@@ -43,9 +37,11 @@ import com.cursorforandroid.domain.Artifact
 import com.cursorforandroid.domain.DesktopFailure
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptContent
+import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.HairlineDivider
+import com.cursorforandroid.ui.components.panelInsetPadding
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 
@@ -74,7 +70,10 @@ fun ConversationPanel(
     // Whether the chat has artifacts decides whether the Artifacts section is there at all, so the list is asked for
     // as the panel opens rather than when a section is; the view model asks once.
     LaunchedEffect(state.agentId) { actions.loadArtifacts() }
-    Column(modifier.fillMaxSize().testTag("conversation-panel")) {
+    // The panel's one inset consumption (panelInsetPadding): the strip or the header under the status bar, the body
+    // above the navigation bar or the keyboard, whichever host — sheet or pane — this is composed in; the host's
+    // surface itself runs edge to edge behind them.
+    Column(modifier.fillMaxSize().panelInsetPadding().testTag("conversation-panel")) {
         when (state.surface) {
             PanelSurface.Chat -> ChatSurface(state, actions, registry, onClose)
             PanelSurface.Project -> ProjectSurface(state, actions, onClose, onExpand, expanded, sideChatContent)
@@ -132,25 +131,22 @@ internal fun tabIcon(tab: PanelTab): ImageVector = when (tab) {
 /** The Chat surface: the chat's name and repo · branch with the close control, then its sections; the file viewer takes their place while a file is open. */
 @Composable
 private fun ChatSurface(state: PanelState, actions: PanelActions, registry: PanelRegistry, onClose: (() -> Unit)?) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     val file = state.browser.file
     if (file != null) {
         FileViewerScreen(file, onBack = actions::closeFile, onOpenUrl = actions::openUrl)
         return
     }
     val sections = registry.shown(state.capabilities, state)
-    Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(state.agent?.name ?: "Chat", style = type.title, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            val subtitle = state.agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ") }?.ifBlank { null }
-            if (subtitle != null) Text(subtitle, style = type.tiny, color = colors.textQuaternary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        // A chat in a Project has the Project panel behind this one; the way back to it.
-        if (state.hasProjectTab) FlatIconButton(CursorIcons.FileText, "Project panel", onClick = { actions.openProject(allFiles = false) }, modifier = Modifier.testTag("panel-to-project"))
-        if (onClose != null) FlatIconButton(CursorIcons.Close, "Close panel", onClick = onClose)
-    }
+    // The same header every pane wears: it pads for the status bar on its own, and finds it already consumed at the root.
+    CursorHeader(
+        title = state.agent?.name ?: "Chat",
+        subtitle = state.agent?.let { a -> listOfNotNull(a.repoShortName, a.branchName).joinToString(" · ") }?.ifBlank { null },
+        trailing = {
+            // A chat in a Project has the Project panel behind this one; the way back to it.
+            if (state.hasProjectTab) FlatIconButton(CursorIcons.FileText, "Project panel", onClick = { actions.openProject(allFiles = false) }, modifier = Modifier.testTag("panel-to-project"))
+            if (onClose != null) FlatIconButton(CursorIcons.Close, "Close panel", onClick = onClose)
+        },
+    )
     HairlineDivider()
     LazyColumn(Modifier.fillMaxSize().testTag("panel-sections"), contentPadding = PaddingValues(vertical = 4.dp)) {
         items(sections, key = { it.id.name }) { section ->

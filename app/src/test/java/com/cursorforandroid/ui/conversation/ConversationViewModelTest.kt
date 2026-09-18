@@ -25,17 +25,14 @@ import com.cursorforandroid.domain.SlashCommand.Origin
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import org.junit.After
 import org.junit.Before
+import com.cursorforandroid.util.MainDispatcherRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -50,38 +47,18 @@ import org.robolectric.annotation.Config
 @Config(sdk = [35])
 class ConversationViewModelTest {
 
+    @get:Rule
+    val mainDispatcher = MainDispatcherRule()
+
     private lateinit var graph: AppGraph
 
     @Before
     fun setUp() = runBlocking {
-        swapMain { Dispatchers.setMain(UnconfinedTestDispatcher()) }
         graph = AppGraph(ApplicationProvider.getApplicationContext<Context>())
         graph.session.enterDemo()
         graph.agents.refresh()
     }
 
-    @After
-    fun tearDown() {
-        swapMain { Dispatchers.resetMain() }
-    }
-
-    /**
-     * Sets or resets `Dispatchers.Main` once nothing is reading it. A view model coroutine finishing on an IO thread
-     * resumes through Main, and the test dispatcher refuses to be swapped while any thread is in the middle of that
-     * ("Dispatchers.Main is used concurrently with setting it") — a read that is over within microseconds, so the swap
-     * is tried again rather than failing whichever test happened to be next.
-     */
-    private fun swapMain(swap: () -> Unit) {
-        var attempt = 0
-        while (true) {
-            try {
-                return swap()
-            } catch (e: IllegalStateException) {
-                if (++attempt > 200) throw e
-                Thread.sleep(5)
-            }
-        }
-    }
 
     /** Opens the chat and waits for the catalogue, without which the picker has nothing to show checked. */
     private fun open(agentId: String): ConversationViewModel {

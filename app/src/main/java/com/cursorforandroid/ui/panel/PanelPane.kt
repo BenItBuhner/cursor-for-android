@@ -6,15 +6,10 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
@@ -87,9 +82,10 @@ fun PanelPane(
             Box(Modifier.fillMaxHeight().width(CursorDimens.hairline).background(colors.strokeSubtle))
             if (onResize != null) Box(Modifier.width(3.dp).height(28.dp).background(colors.strokeStrong, CircleShape))
         }
-        // On the canvas colour, as the web's panel is: the hairline in the grip is what marks the boundary.
+        // On the canvas colour, as the web's panel is: the hairline in the grip is what marks the boundary. The surface
+        // runs edge to edge; the panel's root consumes the window's insets (panelInsetPadding), the one consumption.
         Surface(color = colors.canvas, contentColor = colors.textPrimary, shape = RectangleShape, modifier = Modifier.fillMaxHeight().width(with(density) { shownPx.toDp() } - GripWidth)) {
-            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.End))) { content() }
+            Box(Modifier.fillMaxSize()) { content() }
         }
     }
 }

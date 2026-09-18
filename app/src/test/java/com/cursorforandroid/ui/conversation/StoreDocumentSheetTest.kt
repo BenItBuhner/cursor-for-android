@@ -1,35 +1,53 @@
 package com.cursorforandroid.ui.conversation
 
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.PresignedStoreRead
 import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.media.MediaLoader
+import com.cursorforandroid.data.repo.ArtifactRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.fixtures.CoordinatorFixtures
+import com.cursorforandroid.ui.components.LocalMarkdownMedia
+import com.cursorforandroid.ui.components.MarkdownMediaContext
+import com.cursorforandroid.ui.media.MediaViewerHost
+import com.cursorforandroid.ui.media.MediaViewerState
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okio.Buffer
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import java.io.File
 import java.io.IOException
 
 /**
@@ -122,5 +140,46 @@ class StoreDocumentSheetTest {
         assertThat(storeRef(StorePath.parse("/cursor/stores/self/internal/state.txt")!!, "bc-worker")).isEqualTo(MediaRef.Store("bc-worker", "internal/state.txt"))
         assertThat(storeRef(StorePath.parse("/cursor/stores/user/notes.md")!!, "bc-worker")).isNull()
         assertThat(api.reads).containsExactly("st-proj:internal/state.txt")
+    }
+
+    /**
+     * A store picture in the sheet is a thumbnail of the media viewer's: tapping it puts the sheet away — the sheet is
+     * a window of its own over the app's, the viewer a layer of the app's — and opens the viewer on the picture. The
+     * thumbnail being in another window, the viewer has no box to grow out of and fades in where the page rests.
+     */
+    @Test
+    fun `an image in the sheet opens in the media viewer, and the sheet steps aside`() {
+        val server = MockWebServer()
+        val png = CoordinatorFixtures::class.java.classLoader!!.getResourceAsStream("fixtures/coordinator/tab-landscape-icon-only-project.png")!!.readBytes()
+        repeat(2) { server.enqueue(MockResponse().setHeader("Content-Type", "image/png").setBody(Buffer().write(png))) }
+        val serving = object : AgentStoreApi by api {
+            override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead =
+                PresignedStoreRead(relativePath, server.url("/signed/$relativePath").toString(), null)
+        }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val files = StoreFileRepository(api = { serving }, capabilities = { Capabilities.EXTENDED }, blobs = File(context.cacheDir, "blobs").apply { mkdirs() })
+        val loader = MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) { files }
+        val image = StorePath.parse(fixture.getValue("imagePath").jsonPrimitive.content)!!
+        val ref = storeRef(image, store)!!
+        val viewer = MediaViewerState(null)
+        var sheetOpen by mutableStateOf(true)
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                MediaViewerHost(viewer, loader) {
+                    CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext(store, loader, canReadStores = true)) {
+                        if (sheetOpen) StoreDocumentSheet(ref, files, onDismiss = { sheetOpen = false })
+                    }
+                }
+            }
+        }
+        compose.waitUntil(30_000) { compose.onAllNodes(hasContentDescription(image.fileName)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasContentDescription(image.fileName))[0].performClick()
+        compose.waitUntil(30_000) { compose.waitForIdle(); viewer.phase == MediaViewerState.Phase.Open && compose.onAllNodes(hasTestTag("viewer-image-0")).fetchSemanticsNodes().isNotEmpty() }
+        // The sheet's hide animation runs alongside the viewer's open; it is gone once both have played.
+        compose.waitUntil(30_000) { compose.waitForIdle(); !sheetOpen }
+        assertThat(viewer.current?.src).isEqualTo(image.text)
+        // One read for the thumbnail; the page decoded the bytes the repository kept.
+        assertThat(server.requestCount).isEqualTo(1)
+        server.shutdown()
     }
 }

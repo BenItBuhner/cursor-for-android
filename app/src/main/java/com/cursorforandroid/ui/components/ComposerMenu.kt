@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.McpServerForm
 import com.cursorforandroid.domain.McpTransport
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -59,8 +60,17 @@ import java.util.UUID
 
 /** What the composer's "+" menu can reach. Screens wire these to their view model and stores. */
 class ComposerMenuActions(
-    /** "Files": opens the system picker (the API takes images only). */
-    val onPickFiles: () -> Unit,
+    /**
+     * "Images and videos" (Extended mode) or "Images" (default): the Android photo picker. In the default mode it
+     * offers images alone, since the documented `prompt.images[]` is all the request can carry; in Extended mode it
+     * offers videos too, and whatever it returns goes up as a real file.
+     */
+    val onPickMedia: () -> Unit,
+    /**
+     * "Files": the system document picker for files of any type — PDFs, archives, code, anything — up to 15 MB each
+     * (Extended mode). Null hides the row, as in the default mode.
+     */
+    val onPickFiles: (() -> Unit)? = null,
     /** Project / synced skill names typed before, most recent first. */
     val recentSkills: List<String> = emptyList(),
     /** Called with a project / synced skill name the user picked, so it can be remembered. */
@@ -74,9 +84,10 @@ class ComposerMenuActions(
 private enum class MenuPage { Root, Skills, McpServers }
 
 /**
- * The menu behind the composer's "+" as it appears on cursor.com/agents: Multitask, then Files, Skills › and
+ * The menu behind the composer's "+" as it appears on cursor.com/agents: Multitask, then the pickers, Skills › and
  * MCP Servers ›. The web's flyout submenus become pages that slide in over the root; Multitask and skills toggle a
- * slash command at the front of the prompt, Files opens the picker, MCP servers are managed here and sent inline.
+ * slash command at the front of the prompt, "Images and videos" opens the photo picker and "Files" the document
+ * picker (Extended mode; the default mode has "Images" alone), MCP servers are managed here and sent inline.
  */
 @Composable
 fun ComposerPlusMenu(
@@ -125,7 +136,8 @@ fun ComposerPlusMenu(
                     MenuPage.Root -> RootPage(
                         multitaskOn = SlashCommands.has(prompt, SlashCommands.MULTITASK),
                         onMultitask = { toggleCommand(SlashCommands.MULTITASK) },
-                        onFiles = { onDismiss(); actions.onPickFiles() },
+                        onMedia = { onDismiss(); actions.onPickMedia() },
+                        onFiles = actions.onPickFiles?.let { pick -> { onDismiss(); pick() } },
                         onSkills = { page = MenuPage.Skills },
                         onMcpServers = { page = MenuPage.McpServers },
                     )
@@ -168,8 +180,15 @@ private val MenuWidth = 280.dp
 private val PageListMaxHeight = 300.dp
 private const val PageMillis = 220
 
+/** The media row's label in Extended mode, where the photo picker offers videos too. */
+const val MEDIA_LABEL_IMAGES_AND_VIDEOS = "Images and videos"
+/** The media row's label in the default mode, where the picker is filtered to images — all `prompt.images[]` takes. */
+const val MEDIA_LABEL_IMAGES = "Images"
+/** The document picker's row (Extended mode). */
+const val FILES_LABEL = "Files"
+
 @Composable
-private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () -> Unit, onSkills: () -> Unit, onMcpServers: () -> Unit) {
+private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onMedia: () -> Unit, onFiles: (() -> Unit)?, onSkills: () -> Unit, onMcpServers: () -> Unit) {
     val colors = CursorTheme.colors
     MenuRow(
         icon = CursorIcons.Multitask,
@@ -179,7 +198,14 @@ private fun RootPage(multitaskOn: Boolean, onMultitask: () -> Unit, onFiles: () 
         trailing = { if (multitaskOn) Icon(CursorIcons.Check, "On", tint = colors.accent, modifier = Modifier.size(16.dp)) },
     )
     HairlineDivider(Modifier.padding(vertical = 4.dp))
-    MenuRow(CursorIcons.Paperclip, "Files", onClick = onFiles)
+    // Two pickers, each named for what it opens on: the gallery (images alone in the default mode, where the
+    // documented request takes nothing else) and the document picker for every other kind of file (Extended mode).
+    if (onFiles == null) {
+        MenuRow(CursorIcons.Image, MEDIA_LABEL_IMAGES, onClick = onMedia)
+    } else {
+        MenuRow(CursorIcons.Image, MEDIA_LABEL_IMAGES_AND_VIDEOS, onClick = onMedia)
+        MenuRow(CursorIcons.Paperclip, FILES_LABEL, subtitle = "Any type, up to ${PromptFile.MAX_BYTES / (1024 * 1024)} MB each", onClick = onFiles)
+    }
     MenuRow(CursorIcons.Book, "Skills", onClick = onSkills, trailing = { Chevron() })
     MenuRow(CursorIcons.Plug, "MCP Servers", onClick = onMcpServers, trailing = { Chevron() })
 }

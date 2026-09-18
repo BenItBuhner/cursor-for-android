@@ -3,11 +3,14 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.UploadRef
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -90,6 +93,53 @@ class FollowUpStoreTest {
         store.write("bc-1", FollowUpDraft("a"), emptyList())
         assertThat(files()).isEmpty()
         assertThat(store.read("bc-1")?.draft?.text).isEqualTo("a")
+    }
+
+    @Test
+    fun `files of any type round-trip with their names and types, kept byte for byte and dropped like images`() = runBlocking<Unit> {
+        val pdf = DraftFile("content://docs/9@1", PromptFile(byteArrayOf(0x25, 0x50, 0x44, 0x46), "Q3 report (final).pdf", "application/pdf"))
+        val zip = DraftFile("content://docs/10@2", PromptFile(ByteArray(3) { 9 }, "bundle.zip", "application/zip"))
+        store.write("bc-1", FollowUpDraft("Look at these", files = listOf(pdf)), listOf(QueuedFollowUp("q", "", files = listOf(zip), queuedAtMillis = 1L)))
+
+        val read = store.read("bc-1")!!
+        val draftFile = read.draft.files.single()
+        assertThat(draftFile.id).isEqualTo("content://docs/9@1")
+        assertThat(draftFile.file.name).isEqualTo("Q3 report (final).pdf")
+        assertThat(draftFile.file.mimeType).isEqualTo("application/pdf")
+        assertThat(draftFile.file.bytes.toList()).isEqualTo(listOf<Byte>(0x25, 0x50, 0x44, 0x46))
+        val queuedFile = read.queue.single().files.single()
+        assertThat(queuedFile.file.name).isEqualTo("bundle.zip")
+        assertThat(queuedFile.file.bytes).hasLength(3)
+        assertThat(read.queue.single().previewText).isEqualTo("See the attached file.")
+        // On disk under safe names with their own extensions, apart from the images.
+        val names = agentDir("bc-1").listFiles()!!.map { it.name }.filter { it != "state.json" }
+        assertThat(names).hasSize(2)
+        assertThat(names.count { it.startsWith("file-") && it.endsWith(".pdf") }).isEqualTo(1)
+        assertThat(names.count { it.startsWith("file-") && it.endsWith(".zip") }).isEqualTo(1)
+
+        store.write("bc-1", FollowUpDraft("Look at these"), emptyList())
+        assertThat(agentDir("bc-1").listFiles()!!.map { it.name }).containsExactly("state.json")
+        assertThat(store.read("bc-1")!!.draft.files).isEmpty()
+    }
+
+    /**
+     * A file whose upload completed before the restart — in the draft or in a queued message — comes back with its
+     * reference, so it is sent by that reference rather than uploaded again; one still going up comes back without.
+     */
+    @Test
+    fun `a completed upload's reference rides with the file, in the draft and in the queue, across a restart`() = runBlocking<Unit> {
+        val ref = UploadRef("upl_9", "s3-abc", "uuid-9")
+        val up = DraftFile("f1", PromptFile(byteArrayOf(1), "spec.pdf", "application/pdf", ref))
+        val notYet = DraftFile("f2", PromptFile(byteArrayOf(2), "notes.txt", "text/plain"))
+        val queuedRef = UploadRef("upl_10", "s3-def", "uuid-10")
+        val queued = DraftFile("f3", PromptFile(byteArrayOf(3), "bundle.zip", "application/zip", queuedRef))
+        store.write("bc-2", FollowUpDraft("Read", files = listOf(up, notYet)), listOf(QueuedFollowUp("q", "", files = listOf(queued), queuedAtMillis = 1L)))
+
+        val read = FollowUpStore(context).read("bc-2")!!
+        val (spec, notes) = read.draft.files
+        assertThat(spec.file.upload).isEqualTo(ref)
+        assertThat(notes.file.upload).isNull()
+        assertThat(read.queue.single().files.single().file.upload).isEqualTo(queuedRef)
     }
 
     @Test

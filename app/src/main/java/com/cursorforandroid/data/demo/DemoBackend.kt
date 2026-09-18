@@ -70,7 +70,7 @@ private fun toolEvent(id: String, name: String, status: String, vararg args: Pai
  * ConcurrentModificationException waiting for the right moment, and a caller holding one of these lists could see it
  * change under it. Script pacing stays outside the lock, since a delay must never be held while holding it.
  */
-internal class DemoStore {
+internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
     private val now = AppClock.now()
     private val fmt = DateTimeFormatter.ISO_INSTANT
     fun iso(millis: Long = AppClock.now()): String = fmt.format(Instant.ofEpochMilli(millis))
@@ -90,7 +90,7 @@ internal class DemoStore {
     private var counter = 100
 
     init {
-        DemoData.seeds.forEach { seed ->
+        seeds.forEach { seed ->
             val run = DemoData.initialRun(seed, now)
             val earlier = DemoData.earlierRuns(seed, now)
             agents[seed.id] = DemoData.agentDto(seed, now, run.id)
@@ -735,8 +735,9 @@ internal class DemoRunStreamer(private val store: DemoStore) : RunStreamer {
 
 /** Assembles the demo backend. */
 object DemoBackendFactory {
-    fun create(): Pair<CursorApi, RunStreamer> {
-        val store = DemoStore()
+    /** [perfSeeds] adds the two long chats of [DemoPerfSeeds] (a debug build with the marker file, for measuring the transcript on a device). */
+    fun create(perfSeeds: Boolean = false): Pair<CursorApi, RunStreamer> {
+        val store = DemoStore(if (perfSeeds) DemoData.seeds + DemoPerfSeeds.seeds() else DemoData.seeds)
         return DemoCursorApi(store) to DemoRunStreamer(store)
     }
 }

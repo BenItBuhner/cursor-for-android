@@ -60,8 +60,17 @@ class PendingAttachment(
          * so not for the main thread then.
          */
         fun of(image: PromptImage, id: String, thumbnail: ImageBitmap? = null): PendingAttachment =
-            PendingAttachment(id = id, image = image, thumbnail = thumbnail ?: thumbnailOf(image))
+            PendingAttachment(id = id, image = image.encoded(), thumbnail = thumbnail ?: thumbnailOf(image))
     }
+}
+
+/**
+ * [this] with its request form ready: the base64 the documented `prompt.images[]` carries is computed now, on the
+ * picker's thread, so the send that follows has nothing left to encode. The same object; the encoding is kept on it.
+ */
+internal fun PromptImage.encoded(): PromptImage {
+    base64
+    return this
 }
 
 /** A small (≈160px) bitmap of [image] for a strip or a card. Decodes, so not for the main thread. */
@@ -73,45 +82,23 @@ fun thumbnailOf(image: PromptImage): ImageBitmap? {
 }
 
 /**
- * Launches the system photo picker and converts the selection into [PendingAttachment]s, enforcing the API's
- * limits (5 images, 15 MB each, png / jpeg / gif / webp). Returns a function that opens the picker.
+ * Launches the system photo picker for images alone and converts the selection into [PendingAttachment]s, enforcing
+ * the API's limits (5 images, 15 MB each, png / jpeg / gif / webp): the default mode's "Images", the documented
+ * `prompt.images[]`. Returns a function that opens the picker. See [rememberMediaPicker] for the Extended mode's
+ * "Images and videos", which this is the image-only case of.
  */
 @Composable
 fun rememberImagePicker(
     currentCount: Int,
     onPicked: (List<PendingAttachment>) -> Unit,
     onError: (String) -> Unit,
-): () -> Unit {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val remaining = (PromptImage.MAX_COUNT - currentCount).coerceAtLeast(1)
-    // Remembered: the contract has no equals, and rememberLauncherForActivityResult keys its DisposableEffect on it,
-    // so a fresh one unregisters and re-registers the launcher on every recomposition — which is every SSE delta on
-    // the conversation screen.
-    val contract = remember(remaining) { ActivityResultContracts.PickMultipleVisualMedia(maxItems = maxOf(remaining, 2)) }
-    val singleContract = remember { ActivityResultContracts.PickVisualMedia() }
-    val deliver: (List<Uri>) -> Unit = { uris ->
-        if (uris.isNotEmpty()) {
-            scope.launch {
-                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, currentCount) }
-                if (imported.attachments.isNotEmpty()) onPicked(imported.attachments)
-                imported.error?.let(onError)
-            }
-        }
-    }
-    val launcher = rememberLauncherForActivityResult(contract) { uris -> deliver(uris) }
-    // PickMultipleVisualMedia insists on a limit above one, so with a single slot left it would let the user choose
-    // two and then discard one of them after the fact. The single-item picker asks for exactly what will fit.
-    val single = rememberLauncherForActivityResult(singleContract) { uri -> deliver(listOfNotNull(uri)) }
-    return {
-        val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-        when {
-            currentCount >= PromptImage.MAX_COUNT -> onError(attachmentLimitMessage())
-            remaining == 1 -> single.launch(request)
-            else -> launcher.launch(request)
-        }
-    }
-}
+): () -> Unit = rememberMediaPicker(
+    extended = false,
+    counts = AttachmentCounts(images = currentCount, files = 0),
+    onPickedImages = onPicked,
+    onPickedFiles = {},
+    onError = onError,
+)
 
 private const val TooLargeMessage = "Images must be 15 MB or smaller."
 
@@ -189,8 +176,9 @@ internal fun loadAttachment(bytes: ByteArray, declaredMime: String?, id: String)
     if (bytes.size > PromptImage.MAX_BYTES) error(TooLargeMessage)
     val mime = resolveImageMime(declaredMime, bytes)
         ?: error("Unsupported image type (${declaredMime ?: "unknown"}). Use PNG, JPEG, GIF or WebP.")
-    // Downscaled here, once, so the upload — and the request the composer retries — carries only what the model uses.
-    val image = AttachmentImages.prepare(bytes, mime)
+    // Downscaled and base64-encoded here, once, so the request — and the one the composer retries — carries only
+    // what the model uses and has nothing left to compute when it goes out.
+    val image = AttachmentImages.prepare(bytes, mime).encoded()
     PendingAttachment(id = id, image = image, thumbnail = thumbnailOf(image))
 }
 
@@ -221,7 +209,7 @@ private fun attachmentImport(results: List<Result<PendingAttachment>>, overflow:
 }
 
 /** What the provider says the selection weighs, or -1 when it will not say — which a picker is free to do. */
-private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
+internal fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
     val queried = runCatching {
         resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
             val column = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -235,17 +223,22 @@ private fun declaredSize(resolver: ContentResolver, uri: Uri): Long {
 }
 
 /**
- * The selection's bytes, refused before they are all in memory when there are more than [PromptImage.MAX_BYTES] of
- * them. A declared size is only a hint — a provider may give none at all, and a document provider streaming a
- * 100 MB original is allowed to be wrong about it — so the copy stops one byte past the cap regardless. Reading the
- * whole stream first risked an OutOfMemoryError, which `runCatching` does not make safe, in place of the size
- * message the user is promised.
+ * The selection's bytes, refused before they are all in memory when there are more than [maxBytes] of them
+ * ([PromptImage.MAX_BYTES] for an image, the same 15 MB for a file). A declared size is only a hint — a provider may
+ * give none at all, and a document provider streaming a 100 MB original is allowed to be wrong about it — so the copy
+ * stops one byte past the cap regardless. Reading the whole stream first risked an OutOfMemoryError, which
+ * `runCatching` does not make safe, in place of the size message the user is promised.
  */
-internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): ByteArray {
-    if (declaredSize > PromptImage.MAX_BYTES) error(TooLargeMessage)
-    val stream = open() ?: error("Couldn't read the selected image.")
-    val limit = PromptImage.MAX_BYTES + 1
-    val out = ByteArrayOutputStream(if (declaredSize in 1..PromptImage.MAX_BYTES) declaredSize.toInt() else 256 * 1024)
+internal fun readBoundedBytes(
+    declaredSize: Long,
+    maxBytes: Long = PromptImage.MAX_BYTES,
+    tooLarge: String = TooLargeMessage,
+    open: () -> InputStream?,
+): ByteArray {
+    if (declaredSize > maxBytes) error(tooLarge)
+    val stream = open() ?: error("Couldn't read the selected file.")
+    val limit = maxBytes + 1
+    val out = ByteArrayOutputStream(if (declaredSize in 1..maxBytes) declaredSize.toInt() else 256 * 1024)
     stream.use { input ->
         val buffer = ByteArray(64 * 1024)
         while (out.size() < limit) {
@@ -254,7 +247,7 @@ internal fun readBoundedBytes(declaredSize: Long, open: () -> InputStream?): Byt
             out.write(buffer, 0, n)
         }
     }
-    if (out.size() > PromptImage.MAX_BYTES) error(TooLargeMessage)
+    if (out.size() > maxBytes) error(tooLarge)
     return out.toByteArray()
 }
 

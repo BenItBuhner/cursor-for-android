@@ -43,6 +43,8 @@ import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.opaqueToPointerInput
 import com.cursorforandroid.ui.home.HomeScreen
+import com.cursorforandroid.ui.media.MediaViewerHost
+import com.cursorforandroid.ui.media.rememberMediaViewerState
 import com.cursorforandroid.ui.settings.ExtendedModeUpgradeNotice
 import com.cursorforandroid.ui.projects.ProjectEditorHost
 import com.cursorforandroid.ui.projects.ProjectEditorTarget
@@ -359,31 +361,35 @@ internal fun AppShell(
     )
 
     CompositionLocalProvider(LocalWindowPosture provides posture) {
-    if (wide) {
-        Row(Modifier.fillMaxSize().background(colors.canvas)) {
-            SidebarRail(
-                state = rail,
-                width = posture.expandedRailWidthDp.dp,
-                onResize = { widthDp -> setSidebarWidth(widthDp, commit = false) },
-                onResizeEnd = { widthDp -> setSidebarWidth(widthDp, commit = true) },
-                // Dragged under the minimum, the sidebar snaps shut, as the web's does; its width stays for its return.
-                onHide = ::hideSidebarFromDrag,
-            ) {
-                sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+        // The media viewer is a layer over the whole shell — sidebar, chat and panel alike, in either layout — so a
+        // figure opens over all of it, and the open viewer rides out the swap between the layouts like the pane does.
+        MediaViewerHost(state = rememberMediaViewerState(), loader = graph.media) {
+            if (wide) {
+                Row(Modifier.fillMaxSize().background(colors.canvas)) {
+                    SidebarRail(
+                        state = rail,
+                        width = posture.expandedRailWidthDp.dp,
+                        onResize = { widthDp -> setSidebarWidth(widthDp, commit = false) },
+                        onResizeEnd = { widthDp -> setSidebarWidth(widthDp, commit = true) },
+                        // Dragged under the minimum, the sidebar snaps shut, as the web's does; its width stays for its return.
+                        onHide = ::hideSidebarFromDrag,
+                    ) {
+                        sidebar(inDrawer = false, modifier = Modifier.fillMaxSize())
+                    }
+                    detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
+                }
+            } else {
+                CursorDrawer(
+                    state = drawerState,
+                    drawerWidth = CursorDimens.sidebarWidth,
+                    containerColor = colors.sidebar,
+                    contentColor = colors.textPrimary,
+                    drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
+                ) {
+                    detailHost(Modifier.fillMaxSize(), pane)
+                }
             }
-            detailHost(Modifier.weight(1f).fillMaxHeight(), pane)
         }
-    } else {
-        CursorDrawer(
-            state = drawerState,
-            drawerWidth = CursorDimens.sidebarWidth,
-            containerColor = colors.sidebar,
-            contentColor = colors.textPrimary,
-            drawerContent = { sidebar(inDrawer = true, modifier = Modifier.fillMaxSize()) },
-        ) {
-            detailHost(Modifier.fillMaxSize(), pane)
-        }
-    }
     }
 
     if (customizeOpen) {

@@ -3,7 +3,9 @@ package com.cursorforandroid.data.local
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.UploadRef
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +51,51 @@ class DraftStoreTest {
         assertThat(read.prompt).isEqualTo("Ship it")
         assertThat(read.nonce).isEqualTo("nonce")
         assertThat(store.readImage(read.images.single())!!.bytes).isEqualTo(byteArrayOf(1, 2, 3))
+    }
+
+    @Test
+    fun `a draft's files come back with their names and types, and are pruned with the draft`() = runBlocking<Unit> {
+        val store = DraftStore(context)
+        val stored = store.writeFile(PromptFile(byteArrayOf(9, 9), "trace.zip", "application/zip"))!!
+        store.write(draft("Look").copy(files = listOf(stored)))
+
+        val read = DraftStore(context).read()!!
+        val file = store.readFile(read.files.single())!!
+        assertThat(file.name).isEqualTo("trace.zip")
+        assertThat(file.mimeType).isEqualTo("application/zip")
+        assertThat(file.bytes).isEqualTo(byteArrayOf(9, 9))
+        assertThat(files()).containsExactly("composer.json", stored.file)
+
+        store.write(draft("Look"))
+        assertThat(files()).containsExactly("composer.json")
+    }
+
+    /**
+     * A file whose upload completed before the app was closed comes back with its reference: the composer sends it by
+     * that reference after a restart instead of uploading the bytes again. A file kept without one comes back without.
+     */
+    @Test
+    fun `a completed upload's reference is kept with the draft's file across a restart`() = runBlocking<Unit> {
+        val store = DraftStore(context)
+        val ref = UploadRef("upl_01", "s3-multipart-77", "8d1e5c6a-uuid")
+        val stored = store.writeFile(PromptFile(byteArrayOf(1, 2, 3), "spec.pdf", "application/pdf"))!!
+        val pending = store.writeFile(PromptFile(byteArrayOf(4), "notes.txt", "text/plain"))!!
+        assertThat(stored.ref).isNull()
+        // The reference lands on the record without the bytes being written again.
+        store.write(draft("Look").copy(files = listOf(stored.withRef(ref), pending)))
+
+        val read = DraftStore(context).read()!!
+        val (spec, notes) = read.files
+        assertThat(spec.ref).isEqualTo(ref)
+        assertThat(store.readFile(spec)!!.upload).isEqualTo(ref)
+        assertThat(notes.ref).isNull()
+        assertThat(store.readFile(notes)!!.upload).isNull()
+        assertThat(files()).containsExactly("composer.json", stored.file, pending.file)
+
+        // A file written with its reference already carries it.
+        val withRef = store.writeFile(PromptFile(byteArrayOf(5), "later.pdf", "application/pdf", ref))!!
+        assertThat(withRef.ref).isEqualTo(ref)
+        assertThat(store.readFile(withRef)!!.upload).isEqualTo(ref)
     }
 
     @Test

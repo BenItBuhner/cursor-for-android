@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import androidx.core.graphics.scale
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.domain.MessageAttachment
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -38,17 +39,30 @@ class AttachmentStore(context: Context) {
     private val staging = File(root, ".staging")
 
     @Serializable
-    private data class Meta(val runId: String, val images: List<ImageMeta>)
+    private data class Meta(val runId: String, val images: List<ImageMeta>, val files: List<FileMeta> = emptyList())
 
     @Serializable
     private data class ImageMeta(val file: String, val width: Int, val height: Int)
 
-    /** Writes previews of [images] into a scratch directory. Images that cannot be decoded are skipped. */
-    suspend fun stage(images: List<PromptImage>): StagedAttachments = withContext(Dispatchers.IO) {
-        if (images.isEmpty()) return@withContext StagedAttachments.EMPTY
+    /** A file of any type (Extended mode), kept byte for byte so the system viewer opens what the agent was given. */
+    @Serializable
+    private data class FileMeta(val file: String, val name: String, val mimeType: String, val sizeBytes: Long)
+
+    /**
+     * Writes previews of [images] and copies of [files] into a scratch directory. Images that cannot be decoded are
+     * skipped; a file is kept as it is, under its own name, so the card can hand it to the system viewer — except a
+     * picture attached as a file (from the gallery, in Extended mode), which is kept as a preview like any image, so
+     * the transcript shows it inline; one that will not decode is kept as a file after all.
+     */
+    suspend fun stage(images: List<PromptImage>, files: List<PromptFile> = emptyList()): StagedAttachments = withContext(Dispatchers.IO) {
+        if (images.isEmpty() && files.isEmpty()) return@withContext StagedAttachments.EMPTY
         val dir = File(staging, UUID.randomUUID().toString())
         if (!dir.mkdirs() && !dir.isDirectory) return@withContext StagedAttachments.EMPTY
-        val written = images.mapIndexedNotNull { index, image -> runCatching { writePreview(image, dir, index) }.getOrNull() }
+        val written = images.mapIndexedNotNull { index, image -> runCatching { writePreview(image, dir, index) }.getOrNull() } +
+            files.mapIndexedNotNull { index, file ->
+                val preview = if (PromptImage.isSupported(file.mimeType)) runCatching { writePreview(PromptImage(file.bytes, file.mimeType), dir, images.size + index) }.getOrNull() else null
+                preview ?: runCatching { writeFile(file, dir, index) }.getOrNull()
+            }
         if (written.isEmpty()) {
             dir.deleteRecursively()
             return@withContext StagedAttachments.EMPTY
@@ -78,15 +92,18 @@ class AttachmentStore(context: Context) {
     }
 
     /** Stages and commits in one step, for prompts without an optimistic bubble (launching a new agent). */
-    suspend fun save(agentId: String, runId: String, images: List<PromptImage>): List<MessageAttachment> = commit(agentId, runId, stage(images))
+    suspend fun save(agentId: String, runId: String, images: List<PromptImage>, files: List<PromptFile> = emptyList()): List<MessageAttachment> =
+        commit(agentId, runId, stage(images, files))
 
-    /** Every attachment kept for [agentId], keyed by the run whose prompt carried it. */
+    /** Every attachment kept for [agentId], keyed by the run whose prompt carried it: its images first, then its files. */
     suspend fun forAgent(agentId: String): Map<String, List<MessageAttachment>> = withContext(Dispatchers.IO) {
         val dirs = agentDir(agentId).listFiles { file -> file.isDirectory } ?: return@withContext emptyMap()
         dirs.mapNotNull { dir ->
             val meta = readMeta(dir) ?: return@mapNotNull null
             val images = meta.images.map { MessageAttachment(File(dir, it.file).path, it.width, it.height) }.filter { File(it.path).isFile }
-            if (images.isEmpty()) null else meta.runId to images
+            val files = meta.files.map { MessageAttachment.file(File(dir, it.file).path, it.name, it.mimeType, it.sizeBytes) }.filter { File(it.path).isFile }
+            val all = images + files
+            if (all.isEmpty()) null else meta.runId to all
         }.toMap()
     }
 
@@ -105,8 +122,22 @@ class AttachmentStore(context: Context) {
     private fun runDir(agentId: String, runId: String) = File(agentDir(agentId), safeName(runId))
 
     private fun writeMeta(dir: File, runId: String, attachments: List<MessageAttachment>) {
-        val meta = Meta(runId, attachments.map { ImageMeta(File(it.path).name, it.width, it.height) })
+        val meta = Meta(
+            runId,
+            images = attachments.filterNot { it.isFile }.map { ImageMeta(File(it.path).name, it.width, it.height) },
+            files = attachments.filter { it.isFile }.map { FileMeta(File(it.path).name, it.name.orEmpty(), it.mimeType.orEmpty(), it.sizeBytes) },
+        )
         File(dir, META_FILE).writeText(CursorJson.encodeToString(Meta.serializer(), meta))
+    }
+
+    /**
+     * Copies [file] as it is. Named after the file itself (made safe, prefixed by its slot so two picks of the same
+     * name stay apart) rather than an index: the system viewer the card hands it to reads the type off the extension.
+     */
+    private fun writeFile(file: PromptFile, dir: File, index: Int): MessageAttachment {
+        val target = File(dir, "f$index-" + PromptFile.safeFileName(file.name).takeLast(MAX_FILE_NAME))
+        target.writeBytes(file.bytes)
+        return MessageAttachment.file(target.path, file.name, file.mimeType, file.sizeBytes.toLong())
     }
 
     private fun readMeta(dir: File): Meta? {
@@ -183,6 +214,8 @@ class AttachmentStore(context: Context) {
 
     private companion object {
         const val META_FILE = "meta.json"
+        /** A file name's tail kept on disk: long enough for any real name, short enough for every filesystem. */
+        const val MAX_FILE_NAME = 120
         /** Just above the composer's upload ceiling (1568px), so what the API received is what gets kept. */
         const val MAX_EDGE = 1600
         /** Only a GIF can arrive both within [MAX_EDGE] and this heavy; its first frame is re-encoded instead. */

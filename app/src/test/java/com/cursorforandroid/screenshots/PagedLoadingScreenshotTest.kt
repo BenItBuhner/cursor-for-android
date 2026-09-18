@@ -39,7 +39,6 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.OlderTurnsRow
 import com.cursorforandroid.ui.conversation.LoadErrorRow
@@ -101,8 +100,7 @@ class PagedLoadingScreenshotTest {
     private fun Transcript(loading: Boolean) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
-        val lightbox = rememberLightboxState("bc-demo")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
                 Column(
@@ -157,8 +155,7 @@ class PagedLoadingScreenshotTest {
     private fun LongChat(rows: List<TranscriptRow>) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
-        val lightbox = rememberLightboxState("bc-demo")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
                 Column(
@@ -183,8 +180,7 @@ class PagedLoadingScreenshotTest {
     private fun DesktopLoading(rows: List<TranscriptRow>) {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(context, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
-        val lightbox = rememberLightboxState("bc-demo")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-demo", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-demo", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media, LocalTranscriptControls provides TranscriptControls()) {
                 Column(

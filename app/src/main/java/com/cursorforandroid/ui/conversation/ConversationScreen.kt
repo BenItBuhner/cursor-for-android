@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -55,11 +56,10 @@ import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.domain.AssistantMessage
-import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TranscriptRow
-import com.cursorforandroid.domain.TranscriptRows
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.GoalTranscript
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
@@ -70,19 +70,20 @@ import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.FigureLightbox
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
-import com.cursorforandroid.ui.components.keyboardInsetPadding
+import com.cursorforandroid.ui.components.composerDockPadding
+import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.pressable
-import com.cursorforandroid.ui.components.rememberImagePicker
-import com.cursorforandroid.ui.components.rememberLightboxState
+import com.cursorforandroid.ui.components.rememberFilePicker
+import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
 import com.cursorforandroid.ui.home.ModelSheet
+import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
 import com.cursorforandroid.ui.navigation.LocalWindowPosture
 import com.cursorforandroid.ui.navigation.WindowPosture
@@ -144,13 +145,19 @@ fun ConversationScreen(
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val agent by viewModel.agent.collectAsStateWithLifecycle()
-    val conversation by viewModel.conversation.collectAsStateWithLifecycle()
+    // The chat as last presented: its state and the rows drawn for it, computed off the main thread (see
+    // [ConversationViewModel.presented]); everything below reads the two together so they agree.
+    val presentedTranscript by viewModel.presented.collectAsStateWithLifecycle()
+    val conversation = presentedTranscript.state
     val draft by viewModel.draftText.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
     val attachments by viewModel.pendingAttachments.collectAsStateWithLifecycle()
+    val files by viewModel.pendingFiles.collectAsStateWithLifecycle()
+    val fileUploads by viewModel.fileUploads.collectAsStateWithLifecycle()
+    val uploadHint by viewModel.uploadHint.collectAsStateWithLifecycle()
     val queue by viewModel.queue.collectAsStateWithLifecycle()
     val thumbnails by viewModel.imageThumbnails.collectAsStateWithLifecycle()
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
@@ -170,8 +177,8 @@ fun ConversationScreen(
     // Project, the account's record says its prompts were sent in Project mode, or — needing no account at all —
     // its own transcript carries the coordinator's tools, under any name and however an earlier build filed them
     // (see [CoordinatorTranscript]). The list's word arrives late or not at all on a large account; the content is
-    // in hand from the first frame.
-    val coordinatorMode = agent?.looksLikeProject == true || conversation.isProjectConversation || remember(conversation.items) { CoordinatorTranscript.hasCoordinatorContent(conversation.items) }
+    // in hand from the first frame. Decided with the rows, off the main thread (see [TranscriptPresenter]).
+    val coordinatorMode = presentedTranscript.coordinatorMode
     val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
         TranscriptControls(
             state = controls,
@@ -182,8 +189,19 @@ fun ConversationScreen(
             coordinatorMode = coordinatorMode,
         )
     }
-    val pickImages = rememberImagePicker(currentCount = attachments.size, onPicked = viewModel::addAttachments, onError = viewModel::showMessage)
-    val plusMenu = rememberComposerMenuActions(graph, onPickFiles = pickImages)
+    // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
+    // Extended mode — and, in Extended mode, the document picker for files of any type.
+    val extendedFiles = capabilities.promptFiles && !isDemo
+    val counts = AttachmentCounts.of(attachments, files)
+    val pickMedia = rememberMediaPicker(
+        extended = extendedFiles,
+        counts = counts,
+        onPickedImages = viewModel::addAttachments,
+        onPickedFiles = viewModel::addFiles,
+        onError = viewModel::showMessage,
+    )
+    val pickFiles = rememberFilePicker(counts = counts, onPickedFiles = viewModel::addFiles, onError = viewModel::showMessage)
+    val plusMenu = rememberComposerMenuActions(graph, onPickMedia = pickMedia, onPickFiles = if (extendedFiles) pickFiles else null)
     val share by graph.share.offer.collectAsStateWithLifecycle()
     LaunchedEffect(share?.generation, share?.target) {
         val incoming = share ?: return@LaunchedEffect
@@ -220,31 +238,18 @@ fun ConversationScreen(
 
     // The items as the transcript shows them: every cached call re-read by this build, in a coordinator's chat the
     // brief remark after an injected turn folded under the turn's row (see [CoordinatorTranscript.present]), and the
-    // agent's goal calls lifted out of their stretches of work into rows of their own (see [GoalTranscript.lift]).
-    val items = remember(conversation.items, coordinatorMode) { GoalTranscript.lift(CoordinatorTranscript.present(conversation.items, coordinatorMode)) }
+    // agent's goal calls lifted out of their stretches of work into rows of their own (see [GoalTranscript.lift]) —
+    // and the rows the list draws: the messages as themselves, and everything the agent did between two of them
+    // behind one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still
+    // writes. Both come presented, a turn at a time, off the main thread (see [TranscriptPresenter]).
+    val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    // The rows the list draws: the messages as themselves, and everything the agent did between two of them behind
-    // one summary line (see [TranscriptRows]); the newest stretch reads "Working" while the run still writes.
-    val rows = remember(items, coordinatorMode, isActive) { TranscriptRows.of(items, coordinatorMode, runActive = isActive) }
+    val rows = presentedTranscript.rows
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)
-    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
-    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
-    // opens in the document sheet; without the account it points at the Project on cursor.com.
-    val lightbox = rememberLightboxState(agentId)
     val canReadStores = capabilities.projects && !isDemo
     var openStorePath by rememberSaveable(agentId) { mutableStateOf<String?>(null) }
-    val markdownMedia = remember(agentId, lightbox, canReadStores) {
-        MarkdownMediaContext(
-            agentId, graph.media, lightbox,
-            canReadStores = canReadStores,
-            onOpenStorePath = { path ->
-                val target = storeRef(path, agentId)
-                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
-            },
-        )
-    }
 
     // In a reversed list index 0 is the newest item, so "at the bottom" is "first item, (almost) no offset".
     val atBottom by remember {
@@ -280,6 +285,24 @@ fun ConversationScreen(
     val panelState = rememberSidePanelState()
     val panel by panelViewModel.state.collectAsStateWithLifecycle()
     val panelActions = rememberPanelActions(panelViewModel, onToast = viewModel::showMessage, onOpenAgent = onOpenAgent)
+    // Replies reference screenshots and recordings by their VM path; resolving them needs this agent's id. A path
+    // into an Agent Store (`/cursor/stores/…`, a Project's context) is read through the account in Extended mode and
+    // opens in the document sheet; without the account it points at the Project on cursor.com. A tapped figure opens
+    // the media viewer among the chat's media in transcript order (see [ConversationMedia]), the artifacts the panel
+    // has listed after them; the list is read at the tap, off the items as they are then.
+    val latestItems = rememberUpdatedState(conversation.items)
+    val latestArtifacts = rememberUpdatedState(panel.artifacts.valueOrNull.orEmpty())
+    val markdownMedia = remember(agentId, canReadStores) {
+        MarkdownMediaContext(
+            agentId, graph.media,
+            canReadStores = canReadStores,
+            onOpenStorePath = { path ->
+                val target = storeRef(path, agentId)
+                if (canReadStores && target != null) openStorePath = path.text else runCatching { uriHandler.openUri(StorePath.webUrl(target?.ownerId ?: agentId)) }
+            },
+            entries = { ConversationMedia.of(latestItems.value, latestArtifacts.value) },
+        )
+    }
     // The agent's VM desktop is reached from the header menu (Extended mode, `GetMachine` then noVNC), for the chats
     // that have one to show — the Agents Window's rule, a cloud composer, narrowed to the chats GetMachine would not
     // refuse (DesktopEligibility). It opens over the whole screen for the whole of the way there: the steps while the
@@ -519,11 +542,12 @@ fun ConversationScreen(
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
         val willQueue = isActive || queue.isNotEmpty() || (accountQueue && controls.queue.isNotEmpty())
-        // The composer rests 10dp above the keyboard's edge while there is one, and above the navigation bar otherwise
-        // (keyboardInsetPadding); the transcript above takes whatever height is left and keeps its newest turn on the
-        // composer through the change, being a bottom-anchored list.
+        // The composer and the strips over it dock at the bottom (composerDockPadding): the gutter at each side, and
+        // under the box a gap a shade wider than the gutter, above the keyboard's edge while there is one and above
+        // the navigation bar — or the window's edge — otherwise. The transcript above takes whatever height is left
+        // and keeps its newest turn on the composer through the change, being a bottom-anchored list.
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding().testTag("composer-column"),
+            Modifier.fillMaxWidth().composerDockPadding().testTag("composer-column"),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // The web's pills — Agents, Listening, Changes, Open Desktop — sit directly above the composer box, at its
@@ -580,7 +604,8 @@ fun ConversationScreen(
                     else -> "Follow up…"
                 },
                 onSend = viewModel::send,
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending && !archived,
+                // Held only while an attached file is still going up: once every file carries its reference the send is instant.
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived && uploadHint == null,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
                 isSending = isSending,
@@ -590,6 +615,11 @@ fun ConversationScreen(
                 onRemoveAttachment = viewModel::removeAttachment,
                 onAddAttachments = viewModel::addAttachments,
                 onAttachmentError = viewModel::showMessage,
+                files = files,
+                onRemoveFile = viewModel::removeFile,
+                fileUploads = fileUploads,
+                onRetryFile = viewModel::retryFile,
+                sendHint = uploadHint,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,
@@ -599,15 +629,12 @@ fun ConversationScreen(
                 modePill = picker.modePill,
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).testTag("follow-up-composer"),
             )
         }
     }
     }
 
-    // Above the transcript rather than inside the row that opened it: the lazy list disposes a row as soon as it
-    // scrolls off, which a running agent's replies do on their own, and that used to close the viewer with it.
-    FigureLightbox(lightbox, graph.media, agentId)
     openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->
         CompositionLocalProvider(LocalMarkdownMedia provides markdownMedia) {
             StoreDocumentSheet(ref, graph.storeFiles, onDismiss = { openStorePath = null })
@@ -704,8 +731,12 @@ internal fun changesSummary(panel: PanelState): ConversationPillsState.ChangesSu
 /** How far (px) the newest item may be scrolled past before the reader counts as having left the bottom. */
 private const val BottomTolerancePx = 48
 
-/** How many rows from the oldest one shown the reader may be before the turns before it are asked for. */
-private const val OlderTurnsPrefetchRows = 3
+/**
+ * How many rows from the oldest one shown the reader may be before the turns before it are asked for: about a
+ * screen's worth, so a page is on its way while the reader is still reading the one above it rather than when they
+ * have reached its end (the insert above them costs nothing to what they are looking at; see [TranscriptPresenter]).
+ */
+private const val OlderTurnsPrefetchRows = 6
 
 /**
  * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the

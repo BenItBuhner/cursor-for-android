@@ -7,6 +7,8 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.DraftStore
 import com.cursorforandroid.data.local.PreferencesStore.ComposerDefaults
+import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.FailedLaunch
 import com.cursorforandroid.data.repo.LaunchIdempotency
 import com.cursorforandroid.data.repo.LaunchRequest
@@ -16,13 +18,16 @@ import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.BranchOption
 import com.cursorforandroid.domain.DeviceOption
 import com.cursorforandroid.domain.DeviceTarget
+import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.KnownBranches
 import com.cursorforandroid.domain.KnownDevices
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.attachmentOnlyText
 import com.cursorforandroid.domain.autoOption
 import com.cursorforandroid.domain.named
 import com.cursorforandroid.domain.RecentRepositories
@@ -30,7 +35,10 @@ import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.share.ShareDraft
+import com.cursorforandroid.ui.components.FileUploadState
 import com.cursorforandroid.ui.components.PendingAttachment
+import com.cursorforandroid.ui.components.PendingFile
+import com.cursorforandroid.ui.components.withinSlots
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -55,6 +63,14 @@ import kotlinx.coroutines.withContext
 data class NewAgentUiState(
     val prompt: String = "",
     val attachments: List<PendingAttachment> = emptyList(),
+    /** Files of any type (Extended mode); a launch with any goes through the account's start, on Cursor's cloud only. */
+    val files: List<PendingFile> = emptyList(),
+    /** Where each attached file's upload stands, by [PendingFile.id], from the moment it is attached. */
+    val fileUploads: Map<String, FileUploadState> = emptyMap(),
+    /** Why send is held — "Uploading 2 of 3…" while a file is still going up — or null. */
+    val uploadHint: String? = null,
+    /** Whether the "+" menu offers Files: the `promptFiles` capability, off in the default mode and the demo. */
+    val canAttachFiles: Boolean = false,
     val repositories: List<Repository> = emptyList(),
     /**
      * Repositories an agent has been active in within the last week, newest first, at most ten. Empty when nothing
@@ -106,7 +122,8 @@ data class NewAgentUiState(
     /** Model ids pinned in the picker, most recently pinned first. */
     val pinnedModelIds: List<String> = emptyList(),
 ) {
-    val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo)
+    /** Something to send, nothing on its way out, a destination, and no attached file still going up. */
+    val canLaunch: Boolean get() = (prompt.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isLaunching && (selectedRepo != null || noRepo) && uploadHint == null
     /** The `/` catalog this composer needs: the repository's at its branch, or the repository-less one. */
     val commandScope: SlashScope get() = selectedRepo?.takeIf { !noRepo }?.let { SlashScope.Repo(it.url, ref.trim()) } ?: SlashScope.None
     /**
@@ -130,7 +147,7 @@ data class NewAgentUiState(
     /** The device's repository as a picker entry — the catalogue's own row for it when the catalogue lists it. */
     val deviceRepository: Repository? get() = deviceRepoUrl?.let { url -> repositories.firstOrNull { it.isAt(url) } ?: Repository(url) }
     /** Nothing written, nothing attached and nothing on its way out: a draft that comes back may take the composer. */
-    val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && !isLaunching
+    val isFree: Boolean get() = prompt.isBlank() && attachments.isEmpty() && files.isEmpty() && !isLaunching
 
     companion object {
         /** The web composer's name for a chat with no repository: the source the Agents Window offers beside the repositories. */
@@ -199,6 +216,7 @@ class NewAgentViewModel(
 
     /** Where each attachment's bytes already are on disk, by attachment id, so a save rewrites none of them. */
     @Volatile private var savedImages: Map<String, DraftStore.Image> = emptyMap()
+    @Volatile private var savedFiles: Map<String, DraftStore.StoredFile> = emptyMap()
     /** One writer at a time, so a save that was already under way cannot land on top of a clear. */
     private val draftMutex = Mutex()
 
@@ -246,6 +264,32 @@ class NewAgentViewModel(
         viewModelScope.launch {
             graph.prefs.pinnedModelIds.collect { ids -> _state.update { it.copy(pinnedModelIds = ids) } }
         }
+        viewModelScope.launch {
+            // Files of any type ride the account's start alone: with the mode turned off under attached files, the
+            // files come off rather than stay to refuse the launch.
+            graph.extendedMode.capabilities.collect { caps ->
+                val allowed = caps.promptFiles && !graph.session.isDemo
+                if (!allowed) _state.value.files.forEach { graph.attachmentUploads.cancel(it.id) }
+                _state.update { s -> if (allowed) s.copy(canAttachFiles = true) else s.copy(canAttachFiles = false, files = emptyList()) }
+            }
+        }
+        viewModelScope.launch {
+            // The chips follow the uploads that started when their files were attached; a completed one puts its
+            // reference on the file, so the draft on disk sends what is already up after a restart.
+            graph.attachmentUploads.states.collect { states ->
+                _state.update { s ->
+                    val files = s.files.map { f ->
+                        val ref = (states[f.id] as? AttachmentUploads.Status.Done)?.file?.ref
+                        if (ref != null && f.file.upload != ref) PendingFile(f.id, f.file.withUpload(ref), f.thumbnail) else f
+                    }
+                    s.copy(
+                        files = files,
+                        fileUploads = files.mapNotNull { f -> states[f.id]?.let { f.id to FileUploadState.of(it) } }.toMap(),
+                        uploadHint = AttachmentUploads.hint(states, files.map { it.id }),
+                    )
+                }
+            }
+        }
     }
 
     /**
@@ -259,11 +303,17 @@ class NewAgentViewModel(
         // Decodes a bitmap per image, so not on the main thread.
         val attachments = withContext(Dispatchers.IO) { images.map { (stored, image) -> stored to PendingAttachment.of(image) } }
         savedImages = attachments.associate { (stored, attachment) -> attachment.id to stored }
+        // An image file's chip thumbnail is decoded on the way back, off the main thread like the strip's.
+        val files = withContext(Dispatchers.IO) { draft.files.mapNotNull { stored -> graph.drafts.readFile(stored)?.let { stored to PendingFile.of(it) } } }
+        savedFiles = files.associate { (stored, file) -> file.id to stored }
+        // A file that came back with its reference is up already; one without goes up now.
+        files.forEach { (_, file) -> graph.attachmentUploads.start(file.id, file.file) }
         if (draft.nonce.isNotBlank()) launchNonce = draft.nonce
         _state.update {
             it.copy(
                 prompt = draft.prompt,
                 attachments = attachments.map { (_, attachment) -> attachment },
+                files = files.map { (_, file) -> file },
                 noRepo = draft.noRepo,
                 planMode = draft.planMode,
             ).withExclusiveModes()
@@ -287,19 +337,24 @@ class NewAgentViewModel(
     /** What is on screen, as the draft it would be restored from; an empty composer has no draft to keep. */
     private suspend fun save() = draftMutex.withLock {
         val s = _state.value
-        if (s.prompt.isBlank() && s.attachments.isEmpty()) {
-            if (savedImages.isNotEmpty() || graph.drafts.read() != null) {
+        if (s.prompt.isBlank() && s.attachments.isEmpty() && s.files.isEmpty()) {
+            if (savedImages.isNotEmpty() || savedFiles.isNotEmpty() || graph.drafts.read() != null) {
                 savedImages = emptyMap()
+                savedFiles = emptyMap()
                 graph.drafts.clear()
             }
             return@withLock
         }
         val stored = s.attachments.mapNotNull { a -> (savedImages[a.id] ?: graph.drafts.writeImage(a.image))?.let { a.id to it } }
         savedImages = stored.toMap()
+        // A file already on disk is not written again; its record takes the reference its upload has settled on since.
+        val storedFiles = s.files.mapNotNull { f -> (savedFiles[f.id]?.withRef(f.file.upload) ?: graph.drafts.writeFile(f.file))?.let { f.id to it } }
+        savedFiles = storedFiles.toMap()
         graph.drafts.write(
             DraftStore.Draft(
                 prompt = s.prompt,
                 images = stored.map { it.second },
+                files = storedFiles.map { it.second },
                 repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
                 noRepo = s.noRepo,
                 ref = s.ref,
@@ -316,6 +371,7 @@ class NewAgentViewModel(
 
     private suspend fun forgetDraft() = draftMutex.withLock {
         savedImages = emptyMap()
+        savedFiles = emptyMap()
         graph.drafts.clear()
     }
 
@@ -323,6 +379,8 @@ class NewAgentViewModel(
     private fun NewAgentUiState.draftFields(): List<Any?> = listOf(
         prompt,
         attachments.map { it.id },
+        // A completed upload is a change to the draft too: its reference is what a restart sends.
+        files.map { it.id to it.file.upload?.uploadId },
         selectedRepo?.url,
         noRepo,
         ref,
@@ -511,6 +569,29 @@ class NewAgentViewModel(
         _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == item.id }) }
         restoreWaitingIfFree()
     }
+    /** Files of any type from the document picker (Extended mode); refused with a word when the mode is off. */
+    fun addFiles(items: List<PendingFile>) {
+        if (items.isEmpty()) return
+        if (!_state.value.canAttachFiles) {
+            reportError(AgentRepository.FILES_NEED_EXTENDED)
+            return
+        }
+        var kept: List<PendingFile> = emptyList()
+        _state.update { s -> s.copy(files = (s.files + items).withinSlots(imagesElsewhere = s.attachments.size).also { kept = it }, error = null) }
+        // Up they go, the moment they are attached; the launch waits on nothing once they are.
+        kept.filter { f -> items.any { it.id == f.id } }.forEach { graph.attachmentUploads.start(it.id, it.file) }
+    }
+    /** Takes a file off the draft: its upload, under way or done, is cancelled with it. */
+    fun removeFile(item: PendingFile) {
+        _state.update { s -> s.copy(files = s.files.filterNot { it.id == item.id }) }
+        graph.attachmentUploads.cancel(item.id)
+        restoreWaitingIfFree()
+    }
+    /** A file whose upload failed: the upload alone is tried again, in its chip. */
+    fun retryFile(item: PendingFile) {
+        if (_state.value.files.none { it.id == item.id }) return
+        graph.attachmentUploads.retry(item.id)
+    }
     fun reportError(message: String) = _state.update { it.copy(error = message) }
     /**
      * A repository picked here (see [NewAgentUiState.withRepo] for the branch). On a machine or pool it is a pick
@@ -593,14 +674,29 @@ class NewAgentViewModel(
     fun launch(onOpen: (agentId: String) -> Unit) {
         val s = _state.value
         if (!s.canLaunch) return
+        // A file rides the account's start, which this composer can only ask of Cursor's cloud (see AgentRepository.startWithFiles).
+        if (s.files.isNotEmpty()) {
+            if (!s.canAttachFiles) {
+                reportError(AgentRepository.FILES_NEED_EXTENDED)
+                return
+            }
+            if (s.selectedDevice.type == EnvType.POOL || s.selectedDevice.type == EnvType.MACHINE) {
+                reportError(AgentRepository.FILES_NEED_CLOUD)
+                return
+            }
+        }
         val nonce = launchNonce
         // Held only for as long as the draft takes to pack and put on screen, so a second tap cannot send it twice.
         _state.update { it.copy(isLaunching = true, error = null) }
         viewModelScope.launch {
             val remembered = defaults?.takeIf { it.modelChosen }
             val draft = LaunchRequest(
-                prompt = s.prompt.trim(),
+                // The account's start refuses a message with no text (`$0n`: "Cannot start Cloud Agent without a
+                // message", images excepted), so a files-only draft says what it carries, as the follow-up composer does.
+                prompt = s.prompt.trim().ifEmpty { if (s.files.isNotEmpty()) attachmentOnlyText(s.attachments.size, s.files.size) else "" },
                 images = s.attachments.map { it.image },
+                // Each file carries the reference its upload settled on when it was attached, so the start waits on no upload.
+                files = s.files.map { it.file.withUpload(graph.attachmentUploads.ref(it.id) ?: it.file.upload) },
                 repoUrl = if (s.noRepo) null else s.selectedRepo?.url,
                 ref = s.ref.trim().ifBlank { null },
                 // The last-used id goes out even when this list has not resolved it yet, so a send during a
@@ -647,7 +743,9 @@ class NewAgentViewModel(
                 cloudRepoUrl = if (request.env.isCloud) request.repoUrl else defaults?.cloudRepoUrl,
                 modelChosenAtMillis = now,
             )
-            _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList()) }
+            _state.update { it.copy(isLaunching = false, prompt = "", attachments = emptyList(), files = emptyList()) }
+            // The files are the launch's now, by their references; a launch that fails brings them back with those.
+            graph.attachmentUploads.forget(s.files.map { it.id })
             // The draft is the launcher's now; what is kept on disk is whatever is written next.
             forgetDraft()
             restoreWaitingIfFree()
@@ -663,7 +761,8 @@ class NewAgentViewModel(
         val images = failed.request.images
         // The strip's thumbnails are decoded off the main thread, as they were when the images were picked.
         val attachments = if (images.isEmpty()) emptyList() else withContext(Dispatchers.IO) { images.map(PendingAttachment::of) }
-        waiting += ReturnedDraft(failed, attachments)
+        val files = if (failed.request.files.isEmpty()) emptyList() else withContext(Dispatchers.IO) { failed.request.files.map { PendingFile.of(it) } }
+        waiting += ReturnedDraft(failed, attachments, files)
         restoreWaitingIfFree()
     }
 
@@ -675,6 +774,9 @@ class NewAgentViewModel(
         // re-resolves it rather than the remembered one.
         if (_state.value.resolvesModelOf(draft.failed.request)) modelPicked = true
         _state.update { it.restored(draft) }
+        // The files come back with the references they went out under, so they are up from the start; one that
+        // went out inline, or whose upload the account has since let go, goes up again.
+        draft.files.forEach { graph.attachmentUploads.start(it.id, it.file) }
     }
 
     /**
@@ -690,8 +792,10 @@ class NewAgentViewModel(
         // A launch that sent no model was going to run on Auto; that is what comes back checked.
         val auto = models.autoOption() ?: models.firstOrNull()
         return copy(
-            prompt = request.prompt,
+            // A prompt the launch wrote for an attachment-only draft comes back as the empty field it was typed as.
+            prompt = if (draft.files.isNotEmpty() && request.prompt == attachmentOnlyText(request.images.size, request.files.size)) "" else request.prompt,
             attachments = draft.attachments,
+            files = draft.files,
             error = draft.failed.reason,
             noRepo = request.repoUrl == null,
             selectedRepo = repo ?: selectedRepo,
@@ -715,8 +819,8 @@ class NewAgentViewModel(
     /** True when [request]'s model is one the current list has, or the launch sent none, so the composer can show it as picked. */
     private fun NewAgentUiState.resolvesModelOf(request: LaunchRequest): Boolean = request.modelId == null || modelFor(request) != null
 
-    /** A failed launch's draft with its images ready for the strip again. */
-    private class ReturnedDraft(val failed: FailedLaunch, val attachments: List<PendingAttachment>)
+    /** A failed launch's draft with its images and files ready for the strip again. */
+    private class ReturnedDraft(val failed: FailedLaunch, val attachments: List<PendingAttachment>, val files: List<PendingFile> = emptyList())
 
     class Factory(private val graph: AppGraph) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

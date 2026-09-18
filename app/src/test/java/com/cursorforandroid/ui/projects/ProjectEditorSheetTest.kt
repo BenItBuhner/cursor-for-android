@@ -16,6 +16,12 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.api.ConnectRpcException
+import com.cursorforandroid.domain.AccountModel
+import com.cursorforandroid.domain.ModelChoice
+import com.cursorforandroid.domain.ModelOption
+import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.Repository
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -44,7 +50,22 @@ class ProjectEditorSheetTest {
 
     private val repos = listOf(Repository("https://github.com/acme/billing"), Repository("https://github.com/acme/web"), Repository("https://github.com/acme/infra"))
 
-    private fun show(target: ProjectEditorTarget, name: String = "", appearance: ProjectAppearance? = null, owned: List<String> = emptyList(), busy: Boolean = false, error: String? = null, loading: Boolean = false) {
+    private val auto = ModelOption("default", "Auto")
+    private val sonnet = ModelOption("claude-4.5-sonnet", "Claude 4.5 Sonnet", variants = listOf(ModelVariant("Default", emptyList(), isDefault = true), ModelVariant("High effort", listOf(ModelParam("effort", "high")), isDefault = false)))
+    private val gpt = ModelOption("gpt-5.6", "GPT-5.6")
+    private val catalog = listOf(auto, sonnet, gpt)
+
+    private fun show(
+        target: ProjectEditorTarget,
+        name: String = "",
+        appearance: ProjectAppearance? = null,
+        owned: List<String> = emptyList(),
+        busy: Boolean = false,
+        error: String? = null,
+        loading: Boolean = false,
+        models: List<ModelOption> = emptyList(),
+        defaultModel: ModelChoice? = null,
+    ) {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 ProjectEditorSheet(
@@ -59,6 +80,8 @@ class ProjectEditorSheetTest {
                     onRefreshRepositories = { refreshes++ },
                     onConfirm = { results += it },
                     onDismiss = {},
+                    models = models,
+                    defaultModel = defaultModel,
                 )
             }
         }
@@ -145,12 +168,59 @@ class ProjectEditorSheetTest {
         assertThat(results).containsExactly(ProjectEditorResult("Cesium billing v2", ProjectAppearance("flag", "brand"), listOf("https://github.com/acme/billing")))
     }
 
+    /**
+     * The desktop dialog's Model picker, on a phone: the row opens on the composer's default (the model this device
+     * last used, else the account's newest, else Auto), the composer's own picker changes it — without Plan mode or
+     * auto-PR, which a coordinator has not — and the choice goes out with the Project, Auto as the account's `default`.
+     */
     @Test
-    fun `a refusal is shown and the fields kept`() {
+    fun `the Model row opens on the composer's default and the picker changes it, Auto included`() {
+        show(ProjectEditorTarget.Create, models = catalog, defaultModel = ModelChoice(sonnet, sonnet.variants.first()))
+        list().performScrollToNode(hasText("Claude 4.5 Sonnet"))
+        compose.onNodeWithTag("project-model").assertIsDisplayed()
+        compose.onNodeWithText("Claude 4.5 Sonnet").assertIsDisplayed()
+
+        compose.onNodeWithTag("project-model").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Models").fetchSemanticsNodes().isNotEmpty() }
+        assertThat(compose.onAllNodes(hasText("Plan mode")).fetchSemanticsNodes()).isEmpty()
+        assertThat(compose.onAllNodes(hasText("Auto-create PR")).fetchSemanticsNodes()).isEmpty()
+        compose.onNodeWithText("GPT-5.6").performClick()
+        compose.onNodeWithText("Create").performClick()
+        assertThat(results.last().model).isEqualTo(ModelChoice(gpt, null))
+        assertThat(results.last().accountModel).isEqualTo(AccountModel("gpt-5.6"))
+
+        // Auto is a row like any other, and goes out as the desktop's `default`.
+        compose.onNodeWithText("Auto").performClick()
+        compose.onNodeWithText("Create").performClick()
+        assertThat(results.last().model?.model).isEqualTo(auto)
+        assertThat(results.last().accountModel).isEqualTo(AccountModel("default"))
+        assertThat(results.last().accountModel?.isAuto).isTrue()
+    }
+
+    @Test
+    fun `with no model list the row says Auto and the Project is created with none named, which the account reads as Auto`() {
+        show(ProjectEditorTarget.Create)
+        list().performScrollToNode(hasText("Auto"))
+        compose.onNodeWithText("Auto").assertIsDisplayed()
+        compose.onNodeWithText("Cursor picks the model for each task").assertIsDisplayed()
+        compose.onNodeWithText("Create").performClick()
+        assertThat(results.single().model).isNull()
+        assertThat(results.single().accountModel).isNull()
+    }
+
+    @Test
+    fun `a refusal is shown and the fields kept, in the account's words`() {
         show(ProjectEditorTarget.Edit("bc-p"), name = "Cesium billing", appearance = ProjectAppearance("flag", "green"), error = "Project creation is not available for this workspace.")
         compose.onNodeWithTag("project-editor-error").assertIsDisplayed()
+        compose.onNodeWithText("Cursor didn't save the Project").assertIsDisplayed()
         compose.onNodeWithText("Project creation is not available for this workspace.").assertIsDisplayed()
         compose.onNodeWithText("Save").assertIsDisplayed()
+
+        // The account's refusal, whole, with what it sent besides the words.
+        assertThat(refusalText(ConnectRpcException(400, "invalid_argument", "At least one model details is required"))).isEqualTo("At least one model details is required (Cursor: invalid_argument, HTTP 400)")
+        assertThat(refusalText(ConnectRpcException(200, null, "Cursor started no Project."))).isEqualTo("Cursor started no Project.")
+        assertThat(refusalText(IllegalStateException("This Project isn't loaded."))).isEqualTo("This Project isn't loaded.")
+        assertThat(refusalText(RuntimeException())).isEqualTo("Cursor didn't answer.")
     }
 
     @Test

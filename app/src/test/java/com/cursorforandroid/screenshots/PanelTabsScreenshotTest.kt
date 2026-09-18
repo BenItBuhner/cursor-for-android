@@ -54,7 +54,6 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
-import com.cursorforandroid.ui.components.rememberLightboxState
 import com.cursorforandroid.ui.conversation.ConversationPills
 import com.cursorforandroid.ui.conversation.ConversationPillsState
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
@@ -247,8 +246,7 @@ class PanelTabsScreenshotTest {
     private fun Panel(state: PanelState) {
         val appContext = ApplicationProvider.getApplicationContext<Context>()
         val loader = remember { MediaLoader(appContext, OkHttpClient(), ArtifactRepository(api = { FakeCursorApi() })) }
-        val lightbox = rememberLightboxState("bc-root")
-        val media = remember(loader, lightbox) { MarkdownMediaContext("bc-root", loader, lightbox) }
+        val media = remember(loader) { MarkdownMediaContext("bc-root", loader) }
         CursorTheme(mode = ThemeMode.Dark) {
             CompositionLocalProvider(LocalRippleConfiguration provides null, LocalMarkdownMedia provides media) {
                 // The panel as it sits on a phone: the sheet over the chat's canvas, the width the host gives it, on

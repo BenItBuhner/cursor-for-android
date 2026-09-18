@@ -4,7 +4,14 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
+import com.cursorforandroid.data.api.AgentStartApi
+import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.CursorApiException
+import com.cursorforandroid.data.api.PresignedPromptUpload
+import com.cursorforandroid.data.api.PromptUploadApi
+import com.cursorforandroid.data.api.PromptUploadCompletion
+import com.cursorforandroid.data.api.StartRequest
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AgentListCache
@@ -13,8 +20,12 @@ import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.api.dto.AgentEnvDto
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.DeviceTarget
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.UploadRef
 import com.cursorforandroid.domain.RunStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
@@ -28,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Before
@@ -176,6 +188,127 @@ class AgentRepositoryLaunchTest {
         api.createGate!!.complete(Unit)
         launch.join()
         awaitUntil { cache.read()?.value?.map { it.id } == listOf(id, "bc-old") }
+    }
+
+    /** The account's start and uploads, scriptable: what a launch with files hands them, and the record they answer with. */
+    private class FakeStart : AgentStartApi {
+        val requests = ArrayList<StartRequest>()
+        var onStart: (StartRequest) -> Unit = {}
+        override suspend fun start(request: StartRequest): ComposerSnapshot {
+            requests += request
+            onStart(request)
+            return ComposerSnapshot(request.agentId, name = "From the account")
+        }
+    }
+
+    private class FakeUploads : PromptUploadApi {
+        val presigned = ArrayList<String>()
+        override suspend fun presign(filename: String, mimeType: String, contentLengthBytes: Long, teamId: Int?): PresignedPromptUpload {
+            presigned += filename
+            // No upload path: the uploader carries the bytes inline, so no storage is needed here.
+            throw ConnectRpcException(404, "unimplemented", "no presign in this fake")
+        }
+        override suspend fun complete(uploadId: String, s3UploadId: String) = PromptUploadCompletion.COMPLETED
+        override suspend fun abort(uploadId: String, s3UploadId: String) = Unit
+    }
+
+    private fun withAccountStart(start: FakeStart, uploads: FakeUploads, capabilities: Capabilities = Capabilities.EXTENDED): AgentRepository {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val backend = CursorBackend(api, FakeRunStreamer(), isDemo = true)
+        val session = SessionManager(SecureKeyStore(context), prefs, backend, backend)
+        runBlocking { session.enterDemo() }
+        return AgentRepository(
+            session, prefs, AttachmentStore(context), lostReplyProbeDelayMs = 10,
+            capabilities = { capabilities },
+            start = { start },
+            uploads = { PromptUploader(uploads, OkHttpClient(), partTimeoutMs = 0L) },
+        )
+    }
+
+    @Test
+    fun `a launch with files goes through the account's start with the files uploaded, then adopts the chat from the API`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val uploads = FakeUploads()
+        val agents = withAccountStart(start, uploads)
+        val withFiles = request.copy(
+            files = listOf(PromptFile(byteArrayOf(1, 2, 3), "spec.pdf", "application/pdf")),
+            images = listOf(PromptImage(byteArrayOf(9), "image/png")),
+            planMode = true,
+            autoCreatePr = true,
+        )
+        val id = LaunchIdempotency.agentId(withFiles, "nonce")
+        // The account creates the chat; the API lists it under the minted id a moment later.
+        start.onStart = { api.addRunningAgent(it.agentId, "Sync merge and chat state", "run-server-1") }
+
+        val (agent, run) = agents.launch(withFiles.copy(agentId = id), "Auto").getOrThrow()
+
+        // Nothing went to the documented create: the account's start carried the prompt, its files and its images.
+        assertThat(api.createRequests).isEmpty()
+        val sent = start.requests.single()
+        assertThat(sent.agentId).isEqualTo(id)
+        assertThat(sent.text).isEqualTo(request.prompt)
+        assertThat(sent.repoUrl).isEqualTo(request.repoUrl)
+        assertThat(sent.ref).isEqualTo("main")
+        assertThat(sent.modelId).isEqualTo("auto-smart")
+        assertThat(sent.planMode).isTrue()
+        assertThat(sent.autoCreatePr).isTrue()
+        assertThat(sent.environmentName).isNull()
+        assertThat(sent.images).hasSize(1)
+        assertThat(sent.files.single().filename).isEqualTo("spec.pdf")
+        assertThat(sent.files.single().mimeType).isEqualTo("application/pdf")
+        assertThat(sent.files.single().data).isEqualTo(byteArrayOf(1, 2, 3))
+        assertThat(uploads.presigned).containsExactly("spec.pdf")
+        // Adopted the way a lost reply's chat is: the row from GET /v1/agents/{id}, its run read once named.
+        assertThat(agent.id).isEqualTo(id)
+        assertThat(agent.name).isEqualTo("Sync merge and chat state")
+        assertThat(run?.id).isEqualTo("run-server-1")
+        assertThat(agent.runStatus).isEqualTo(RunStatus.RUNNING)
+        assertThat(agent.modelDisplayName).isEqualTo("Auto")
+        assertThat(agents.state.value.agents.map { it.id }).containsExactly(id)
+        // The files were kept for the transcript under the run, beside the image.
+        val kept = AttachmentStore(ApplicationProvider.getApplicationContext()).forAgent(id).getValue("run-server-1")
+        assertThat(kept.filter { it.isFile }.map { it.name }).containsExactly("spec.pdf")
+    }
+
+    /**
+     * The composer uploads a file the moment it is attached (see [AttachmentUploads]); the launch then meets files
+     * carrying their references and puts them in the start request as they are — no presign, no bytes on the wire.
+     */
+    @Test
+    fun `a launch whose files were uploaded on attach sends their references and uploads nothing`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val uploads = FakeUploads()
+        val agents = withAccountStart(start, uploads)
+        val ref = UploadRef("upl_spec", "s3-spec", "uuid-spec")
+        val withFiles = request.copy(files = listOf(PromptFile(byteArrayOf(1, 2, 3), "spec.pdf", "application/pdf", ref)))
+        val id = LaunchIdempotency.agentId(withFiles, "nonce")
+        start.onStart = { api.addRunningAgent(it.agentId, "Sync merge and chat state", "run-server-1") }
+
+        agents.launch(withFiles.copy(agentId = id), "Auto").getOrThrow()
+
+        val sent = start.requests.single().files.single()
+        assertThat(sent.uploadId).isEqualTo("upl_spec")
+        assertThat(sent.s3UploadId).isEqualTo("s3-spec")
+        assertThat(sent.uuid).isEqualTo("uuid-spec")
+        assertThat(sent.data).isNull()
+        assertThat(uploads.presigned).isEmpty()
+    }
+
+    @Test
+    fun `a launch with files is refused before anything is sent when the mode is off, or the chat would run on a pool or machine`() = runBlocking<Unit> {
+        val start = FakeStart()
+        val withFiles = request.copy(files = listOf(PromptFile(byteArrayOf(1), "a.txt", "text/plain")))
+        val id = LaunchIdempotency.agentId(withFiles, "nonce")
+
+        val off = withAccountStart(start, FakeUploads(), capabilities = Capabilities.DOCUMENTED).launch(withFiles.copy(agentId = id), "Auto")
+        assertThat(off.exceptionOrNull()).hasMessageThat().isEqualTo(AgentRepository.FILES_NEED_EXTENDED)
+
+        val pool = withAccountStart(start, FakeUploads()).launch(withFiles.copy(agentId = id, env = DeviceTarget.pool("team-pool")), "Auto")
+        assertThat(pool.exceptionOrNull()).hasMessageThat().isEqualTo(AgentRepository.FILES_NEED_CLOUD)
+
+        assertThat(start.requests).isEmpty()
+        assertThat(api.createRequests).isEmpty()
+        assertThat(agents.state.value.agents).isEmpty()
     }
 
     @Test

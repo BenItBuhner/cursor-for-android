@@ -22,6 +22,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -47,8 +50,12 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.TimeFormat
+import kotlinx.coroutines.delay
 
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
@@ -111,7 +118,7 @@ private fun QueuedFollowUpRow(
         if (item.warning != null) {
             Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(13.dp))
             Spacer(Modifier.width(8.dp))
-        } else if (item.images.isNotEmpty()) {
+        } else if (item.images.isNotEmpty() || item.files.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 item.images.forEach { image ->
                     Box(Modifier.size(Tile).cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.sm)) {
@@ -123,25 +130,38 @@ private fun QueuedFollowUpRow(
                         }
                     }
                 }
+                // A file keeps its glyph where an image has its tile; its name follows the message line below.
+                item.files.forEach { file ->
+                    Box(Modifier.size(Tile).cursorSurface(colors.fill, colors.stroke, CursorTheme.shapes.sm).semantics { contentDescription = "Attached file ${file.file.name}" }) {
+                        Icon(file.file.kind.icon(), null, tint = colors.iconTertiary, modifier = Modifier.size(10.dp).align(Alignment.Center))
+                    }
+                }
             }
             Spacer(Modifier.width(8.dp))
         }
+        // A message the server keeps refusing as busy reads as waiting, steadily — one line, the time waited on it —
+        // whether or not an attempt happens to be in flight this instant: the attempts are brief and the pauses
+        // between them long, and a card that read "sending" for each would flicker between the two for as long as
+        // the server took (see QueuedFollowUp.isHeld). The ring is for a first send only.
+        val sending = item.isSending && !item.isHeld
         Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
             Text(
                 item.previewText,
                 style = type.input,
-                color = if (item.isSending) colors.textTertiary else colors.textPrimary,
+                color = if (sending) colors.textTertiary else colors.textPrimary,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (item.files.isNotEmpty()) AttachedFileNames(item.files.map { it.file.name })
             // Why it did not go, in the server's words or the connection's: without it the warning is only a riddle.
             item.warning?.let { note ->
                 Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            if (item.isHeld) HeldNote(item)
         }
         Spacer(Modifier.width(8.dp))
-        if (item.isSending) {
+        if (sending) {
             Box(Modifier.size(Glyph + 10.dp).semantics { contentDescription = "Sending" }, contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 11.dp)
             }
@@ -152,6 +172,37 @@ private fun QueuedFollowUpRow(
                 GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
             }
         }
+    }
+}
+
+/**
+ * The line under a message the server keeps refusing as busy while nothing here calls the agent busy: what is being
+ * waited for and for how long, ticking by the second, and — from the third refusal on — the server's own words for
+ * it, so a wait of minutes is never a riddle. Quiet, not red: nothing has failed.
+ */
+@Composable
+private fun HeldNote(item: QueuedFollowUp) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val since = item.heldSinceMillis ?: return
+    var now by remember { mutableLongStateOf(AppClock.now()) }
+    LaunchedEffect(since) {
+        while (true) {
+            now = AppClock.now()
+            delay(1_000L)
+        }
+    }
+    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))
+    Text(
+        listOfNotNull(QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
+        style = type.small.copy(fontFeatureSettings = "tnum"),
+        color = colors.textQuaternary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.testTag("queued-held"),
+    )
+    item.serverReason?.let { reason ->
+        Text("Cursor says: $reason", style = type.small, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("queued-held-reason"))
     }
 }
 
@@ -252,6 +303,15 @@ private fun AccountQueueRow(
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // What the account says the message carries (`selected_context`): its files by name, its images by count.
+                if (item.files.isNotEmpty() || item.imageCount > 0) {
+                    val images = when (item.imageCount) {
+                        0 -> emptyList()
+                        1 -> listOf("1 image")
+                        else -> listOf("${item.imageCount} images")
+                    }
+                    AttachedFileNames(item.files.map { it.name } + images)
+                }
                 if (item.isEditing) Text("Being edited on another device", style = type.small, color = colors.textQuaternary, maxLines = 1)
             }
             Spacer(Modifier.width(8.dp))
@@ -278,6 +338,20 @@ private fun AccountQueueRow(
             }
         }
     }
+}
+
+/** The attachments a queued row carries, named in one small line under its text: `report.pdf · trace.zip · 2 images`. */
+@Composable
+private fun AttachedFileNames(names: List<String>) {
+    Text(
+        names.joinToString(" · "),
+        style = CursorTheme.typography.small,
+        color = CursorTheme.colors.textTertiary,
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.testTag("queued-attachments"),
+    )
 }
 
 /** One line of the reorder menu: the direction's glyph and word, dimmed at the end of the queue it cannot move past. */

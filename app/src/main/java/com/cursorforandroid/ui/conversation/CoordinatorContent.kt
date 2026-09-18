@@ -308,14 +308,32 @@ internal fun CoordinatorMessageView(call: ToolCall, payload: ToolPayload.Coordin
     // A message whose body this copy lacks (the stream left it out, or an earlier build did) says so, dimmed,
     // rather than standing bare, until the turn is asked for again.
     val missing = payload.missing && payload.message.isBlank()
-    ReplyMessage(
-        markdown = if (missing) MISSING_MESSAGE else payload.message,
-        isStreaming = call.isRunning,
-        modifier = modifier.testTag(if (missing) "coordinator-message-missing" else "coordinator-message"),
-        text = payload.message,
-        color = if (missing) colors.textTertiary else colors.textPrimary,
-    )
+    if (!payload.recovered || missing) {
+        ReplyMessage(
+            markdown = if (missing) MISSING_MESSAGE else payload.message,
+            isStreaming = call.isRunning,
+            modifier = modifier.testTag(if (missing) "coordinator-message-missing" else "coordinator-message"),
+            text = payload.message,
+            color = if (missing) colors.textTertiary else colors.textPrimary,
+        )
+        return
+    }
+    // A body read leniently out of a record that did not give it whole (see MessageRecovery): the reply as it was
+    // read, with one dimmed line under it saying so — it may be cut short, and the run's own copy replaces it when
+    // the log still has it.
+    Column(modifier.fillMaxWidth().testTag("coordinator-message-recovered")) {
+        ReplyMessage(markdown = payload.message, isStreaming = call.isRunning, text = payload.message)
+        Text(
+            RECOVERED_MESSAGE,
+            style = CursorTheme.typography.small,
+            color = colors.textQuaternary,
+            modifier = Modifier.padding(start = 6.dp, top = 2.dp).testTag("coordinator-message-recovered-note"),
+        )
+    }
 }
 
 /** What a coordinator's message row says when the body did not reach this device. */
 internal const val MISSING_MESSAGE = "This message's text didn't reach this device. It reloads with the turn when the run's log or the account's record is read again."
+
+/** The line under a message whose body was read out of a record that did not give it whole. */
+internal const val RECOVERED_MESSAGE = "Recovered from a partial record \u00B7 may be incomplete"

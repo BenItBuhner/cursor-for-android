@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ProjectAppearance
 import kotlinx.serialization.KSerializer
@@ -20,6 +21,12 @@ data class ProjectDraft(
     val appearance: ProjectAppearance,
     /** Repository URLs, the first of them primary; empty for a Project with no repository (an empty cloud environment). */
     val repoUrls: List<String>,
+    /**
+     * The model the coordinator runs on; null is Auto — the desktop's `default`, which its dialog sends when nothing
+     * is picked (`PQp`: `selectedModels: [{modelId: "default", parameters: []}]`). Never left off the request: the
+     * account refuses a start that names no model ("At least one model details is required").
+     */
+    val model: AccountModel? = null,
     val projectId: String = "bc-${UUID.randomUUID()}",
 )
 
@@ -52,6 +59,12 @@ interface ProjectCreationApi {
  *   `skills: []`; `name`; `project_details {name}` (`agent.v1.ProjectDetails`); `project_metadata {appearance {icon,
  *   color_id}}` (`aiserver.v1.ProjectMetadata`). Nothing else marks the chat a Project: the account reads
  *   `project_details` and answers with a record whose `projectMetadata` is set.
+ * - The model (`_buildStartRequestModelFields`): the dialog's model config always has a selected model — `PQp`
+ *   substitutes `{modelId: "default", parameters: []}` (Auto) when none is set — so the request carries
+ *   `requested_models: [agent.v1.RequestedModel {model_id, max_mode, parameters[{id, value}]}]` (field 58) and no
+ *   legacy `model_details` (field 4; that path, `D9a`, is taken only when the config names no model at all). The
+ *   account requires one or the other: a start naming neither is refused with "At least one model details is
+ *   required" — which is what the first build of this sheet sent.
  * - A Project with no repository starts in a no-repo cloud environment, the way the desktop's no-repo cloud target
  *   does (`_resolveCloudStartTarget` kind `noRepoEnvironment`; the automations runtime's
  *   `ensureNoRepoAutomationEnvironment`): `ListEnvironments {include_environment_json, repository_scope_repo_urls: []}`
@@ -79,7 +92,7 @@ class ConnectProjectCreationApi(
                 repoConfig = if (repos.size > 1) RepoConfigDto(repos.map { RepoEntryDto(repoUrl = it) }) else null,
             )
         } else {
-            StartingPointDto(environmentPublicId = noRepoEnvironment())
+            StartingPointDto(environmentPublicId = noRepoEnvironmentPublicId())
         }
         val messageId = "msg-${UUID.randomUUID()}"
         val request = StartFromSnapshotDto(
@@ -112,6 +125,7 @@ class ConnectProjectCreationApi(
             name = name,
             projectDetails = ProjectDetailsDto(name),
             projectMetadata = ProjectMetadataDto(BackgroundComposerApi.ProjectAppearanceDto(draft.appearance.icon, draft.appearance.colorId)),
+            requestedModels = listOf(requestedModel(draft.model)),
         )
         val response = call("StartBackgroundComposerFromSnapshot", request, StartFromSnapshotDto.serializer(), ComposerResponseDto.serializer())
         val record = response.composer?.let { BackgroundComposerApi.snapshot(it) }
@@ -125,8 +139,11 @@ class ConnectProjectCreationApi(
         return response.name?.takeIf { it.isNotBlank() } ?: name.trim()
     }
 
-    /** The account's personal no-repo environment — found among its environments, or created empty — by its public id. */
-    private suspend fun noRepoEnvironment(): String {
+    /**
+     * The account's personal no-repo environment — found among its environments, or created empty — by its public id.
+     * Shared with [ConnectAgentStartApi], whose no-repo chats start in the same environment the desktop's do.
+     */
+    suspend fun noRepoEnvironmentPublicId(): String {
         val listed = call("ListEnvironments", ListEnvironmentsDto(includeEnvironmentJson = true, repositoryScopeRepoUrls = emptyList()), ListEnvironmentsDto.serializer(), ListEnvironmentsResponseDto.serializer())
         listed.environments.firstOrNull { it.isPersonalNoRepo }?.publicId?.takeIf { it.isNotBlank() }?.let { return it }
         val created = call(
@@ -140,6 +157,16 @@ class ConnectProjectCreationApi(
 
     private suspend fun <I, O> call(method: String, body: I, requestSerializer: KSerializer<I>, responseSerializer: KSerializer<O>): O =
         rpc.unaryWithSession(BackgroundComposerApi.SERVICE, method, tokens, body, requestSerializer, responseSerializer)
+
+    /** The desktop's `RequestedModel` for the chosen model, or for Auto (`default`) when none was chosen; `max_mode` and `parameters` only when set, as protobuf-es writes them. */
+    private fun requestedModel(model: AccountModel?): RequestedModelDto {
+        val chosen = model?.takeIf { it.modelId.isNotBlank() } ?: AccountModel(AccountModel.AUTO_ID)
+        return RequestedModelDto(
+            modelId = chosen.modelId.trim(),
+            maxMode = chosen.maxMode.takeIf { it },
+            parameters = chosen.params.filter { it.id.isNotBlank() }.map { ModelParameterDto(it.id, it.value) }.takeIf { it.isNotEmpty() },
+        )
+    }
 
     @Serializable
     private data class StartFromSnapshotDto(
@@ -160,7 +187,16 @@ class ConnectProjectCreationApi(
         val name: String,
         val projectDetails: ProjectDetailsDto,
         val projectMetadata: ProjectMetadataDto,
+        val requestedModels: List<RequestedModelDto>,
     )
+
+    /** `agent.v1.RequestedModel {model_id, max_mode, parameters[]}`, the corner the dialog fills (no credentials). */
+    @Serializable
+    private data class RequestedModelDto(val modelId: String, val maxMode: Boolean? = null, val parameters: List<ModelParameterDto>? = null)
+
+    /** `agent.v1.RequestedModel.ModelParameterValue {id, value}`. */
+    @Serializable
+    private data class ModelParameterDto(val id: String, val value: String)
 
     /** `aiserver.v1.DevcontainerStartingPoint`: the repository (`url`, and `repo_config` for several), or the environment. */
     @Serializable

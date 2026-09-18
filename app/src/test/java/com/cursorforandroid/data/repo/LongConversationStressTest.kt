@@ -653,7 +653,13 @@ class LongConversationStressTest {
         record.turns = runs + 1
         val reads = record.calls.get()
         conversations.reload(agentId)
-        awaitUntil { record.calls.get() > reads && !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.prompts().first() == "Prompt ${runs - 8}" }
+        // Everything the refresh brings, awaited in full: the record's tail (the window's prompts), the state's turn
+        // count, and the publication that carries both (a burst publishes once, a beat later).
+        awaitUntil {
+            val s = conversations.state(agentId).value
+            record.calls.get() > reads && !s.isLoading && s.prompts().first() == "Prompt ${runs - 8}" &&
+                s.footers().size == 10 && conversations.loadDiagnostics(agentId)?.record?.turnCount == runs + 1
+        }
         val settled = conversations.state(agentId).value
         assertThat(settled.prompts()).containsExactly(*((runs - 8)..(runs + 1)).map { "Prompt $it" }.toTypedArray()).inOrder()
         assertThat(settled.prompts().count { it == followUpText }).isEqualTo(1)

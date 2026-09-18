@@ -63,6 +63,8 @@ import com.cursorforandroid.ui.components.MarkdownAppearance
 import com.cursorforandroid.ui.components.MarkdownText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
+import com.cursorforandroid.ui.media.LocalMediaViewer
+import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -327,9 +329,16 @@ private fun RecentTile(recent: RecentContextFile, actions: PanelActions) {
     val bitmap by produceState<ImageBitmap?>(initialValue = null, url, media) {
         value = if (url == null || media == null) null else runCatching { media.loader.image(MediaRef.parse(url, media.agentId), px.first * 2, px.second * 2).asImageBitmap() }.getOrNull()
     }
+    val viewer = LocalMediaViewer.current
     val open: () -> Unit = {
         val picture = bitmap
-        if (url != null && picture != null) media?.lightbox?.open(url, recent.entry.name, picture) else actions.openDocument(recent.store, recent.entry.relativePath)
+        // A picture opens in the media viewer on its own (the store's pictures are not among the chat's media); the rest as a tab.
+        if (url != null && picture != null) {
+            media?.onBeforeOpen?.invoke()
+            viewer?.open(media?.agentId, emptyList(), url, seen = picture, fallback = MediaEntry(url, MediaEntry.Kind.Image, caption = recent.entry.name, fileName = recent.entry.name))
+        } else {
+            actions.openDocument(recent.store, recent.entry.relativePath)
+        }
     }
     Column(Modifier.width(RecentTileWidth).testTag("recent-tile"), horizontalAlignment = Alignment.Start) {
         Box(
@@ -368,6 +377,7 @@ private fun RecentsFallback(state: PanelState, actions: PanelActions, inset: Dp)
         PanelNote("This chat's pictures and recordings would show here; it has none yet.")
         return
     }
+    val viewer = LocalMediaViewer.current
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val shape = CursorTheme.shapes.lg
@@ -382,7 +392,16 @@ private fun RecentsFallback(state: PanelState, actions: PanelActions, inset: Dp)
             Column(Modifier.width(RecentTileWidth).testTag("recent-tile")) {
                 Box(
                     Modifier.size(RecentTileWidth, RecentTileHeight).cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
-                        .pressable({ bitmap?.let { media?.lightbox?.open(tile.src, tile.caption, it) } ?: actions.openUrl(tile.src) }, shape, role = Role.Image),
+                        .pressable(
+                            {
+                                bitmap?.let { picture ->
+                                    media?.onBeforeOpen?.invoke()
+                                    viewer?.open(media?.agentId, media?.entries?.invoke() ?: emptyList(), tile.src, seen = picture, fallback = MediaEntry(tile.src, MediaEntry.Kind.Image, caption = tile.caption))
+                                } ?: actions.openUrl(tile.src)
+                            },
+                            shape,
+                            role = Role.Image,
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     val picture = bitmap

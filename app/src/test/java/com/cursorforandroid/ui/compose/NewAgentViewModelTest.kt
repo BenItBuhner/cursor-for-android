@@ -17,18 +17,15 @@ import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.MainDispatcherRule
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
-import org.junit.After
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -45,6 +42,9 @@ import java.util.concurrent.CopyOnWriteArrayList
 @Config(sdk = [35])
 class NewAgentViewModelTest {
 
+    @get:Rule
+    val mainDispatcher = MainDispatcherRule()
+
     private lateinit var graph: AppGraph
 
     /** Every create the composer sent, as the API received it. */
@@ -52,7 +52,6 @@ class NewAgentViewModelTest {
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
         // The demo's own catalogue and data, with the requests it is sent recorded.
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
         val api = object : CursorApi by demoApi {
@@ -72,10 +71,6 @@ class NewAgentViewModelTest {
         }
     }
 
-    @After
-    fun tearDown() {
-        Dispatchers.resetMain()
-    }
 
     private fun loaded(draftSaveDelayMs: Long = 400L): NewAgentViewModel {
         val vm = NewAgentViewModel(graph, draftSaveDelayMs)

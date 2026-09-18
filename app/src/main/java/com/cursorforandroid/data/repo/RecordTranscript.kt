@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.ConversationRecordApi
+import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessStep
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.TurnTiming
@@ -9,6 +10,8 @@ import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.TimelineItem
+import com.cursorforandroid.domain.TranscriptPerf
+import com.cursorforandroid.domain.TurnShape
 
 /**
  * The account's own record of a chat (`FetchBackgroundComposer`, see [ConversationRecordApi]) as the conversation
@@ -31,6 +34,12 @@ class RecordTurn(
     val projectMode: Boolean,
     /** The turn's trace — thoughts, tool calls with their payloads, the reply — without a footer, which the run or the timing gives. */
     val items: List<TimelineItem>,
+    /**
+     * The turn's steps and calls as they came, keys and value types only, for the transcript diagnostics: kept for
+     * the record's newest turns as read this session (see [RecordTranscript.SHAPE_TURNS]); null for the rest and for
+     * a turn restored from disk.
+     */
+    val shape: TurnShape? = null,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
@@ -48,6 +57,13 @@ class RecordTurn(
      * from the run's log too, like a turn without a body (see `ConversationRepository.recordTurnsNeedingReplay`).
      */
     val hasUserMessage: Boolean by lazy { CoordinatorTranscript.hasUserMessage(items) }
+
+    /**
+     * The coordinator's word to the user is among the turn's calls with a body read leniently out of arguments the
+     * record did not give whole (see `MessageRecovery`): shown as recovered, and read from the run's log too while
+     * that lasts, since the log has the message as it was sent.
+     */
+    val hasRecoveredMessage: Boolean by lazy { CoordinatorTranscript.hasRecoveredMessage(items) }
 
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
@@ -110,7 +126,7 @@ object RecordPager {
         if (total > 0) {
             // Read the newest page against the known size; the answer says whether the record grew.
             val from = (total - pageSize).coerceAtLeast(0)
-            val page = api.fetch(agentId, startIndex = from, limit = pageSize)
+            val page = api.counted(agentId, startIndex = from, limit = pageSize)
             total = page.totalResponses
             if (total <= 0) return null
             steps.addAll(page.steps)
@@ -120,7 +136,7 @@ object RecordPager {
                 var next = from + page.steps.size
                 var guard = 0
                 while (next < total && guard++ < MAX_PAGES) {
-                    val more = api.fetch(agentId, startIndex = next, limit = pageSize)
+                    val more = api.counted(agentId, startIndex = next, limit = pageSize)
                     if (more.steps.isEmpty()) break
                     steps.addAll(more.steps)
                     next += more.steps.size
@@ -128,7 +144,7 @@ object RecordPager {
                 }
             }
         } else {
-            val probe = api.fetch(agentId, startIndex = 0, limit = 1)
+            val probe = api.counted(agentId, startIndex = 0, limit = 1)
             total = probe.totalResponses
             if (total <= 0) return null
             end = total
@@ -136,7 +152,7 @@ object RecordPager {
         var pages = 0
         while (end > 0 && pages < MAX_PAGES && prompts(steps) <= wantTurns) {
             val from = (end - pageSize).coerceAtLeast(0)
-            val page = api.fetch(agentId, startIndex = from, limit = end - from)
+            val page = api.counted(agentId, startIndex = from, limit = end - from)
             if (page.steps.isEmpty() && from > 0) break
             steps = ArrayList<HeadlessStep>(page.steps.size + steps.size).apply { addAll(page.steps); addAll(steps) }
             end = from
@@ -150,7 +166,7 @@ object RecordPager {
      * record's size (and the first of the new steps, which [tail] then reads in full). Cheap while nothing changes.
      */
     suspend fun grownPast(api: ConversationRecordApi, agentId: String, knownTotal: Int): Boolean {
-        val page = api.fetch(agentId, startIndex = knownTotal.coerceAtLeast(0), limit = 1)
+        val page = api.counted(agentId, startIndex = knownTotal.coerceAtLeast(0), limit = 1)
         return page.totalResponses > knownTotal || page.steps.isNotEmpty()
     }
 
@@ -162,7 +178,7 @@ object RecordPager {
         var pages = 0
         while (end > 0 && pages < MAX_PAGES && prompts(steps) <= wantTurns) {
             val from = (end - pageSize).coerceAtLeast(0)
-            val page = api.fetch(agentId, startIndex = from, limit = end - from)
+            val page = api.counted(agentId, startIndex = from, limit = end - from)
             total = page.totalResponses
             if (page.steps.isEmpty() && from > 0) break
             steps = ArrayList<HeadlessStep>(page.steps.size + steps.size).apply { addAll(page.steps); addAll(steps) }
@@ -173,6 +189,12 @@ object RecordPager {
     }
 
     private fun prompts(steps: List<HeadlessStep>): Int = steps.count { it.userMessage != null }
+
+    /** One page read, counted for the chat's diagnostics (see [TranscriptPerf]). */
+    private suspend fun ConversationRecordApi.counted(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
+        TranscriptPerf.session(agentId).network("record")
+        return fetch(agentId, startIndex = startIndex, limit = limit)
+    }
 
     /** Steps per request: a turn is rarely more than a page or two. */
     const val PAGE_SIZE = 200
@@ -201,16 +223,23 @@ object RecordTranscript {
             firstStep = kept.first().second
         }
         val reuse = previous?.turns?.associateBy { it.stepIndex }
-        val turns = kept.map { cutTurn ->
+        val turns = kept.mapIndexed { i, cutTurn ->
             val turn = cutTurn.first
             val stepIndex = cutTurn.second
             val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
             val old = reuse?.get(stepIndex)
-            val items = if (old != null && old.stepCount == count && old.prompt == turn.prompt) old.items else build(turn, RecordTurn.traceKey(stepIndex))
-            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items)
+            val reused = old != null && old.stepCount == count && old.prompt == turn.prompt
+            val items = if (reused) old!!.items else build(turn, RecordTurn.traceKey(stepIndex))
+            // The newest turns' shapes, from the steps as they were just read — reused items or not: the shapes are
+            // the diagnostics' account of the record as this read found it.
+            val shape = if (i >= kept.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape)
         }
         return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now)
     }
+
+    /** How many of the record's newest turns keep their shapes for the transcript diagnostics. */
+    const val SHAPE_TURNS = 6
 
     /**
      * [older] (the steps before [window]) joined onto it: the window's leading steps complete the last turn of the

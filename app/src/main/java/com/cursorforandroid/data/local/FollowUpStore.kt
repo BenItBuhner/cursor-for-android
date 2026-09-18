@@ -2,12 +2,15 @@ package com.cursorforandroid.data.local
 
 import android.content.Context
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.domain.DraftFile
 import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.UploadRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,14 +39,32 @@ class FollowUpStore(context: Context) {
     @Serializable
     private data class StoredImage(val id: String, val file: String, val mimeType: String)
 
+    /**
+     * A file of any type: its bytes under [file], the name and type the request carries, and — once its upload has
+     * been completed — the reference the prompt names it by, so a restart sends what is already up rather than uploading again.
+     */
     @Serializable
-    private data class StoredDraft(val text: String = "", val images: List<StoredImage> = emptyList())
+    private data class StoredFile(
+        val id: String,
+        val file: String,
+        val name: String,
+        val mimeType: String,
+        val uploadId: String? = null,
+        val s3UploadId: String? = null,
+        val uploadUuid: String? = null,
+    ) {
+        val ref: UploadRef? get() = uploadId?.takeIf { it.isNotBlank() }?.let { UploadRef(it, s3UploadId.orEmpty(), uploadUuid ?: it) }
+    }
+
+    @Serializable
+    private data class StoredDraft(val text: String = "", val images: List<StoredImage> = emptyList(), val files: List<StoredFile> = emptyList())
 
     @Serializable
     private data class StoredQueued(
         val id: String,
         val text: String,
         val images: List<StoredImage> = emptyList(),
+        val files: List<StoredFile> = emptyList(),
         val queuedAtMillis: Long,
         val planMode: Boolean? = null,
         val modelId: String? = null,
@@ -62,12 +83,13 @@ class FollowUpStore(context: Context) {
         val file = File(dir, STATE_FILE).takeIf { it.isFile } ?: return@withContext null
         val stored = runCatching { CursorJson.decodeFromString(Stored.serializer(), file.readText()) }.getOrNull() ?: return@withContext null
         FollowUpComposerState(
-            draft = FollowUpDraft(stored.draft.text, stored.draft.images.mapNotNull { it.load(dir) }),
+            draft = FollowUpDraft(stored.draft.text, stored.draft.images.mapNotNull { it.load(dir) }, stored.draft.files.mapNotNull { it.load(dir) }),
             queue = stored.queue.map { q ->
                 QueuedFollowUp(
                     id = q.id,
                     text = q.text,
                     images = q.images.mapNotNull { it.load(dir) },
+                    files = q.files.mapNotNull { it.load(dir) },
                     queuedAtMillis = q.queuedAtMillis,
                     planMode = q.planMode,
                     modelId = q.modelId,
@@ -97,13 +119,22 @@ class FollowUpStore(context: Context) {
             if (!file.isFile) file.writeBytes(image.image.bytes)
             return StoredImage(image.id, name, image.image.mimeType)
         }
+        fun storeFile(draftFile: DraftFile): StoredFile {
+            val name = fileNameFor(draftFile)
+            referenced += name
+            val file = File(dir, name)
+            if (!file.isFile) file.writeBytes(draftFile.file.bytes)
+            val ref = draftFile.file.upload
+            return StoredFile(draftFile.id, name, draftFile.file.name, draftFile.file.mimeType, uploadId = ref?.uploadId, s3UploadId = ref?.s3UploadId, uploadUuid = ref?.uuid)
+        }
         val stored = Stored(
-            draft = StoredDraft(draft.text, draft.images.map(::store)),
+            draft = StoredDraft(draft.text, draft.images.map(::store), draft.files.map(::storeFile)),
             queue = queue.map { q ->
                 StoredQueued(
                     id = q.id,
                     text = q.text,
                     images = q.images.map(::store),
+                    files = q.files.map(::storeFile),
                     queuedAtMillis = q.queuedAtMillis,
                     planMode = q.planMode,
                     modelId = q.modelId,
@@ -136,6 +167,17 @@ class FollowUpStore(context: Context) {
     private fun StoredImage.load(dir: File): DraftImage? {
         val bytes = File(dir, file).takeIf { it.isFile }?.readBytes() ?: return null
         return DraftImage(id, PromptImage(bytes, mimeType))
+    }
+
+    private fun StoredFile.load(dir: File): DraftFile? {
+        val bytes = File(dir, file).takeIf { it.isFile }?.readBytes() ?: return null
+        return DraftFile(id, PromptFile(bytes, name, mimeType, ref))
+    }
+
+    /** Like [fileNameFor] for an image, with the file's own extension so what is on disk still reads as what it is. */
+    private fun fileNameFor(draftFile: DraftFile): String {
+        val extension = PromptFile.extensionOf(draftFile.file.name).takeIf { it.isNotEmpty() && it.length <= 12 } ?: "bin"
+        return "file-" + safeName(draftFile.id).takeLast(32) + "-" + draftFile.id.hashCode().toUInt().toString(16) + "." + extension
     }
 
     private fun agentDir(agentId: String) = File(root, safeName(agentId))

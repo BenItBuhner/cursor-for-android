@@ -65,7 +65,7 @@ class ComposerFocusTest {
                     onValueChange = { hoisted = it },
                     placeholder = "Ask anything",
                     onSend = {},
-                    plusMenu = ComposerMenuActions(onPickFiles = {}),
+                    plusMenu = ComposerMenuActions(onPickMedia = {}),
                 )
             }
         }

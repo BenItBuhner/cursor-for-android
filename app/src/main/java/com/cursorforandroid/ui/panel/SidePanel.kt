@@ -21,15 +21,10 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -154,10 +149,12 @@ fun SidePanelHost(
                 },
         ) {
             // Composed only while there is something to see: a closed panel's sections — with their figures and lists —
-            // would otherwise be measured and kept up to date off screen for the whole of every chat.
+            // would otherwise be measured and kept up to date off screen for the whole of every chat. The surface runs
+            // edge to edge, under the status bar and the navigation bar alike; the content insets itself
+            // (`panelInsetPadding` at the panel's root), so the one consumption is the content's whichever host it is in.
             if (state.isOpen || state.fraction > 0f) {
                 Surface(color = containerColor, contentColor = contentColor, shape = RectangleShape, modifier = Modifier.fillMaxSize()) {
-                    Box(Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.End))) { panelContent() }
+                    panelContent()
                 }
             }
         }
