@@ -53,6 +53,8 @@ object ProjectDiagnostics {
         val managerCandidates: Set<String> = emptySet(),
         /** The moment the report is for, in millis: what each row's time bucket is read against. */
         val nowMillis: Long = AppClock.now(),
+        /** What the last refresh cost, stage by stage (see [RefreshStats]); null before a refresh this process. */
+        val refresh: RefreshStats.Snapshot? = null,
     )
 
     data class RootScanSummary(
@@ -161,6 +163,20 @@ object ProjectDiagnostics {
         val pendingRoots = input.agents.asSequence().mapNotNull { it.parent?.id }.distinct().filter { id -> rows.none { it.id == id } }.toList()
         pendingRoots.forEach { appendLine("  ${tail(it)} (not loaded) ${input.rootSyncs[it]?.let { s -> "sync=workers:${s.workersRead} children:${s.childrenRead}" } ?: "sync=never"}") }
 
+        appendLine()
+        appendLine("refresh:")
+        val refresh = input.refresh
+        if (refresh == null) {
+            appendLine("  none this process")
+        } else {
+            appendLine("  started=${Instant.ofEpochMilli(refresh.startedAtMillis)} spinnerReleased=${refresh.spinnerMs?.let { "+${it}ms" } ?: "-"} lastStageEnded=${refresh.settledMs?.let { "+${it}ms" } ?: "-"} calls=${refresh.totalCalls}")
+            appendLine("  stages (start → end, calls):")
+            refresh.stages.sortedBy { it.startedAtMillis }.forEach { stage ->
+                val start = stage.startedAtMillis - refresh.startedAtMillis
+                val end = stage.endedAtMillis - refresh.startedAtMillis
+                appendLine("    +${start}ms → +${end}ms (${stage.durationMs}ms)  ${stage.calls} × ${stage.name}${stage.note?.let { " · $it" } ?: ""}")
+            }
+        }
         appendLine()
         appendLine("rows (id · scope · signal · parent · kind · source · env · lifecycle · run · flags), each with the desktop rule that placed it and the record's raw fields:")
         val loaded = rows.mapTo(HashSet()) { it.id }

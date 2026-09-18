@@ -10,6 +10,8 @@ import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -31,6 +33,9 @@ interface ProjectLineageApi {
     /** The root discovery pass over the whole account list (see `RootScanApi`); null when the source has no list to scan. */
     suspend fun scanRoots(maxPages: Int): RootScan? = null
 
+    /** The same pass stopped at the page older than [stopBelowActivityMillis] (see `RootScanApi.scanRoots`); sources that cannot date their pages read as [scanRoots]. */
+    suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan? = scanRoots(maxPages)
+
     /** The chats branched off or spawned by [parentId], as the account's list would describe them. */
     suspend fun children(parentId: String): List<ComposerSnapshot>
 
@@ -39,25 +44,30 @@ interface ProjectLineageApi {
      * subagents `ListBackgroundComposerChildren` lists. One refusing does not lose the other's answer — a Project
      * whose children call is not offered still has its workers placed — and the result says which read answered.
      */
-    suspend fun lineage(rootId: String): ProjectLineage {
-        var failure: Throwable? = null
-        val workers = try {
-            workersForManager(rootId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            failure = t
-            null
+    suspend fun lineage(rootId: String): ProjectLineage = coroutineScope {
+        // Both reads at once: neither waits on the other's round trip.
+        val workersRead = async {
+            try {
+                Result.success(workersForManager(rootId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
-        val childRecords = try {
-            children(rootId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            if (failure == null) failure = t
-            null
+        val childrenRead = async {
+            try {
+                Result.success(children(rootId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
         }
-        return ProjectLineage(
+        val workers = workersRead.await().getOrNull()
+        val childRecords = childrenRead.await().getOrNull()
+        val failure = workersRead.await().exceptionOrNull() ?: childrenRead.await().exceptionOrNull()
+        ProjectLineage(
             rootId = rootId,
             workers = workers.orEmpty(),
             children = childRecords.orEmpty().associate { child -> child.id to (child.parent?.kind ?: AgentParentKind.SUBAGENT) },

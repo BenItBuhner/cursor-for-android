@@ -57,6 +57,8 @@ fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, 
                 ProjectDiagnosticsRow(graph)
                 HairlineDivider()
                 TranscriptDiagnosticsRow(graph)
+                HairlineDivider()
+                DeepRefreshRow(graph)
             }
 
             Group(SettingsDebugCopy.GROUP_ABOUT)

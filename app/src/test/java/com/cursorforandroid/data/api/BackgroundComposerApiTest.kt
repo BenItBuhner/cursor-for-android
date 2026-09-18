@@ -297,6 +297,43 @@ class BackgroundComposerApiTest {
         assertThat(capped.failure).isNull()
     }
 
+    /**
+     * A pull's pass stops once a page's oldest record is older than every Project the registry knows: the list is
+     * newest first, so the pages behind it hold nothing newer. The page that crosses the floor is read whole; the
+     * next one is not asked for. A deep refresh passes no floor and reads on.
+     */
+    @Test
+    fun `the discovery pass stops at the page older than the registry's oldest Project`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{},"lastMessageActivityAtMs":"1700000009000"},{"bcId":"bc-a","lastMessageActivityAtMs":"1700000008000"}],"hasMore":true,"nextPageToken":"p2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-b","lastMessageActivityAtMs":"1700000005000"},{"bcId":"bc-r2","projectMetadata":{},"lastMessageActivityAtMs":"1700000004000"}],"hasMore":true,"nextPageToken":"p3"}"""))
+        // A third page (bc-c, bc-r3, older still) is on the server, and is never asked for: nothing is queued for it,
+        // so a pass that did ask would hang on the mock rather than read on.
+
+        // The second page crosses the floor (its oldest record, 4000, is older than it): the third is not asked for.
+        val stopped = api.scanRoots(maxPages = 10, stopBelowActivityMillis = 1_700_000_004_500L)
+        assertThat(stopped.pagesRead).isEqualTo(2)
+        assertThat(stopped.stoppedEarly).isTrue()
+        assertThat(stopped.complete).isFalse()
+        assertThat(stopped.truncated).isFalse()
+        assertThat(stopped.failure).isNull()
+        // bc-r2 sits on the second page, read whole although the floor falls inside it.
+        assertThat(stopped.roots.map { it.id }).containsExactly("bc-r1", "bc-r2").inOrder()
+        assertThat(stopped.seenIds).containsExactly("bc-r1", "bc-a", "bc-b", "bc-r2")
+        server.takeRequest() // the exchange
+        server.takeRequest()
+        server.takeRequest()
+        assertThat(server.requestCount).isEqualTo(3)
+
+        // No floor: the pass reads to the end.
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r1","projectMetadata":{},"lastMessageActivityAtMs":"1700000009000"}],"hasMore":true,"nextPageToken":"p2"}"""))
+        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-r3","projectMetadata":{},"lastMessageActivityAtMs":"1700000001000"}],"hasMore":false}"""))
+        val whole = api.scanRoots(maxPages = 10, stopBelowActivityMillis = null)
+        assertThat(whole.pagesRead).isEqualTo(2)
+        assertThat(whole.stoppedEarly).isFalse()
+        assertThat(whole.complete).isTrue()
+    }
+
     @Test
     fun `a list with more behind it hands back the service's cursor, and the pages behind it are read on demand`() = runBlocking<Unit> {
         server.enqueue(session("s"))

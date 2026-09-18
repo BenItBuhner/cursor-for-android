@@ -35,6 +35,12 @@ data class KnownRoot(
     val membershipWorkers: Int = 0,
     /** Workers' records naming it as manager the last time any did: a candidate for the membership read, not evidence. */
     val namedBy: Int = 0,
+    /**
+     * When the record was last active (`lastMessageActivityAtMs ?? updatedAtMs`, the account list's order), as last
+     * read; null when no record has dated it. The discovery scan reads the list newest first and stops at the page
+     * older than the oldest of these (see `ProjectRepository.discoverRoots`).
+     */
+    val activityAtMillis: Long? = null,
 ) {
     /**
      * The evidence holds: the record flags it (the desktop's `isProject`). [flagged] is only ever set from a record
@@ -76,6 +82,7 @@ data class KnownRoot(
         record = if (later.signal == LineageSignal.ACCOUNT_RECORD) later.record ?: record else record,
         membershipWorkers = if (later.signal == LineageSignal.MEMBERSHIP) later.membershipWorkers else membershipWorkers,
         namedBy = maxOf(namedBy, later.namedBy),
+        activityAtMillis = later.activityAtMillis ?: activityAtMillis,
     )
 
     private companion object {

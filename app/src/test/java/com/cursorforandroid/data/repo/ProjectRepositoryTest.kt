@@ -191,6 +191,43 @@ class ProjectRepositoryTest {
         assertThat(agents.agent("bc-a")?.scope).isEqualTo(AgentScope.PROJECT_CHILD)
     }
 
+    /**
+     * Incremental: a round re-reads a root's memberships only when its record has moved since the last read (or the
+     * read is old enough — the TTL, kept out of reach here); a root nobody has touched costs the round nothing. The
+     * first read of a root, a changed record and a forced pass all read.
+     */
+    @Test
+    fun `on, a round re-reads only the roots whose record has moved since the last read`() = runBlocking<Unit> {
+        extended = true
+        api.addIdleAgent("bc-p", "One", "run-p")
+        api.addIdleAgent("bc-q", "Two", "run-q")
+        api.addIdleAgent("bc-w", "Worker", "run-w")
+        val agents = agents()
+        agents.refresh()
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-p", isProject = true, activityAtMillis = 1_000L), ComposerSnapshot("bc-q", isProject = true, activityAtMillis = 2_000L)))
+        lineage.workers = mapOf("bc-q" to listOf(WorkerMembership("bc-w", "bc-q")))
+        val projects = ProjectRepository(session, agents, lineage, actions = lineage, store = lineage, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, lineageTtlMs = Long.MAX_VALUE)
+
+        projects.syncLineage(listOf("bc-p", "bc-q"))
+        assertThat(lineage.calls.filter { it.startsWith("workers:") }).containsExactly("workers:bc-p", "workers:bc-q")
+        assertThat(agents.agent("bc-w")?.parent?.id).isEqualTo("bc-q")
+
+        // Nothing moved: the next round reads neither.
+        lineage.calls.clear()
+        projects.syncLineage(listOf("bc-p", "bc-q"))
+        assertThat(lineage.calls.filter { it.startsWith("workers:") || it.startsWith("children:") }).isEmpty()
+
+        // One record moved (a message, an adoption the account stamps): that root is read again, the other not.
+        agents.applyAccountSnapshots(listOf(ComposerSnapshot("bc-q", isProject = true, activityAtMillis = 3_000L)))
+        projects.syncLineage(listOf("bc-p", "bc-q"))
+        assertThat(lineage.calls.filter { it.startsWith("workers:") }).containsExactly("workers:bc-q")
+
+        // Asked for outright, every root is read.
+        lineage.calls.clear()
+        projects.syncLineage(listOf("bc-p", "bc-q"), force = true)
+        assertThat(lineage.calls.filter { it.startsWith("workers:") }).containsExactly("workers:bc-p", "workers:bc-q")
+    }
+
     @Test
     fun `on, a root whose reads fail is skipped and the others still land`() = runBlocking<Unit> {
         extended = true

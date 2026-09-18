@@ -19,6 +19,7 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.ProjectContext
 import com.cursorforandroid.domain.ProjectWorker
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.util.AppClock
@@ -28,6 +29,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,7 +45,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -149,6 +154,10 @@ class ProjectRepository(
     private val capabilities: suspend () -> Capabilities = { Capabilities.EXTENDED },
     /** The waits before a failed or partial discovery pass is tried again, by attempt (see [discoverRoots]). */
     private val retryDelaysMs: List<Long> = RETRY_DELAYS_MS,
+    /** What each pass cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
+    /** How long a root whose record has not changed goes without its memberships being re-read (see [syncLineage]). */
+    private val lineageTtlMs: Long = LINEAGE_TTL_MS,
 ) {
     /** What the account's reads add to one Project beyond the agent list. */
     private data class Extras(
@@ -161,7 +170,13 @@ class ProjectRepository(
         /** The last membership pass: when, and what each read answered — for the sync's rotation and the diagnostics. */
         val lastSyncedAtMillis: Long = 0L,
         val lastSync: LineageSyncRecord? = null,
+        /** The root's record as it was when its memberships were last read (see [syncLineage]); null before a read. */
+        val syncedRecordStamp: Long? = null,
     )
+
+    private val _syncingLineage = MutableStateFlow(false)
+    /** A membership pass is running (see [syncLineage]): the sidebar's "still syncing" footer reads it with the list's own flag. */
+    val syncingLineage: StateFlow<Boolean> = _syncingLineage.asStateFlow()
 
     /** One membership pass at a time; a second request while one runs waits for it rather than doubling the calls. */
     private val syncMutex = Mutex()
@@ -215,10 +230,14 @@ class ProjectRepository(
         scope.launch { syncLineage(rootIds) }
     }
 
-    /** [discoverRoots] then [syncLineage], on this repository's own scope: what follows every account list read. */
-    fun scheduleRootDiscovery(rootIds: Collection<String>) {
+    /**
+     * [discoverRoots] then [syncLineage], on this repository's own scope: what follows every account list read.
+     * [deep] reads the whole account list, as the user asked for by a deep refresh; otherwise the pass stops at the
+     * page older than every Project the registry knows.
+     */
+    fun scheduleRootDiscovery(rootIds: Collection<String>, deep: Boolean = false) {
         scope.launch {
-            discoverRoots()
+            discoverRoots(deep = deep)
             syncLineage(rootIds)
             // The roots the memberships admitted have their rows fetched like the ones the pass named.
             agents.materializeRoots(budget = ROOT_FETCH_BUDGET)
@@ -226,6 +245,8 @@ class ProjectRepository(
     }
 
     @Volatile private var lastRootScanAtMillis = 0L
+    /** A pass of this process read the account list to its end (or as far as a pass may): the registry is the whole account's. */
+    @Volatile private var fullScanDone = false
     private val discoveryMutex = Mutex()
     private val _lastRootScan = MutableStateFlow<RootScanRecord?>(null)
     /** What the last root discovery pass found, for the diagnostics; null before one. */
@@ -244,22 +265,32 @@ class ProjectRepository(
      * stopped it are in [lastRootScan] for the diagnostics. Default mode has no list to scan: its registry is what
      * earlier sessions and the coordinators' transcripts filled, and its roots are fetched by id all the same.
      */
-    suspend fun discoverRoots(force: Boolean = false) {
+    suspend fun discoverRoots(force: Boolean = false, deep: Boolean = false) {
         if (session.isDemo) return
         if (!capabilities().projects) {
             agents.materializeRoots()
             return
         }
         discoveryMutex.withLock {
-            if (!force && now() - lastRootScanAtMillis < ROOT_SCAN_INTERVAL_MS) {
+            if (!force && !deep && now() - lastRootScanAtMillis < ROOT_SCAN_INTERVAL_MS) {
                 agents.materializeRoots()
                 return
             }
             val token = agents.token()
             val attempt = ++scanAttempts
             _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Running, attempts = attempt) }
+            // The list is read newest first; once a page is older than every live Project the registry knows, the
+            // pages behind it can name no Project newer than those — only one older, which a deep refresh reads for.
+            // Archived Projects are left out of the floor: they sit far down the list and are not what a pull is
+            // for. A registry with nothing dated (empty, or an older build's) reads to the end.
+            // The floor stands on a registry that has read the whole account before — restored from a session that
+            // did, or filled by a pass of this process that read to the end — never on what the first page happened
+            // to bring; the first pass of a fresh install reads everything.
+            val complete = agents.registryRestoredFromDisk || fullScanDone
+            val floor = if (deep || !complete) null else agents.knownRoots.value.filter { !it.archived }.let { live -> live.mapNotNull { it.activityAtMillis }.takeIf { it.isNotEmpty() && it.size == live.size }?.minOrNull() }
+            val scanStartedAt = now()
             val scan = try {
-                api.scanRoots(ROOT_SCAN_PAGES)
+                api.scanRoots(ROOT_SCAN_PAGES, floor)
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -279,12 +310,17 @@ class ProjectRepository(
             // The pass is the account's word on every record it carried: a registry root among them that is neither
             // a Project nor a manager by its record is no root (what an older build admitted on a source or a hint).
             agents.revalidateRegistry(scan.seenIds, scan.roots.mapTo(HashSet()) { it.id }, scan.managers, token)
-            // A pass that read to the end, or as far as it is allowed to, is done; one a page failed is tried again.
-            val finished = scan.failure == null && (scan.complete || scan.truncated)
+            // A pass that read to the end, as far as it is allowed to, or to the page older than every known Project
+            // is done; one a page failed is tried again.
+            val finished = scan.failure == null && (scan.complete || scan.truncated || scan.stoppedEarly)
+            if (scan.failure == null && (scan.complete || scan.truncated)) fullScanDone = true
             if (finished) {
                 lastRootScanAtMillis = now()
                 scanAttempts = 0
-                retryJob.getAndSet(null)?.cancel()
+                // A pass that finished ends the retry chain — unless this pass is the retry itself, whose job still
+                // has the memberships and the roots' rows to read (cancelling it here cut those off).
+                val self = currentCoroutineContext()[Job]
+                retryJob.getAndSet(null)?.takeIf { it !== self }?.cancel()
             } else {
                 scheduleRetry(attempt)
             }
@@ -294,9 +330,22 @@ class ProjectRepository(
                 pagesRead = scan.pagesRead,
                 records = scan.records,
                 complete = scan.complete,
-                notice = scan.failure ?: if (scan.truncated) "stopped at $ROOT_SCAN_PAGES pages with more to read" else null,
+                notice = scan.failure ?: when {
+                    scan.stoppedEarly -> "stopped after page ${scan.pagesRead}: the pages behind it are older than every known Project (a deep refresh reads on)"
+                    scan.truncated -> "stopped at $ROOT_SCAN_PAGES pages with more to read"
+                    else -> null
+                },
                 atMillis = now(),
                 attempts = attempt,
+            )
+            stats.stage(
+                "discovery scan (account pages)", scan.pagesRead, scanStartedAt, now(),
+                note = "${scan.roots.size} roots, ${scan.records} records" + when {
+                    scan.stoppedEarly -> ", stopped early at the registry's oldest root" + if (deep) "" else ""
+                    scan.complete -> ", end reached"
+                    scan.truncated -> ", capped"
+                    else -> ""
+                } + if (deep) " (deep)" else "",
             )
             agents.materializeRoots(token, budget = ROOT_FETCH_BUDGET)
         }
@@ -332,21 +381,52 @@ class ProjectRepository(
      * for the demo. Bounded per pass to keep a list with many Projects from turning one refresh into a flood of
      * calls, and rotated — the root read longest ago goes first — so a cap never leaves the same roots unread.
      */
-    suspend fun syncLineage(rootIds: Collection<String> = emptyList()) {
+    suspend fun syncLineage(rootIds: Collection<String> = emptyList(), force: Boolean = false) {
         if (session.isDemo || !capabilities().projects) return
+        val startedAt = now()
+        var read = 0
+        var skipped = 0
         syncMutex.withLock {
-            val token = agents.token()
-            // The roots the list and the registry know: the Projects, by the record's flag. A manager without the
-            // flag is an ordinary chat with its workers' records naming it; nothing is asked about it here.
-            val known = agents.state.value.agents.filter { it.isProjectRoot }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id }
-            val roots = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
-            for (rootId in roots.take(maxRootsPerSync)) {
-                if (!readLineage(rootId, token)) return
+            _syncingLineage.value = true
+            try {
+                val token = agents.token()
+                // The roots the list and the registry know: the Projects, by the record's flag. A manager without the
+                // flag is an ordinary chat with its workers' records naming it; nothing is asked about it here.
+                val known = agents.state.value.agents.filter { it.isProjectRoot }.map { it.id } + agents.knownRoots.value.filter { !it.archived }.map { it.id }
+                val candidates = (rootIds + known).filter { it.isNotBlank() }.distinct().sortedBy { extras[it]?.value?.lastSyncedAtMillis ?: 0L }
+                // Incremental: a root whose record has not moved since its memberships were last read, and was read
+                // recently enough, is left alone this round — a Project nobody has touched costs nothing.
+                val due = candidates.filter { rootId ->
+                    val extras = extras[rootId]?.value
+                    val stamp = recordStamp(rootId)
+                    force || extras?.lastSync == null || extras.syncedRecordStamp == null || stamp == null || stamp != extras.syncedRecordStamp || now() - extras.lastSyncedAtMillis >= lineageTtlMs
+                }
+                skipped = candidates.size - due.size
+                val roots = due.take(maxRootsPerSync)
+                // A few roots at a time rather than one after another: each read is its own pair of calls.
+                val pool = Semaphore(LINEAGE_POOL)
+                coroutineScope {
+                    roots.forEach { rootId ->
+                        launch {
+                            pool.withPermit {
+                                if (agents.token() != token) return@withPermit
+                                if (readLineage(rootId, token)) read++
+                            }
+                        }
+                    }
+                }
+            } finally {
+                _syncingLineage.value = false
             }
         }
+        stats.stage("memberships (workers + children per root)", read * 2, startedAt, now(), note = "$read roots read, $skipped unchanged and skipped")
         // A candidate the memberships admitted has its row fetched like any root the registry names.
         agents.materializeRoots()
     }
+
+    /** The root's record as the rows carry it — its last activity — so a round can tell a Project that moved from one that did not. */
+    private fun recordStamp(rootId: String): Long? =
+        agents.agent(rootId)?.activityAtMillis ?: agents.knownRoots.value.firstOrNull { it.id == rootId }?.activityAtMillis
 
     /** One root's memberships, folded onto the rows and kept for its view; false when the list has been reset meanwhile. */
     private suspend fun readLineage(rootId: String, token: Int): Boolean {
@@ -386,6 +466,7 @@ class ProjectRepository(
                 lastSyncedAtMillis = now(),
                 lineageNotice = notice,
                 lastSync = LineageSyncRecord(lineage.workersRead, lineage.childrenRead, notice, lineage.workers.size, lineage.children.size),
+                syncedRecordStamp = recordStamp(rootId),
             )
         }
         publishCounts()
@@ -403,13 +484,17 @@ class ProjectRepository(
             if (agents.token() != token) return false
             if (record != null) agents.applyAccountSnapshots(listOf(record), token)
         }
-        // Members the list does not hold (beyond its window, or created moments ago) are fetched by id so the view can list them.
+        // Members the list does not hold (beyond its window, or created moments ago) are fetched by id so the view can
+        // list them — a few at a time, and not one a page has brought meanwhile.
         val missing = lineage.members.keys.filter { agents.agent(it) == null }.take(maxMaterialized)
-        for (id in missing) {
-            if (agents.token() != token) return false
-            agents.loadDetail(id)
+        coroutineScope {
+            missing.forEach { id ->
+                launch {
+                    if (agents.token() == token && agents.agent(id) == null) agents.loadDetail(id)
+                }
+            }
         }
-        return true
+        return agents.token() == token
     }
 
     /** The last membership pass of each root this session, for the diagnostics export. */
@@ -676,6 +761,8 @@ class ProjectRepository(
     /** On sign-out or a backend switch: nothing fetched for the previous account counts for the next. */
     fun reset() {
         materialized.clear()
+        fullScanDone = false
+        lastRootScanAtMillis = 0L
         _unavailableParents.value = emptyMap()
         extras.clear()
         pollers.values.forEach { it.cancel() }
@@ -725,6 +812,10 @@ class ProjectRepository(
 
     companion object {
         private const val MAX_ROOTS_PER_SYNC = 20
+        /** Roots whose memberships are read at once (see [syncLineage]). */
+        private const val LINEAGE_POOL = 3
+        /** A root whose record has not moved is still re-read this often, for a membership change the record does not show. */
+        const val LINEAGE_TTL_MS = 10 * 60_000L
         /** Pages of the account list the root discovery pass reads at most (see [discoverRoots]): five thousand records. */
         const val ROOT_SCAN_PAGES = 25
         /** How often the account list is scanned for roots in full. */

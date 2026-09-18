@@ -91,6 +91,53 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
     }
 }
 
+/**
+ * The refresh that reads everything: the sidebar's window and, behind it, the whole account list for the root
+ * registry — a pull stops that scan at the page older than every Project already known, so a Project older than
+ * all of them is found by this. Runs in the background; the sidebar's footer says so while it does.
+ */
+@Composable
+fun DeepRefreshRow(graph: AppGraph) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .pressable({
+                if (busy) return@pressable
+                busy = true
+                Toast.makeText(context, DeepRefreshCopy.STARTED, Toast.LENGTH_SHORT).show()
+                scope.launch {
+                    try {
+                        graph.agents.refresh(depth = com.cursorforandroid.data.repo.RefreshDepth.Deep)
+                    } finally {
+                        busy = false
+                    }
+                }
+            }, CursorTheme.shapes.lg)
+            .testTag(DeepRefreshCopy.TAG)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(DeepRefreshCopy.TITLE, style = type.base, color = colors.textPrimary)
+            Text(DeepRefreshCopy.SUBTITLE, style = type.small, color = colors.textTertiary)
+        }
+        Spacer(Modifier.width(12.dp))
+        Icon(CursorIcons.Refresh, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
+    }
+}
+
+object DeepRefreshCopy {
+    const val TITLE = "Deep refresh"
+    const val SUBTITLE = "Re-reads the whole account for Projects: a pull stops at the ones already known. Runs in the background."
+    const val STARTED = "Deep refresh started"
+    const val TAG = "deep-refresh"
+}
+
 object ProjectDiagnosticsCopy {
     const val TITLE = "Export Project diagnostics"
     const val SUBTITLE = "Which chats are Projects, workers and side chats, and what placed each. Ids shortened; no names or text. Send it if a Project's chat still shows among your chats."

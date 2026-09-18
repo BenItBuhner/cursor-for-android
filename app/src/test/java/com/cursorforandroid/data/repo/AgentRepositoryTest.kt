@@ -121,6 +121,29 @@ class AgentRepositoryTest {
         modelDisplayName = "Claude",
     )
 
+    /**
+     * Two passes asking for the same row at once — the running scan's and the pin's, a root's and a membership's —
+     * share one read of `GET /v1/agents/{id}` rather than each making its own; a later ask reads again.
+     */
+    @Test
+    fun `concurrent fetches by id of one chat share one read`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-shared", "Shared", "run-shared")
+        val repo = repository()
+        api.getAgentGate = kotlinx.coroutines.CompletableDeferred()
+        val before = api.getAgentCalls
+        val first = async { repo.loadDetail("bc-shared") }
+        val second = async { repo.loadDetail("bc-shared") }
+        awaitUntil { api.getAgentCalls == before + 1 }
+        api.getAgentGate!!.complete(Unit)
+        assertThat(first.await().isSuccess).isTrue()
+        assertThat(second.await().isSuccess).isTrue()
+        assertThat(api.getAgentCalls).isEqualTo(before + 1)
+        api.getAgentGate = null
+        // The shared read is over: the next ask is its own.
+        repo.loadDetail("bc-shared")
+        assertThat(api.getAgentCalls).isEqualTo(before + 2)
+    }
+
     @Test
     fun `the list restored from disk is on screen before the network answers, then revalidated`() = runBlocking<Unit> {
         cache.write(listOf(cachedAgent("bc-old", "From last time")))

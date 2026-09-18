@@ -3,8 +3,10 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.local.PullRequestCache
 import com.cursorforandroid.domain.PullRequestState
 import com.cursorforandroid.domain.PullRequestStatus
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -12,6 +14,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -63,6 +67,8 @@ class PullRequestRepository(
     private val cache: PullRequestCache? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val maxPerRefresh: Int = MAX_PER_REFRESH,
+    /** What each pass cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
+    private val stats: RefreshStats = RefreshStats(),
 ) {
     private val _statuses = MutableStateFlow<Map<String, PullRequestStatus>>(emptyMap())
 
@@ -145,23 +151,38 @@ class PullRequestRepository(
             .take(maxPerRefresh)
         val source = if (demo) this.demo else account
         var dirty = false
+        val startedAt = AppClock.now()
+        var looked = 0
         try {
-            for (url in due) {
-                val state = when (val result = source.lookup(url)) {
-                    is PullRequestLookup.Found -> result.state
-                    PullRequestLookup.Unreadable -> null
-                    // Offline, or the account service is down: the rest of the pass would end the same way.
-                    PullRequestLookup.Failed -> return
+            // A few at a time rather than one after another; a source that is down ends the pass for the rest.
+            val pool = Semaphore(LOOKUP_POOL)
+            val failed = java.util.concurrent.atomic.AtomicBoolean(false)
+            coroutineScope {
+                due.forEach { url ->
+                    launch {
+                        pool.withPermit {
+                            if (failed.get() || generation.get() != startedIn) return@withPermit
+                            looked++
+                            val state = when (val result = source.lookup(url)) {
+                                is PullRequestLookup.Found -> result.state
+                                PullRequestLookup.Unreadable -> null
+                                // Offline, or the account service is down: the rest of the pass would end the same way.
+                                PullRequestLookup.Failed -> { failed.set(true); return@withPermit }
+                            }
+                            // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
+                            // account this repository no longer speaks for.
+                            if (generation.get() != startedIn) return@withPermit
+                            // Each answer shows as it lands; the disk gets them together, once, below.
+                            _statuses.update { it + (url to PullRequestStatus(state, AppClock.now(), live = true)) }
+                            dirty = true
+                        }
+                    }
                 }
-                // A sign-out or a backend switch that landed while this lookup was out means the answer belongs to an
-                // account this repository no longer speaks for.
-                if (generation.get() != startedIn) return
-                // Each answer shows as it lands; the disk gets them together, once, below.
-                _statuses.update { it + (url to PullRequestStatus(state, AppClock.now(), live = true)) }
-                dirty = true
             }
+            if (failed.get()) return
             if (!demo && forgetStale(now)) dirty = true
         } finally {
+            if (looked > 0 && !demo) stats.stage("pull request badges (GetPullRequestMergeStatus)", looked, startedAt, note = if (eager) "eager" else null)
             if (dirty && !demo && generation.get() == startedIn) cache?.write(_statuses.value, token)
         }
     }
@@ -250,6 +271,8 @@ class PullRequestRepository(
 
     private companion object {
         const val MAX_PER_REFRESH = 50
+        /** Lookups in flight at once per pass. */
+        private const val LOOKUP_POOL = 3
         /** A PR that can still move is read from the SCM this often while the list is on screen; one request per PR. */
         const val OPEN_INTERVAL_MS = 2 * 60_000L
         const val CLOSED_INTERVAL_MS = 6 * 60 * 60_000L
