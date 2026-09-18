@@ -111,6 +111,8 @@ object TranscriptDiagnostics {
         val load: TranscriptLoadDiagnostics? = null,
         /** What the pipeline cost since the chat was opened (see [TranscriptPerf]); null when it was never opened this process. */
         val perf: TranscriptPerf.Snapshot? = null,
+        /** The send path's account of the chat (see [SendDiagnostics]); null when nothing was sent or queued from here. */
+        val send: SendDiagnostics? = null,
     )
 
     /** The decision the conversation screen makes, spelled out: which of its three words fired. */
@@ -149,6 +151,8 @@ object TranscriptDiagnostics {
         // Where the time went: the open's moments, the publications and what the presenter, the markdown cache, the
         // disk and the network cost for them (see [TranscriptPerf.Snapshot.render]).
         input.perf?.let { appendLine(it.render()) }
+        // The send path: the last send-or-queue decision with every input it read, the queue, and each attempt's outcome.
+        input.send?.let { append(it.render()) }
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)

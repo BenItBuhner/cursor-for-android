@@ -18,7 +18,16 @@ data class RunningScan(
     /** The account list's running composers, when Extended mode has read it; null when it has not. */
     val accountIds: Set<String>? = null,
     val accountAtMillis: Long = 0L,
+    /**
+     * The account's latest word on each composer it has named — running or not, and when it said so — kept per
+     * composer, since a detail read names one at a time and the list only its window: what the send decision reads
+     * for one chat (see `SendGate`), where the whole-set reading above would speak for chats it never covered.
+     */
+    val accountWord: Map<String, AccountWord> = emptyMap(),
 ) {
+    /** One composer's status as the account gave it, and when. */
+    data class AccountWord(val running: Boolean, val atMillis: Long)
+
     val hasScanned: Boolean get() = scannedAtMillis > 0L || accountAtMillis > 0L
 
     /** Every agent either pass called running. */

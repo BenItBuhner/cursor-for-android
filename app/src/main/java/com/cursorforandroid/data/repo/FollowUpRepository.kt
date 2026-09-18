@@ -13,7 +13,11 @@ import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.QueuedFollowUp
+import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.RunningScan
+import com.cursorforandroid.domain.SendDiagnostics
+import com.cursorforandroid.domain.SendGate
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -71,14 +75,22 @@ class FollowUpRepository(
      * to send through; such a message then fails with [AgentRepository.FILES_NEED_EXTENDED] and waits for the user.
      */
     private val accountSend: (suspend (agentId: String, item: QueuedFollowUp) -> String?)? = null,
+    /**
+     * Files a queued message with the account's queue (Extended mode, `AddAsyncFollowupBackgroundComposer`) when the
+     * server refuses the documented run request as busy while nothing here calls the agent busy: the account then
+     * sends it the moment the agent is free, as the desktop's does, and the card above the composer gives way to
+     * the account's row. Answers with the run the account started, or null when it queued the message. Null (default
+     * mode, or the surface off) leaves the message waiting here, tried again with a growing pause (see [dispatch]).
+     */
+    private val accountQueue: (suspend (agentId: String, item: QueuedFollowUp) -> String?)? = null,
+    /** Whether the account's queue may take a refused message right now (Extended mode on, not the demo). */
+    private val accountQueueAvailable: suspend () -> Boolean = { false },
     private val store: FollowUpStore? = null,
     /** False (the demo) keeps everything in memory. */
     private val persist: () -> Boolean = { true },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     /** Typing is written this long after the last keystroke, not on every one. */
     private val draftSaveDelayMs: Long = DRAFT_SAVE_DELAY_MS,
-    /** After a `409 agent_busy` nobody predicted, how long to wait for the row to catch up before asking again. */
-    private val busyRecheckMs: Long = BUSY_RECHECK_MS,
     /** How long a message waits on a row that says the agent is busy before the record is read to settle the row. */
     private val idleSettleMs: Long = IDLE_SETTLE_MS,
     /** The first pause before a cancel or a send that failed for a passing reason is tried again; doubles each time. */
@@ -89,6 +101,52 @@ class FollowUpRepository(
         var restoreJob: Job? = null
         var saveJob: Job? = null
         var dispatcher: Job? = null
+        /** The last decision between sending and queueing made for this chat, and when (see [SendGate]). */
+        @Volatile var lastDecision: SendGate.Decision? = null
+        @Volatile var lastDecisionAt: Long = 0L
+        /** The requests made for this chat's messages, newest last, the last [MAX_ATTEMPTS_KEPT] kept. */
+        val attempts = ArrayDeque<SendDiagnostics.Attempt>()
+        /** The ids the server answered a send with, newest last. */
+        val accepted = ArrayDeque<String>()
+        /** The pause the dispatcher has already waited out: the head's id and its [QueuedFollowUp.notBeforeMillis]. */
+        @Volatile var pausedFor: Pair<String, Long>? = null
+
+        fun attempt(item: QueuedFollowUp, via: String, outcome: String, detail: String? = null) = synchronized(attempts) {
+            attempts.addLast(SendDiagnostics.Attempt(java.time.Instant.ofEpochMilli(AppClock.now()).toString(), ProjectDiagnostics.tail(item.id), via, outcome, detail?.let(::redact)))
+            while (attempts.size > MAX_ATTEMPTS_KEPT) attempts.removeFirst()
+        }
+
+        fun acceptedId(id: String) = synchronized(attempts) {
+            accepted.addLast(ProjectDiagnostics.tail(id))
+            while (accepted.size > MAX_ATTEMPTS_KEPT) accepted.removeFirst()
+        }
+    }
+
+    /** An error's words without any id, URL or quoted text, as the diagnostics export prints them. */
+    private fun redact(text: String): String =
+        text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").replace(Regex("\"[^\"]*\""), "\"…\"").take(160)
+
+    /** The send path's account of [agentId] for the diagnostics export (see [SendDiagnostics]); null for a chat never touched. */
+    fun sendDiagnostics(agentId: String): SendDiagnostics? {
+        val e = synchronized(entries) { entries[agentId] } ?: return null
+        val now = AppClock.now()
+        val queue = e.state.value.queue.map { q ->
+            SendDiagnostics.QueueLine(ProjectDiagnostics.tail(q.id), q.text.length, q.isSending, q.isSteered, q.busyRefusals, q.heldSinceMillis?.let { now - it }, q.error?.let(::redact), q.needsConfirmation)
+        }
+        val (attempts, accepted) = synchronized(e.attempts) { e.attempts.toList() to e.accepted.toList() }
+        return SendDiagnostics(e.lastDecision, e.lastDecisionAt.takeIf { it > 0 }?.let { java.time.Instant.ofEpochMilli(it).toString() }, queue, attempts, accepted)
+    }
+
+    /**
+     * The decision between sending now and queueing, for the composer's send (see [SendGate]): the same reading the
+     * dispatcher makes, so the two never disagree, recorded for the diagnostics.
+     */
+    fun decide(agentId: String): SendGate.Decision {
+        val decision = gate(agents.agent(agentId), conversations.state(agentId).value, agents.runningScan.value)
+        val e = entry(agentId)
+        e.lastDecision = decision
+        e.lastDecisionAt = AppClock.now()
+        return decision
     }
 
     private val entries = HashMap<String, Entry>()
@@ -171,17 +229,27 @@ class FollowUpRepository(
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
         files: List<DraftFile> = emptyList(),
+        /**
+         * The composer's own send was just refused as busy while nothing here called the agent busy: the message
+         * arrives already waiting — the card says so from its first frame, and the first attempt from here is a
+         * pause away rather than at once, the server having just said no.
+         */
+        refusedAsBusy: Boolean = false,
     ): QueuedFollowUp {
+        val now = AppClock.now()
         val item = QueuedFollowUp(
             id = "queued-" + UUID.randomUUID(),
             text = text.trim(),
             images = images,
             files = files,
-            queuedAtMillis = AppClock.now(),
+            queuedAtMillis = now,
             planMode = planMode,
             modelId = modelId,
             modelParams = modelParams,
             modelDisplayName = modelDisplayName,
+            heldSinceMillis = if (refusedAsBusy) now else null,
+            busyRefusals = if (refusedAsBusy) 1 else 0,
+            notBeforeMillis = if (refusedAsBusy) now + retryBaseMs else null,
         )
         val e = entry(agentId)
         synchronized(e) {
@@ -230,7 +298,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.update {
-                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null) else it })
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null) else it })
             }
             e.ensureDispatcher()
         }
@@ -335,16 +403,33 @@ class FollowUpRepository(
             val t = result.exceptionOrNull()
             when {
                 t == null -> {
+                    e.attempt(item, VIA_STEER, "accepted", result.getOrNull())
+                    result.getOrNull()?.let { e.acceptedId(it) }
                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                     e.scheduleSave()
                     return
                 }
                 t is CancellationException -> throw t
-                t.toCursorError()?.code == AGENT_BUSY -> awaitBusyTurn(e.agentId, busyStreak++)
+                t.toCursorError()?.code == AGENT_BUSY -> {
+                    e.attempt(item, VIA_STEER, "busy", t.toCursorError()?.message)
+                    awaitBusyTurn(e.agentId, busyStreak++)
+                }
                 // A message with files went through the account's follow-up, whose failure has already taken the
                 // bubble down (see [ConversationRepository.sendStagedVia]): it is not sent again under a bubble that is gone.
-                t.isTransientFailure() && retries < MAX_SEND_RETRIES && item.files.isEmpty() -> delay(retryBaseMs shl retries++)
+                t.isTransientFailure() && retries < MAX_SEND_RETRIES && item.files.isEmpty() -> {
+                    // The answer never came: the server may have the message. A message it took is never sent again.
+                    if (conversations.wasSentSince(e.agentId, item.previewText, startedAt).getOrNull() == true) {
+                        e.attempt(item, VIA_STEER, "accepted-confirmed", "the transcript holds it")
+                        e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                        e.scheduleSave()
+                        conversations.revalidate(e.agentId)
+                        return
+                    }
+                    e.attempt(item, VIA_STEER, "retry", t.userMessage())
+                    delay(retryBaseMs shl retries++)
+                }
                 else -> {
+                    e.attempt(item, VIA_STEER, "failed", t.userMessage())
                     unsteer(e, item, staged, t)
                     return
                 }
@@ -356,7 +441,7 @@ class FollowUpRepository(
      * Sends a staged queued message: the documented run request, or — for one that carries files — the account's
      * follow-up through [accountSend], which alone can take them.
      */
-    private suspend fun sendStagedItem(e: Entry, staged: StagedFollowUp, item: QueuedFollowUp): Result<Unit> {
+    private suspend fun sendStagedItem(e: Entry, staged: StagedFollowUp, item: QueuedFollowUp): Result<String?> {
         if (item.files.isEmpty()) {
             return conversations.sendStaged(
                 e.agentId,
@@ -367,10 +452,11 @@ class FollowUpRepository(
                 modelId = item.modelId,
                 modelParams = item.modelParams,
                 modelDisplayName = item.modelDisplayName,
-            )
+            ).map { it.id }
         }
-        val send = accountSend ?: return conversations.sendStagedVia(e.agentId, staged) { throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED) }
-        return conversations.sendStagedVia(e.agentId, staged, item.modelId, item.modelParams, item.modelDisplayName) { send(e.agentId, item) }
+        val send = accountSend ?: return conversations.sendStagedVia(e.agentId, staged) { throw IllegalStateException(AgentRepository.FILES_NEED_EXTENDED) }.map { null }
+        var named: String? = null
+        return conversations.sendStagedVia(e.agentId, staged, item.modelId, item.modelParams, item.modelDisplayName) { send(e.agentId, item).also { named = it } }.map { named }
     }
 
     /**
@@ -410,44 +496,20 @@ class FollowUpRepository(
     }
 
     /**
-     * The row said idle and the server disagreed: the turn is still going. The row takes the server's word until the
-     * run's end or the next refresh corrects it. Should nothing report the turn — no row, no stream — it is asked
-     * again after a while rather than at once.
-     *
-     * Unless the run the row names is one the hub has already seen end: then the server is a moment behind its own
-     * stream (the turn just ended, or was just cancelled, and its record has yet to say so), and marking the row
-     * running would leave it so — the hub reports a run's end once. The row is left as it is and, after a pause that
-     * grows with each such answer in a row ([busyStreak]), settled against the record before the send is tried again.
+     * The row said idle and the server disagreed. Until 0.3.34 the row was patched to running on the server's word
+     * and read again ten seconds later — a status this device made up, which the next read of the record undid, and
+     * the message went round that loop for as long as the server kept refusing: queued, sending, queued (Bennett,
+     * v0.3.33). Now nothing is written to the row: a steered message waits [busyPause] for its [busyStreak], then
+     * the record and the agent's detail are read so the row is where the server has it, and it is tried again. (A
+     * queued message's pause is [QueuedFollowUp.notBeforeMillis], which [dispatchLoop] waits out the same way.)
      */
     private suspend fun awaitBusyTurn(agentId: String, busyStreak: Int = 0) {
-        if (hubSawRunEnd(agentId)) {
-            delay(retryBaseMs shl busyStreak.coerceIn(0, MAX_BUSY_BACKOFF_STEPS))
-            settleRow(agentId)
-            return
-        }
-        agents.patch(agentId) { if (it.isRunning) it else it.copy(runStatus = RunStatus.RUNNING) }
-        conversations.revalidate(agentId)
-        // The row reads running now, and the caller waits for the turn's end as for any other. Only a row that does
-        // not — none loaded yet, or one no run status makes running — leaves the next attempt nothing to wait on, so
-        // it is held back for a while instead. Held on the state as it stands, re-read as it goes, never on a change
-        // still to come: the hub can see the run end, and put the row back to idle, between the patch above and the
-        // first reading here, and a wait for the row to *become* running then sat out the whole [busyRecheckMs] for
-        // a change that had come and gone — which is what held a steer up for twenty seconds on a loaded machine.
-        // A row the hub's word put back to idle is not held at all: the send may go again (and a busy answer to
-        // that is the case above, with its growing pause).
-        withTimeoutOrNull(busyRecheckMs) {
-            while (isIdleNow(agentId) && !hubSawRunEnd(agentId)) delay(BUSY_HOLD_POLL_MS)
-        }
+        delay(busyPause(busyStreak))
+        settleRow(agentId)
     }
 
-    /**
-     * The run the row names is one the hub followed to its end. The record can lag the stream, so a row the hub put
-     * idle is idle whatever the server's next answer says — and nothing to wait on.
-     */
-    private fun hubSawRunEnd(agentId: String): Boolean {
-        val runId = agents.agent(agentId)?.latestRunId ?: return false
-        return hub.current(agentId, runId)?.finished == true
-    }
+    /** The pause before the attempt after [busyStreak] refusals in a row: [retryBaseMs] doubled each time, to [MAX_BUSY_PAUSE_MS]. */
+    private fun busyPause(busyStreak: Int): Long = (retryBaseMs shl busyStreak.coerceIn(0, MAX_BUSY_BACKOFF_STEPS)).coerceAtMost(MAX_BUSY_PAUSE_MS)
 
     /** Drops everything held for an agent, on disk too; used when it is deleted. */
     fun forget(agentId: String) {
@@ -550,21 +612,36 @@ class FollowUpRepository(
     private fun isIdle(agentId: String): Flow<Boolean> = combine(
         agents.state.map { s -> s.agents.firstOrNull { it.id == agentId } }.distinctUntilChanged(),
         conversations.state(agentId),
-    ) { row, chat -> idle(row, chat) }.distinctUntilChanged()
+        agents.runningScan,
+    ) { row, chat, scan -> gate(row, chat, scan).idle }.distinctUntilChanged()
 
     /**
      * [isIdle] as of this instant. A flow's answer can be a step behind the state it is built from — a send that was
      * just accepted marks the row running before the queue moves on, and the two reach a collector in either order —
      * so the moment before a request goes out is checked against the values themselves.
      */
-    private fun isIdleNow(agentId: String): Boolean = idle(agents.agent(agentId), conversations.state(agentId).value)
+    private fun isIdleNow(agentId: String): Boolean = decideNow(agentId).idle
 
-    private fun idle(row: Agent?, chat: ConversationState): Boolean {
-        val rowRunning = row?.isRunning == true
-        // Without a row (the list not loaded yet) the chat's own status is all there is to go on.
-        val chatRunning = chat.runStatus?.isActive == true && (chat.isStreaming || row == null)
-        return !rowRunning && !chatRunning
+    private fun decideNow(agentId: String): SendGate.Decision {
+        val decision = gate(agents.agent(agentId), conversations.state(agentId).value, agents.runningScan.value)
+        synchronized(entries) { entries[agentId] }?.let { it.lastDecision = decision; it.lastDecisionAt = AppClock.now() }
+        return decision
     }
+
+    /** One reading of every source the decision has (see [SendGate]). */
+    private fun gate(row: Agent?, chat: ConversationState, scan: RunningScan): SendGate.Decision = SendGate.decide(
+        SendGate.Inputs(
+            rowLoaded = row != null,
+            rowRunning = row?.isRunning == true,
+            rowUpdatedAtMillis = row?.updatedAtMillis ?: 0L,
+            chatRunStatus = chat.runStatus,
+            chatStreaming = chat.isStreaming,
+            chatReconnecting = chat.isReconnecting,
+            accountScanned = row != null && scan.accountWord[row.id] != null,
+            accountRunning = row != null && scan.accountWord[row.id]?.running == true,
+            accountAtMillis = row?.let { scan.accountWord[it.id]?.atMillis } ?: 0L,
+        ),
+    )
 
     /** The run to follow while something is queued: the row's, while it is running. Never a prompt's local placeholder. */
     private fun runToFollow(agentId: String): Flow<String?> = agents.state
@@ -590,7 +667,6 @@ class FollowUpRepository(
             }
         }
         try {
-            var busyStreak = 0
             while (isActive) {
                 val done = synchronized(e) {
                     val s = e.state.value
@@ -610,6 +686,17 @@ class FollowUpRepository(
                     if (e.state.value.let { it.restored && it.headMayGo }) settleRow(e.agentId)
                     continue
                 }
+                // A message the server refused as busy waits out its pause first — the card saying so the whole
+                // time — and the row is put where the server has the agent before it is asked again. The pause is
+                // waited once per refusal, as the wall clock has it, not re-read from the app's clock: a test's
+                // clock stands still.
+                val pending = e.state.value.queue.firstOrNull()?.let { h -> h.notBeforeMillis?.let { nb -> h.id to nb } }
+                if (pending != null && e.pausedFor != pending) {
+                    delay((pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
+                    e.pausedFor = pending
+                    settleRow(e.agentId)
+                    continue
+                }
                 // Claiming the head and marking it sending are one step, under the monitor every other queue
                 // operation takes: a steer, an edit or a removal either gets there first and this finds nothing to
                 // claim, or arrives to a message that already reads as in flight and leaves it alone. The agent's
@@ -625,7 +712,7 @@ class FollowUpRepository(
                     h.copy(isSending = true, sendStartedAtMillis = startedAt)
                 } ?: continue
                 e.scheduleSave()
-                busyStreak = if (dispatch(e, head, startedIn, busyStreak)) busyStreak + 1 else 0
+                dispatch(e, head, startedIn)
             }
         } finally {
             follower.cancel()
@@ -637,12 +724,25 @@ class FollowUpRepository(
         get() = queue.firstOrNull()?.let { it.error == null && !it.isSending && !it.isSteered && !it.needsConfirmation } == true
 
     /**
-     * Sends [item], which [dispatchLoop] has already claimed and marked sending. True when the server refused it as
-     * busy and the message is waiting its turn again.
+     * Sends [item], which [dispatchLoop] has already claimed and marked sending.
+     *
+     * The prompt is not shown in the transcript ahead of the request — the card above the composer is what the
+     * reader sees of a queued message — so a refusal takes nothing down; it appears, filed under its run, when the
+     * server accepts. The outcomes:
+     *  - accepted: the message leaves the queue; the run the server named is kept (see [SendDiagnostics]).
+     *  - refused as busy while nothing here calls the agent busy — the server still winding down the last turn, or
+     *    a server that says busy of an idle agent: in Extended mode the account's queue takes the message, once, and
+     *    sends it when the agent is free; otherwise the message waits here, its card saying so, tried again after a
+     *    pause that doubles with each refusal (to [MAX_BUSY_PAUSE_MS]), the server's own words on the card from the
+     *    third refusal on.
+     *  - lost in transit (the connection, the server slow): the server is asked whether the message arrived before
+     *    anything is decided — a message it took is never sent again — and only then is the failure shown.
+     *  - refused for any other reason: shown in the server's words; nothing behind it goes until the user decides.
      */
-    private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int, busyStreak: Int): Boolean {
-        if (generation.get() != startedIn) return false
-        val result = if (item.files.isEmpty()) {
+    private suspend fun dispatch(e: Entry, item: QueuedFollowUp, startedIn: Int) {
+        if (generation.get() != startedIn) return
+        val via = if (item.files.isEmpty()) VIA_RUN else VIA_ACCOUNT
+        val result: Result<String?> = if (item.files.isEmpty()) {
             conversations.sendFollowUp(
                 e.agentId,
                 item.previewText,
@@ -652,34 +752,93 @@ class FollowUpRepository(
                 modelId = item.modelId,
                 modelParams = item.modelParams,
                 modelDisplayName = item.modelDisplayName,
-            )
+                showEcho = false,
+            ).map { it.id }
         } else {
-            val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file })
+            val staged = conversations.stageFollowUp(e.agentId, item.previewText, item.images.map { it.image }, item.files.map { it.file }, show = false)
             sendStagedItem(e, staged, item)
         }
-        if (generation.get() != startedIn) return false
-        return result.fold(
-            onSuccess = {
+        if (generation.get() != startedIn) return
+        result.fold(
+            onSuccess = { runId ->
+                e.attempt(item, via, "accepted", runId)
+                runId?.let { e.acceptedId(it) }
                 e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                 e.scheduleSave()
-                false
             },
             onFailure = { t ->
                 if (t is CancellationException) throw t
-                if (t.toCursorError()?.code == AGENT_BUSY) {
-                    // The message waits its turn again.
-                    e.update {
-                        copy(queue = queue.map { if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null) else it })
+                val error = t.toCursorError()
+                when {
+                    error?.code == AGENT_BUSY -> {
+                        e.attempt(item, via, "busy", error.message)
+                        if (accountQueue != null && accountQueueAvailable()) {
+                            // The account's queue takes it, once: the row it shows above the composer replaces this card.
+                            val handed = runCatching { accountQueue(e.agentId, item) }
+                            if (generation.get() != startedIn) return
+                            handed.fold(
+                                onSuccess = { runId ->
+                                    e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else "accepted", runId)
+                                    runId?.let { e.acceptedId(it) }
+                                    e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                                    e.scheduleSave()
+                                    if (runId == null) conversations.reload(e.agentId)
+                                    return
+                                },
+                                onFailure = { handoff ->
+                                    if (handoff is CancellationException) throw handoff
+                                    e.attempt(item, VIA_ACCOUNT, "failed", handoff.userMessage())
+                                    // The account would not take it either: the message waits here as it would without one.
+                                },
+                            )
+                        }
+                        val refusals = item.busyRefusals + 1
+                        val now = AppClock.now()
+                        e.update {
+                            copy(queue = queue.map {
+                                if (it.id == item.id) {
+                                    it.copy(
+                                        isSending = false,
+                                        sendStartedAtMillis = null,
+                                        busyRefusals = refusals,
+                                        heldSinceMillis = it.heldSinceMillis ?: now,
+                                        notBeforeMillis = now + busyPause(item.busyRefusals),
+                                        // The server's own reason, once it has refused three times: what the card says under the wait.
+                                        serverReason = if (refusals >= REFUSALS_BEFORE_REASON) (error.message?.takeIf { m -> m.isNotBlank() } ?: it.serverReason) else it.serverReason,
+                                    )
+                                } else it
+                            })
+                        }
+                        e.scheduleSave()
                     }
-                    awaitBusyTurn(e.agentId, busyStreak)
-                    true
-                } else {
-                    e.update {
-                        copy(queue = queue.map {
-                            if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage()) else it
-                        })
+                    t.isTransientFailure() -> {
+                        // The answer never came: the server may have the message all the same. Ask before deciding.
+                        val since = item.sendStartedAtMillis ?: AppClock.now()
+                        val sent = conversations.wasSentSince(e.agentId, item.previewText, since)
+                        if (sent.getOrNull() == true) {
+                            e.attempt(item, via, "accepted-confirmed", "the transcript holds it")
+                            e.update { copy(queue = queue.filterNot { it.id == item.id }) }
+                            e.scheduleSave()
+                            conversations.revalidate(e.agentId)
+                        } else {
+                            e.attempt(item, via, if (sent.isFailure) "unknown" else "failed", t.userMessage())
+                            e.update {
+                                copy(queue = queue.map {
+                                    if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage(), needsConfirmation = sent.isFailure) else it
+                                })
+                            }
+                            e.scheduleSave()
+                        }
                     }
-                    false
+                    else -> {
+                        e.attempt(item, via, "failed", t.userMessage())
+                        e.update {
+                            copy(queue = queue.map {
+                                if (it.id == item.id) it.copy(isSending = false, sendStartedAtMillis = null, error = t.userMessage()) else it
+                            })
+                        }
+                        e.scheduleSave()
+                    }
                 }
             },
         )
@@ -688,17 +847,23 @@ class FollowUpRepository(
     private companion object {
         const val MAX_ENTRIES = 24
         const val DRAFT_SAVE_DELAY_MS = 400L
-        const val BUSY_RECHECK_MS = 20_000L
-        /** How often a message held back by a busy answer with no row to wait on re-reads the row (see [awaitBusyTurn]). */
-        const val BUSY_HOLD_POLL_MS = 250L
         const val IDLE_SETTLE_MS = 10_000L
+        /** The longest pause between two attempts the server keeps refusing as busy (see [awaitBusyTurn]). */
+        const val MAX_BUSY_PAUSE_MS = 60_000L
+        /** From this many refusals in a row the card carries the server's own reason under the wait. */
+        const val REFUSALS_BEFORE_REASON = 3
+        /** Attempts kept per chat for the diagnostics. */
+        const val MAX_ATTEMPTS_KEPT = 24
+        const val VIA_RUN = "runs"
+        const val VIA_ACCOUNT = "account"
+        const val VIA_STEER = "steer"
         const val RETRY_BASE_MS = 1_000L
         /** A cancel that failed for a passing reason is asked this many more times (1 s, then 2 s later). */
         const val MAX_CANCEL_RETRIES = 2
         /** A steered send that failed for a passing reason is tried this many more times (1 s, 2 s, then 4 s later). */
         const val MAX_SEND_RETRIES = 3
-        /** Caps the pause between sends the server keeps refusing as busy after the hub saw the run end (up to 32 s). */
-        const val MAX_BUSY_BACKOFF_STEPS = 5
+        /** How many doublings the pause between refused attempts takes before [MAX_BUSY_PAUSE_MS] caps it. */
+        const val MAX_BUSY_BACKOFF_STEPS = 6
         const val AGENT_BUSY = "agent_busy"
         const val RUN_NOT_CANCELLABLE = "run_not_cancellable"
         /** The ids of the placeholder runs prompts sent from here are shown under until the server answers (see [ConversationRepository]). */

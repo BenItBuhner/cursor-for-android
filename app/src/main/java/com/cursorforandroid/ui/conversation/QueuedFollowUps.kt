@@ -22,6 +22,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +53,9 @@ import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.TimeFormat
+import kotlinx.coroutines.delay
 
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
@@ -133,11 +139,16 @@ private fun QueuedFollowUpRow(
             }
             Spacer(Modifier.width(8.dp))
         }
+        // A message the server keeps refusing as busy reads as waiting, steadily — one line, the time waited on it —
+        // whether or not an attempt happens to be in flight this instant: the attempts are brief and the pauses
+        // between them long, and a card that read "sending" for each would flicker between the two for as long as
+        // the server took (see QueuedFollowUp.isHeld). The ring is for a first send only.
+        val sending = item.isSending && !item.isHeld
         Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
             Text(
                 item.previewText,
                 style = type.input,
-                color = if (item.isSending) colors.textTertiary else colors.textPrimary,
+                color = if (sending) colors.textTertiary else colors.textPrimary,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -147,9 +158,10 @@ private fun QueuedFollowUpRow(
             item.warning?.let { note ->
                 Text(note, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
+            if (item.isHeld) HeldNote(item)
         }
         Spacer(Modifier.width(8.dp))
-        if (item.isSending) {
+        if (sending) {
             Box(Modifier.size(Glyph + 10.dp).semantics { contentDescription = "Sending" }, contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 11.dp)
             }
@@ -160,6 +172,37 @@ private fun QueuedFollowUpRow(
                 GlyphButton(CursorIcons.ArrowUp, if (item.warning != null) "Retry sending" else "Send now", colors.iconPrimary, onSteer)
             }
         }
+    }
+}
+
+/**
+ * The line under a message the server keeps refusing as busy while nothing here calls the agent busy: what is being
+ * waited for and for how long, ticking by the second, and — from the third refusal on — the server's own words for
+ * it, so a wait of minutes is never a riddle. Quiet, not red: nothing has failed.
+ */
+@Composable
+private fun HeldNote(item: QueuedFollowUp) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val since = item.heldSinceMillis ?: return
+    var now by remember { mutableLongStateOf(AppClock.now()) }
+    LaunchedEffect(since) {
+        while (true) {
+            now = AppClock.now()
+            delay(1_000L)
+        }
+    }
+    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))
+    Text(
+        listOfNotNull(QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
+        style = type.small.copy(fontFeatureSettings = "tnum"),
+        color = colors.textQuaternary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.testTag("queued-held"),
+    )
+    item.serverReason?.let { reason ->
+        Text("Cursor says: $reason", style = type.small, color = colors.textQuaternary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("queued-held-reason"))
     }
 }
 
