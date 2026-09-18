@@ -294,21 +294,25 @@ class AgentsViewModelTest {
     @Test
     fun `pull request badges are read for the rows on screen, not for every row`() = runTest {
         mainDispatcher.set(StandardTestDispatcher(testScheduler))
+        // The sidebar's first report lands before the list does: one row with a PR (the demo's Revenue Scaling
+        // Pipeline Research, bc-demo-0002) is on screen. The list is held at its first call meanwhile.
+        blockListCall = 1
         val vm = AgentsViewModel(graph)
-        // The sidebar's first report lands before the list does: one row with a PR is on screen.
-        val all = graph.agents.state.first { it.hasLoaded }.agents
-        val withPr = all.filter { it.prUrl != null }
-        assertThat(withPr.size).isAtLeast(3)
-        val onScreen = withPr.first()
-        vm.rowsVisible(listOf(onScreen.id))
+        vm.rowsVisible(listOf("bc-demo-0002"))
+        expectListCall(0).await()
+        listCallGate.complete(Unit)
         advanceUntilIdle()
         vm.loaded()
+        val all = graph.agents.state.value.agents
+        val withPr = all.filter { it.prUrl != null }
+        assertThat(withPr.size).isAtLeast(3)
+        val onScreen = withPr.first { it.id == "bc-demo-0002" }
         graph.pullRequests.statuses.first { onScreen.prUrl in it.keys }
         // Only that row's badge was read: the rows off screen keep theirs unread.
         assertThat(graph.pullRequests.statuses.value.keys).containsExactly(onScreen.prUrl)
 
         // The reader scrolls: another row with a PR comes on screen, and its badge is read then.
-        val scrolledTo = withPr[1]
+        val scrolledTo = withPr.first { it.id != "bc-demo-0002" }
         vm.rowsVisible(listOf(onScreen.id, scrolledTo.id))
         advanceTimeBy(AgentsViewModel.VISIBLE_DEBOUNCE_MS + 1)
         runCurrent()
