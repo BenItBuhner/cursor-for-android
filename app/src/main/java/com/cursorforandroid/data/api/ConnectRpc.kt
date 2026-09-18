@@ -6,6 +6,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -27,9 +28,17 @@ class ConnectRpcException(
     message: String,
     /** How long the server asked us to wait (`Retry-After`), on a 429 or a 503 that named one; null otherwise. */
     val retryAfterMillis: Long? = null,
-) : IOException(message) {
+    cause: Throwable? = null,
+) : IOException(message, cause) {
     val isUnauthenticated: Boolean get() = httpCode == 401 || code == "unauthenticated"
     val isRateLimited: Boolean get() = httpCode == 429 || code == "resource_exhausted"
+    /** The server answered and this build could not read the answer (see [UNREADABLE_ANSWER]): nothing the server said, and nothing a retry changes. */
+    val isUnreadableAnswer: Boolean get() = code == UNREADABLE_ANSWER
+
+    companion object {
+        /** The [code] of an answer this build could not decode — a shape it does not know, not a refusal of the server's. */
+        const val UNREADABLE_ANSWER = "unreadable_answer"
+    }
 }
 
 /**
@@ -157,7 +166,16 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
                         retryAfterMillis = response.retryAfterMillis(),
                     )
                 }
-                CursorJson.decodeFromString(responseSerializer, text.ifBlank { "{}" })
+                try {
+                    CursorJson.decodeFromString(responseSerializer, text.ifBlank { "{}" })
+                } catch (e: SerializationException) {
+                    // The server answered; this build could not read the answer. Said as that — the call and the
+                    // reason — rather than as the serializer's own words about a field, which is what a composer
+                    // showed when the account's environment list carried a shape the DTO refused.
+                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e)
+                } catch (e: IllegalArgumentException) {
+                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e)
+                }
             }
         }
     }

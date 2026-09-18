@@ -4,8 +4,11 @@ import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentSource
 import com.cursorforandroid.domain.ProjectAppearance
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.net.URI
@@ -141,11 +144,22 @@ class ConnectProjectCreationApi(
 
     /**
      * The account's personal no-repo environment — found among its environments, or created empty — by its public id.
-     * Shared with [ConnectAgentStartApi], whose no-repo chats start in the same environment the desktop's do.
+     * Shared with [ConnectAgentStartApi], whose no-repo chats start in the same environment the desktop's do. The
+     * list is read the desktop's way (`ListEnvironments {include_environment_json: true, repository_scope_repo_urls: []}`,
+     * `findReusableNoRepoAutomationEnvironment`) and, unlike the desktop's one read, on to its next pages when the
+     * account says there are more: an environment beyond the first page must not be written a second time.
      */
     suspend fun noRepoEnvironmentPublicId(): String {
-        val listed = call("ListEnvironments", ListEnvironmentsDto(includeEnvironmentJson = true, repositoryScopeRepoUrls = emptyList()), ListEnvironmentsDto.serializer(), ListEnvironmentsResponseDto.serializer())
-        listed.environments.firstOrNull { it.isPersonalNoRepo }?.publicId?.takeIf { it.isNotBlank() }?.let { return it }
+        var pageToken: String? = null
+        for (page in 0 until MAX_ENVIRONMENT_PAGES) {
+            val listed = call("ListEnvironments", ListEnvironmentsDto(includeEnvironmentJson = true, repositoryScopeRepoUrls = emptyList(), pageToken = pageToken), ListEnvironmentsDto.serializer(), ListEnvironmentsResponseDto.serializer())
+            listed.readable().firstOrNull { it.isPersonalNoRepo }?.publicId?.takeIf { it.isNotBlank() }?.let { return it }
+            pageToken = listed.nextPageToken?.takeIf { listed.hasMore && it.isNotBlank() } ?: break
+        }
+        return createNoRepoEnvironment()
+    }
+
+    private suspend fun createNoRepoEnvironment(): String {
         val created = call(
             "SetPersonalEnvironmentJson",
             SetPersonalEnvironmentDto(environmentJson = "{}", repoUrl = "", writeSource = WRITE_SOURCE_DASHBOARD, repoConfig = RepoConfigDto(emptyList())),
@@ -202,13 +216,17 @@ class ConnectProjectCreationApi(
     @Serializable
     private data class StartingPointDto(val url: String? = null, val repoConfig: RepoConfigDto? = null, val environmentPublicId: String? = null)
 
-    /** `aiserver.v1.EnvironmentRepoConfig {repos[]}`. */
+    /**
+     * `aiserver.v1.EnvironmentRepoConfig {repos[]}`. Read, an empty list arrives as no member at all (see
+     * [EnvironmentDto]); written, it goes out as `"repos": []` as it always has, the default notwithstanding.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
     @Serializable
-    private data class RepoConfigDto(val repos: List<RepoEntryDto>)
+    private data class RepoConfigDto(@EncodeDefault val repos: List<RepoEntryDto> = emptyList())
 
     /** `aiserver.v1.EnvironmentRepoEntry {repo_url, scm_repo_node_id}`; the desktop sends the node id empty. */
     @Serializable
-    private data class RepoEntryDto(val repoUrl: String, val scmRepoNodeId: String = "")
+    private data class RepoEntryDto(val repoUrl: String = "", val scmRepoNodeId: String = "")
 
     /** `agent.v1.ConversationAction { user_message_action }`. */
     @Serializable
@@ -254,13 +272,27 @@ class ConnectProjectCreationApi(
     @Serializable
     private data class RenameResponseDto(val name: String? = null)
 
+    /** `aiserver.v1.ListEnvironmentsRequest` fields 2, 3 and 6. */
     @Serializable
-    private data class ListEnvironmentsDto(val includeEnvironmentJson: Boolean, val repositoryScopeRepoUrls: List<String>)
+    private data class ListEnvironmentsDto(val includeEnvironmentJson: Boolean, val repositoryScopeRepoUrls: List<String>, val pageToken: String? = null)
 
+    /**
+     * `aiserver.v1.ListEnvironmentsResponse {environments[], has_more, next_page_token}`. The environments are kept as
+     * they came and read one by one ([readable]): the list is the account's, in whatever shape each entry takes, and
+     * one entry this build cannot read must not cost the others — least of all the no-repo environment among them.
+     */
     @Serializable
-    private data class ListEnvironmentsResponseDto(val environments: List<EnvironmentDto> = emptyList())
+    private data class ListEnvironmentsResponseDto(val environments: List<JsonElement> = emptyList(), val hasMore: Boolean = false, val nextPageToken: String? = null) {
+        fun readable(): List<EnvironmentDto> = environments.mapNotNull { runCatching { CursorJson.decodeFromJsonElement(EnvironmentDto.serializer(), it) }.getOrNull() }
+    }
 
-    /** `aiserver.v1.LogicalEnvironment`, the fields the no-repo search reads (`findReusableNoRepoAutomationEnvironment`). */
+    /**
+     * `aiserver.v1.LogicalEnvironment`, the fields the no-repo search reads (`findReusableNoRepoAutomationEnvironment`).
+     * Every field has a default: the account writes proto3 JSON, in which a field at its default is left out — the
+     * no-repo environment's own `repo_config`, an `EnvironmentRepoConfig` with no repositories, arrives as
+     * `"repoConfig": {}`, with no `repos` member at all. Reading that as a missing field is what refused the whole list
+     * on an account that had one (0.3.41: "Field 'repos' is required … at path: $.environments[27].repoConfig").
+     */
     @Serializable
     private data class EnvironmentDto(
         val publicId: String? = null,
@@ -268,7 +300,11 @@ class ConnectProjectCreationApi(
         val repoConfig: RepoConfigDto? = null,
         val environmentJson: String? = null,
     ) {
-        /** `scope === PERSONAL && hasNoRepoConfigIdentity(repoConfig) && hasBlankEnvironmentJson(env)`. */
+        /**
+         * The desktop's `scope === PERSONAL && hasNoRepoConfigIdentity(repoConfig) && hasBlankEnvironmentJson(env)`:
+         * a repo config that is there and names no repository (protobuf-es reads the empty object as `{repos: []}`),
+         * and an environment json that is absent, blank or `{}`.
+         */
         val isPersonalNoRepo: Boolean
             get() {
                 val personal = scope?.contentOrNull.let { it == SCOPE_PERSONAL || it == "1" }
@@ -303,6 +339,8 @@ class ConnectProjectCreationApi(
         const val MESSAGE_HUMAN = "MESSAGE_TYPE_HUMAN"
         const val WRITE_SOURCE_DASHBOARD = "ENVIRONMENT_WRITE_SOURCE_DASHBOARD"
         const val SCOPE_PERSONAL = "LOGICAL_ENVIRONMENT_SCOPE_PERSONAL"
+        /** Pages of `ListEnvironments` read for the no-repo environment before one is written; the desktop reads one. */
+        const val MAX_ENVIRONMENT_PAGES = 10
         /** What this app is to the account service: a client on the API, like the SDK's chats (the desktop sends `GLASS`). */
         val SOURCE = AgentSource.API.wireName
 

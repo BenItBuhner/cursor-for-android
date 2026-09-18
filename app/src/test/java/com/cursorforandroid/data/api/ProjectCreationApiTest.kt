@@ -166,6 +166,57 @@ class ProjectCreationApiTest {
     }
 
     /**
+     * The account writes proto3 JSON, in which a field at its default is left out: the no-repo environment's own
+     * `EnvironmentRepoConfig`, with no repositories, is `"repoConfig": {}` — no `repos` member — and a scope may come as
+     * its number. 0.3.41 read the missing member as a missing field and refused the whole list ("Field 'repos' is
+     * required … at path: $.environments[27].repoConfig"), so no launch without a repository could get past the
+     * lookup on an account that had the environment. The desktop reads the same object as `{repos: []}`
+     * (`hasNoRepoConfigIdentity`) and picks it.
+     */
+    @Test
+    fun `the no-repo environment is read in the shape the account sends it, an empty repo config with no repos member`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        val environments = (1..27).joinToString(",") { n -> """{"id":"$n","publicId":"env-$n","name":"app-$n","scope":"LOGICAL_ENVIRONMENT_SCOPE_PERSONAL","repoConfig":{"repos":[{"repoUrl":"https://github.com/acme/app-$n"}]},"environmentJson":"{\"snapshot\":\"default\"}"}""" } +
+            """,{"id":"28","publicId":"env-scratch","name":"","scope":1,"repoConfig":{},"environmentJson":"{}"}"""
+        server.enqueue(MockResponse().setBody("""{"environments":[$environments]}"""))
+
+        assertThat(api.noRepoEnvironmentPublicId()).isEqualTo("env-scratch")
+
+        server.takeRequest()
+        assertThat(server.takeRequest().path).isEqualTo("/aiserver.v1.BackgroundComposerService/ListEnvironments")
+        // Found, so nothing was written.
+        assertThat(server.requestCount).isEqualTo(2)
+    }
+
+    @Test
+    fun `an environment of a shape this build cannot read costs nothing but itself, and an unreadable list names the call`() = runBlocking<Unit> {
+        // One entry no version of this app knows how to read sits before the no-repo environment.
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"environments":[{"publicId":["not","a","string"],"scope":1},{"publicId":"env-scratch","scope":"LOGICAL_ENVIRONMENT_SCOPE_PERSONAL","repoConfig":{}}]}"""))
+        assertThat(api.noRepoEnvironmentPublicId()).isEqualTo("env-scratch")
+
+        // The list itself in a shape that cannot be read at all: the failure names the call, not a field of a DTO.
+        server.enqueue(MockResponse().setBody("""{"environments":"none"}"""))
+        val unreadable = runCatching { api.noRepoEnvironmentPublicId() }.exceptionOrNull() as ConnectRpcException
+        assertThat(unreadable.isUnreadableAnswer).isTrue()
+        assertThat(unreadable.message).startsWith("Cursor's answer to ListEnvironments could not be read: ")
+    }
+
+    @Test
+    fun `the environment pages are followed before a no-repo environment is written`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(MockResponse().setBody("""{"environments":[{"publicId":"env-1","scope":1,"repoConfig":{"repos":[{"repoUrl":"https://github.com/acme/app"}]}}],"hasMore":true,"nextPageToken":"page-2"}"""))
+        server.enqueue(MockResponse().setBody("""{"environments":[{"publicId":"env-scratch","scope":1,"repoConfig":{}}],"hasMore":false}"""))
+
+        assertThat(api.noRepoEnvironmentPublicId()).isEqualTo("env-scratch")
+
+        server.takeRequest()
+        assertThat(server.takeRequest().json()["pageToken"]).isNull()
+        assertThat(server.takeRequest().json()["pageToken"]?.jsonPrimitive?.content).isEqualTo("page-2")
+        assertThat(server.requestCount).isEqualTo(3)
+    }
+
+    /**
      * The account refuses a start that names no model ("At least one model details is required" — what the first
      * build of the sheet was told). The desktop's dialog always names one: `requested_models[0]` is the picked model
      * with its max mode and parameters (`_buildStartRequestModelFields`), or `default` for Auto (`PQp`).
