@@ -43,6 +43,7 @@ import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.ThinkingBlock
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
+import com.cursorforandroid.domain.ToolNames
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptDiagnostics
 import com.cursorforandroid.domain.TranscriptLoadDiagnostics
@@ -443,7 +444,17 @@ class TranscriptVerifier(
             sb.append(" run=").append(pairedTail ?: "UNPAIRED").append('/').append(run.status)
             sb.append(" trace=").append(run.trace).append(" items=").append(run.items)
             run.message?.let { sb.append(" sendMessage: ").append(it) }
-            own?.let { sb.append(" | record-alone: sendMessage=").append(it.messageStage).append(" body=").append(it.hasBody) }
+            own?.let {
+                sb.append(" | record-alone: sendMessage=").append(it.messageStage).append(" body=").append(it.hasBody)
+                // The message calls as the record carried them: each call's name and how its arguments came together,
+                // and the parser branches of the steps that carried any call — which key the record put them under.
+                val messageCalls = it.shape.calls.filter { c -> ToolNames.coordinatorTool(c.name) == ToolNames.USER_MESSAGE_TOOL }
+                if (messageCalls.isNotEmpty()) {
+                    sb.append(" msgCalls=[").append(messageCalls.joinToString("; ") { c -> "${c.name} args=${c.args} steps=${c.steps} result=${c.result}" }).append(']')
+                    val branches = it.shape.steps.map { st -> st.branch }.filter { b -> b.startsWith("tool_call") || b.startsWith("streamed_back_tool_call") }.distinct()
+                    if (branches.isNotEmpty()) sb.append(" branches=[").append(branches.joinToString("; ")).append(']')
+                }
+            }
             // The pairing checked by time: the run whose life covers the turn's end, as the state times it.
             val timing = own?.timing
             if (timing?.timestampMs != null && independent != null && independent.runs.isNotEmpty()) {
