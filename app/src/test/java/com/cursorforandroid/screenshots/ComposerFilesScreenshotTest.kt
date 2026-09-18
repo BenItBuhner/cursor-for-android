@@ -117,21 +117,26 @@ class ComposerFilesScreenshotTest {
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "78_composer_file_chips.png").path, RoborazziOptions())
     }
 
+    /**
+     * The files going up the moment they were attached, the user still typing: the first is up and reads as a plain
+     * chip, the second fills, the third failed and offers a retry; the send is held, the footer saying why.
+     */
     @Test
     fun composerFileChipsUploading() {
         compose.setContent {
             Scene {
                 ComposerBox(
-                    value = "",
+                    value = "Read the spec and the trace, then fix the checkout regression shown in the reco",
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
-                    isSending = true,
+                    canSend = false,
                     plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     files = listOf(spec, recording, trace),
                     onRemoveFile = {},
-                    fileUploads = mapOf("f1" to FileUploadState(progress = 1f), "f2" to FileUploadState(progress = 0.62f), "f3" to FileUploadState(progress = 0f, failed = true)),
+                    fileUploads = mapOf("f1" to FileUploadState.DONE, "f2" to FileUploadState(progress = 0.62f), "f3" to FileUploadState(progress = 0f, failed = true)),
                     onRetryFile = {},
+                    sendHint = "Uploading 2 of 3…",
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
                     modifier = Modifier.fillMaxWidth(),

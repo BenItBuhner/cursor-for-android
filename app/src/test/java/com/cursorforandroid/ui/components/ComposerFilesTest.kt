@@ -1,6 +1,8 @@
 package com.cursorforandroid.ui.components
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -62,21 +64,30 @@ class ComposerFilesTest {
         assertThat(removed.map { it.id }).containsExactly("f1")
     }
 
+    /**
+     * The upload starts the moment the file is attached (see `AttachmentUploads`), so the chip fills while the user
+     * types: its cross stays, cancelling the upload; a failed one offers a retry of the upload alone; and the composer
+     * says why send is held, the button disabled, until every file is up.
+     */
     @Test
-    fun `an upload under way fills the chip and hides its cross, and a failed one offers a retry`() {
+    fun `an upload under way fills the chip and holds send with a hint, and a failed one offers a retry`() {
         val retried = ArrayList<PendingFile>()
+        val removed = ArrayList<PendingFile>()
+        var sent = 0
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 ComposerBox(
-                    value = "",
+                    value = "Read both",
                     onValueChange = {},
                     placeholder = "Follow up…",
-                    onSend = {},
+                    onSend = { sent++ },
+                    canSend = false,
                     plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     files = listOf(pdf, zip),
-                    onRemoveFile = {},
+                    onRemoveFile = { removed += it },
                     fileUploads = mapOf("f1" to FileUploadState(progress = 0.4f), "f2" to FileUploadState(progress = 0.1f, failed = true)),
                     onRetryFile = { retried += it },
+                    sendHint = "Uploading 1 of 2…",
                 )
             }
         }
@@ -84,11 +95,45 @@ class ComposerFilesTest {
 
         compose.onNodeWithText("Uploading · 40%").assertIsDisplayed()
         compose.onNodeWithText("Upload failed · tap to retry").assertIsDisplayed()
-        // The chip going up cannot be taken off mid-flight; the failed one can be retried or removed.
-        compose.onAllNodesWithContentDescription("Remove attachment").assertCountEquals(1)
+        compose.onNodeWithTag("send-hint").assertIsDisplayed().assertTextEquals("Uploading 1 of 2…")
+        // The disabled button takes no tap: the send waits for the files, not the other way round.
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitForIdle()
+        assertThat(sent).isEqualTo(0)
+        // Both chips keep their cross: taking a file off cancels its upload, done or not.
+        compose.onAllNodesWithContentDescription("Remove attachment").assertCountEquals(2)
+        compose.onAllNodesWithContentDescription("Remove attachment")[0].performClick()
         compose.onNodeWithContentDescription("Retry upload").performClick()
         compose.waitForIdle()
+        assertThat(removed.map { it.id }).containsExactly("f1")
         assertThat(retried.map { it.id }).containsExactly("f2")
+    }
+
+    /** Up, a file's chip is the file again — glyph, kind and size — and nothing holds the send: it goes out at once. */
+    @Test
+    fun `a file that is up reads as a plain chip and send is instant`() {
+        var sent = 0
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                ComposerBox(
+                    value = "Read both",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = { sent++ },
+                    canSend = true,
+                    files = listOf(pdf, zip),
+                    onRemoveFile = {},
+                    fileUploads = mapOf("f1" to FileUploadState.DONE, "f2" to FileUploadState.DONE),
+                )
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("PDF · 2 KB").assertIsDisplayed()
+        compose.onAllNodesWithText("Uploading", substring = true).assertCountEquals(0)
+        compose.onAllNodesWithTag("send-hint").assertCountEquals(0)
+        compose.onNodeWithContentDescription("Send").performClick()
+        compose.waitForIdle()
+        assertThat(sent).isEqualTo(1)
     }
 
     @Test

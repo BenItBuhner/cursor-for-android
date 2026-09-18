@@ -1,7 +1,9 @@
 package com.cursorforandroid.data.api
 
 import com.cursorforandroid.data.auth.SessionTokenProvider
+import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.UploadRef
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,9 +25,19 @@ class UploadedFile(
     val uploadId: String?,
     val data: ByteArray? = null,
     val uuid: String = UUID.randomUUID().toString(),
+    /** The S3 multipart id `CompletePromptUpload` settled, which `AbortPromptUpload` takes to drop the upload again; null for an inline file. */
+    val s3UploadId: String? = null,
 ) {
     init {
         require(uploadId != null || data != null) { "An UploadedFile carries an upload id or its bytes." }
+    }
+
+    /** The reference a draft keeps of a staged upload, so a restart sends what is already up; null for an inline file. */
+    val ref: UploadRef? get() = uploadId?.let { UploadRef(it, s3UploadId.orEmpty(), uuid) }
+
+    companion object {
+        /** [file] as the prompt names it once its upload has been completed under [ref]. */
+        fun of(file: PromptFile, ref: UploadRef): UploadedFile = UploadedFile(file.name, file.mimeType.ifBlank { PromptFile.OCTET_STREAM }, ref.uploadId, uuid = ref.uuid, s3UploadId = ref.s3UploadId)
     }
 
     /**

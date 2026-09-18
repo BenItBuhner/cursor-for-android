@@ -10,8 +10,8 @@ import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.ConversationState
-import com.cursorforandroid.data.repo.PromptUploadException
 import com.cursorforandroid.data.repo.SlashCommandRepository
 import com.cursorforandroid.data.repo.SlashScope
 import com.cursorforandroid.data.repo.TraceStatus
@@ -148,9 +148,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      */
     private val draft = MutableStateFlow("")
     private val attachments = MutableStateFlow<List<PendingAttachment>>(emptyList())
-    /** Files of any type (Extended mode). They stay in the strip, filling with their upload, until the send is through. */
+    /**
+     * Files of any type (Extended mode). Each goes up the moment it is attached (see [AttachmentUploads]) and stays
+     * in the strip, its chip filling, until the send is through; a file that is up carries its reference.
+     */
     private val files = MutableStateFlow<List<PendingFile>>(emptyList())
-    private val uploads = MutableStateFlow<Map<String, FileUploadState>>(emptyMap())
     private val sending = MutableStateFlow(false)
     private val toast = MutableStateFlow<String?>(null)
     /** The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. */
@@ -198,8 +200,16 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     val draftText: StateFlow<String> = draft.asStateFlow()
     val pendingAttachments: StateFlow<List<PendingAttachment>> = attachments.asStateFlow()
     val pendingFiles: StateFlow<List<PendingFile>> = files.asStateFlow()
-    /** Where each attached file's upload stands while a send is under way, by [PendingFile.id]; empty otherwise. */
-    val fileUploads: StateFlow<Map<String, FileUploadState>> = uploads.asStateFlow()
+    /** Where each attached file's upload stands, by [PendingFile.id], from the moment it is attached. */
+    val fileUploads: StateFlow<Map<String, FileUploadState>> = combine(files, graph.attachmentUploads.states) { fs, states ->
+        fs.mapNotNull { f -> states[f.id]?.let { f.id to FileUploadState.of(it) } }.toMap()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+    /**
+     * Why send is held: "Uploading 2 of 3…" while an attached file is still going up, null otherwise. The send
+     * button follows it; once every file carries its reference the prompt goes out with no upload in the way.
+     */
+    val uploadHint: StateFlow<String?> = combine(files, graph.attachmentUploads.states) { fs, states -> AttachmentUploads.hint(states, fs.map { it.id }) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     val isSending: StateFlow<Boolean> = sending.asStateFlow()
     val toastMessage: StateFlow<String?> = toast.asStateFlow()
     /**
@@ -271,6 +281,20 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         viewModelScope.launch {
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
         }
+        viewModelScope.launch {
+            // A file whose upload has completed takes its reference onto the draft, so the copy on disk sends what is
+            // already up after a restart rather than uploading it again.
+            graph.attachmentUploads.states.collect { states -> adoptUploadRefs(states) }
+        }
+    }
+
+    private fun adoptUploadRefs(states: Map<String, AttachmentUploads.Status>) {
+        val current = files.value
+        val updated = current.map { f ->
+            val ref = (states[f.id] as? AttachmentUploads.Status.Done)?.file?.ref
+            if (ref != null && f.file.upload != ref) PendingFile(f.id, f.file.withUpload(ref), f.thumbnail) else f
+        }
+        if (updated != current) setFiles(updated)
     }
 
     /** The agent's own catalog; the repository and branch, when the row has them, help the server before its machine has reported. */
@@ -385,12 +409,16 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             toast.value = AgentRepository.FILES_NEED_EXTENDED
             return
         }
-        setFiles((files.value + items).withinSlots(imagesElsewhere = attachments.value.size))
+        val kept = (files.value + items).withinSlots(imagesElsewhere = attachments.value.size)
+        // Up they go, the moment they are attached; the send waits on nothing once they are.
+        kept.filter { f -> items.any { it.id == f.id } }.forEach { graph.attachmentUploads.start(it.id, it.file) }
+        setFiles(kept)
     }
 
+    /** Takes a file off the message: its upload, under way or done, is cancelled with it. */
     fun removeFile(item: PendingFile) {
         setFiles(files.value.filterNot { it.id == item.id })
-        uploads.update { it - item.id }
+        graph.attachmentUploads.cancel(item.id)
     }
 
     private fun setFiles(items: List<PendingFile>) {
@@ -398,11 +426,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.followUps.setDraftFiles(agentId, items.map { DraftFile(it.id, it.file) })
     }
 
-    /** A file whose upload failed: the whole message is sent again, the upload with it. */
+    /** A file whose upload failed: the upload alone is tried again, in its chip; the message waits where it is. */
     fun retryFile(item: PendingFile) {
         if (files.value.none { it.id == item.id }) return
-        uploads.update { it - item.id }
-        send()
+        graph.attachmentUploads.retry(item.id)
     }
 
     /** Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. */
@@ -416,7 +443,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         draft.value = saved.text
         attachments.value = restored
         files.value = restoredFiles
-        uploads.value = emptyMap()
+        // A file that came back with its reference is up already; one without goes up now.
+        restoredFiles.forEach { graph.attachmentUploads.start(it.id, it.file) }
         keepModesExclusive(saved.text)
     }
 
@@ -462,6 +490,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             toast.value = AgentRepository.FILES_NEED_EXTENDED
             return
         }
+        // The send button is held while a file is still going up; a send that gets here all the same waits its turn too.
+        uploadHint.value?.let { hint ->
+            toast.value = "$hint The message goes out once the files are up."
+            return
+        }
         val accountQueue = caps.accountQueue && !graph.session.isDemo
         val waiting = graph.followUps.state(agentId).value.queue.isNotEmpty()
         when {
@@ -477,7 +510,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * A follow-up only the account service carries — a mode, or files — on a free agent: filed there, shown and
-     * streamed like any other. The files go up first, their chips filling as they do; they leave the strip once the
+     * streamed like any other. The files went up when they were attached, so the message goes out at once by their
+     * references; a file that did not get up is tried again first, its chip filling. They leave the strip once the
      * account has the message, and stay, marked, when an upload failed, so the same send can be tried again.
      */
     private fun sendViaAccount(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
@@ -500,7 +534,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
                 picker.update { if (it.override == options.override) it.copy(override = null) else it }
-            }.onFailure { restoreDraft(text, images, attached, it) }
+            }.onFailure { restoreDraft(text, images, it) }
             sending.value = false
         }
     }
@@ -517,34 +551,25 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             }.onSuccess {
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
-            }.onFailure { restoreDraft(text, images, attached, it) }
+            }.onFailure { restoreDraft(text, images, it) }
             sending.value = false
         }
     }
 
-    /** Puts [attached] up through the account's prompt uploads, the chips following each file's bytes. */
+    /**
+     * What the prompt names [attached] as: the references their uploads settled on when they were attached — at
+     * once, the case a send meets — or, for a file that did not get up, the upload tried again now, its chip filling.
+     */
     private suspend fun uploadFiles(attached: List<PendingFile>): List<UploadedFile> {
         if (attached.isEmpty()) return emptyList()
-        uploads.update { it + attached.associate { f -> f.id to FileUploadState() } }
-        return try {
-            graph.promptUploads.upload(attached.map { it.file }) { index, done, total ->
-                val id = attached.getOrNull(index)?.id ?: return@upload
-                uploads.update { it + (id to FileUploadState(progress = if (total > 0) done.toFloat() / total else 1f)) }
-            }
-        } catch (t: Throwable) {
-            val failed = (t as? PromptUploadException)?.filename
-            uploads.update { current ->
-                current + attached.filter { it.id in current }.associate { f -> f.id to FileUploadState(progress = current[f.id]?.progress ?: 0f, failed = failed == null || f.file.name == failed) }
-            }
-            throw t
-        }
+        return graph.attachmentUploads.awaitAll(attached.map { it.id to it.file })
     }
 
     /** The files went out with the message: the chips go, unless something else was attached meanwhile. */
     private fun clearFiles(sent: List<PendingFile>) {
         val sentIds = sent.mapTo(HashSet()) { it.id }
         setFiles(files.value.filterNot { it.id in sentIds })
-        uploads.update { it - sentIds }
+        graph.attachmentUploads.forget(sentIds)
     }
 
     private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, uploaded: List<UploadedFile>, options: FollowUpModelState) = AccountFollowup(
@@ -557,16 +582,14 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
 
     /**
      * A send that did not go out: what was typed since wins; the prompt only comes back to an empty composer. The files
-     * never left the strip; a failed upload's chip says so and offers a retry, the others go back to plain chips.
+     * never left the strip, and a failed upload's chip says so and offers a retry.
      */
-    private fun restoreDraft(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, cause: Throwable) {
+    private fun restoreDraft(text: String, images: List<PendingAttachment>, cause: Throwable) {
         if (draft.value.isBlank()) {
             draft.value = text
             graph.followUps.setDraftText(agentId, text)
         }
         if (attachments.value.isEmpty()) setAttachments(images)
-        if (cause !is PromptUploadException) uploads.update { it - attached.map { f -> f.id }.toSet() }
-        else uploads.update { current -> current.filterKeys { id -> current[id]?.failed == true } }
         toast.value = cause.userMessage()
     }
 
@@ -592,7 +615,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             }.onFailure {
                 // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
                 // prompt that did not go out only comes back to an empty one.
-                if (it.toCursorError()?.code == "agent_busy") enqueue(text, images, emptyList(), options) else restoreDraft(text, images, emptyList(), it)
+                if (it.toCursorError()?.code == "agent_busy") enqueue(text, images, emptyList(), options) else restoreDraft(text, images, it)
             }
             sending.value = false
         }
@@ -607,12 +630,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             modelId = options.override?.model?.id,
             modelParams = options.override?.params.orEmpty(),
             modelDisplayName = options.override?.label,
-            files = attached.map { DraftFile(it.id, it.file) },
+            // The queued message carries the references its files' uploads settled on, so it goes out by them when its turn comes.
+            files = attached.map { DraftFile(it.id, it.file.withUpload(graph.attachmentUploads.ref(it.id) ?: it.file.upload)) },
         )
         draft.value = ""
         attachments.value = emptyList()
         files.value = emptyList()
-        uploads.value = emptyMap()
+        graph.attachmentUploads.forget(attached.map { it.id })
         graph.followUps.clearDraft(agentId)
     }
 
