@@ -34,6 +34,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -94,7 +95,9 @@ fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
     val scope = rememberCoroutineScope()
-    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = null)
+    // On the main dispatcher, as the screen's reading of the mode is (see SettingsScreen): written from the store's IO
+    // thread, a first value can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
+    val acknowledgedAt by graph.extendedMode.acknowledgedAt.collectAsStateWithLifecycle(initialValue = null, context = Dispatchers.Main.immediate)
     var dialogOpen by rememberSaveable { mutableStateOf(false) }
 
     fun setEnabled(on: Boolean) {

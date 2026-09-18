@@ -76,6 +76,7 @@ import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.TimeFormat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -137,7 +138,12 @@ fun SettingsScreen(
     val keyStorage by graph.keyStore.availability.collectAsStateWithLifecycle()
     // Collected once for the screen: the Extended mode row and the debug sheet's API row read this one value, so the
     // sheet says what the switch says from its first frame rather than starting a collector of its own when it opens.
-    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
+    // Collected on the main dispatcher (as the acknowledgment in ExtendedModeRows is): the value arrives from the
+    // store's IO thread, and a state write made there can be lost to the recomposer while it is dispatching another
+    // change — Compose 1.7's Recomposer.recordComposerModifications resets its pending set without holding the lock
+    // for the whole round. On a device the composition runs on the main thread anyway; under the test harness's
+    // unconfined dispatcher it does not, and a fresh collector's first value went missing once in a few dozen runs.
+    val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false, context = Dispatchers.Main.immediate)
     var accountOpen by rememberSaveable { mutableStateOf(false) }
     var debugOpen by rememberSaveable { mutableStateOf(false) }
 
