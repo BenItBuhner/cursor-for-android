@@ -83,6 +83,9 @@ class TranscriptDiagnosticsTest {
                 TranscriptLoadDiagnostics.RunLine("…run152", "FINISHED", "failed", 0),
                 TranscriptLoadDiagnostics.RunLine("…run159", "FINISHED", "shown", 4),
                 TranscriptLoadDiagnostics.RunLine("…run160", "RUNNING", "live", 0),
+                // A coordinator's turn from the record: what the record had of the message, and what reached the screen from where.
+                TranscriptLoadDiagnostics.RunLine("turn@8301/…run161", "FINISHED", "shown(log)", 5, message = "record=none rendered=yes via=log"),
+                TranscriptLoadDiagnostics.RunLine("turn@8310", "-", "shown(unpaired)", 2, message = "record=missing result=yes rendered=missing via=record"),
             ),
             traceQueue = 0, traceInFlight = 1, traceWorkerRunning = true, expiredBeforeIso = "2026-09-07T10:00:00Z", expiredRuns = 7, failedTraces = 1,
             liveRunId = "run-160", following = true,
@@ -107,16 +110,18 @@ class TranscriptDiagnosticsTest {
         assertThat(report).contains("load: source=record attached=1 paused=false fetched=true fetchedAt=2026-09-14T03:59:58Z messages=319 prompts=160 runs=160 complete=true olderCursor=false order=OLDEST_FIRST latestById=true window=10 turns=[150,160)")
         assertThat(report).contains("record: total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
         assertThat(report).contains("status: shown=RUNNING latestRun=CANCELLED streaming=false rowRunning=false accountRunning=true rowNewerThanRecordMs=600000")
-        assertThat(report).contains("traces: shown=1 of 3 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")
+        assertThat(report).contains("traces: shown=3 of 5 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")
         assertThat(report).contains("  run …run151 FINISHED trace=expired items=0")
         assertThat(report).contains("  run …run152 FINISHED trace=failed items=0")
         assertThat(report).contains("  run …run160 RUNNING trace=live items=0")
+        assertThat(report).contains("  run turn@8301/…run161 FINISHED trace=shown(log) items=5 sendMessage: record=none rendered=yes via=log")
+        assertThat(report).contains("  run turn@8310 - trace=shown(unpaired) items=2 sendMessage: record=missing result=yes rendered=missing via=record")
         assertThat(report).contains("live: run=…un-160 following=true stream=events:3,status:RUNNING,reconnecting:false,expired:false,finished:false,items:2")
         assertThat(report).contains("errors: last=- transcript=\"Cursor took too long to respond. <url>\" transcriptUnavailable=false")
         assertThat(report).doesNotContain("bc-1234")
         // The shape dump: the newest turns step by step, then their calls.
         assertThat(report).contains("shapes: newest 1 turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
-        assertThat(report).contains("turn@8301 steps=2 prompt=user project=true calls=1")
+        assertThat(report).contains("turn@8301 steps=2 prompt=user project=true calls=1 sendMessage=recovered result=yes")
         assertThat(report).contains("  8301 human_message {humanMessage:{text:str(17),agentMode:AGENT_MODE_PROJECT}}")
         assertThat(report).contains("  8302 tool_call[id=toolCallId name=name args=piece] {toolCall:{toolCallId:str(18),name:SendMessage,rawArgs:str(50),isStreaming:true}}")
         assertThat(report).contains("  call …Pieces SendMessage steps=3 args=recovered(repaired,3) result=true")

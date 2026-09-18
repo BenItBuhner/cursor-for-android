@@ -69,7 +69,14 @@ data class TranscriptLoadDiagnostics(
      */
     data class StatusLine(val shown: String, val latestRun: String, val streaming: Boolean, val rowRunning: Boolean, val accountRunning: Boolean, val rowNewerThanRecordMs: Long?)
 
-    data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int)
+    /**
+     * One run of the window (a record turn with the run it pairs with, in Extended mode). [message] is the
+     * coordinator's word to the user through the turn's stages, for a coordinator's chat: what the record has of it
+     * (`body`, `recovered`, `missing`, `none`), whether its result was recorded, and what reached the screen (`yes`,
+     * `missing`, `none`) from which source (`record`, `log`, `live`) — which says where a reply the reader cannot see
+     * was lost. Null for a chat that is not a coordinator's.
+     */
+    data class RunLine(val idTail: String, val status: String, val trace: String, val items: Int, val message: String? = null)
 
     /**
      * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
@@ -183,11 +190,11 @@ object TranscriptDiagnostics {
         load.status?.let { st ->
             appendLine("status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}")
         }
-        val shown = load.runs.count { it.trace == "shown" }
+        val shown = load.runs.count { it.trace.startsWith("shown") }
         appendLine(
             "traces: shown=$shown of ${load.runs.count { it.trace != "live" }} queue=${load.traceQueue} inFlight=${load.traceInFlight} worker=${load.traceWorkerRunning} expiredRuns=${load.expiredRuns} expiredBefore=${load.expiredBeforeIso ?: "-"} failed=${load.failedTraces}",
         )
-        load.runs.forEach { appendLine("  run ${it.idTail} ${it.status} trace=${it.trace} items=${it.items}") }
+        load.runs.forEach { appendLine("  run ${it.idTail} ${it.status} trace=${it.trace} items=${it.items}" + (it.message?.let { m -> " sendMessage: $m" } ?: "")) }
         appendLine(
             "live: run=${load.liveRunId?.let { ProjectDiagnostics.tail(it) } ?: "-"} following=${load.following}" +
                 (load.liveStream?.let { " stream=events:${it.events},status:${it.status},reconnecting:${it.reconnecting},expired:${it.expired},finished:${it.finished},items:${it.items}" } ?: " stream=none"),
@@ -206,7 +213,18 @@ object TranscriptDiagnostics {
         appendLine()
         appendLine("shapes: newest ${shapes.size} turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
         for (turn in shapes) {
-            appendLine("turn@${turn.stepIndex} steps=${turn.steps.size} prompt=${turn.prompt} project=${turn.projectMode} calls=${turn.calls.size}")
+            // The coordinator's word to the user as the record gave it: with its body, read leniently, in pieces that
+            // never read, without arguments — or no such call in the record at all, which is what the run's log then answers for.
+            val messages = turn.calls.filter { ToolNames.coordinatorTool(it.name) == ToolNames.USER_MESSAGE_TOOL }
+            val stage = when {
+                messages.isEmpty() -> "none"
+                messages.any { it.args == "json" || it.args == "value" || it.args.startsWith("joined") } -> "body"
+                messages.any { it.args.startsWith("recovered") } -> "recovered"
+                messages.any { it.args.startsWith("partial") } -> "partial"
+                else -> "missing"
+            }
+            val result = if (messages.isEmpty()) "" else " result=${if (messages.any { it.result }) "yes" else "no"}"
+            appendLine("turn@${turn.stepIndex} steps=${turn.steps.size} prompt=${turn.prompt} project=${turn.projectMode} calls=${turn.calls.size} sendMessage=$stage$result")
             turn.steps.take(MAX_SHAPE_STEPS).forEach { step -> appendLine("  ${step.index} ${step.branch} ${step.keys}") }
             if (turn.steps.size > MAX_SHAPE_STEPS) appendLine("  … +${turn.steps.size - MAX_SHAPE_STEPS} more steps")
             turn.calls.forEach { call -> appendLine("  call ${call.idTail} ${call.name.ifBlank { "<blank>" }} steps=${call.steps} args=${call.args} result=${call.result}") }

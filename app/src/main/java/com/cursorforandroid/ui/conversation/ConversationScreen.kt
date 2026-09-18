@@ -173,6 +173,7 @@ fun ConversationScreen(
             onOpenAgent = onOpenAgent,
             agentById = { id -> agentsById[id] },
             coordinatorMode = coordinatorMode,
+            onReloadTranscript = viewModel::reloadTranscript,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in

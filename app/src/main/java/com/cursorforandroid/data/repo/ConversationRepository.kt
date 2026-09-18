@@ -606,6 +606,9 @@ class ConversationRepository(
         /** The rendered items of the window's turns, by step index; see [recordItems]. Under the entry's monitor. */
         private val renderedTurns = HashMap<Int, RenderedTurn>()
 
+        /** The items the turn at [stepIndex] was last rendered to (see [recordItems]), for the diagnostics; null before it was. */
+        fun renderedItems(stepIndex: Int): List<TimelineItem>? = renderedTurns[stepIndex]?.items
+
         /**
          * One turn of the record as the transcript shows it: its prompt (an injected turn as its rows), then its
          * trace — the stream's complete one, the story so far of the run being followed, the record's own body, or
@@ -683,6 +686,20 @@ class ConversationRepository(
                 val wanting = !turn.hasBody || (projectMode && (!turn.hasUserMessage || turn.hasRecoveredMessage))
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
+        }
+
+        /**
+         * The record's window holds more turns than the run list reaches, with older pages of the list still to
+         * read. Turns pair with runs by position from the newest, so a turn behind more runs than the list has in
+         * hand pairs with none: no footer, and — the coordinator's word to the user being in the run's log alone
+         * when the record has it in no shape this app reads — no reply, however many times the record is read
+         * (Bennett's v0.3.35 chat: a Project injecting dozens of turns between two of his, and the first page of the
+         * list reaching twenty runs). The list is paged until it covers the window (see `loadFromRecord`,
+         * `loadOlderFromRecord`), as the documented path pages it before widening.
+         */
+        fun recordNeedsRuns(): Boolean {
+            val window = recordWindow ?: return false
+            return !runsComplete && olderRunsCursor != null && allRuns().size < window.turns.size
         }
 
         /**
@@ -941,17 +958,34 @@ class ConversationRepository(
             }
             val window = e.recordWindow
             val runLines = if (window != null) {
-                // From the record: one line per loaded turn, with the run the turn pairs with when the list has it.
-                val ordered = e.allRuns()
-                val offset = ordered.size - window.turns.size
+                // From the record: one line per loaded turn, with the run the turn pairs with when the list has it
+                // (paired as [recordItems] pairs them), and in a coordinator's chat the message's stages: what the
+                // record has of the coordinator's word, and what reached the screen from which source.
+                val trailing = with(e) { local.filter { window.turnOf(it) == null } }.mapTo(HashSet()) { it.run.id }
+                val paired = e.allRuns().filter { it.id !in trailing }
+                val offset = paired.size - window.turns.size
+                val coordinator = e.projectMode || CoordinatorTranscript.hasCoordinatorContent(e.state.value.items)
                 window.turns.mapIndexed { i, turn ->
-                    val run = ordered.getOrNull(offset + i)
+                    val run = paired.getOrNull(offset + i)
+                    val complete = run?.let { e.traces[it.id] }
+                    val liveItems = e.live?.takeIf { run != null && it.runId == run.id && complete == null }?.items
                     val trace = when {
                         run != null && run.statusEnum().isActive -> "live"
+                        complete != null -> "shown(log)"
                         turn.items.isEmpty() -> "pending"
+                        run == null -> "shown(unpaired)"
                         else -> "shown"
                     }
-                    TranscriptLoadDiagnostics.RunLine("turn@${turn.stepIndex}" + (run?.let { "/" + ProjectDiagnostics.tail(it.id) } ?: ""), run?.status ?: "-", trace, turn.items.size)
+                    val message = if (!coordinator) null else {
+                        val shown = e.renderedItems(turn.stepIndex) ?: complete ?: liveItems ?: turn.items
+                        val via = when {
+                            complete != null -> "log"
+                            liveItems != null -> "live"
+                            else -> "record"
+                        }
+                        "record=${CoordinatorTranscript.messageStage(turn.items)} rendered=${CoordinatorTranscript.messageStage(shown).substringBefore(' ').let { if (it == "body") "yes" else it }} via=$via"
+                    }
+                    TranscriptLoadDiagnostics.RunLine("turn@${turn.stepIndex}" + (run?.let { "/" + ProjectDiagnostics.tail(it.id) } ?: ""), run?.status ?: "-", trace, turn.items.size, message)
                 }
             } else {
                 (layout.paired + layout.standing).map { run ->
@@ -1657,6 +1691,9 @@ class ConversationRepository(
             // The turns the record holds without their steps — or, in a coordinator's chat, without the coordinator's
             // word — get them from their runs' logs, newest first.
             loadTraces(e, agentId, e.shownRuns())
+            // A window the first page of runs does not reach (a Project's injected turns, dozens between two of the
+            // user's) has its older runs paged in behind it; the replays of the turns they pair with follow.
+            if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
         } else if (rawWindow == null) {
             // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
         }
@@ -1777,6 +1814,47 @@ class ConversationRepository(
         // The record has grown: the prompts sent from here it now holds hand over to it (see [pruneLocal]).
         e.publish(mutate = { if (recordWindow === known) recordWindow = built; pruneLocal() })
         persistRecord(e, built, known, session.current, cacheTokens())
+        // The turns the record grew by are the chat's newest runs, and the window pairs turns with runs by position
+        // from the newest: the list's first page is read again so its newest end is the record's — a Project's
+        // injected turns arrive by the dozen between two reads, and a list a dozen runs short paired every turn with
+        // the run a dozen before it. The turns the refreshed list pairs and finds finished get their logs replayed.
+        refreshNewestRuns(e)
+        loadTraces(e, e.agentId, e.shownRuns())
+    }
+
+    /**
+     * Reads the run list's first page again and folds it in: the newest runs' records (a finished turn's status, a
+     * run started since) with the order the list came in read as [loadFromRecord] reads it. The chat's own status and
+     * follow are left as they are; this serves the pairing of record turns with runs (see [Entry.recordNeedsRuns]).
+     */
+    private suspend fun refreshNewestRuns(e: Entry) {
+        val api = session.current.api
+        val agentId = e.agentId
+        val first = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = FIRST_RUN_PAGE) }.getOrElse { t -> if (t is CancellationException) throw t; return }
+        val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+        val (knownRuns, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
+        val newest = newestRuns(api, agentId, first, latestId, knownRuns, knownComplete)
+        // A page that reaches none of the runs in hand has runs between it and them — a burst of injected turns
+        // longer than a page — which are read too, a few pages at most, so the list has no hole to pair turns across.
+        var page = newest.page
+        val knownIds = knownRuns.mapTo(HashSet()) { it.id }
+        var pages = 0
+        while (knownIds.isNotEmpty() && page.items.isNotEmpty() && page.items.none { it.id in knownIds } && !page.nextCursor.isNullOrBlank() && pages < MAX_RUN_PAGES) {
+            val more = runCatching { net(agentId, "runs"); api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = page.nextCursor) }.getOrElse { t -> if (t is CancellationException) throw t; null } ?: break
+            if (more.items.isEmpty()) break
+            val have = page.items.mapTo(HashSet()) { it.id }
+            page = ListRunsResponseDto(items = page.items + more.items.filter { it.id !in have }, nextCursor = more.nextCursor)
+            pages++
+        }
+        e.publish(
+            mutate = {
+                mergeNewestPage(page, endKnown = newest.endKnown)
+                runOrder = if (newest.ascending) RunOrder.OLDEST_FIRST else RunOrder.NEWEST_FIRST
+                latestFetchedById = newest.latestFetched
+                pruneLocal()
+            },
+        )
+        if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
     }
 
     /** Widens the record's window by [WINDOW_RUNS] older turns (see [loadOlderNow]). */
@@ -1798,6 +1876,9 @@ class ConversationRepository(
         })
         prefetchOlderRecord(e, built)
         persistRecord(e, built, window, backend, tokens)
+        // The run list is read on to cover the widened window before the replays are asked for: a turn without
+        // its run has no footer and no reply from the run's log (see [Entry.recordNeedsRuns]).
+        if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRunsNow(e, e.agentId, pages = MAX_RUN_PAGES)
         loadTraces(e, e.agentId, e.shownRuns())
     }
 
@@ -1972,7 +2053,8 @@ class ConversationRepository(
         val tokens = cacheTokens()
         var fetched = 0
         for (i in 0 until pages) {
-            val cursor = synchronized(e) { e.olderRunsCursor.takeUnless { e.runsComplete } } ?: break
+            // In Extended mode the pages serve the record's window: enough of them to cover it, no more.
+            val cursor = synchronized(e) { e.olderRunsCursor.takeUnless { e.runsComplete || (e.recordWindow != null && !e.recordNeedsRuns()) } } ?: break
             val page = runCatching { net(agentId, "runs"); backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
                 if (t is CancellationException) throw t
                 break

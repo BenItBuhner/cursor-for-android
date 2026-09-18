@@ -225,6 +225,106 @@ class RecordCoordinatorTest {
         assertThat(rows.map { it.key }).containsNoDuplicates()
     }
 
+    /**
+     * Bennett's v0.3.35 chat (internal/reference/coordinator-notified-but-no-message.png): the record carries the
+     * coordinator's narration of every turn — "Bennett is told what comes next" — but not its `SendMessage`, which
+     * only the run's log has; and between two of his messages the Project injects dozens of turns (a subscribed pull
+     * request's change, a subagent's report), each a run of its own. The run list's first page reaches twenty runs;
+     * a user's turn behind more injected turns than that had no run paired, so its log was never replayed and its
+     * reply never shown — the note that he was told stood alone. The run list is paged until the window's turns
+     * have their runs, and every reply the logs still have is on screen, each turn with its footer.
+     */
+    @Test
+    fun `a user's turn behind more injected turns than the run list's first page still gets its reply from the run's log`() = runBlocking<Unit> {
+        val wall = CoordinatorFixtures.json("event_wall.json").getValue("turns").jsonArray.map { it.jsonObject.getValue("text").jsonPrimitive.content }
+        val userTurns = listOf(
+            "So where we at rn" to "The phones pass is at shot 12 and the realism coordinator is re-rendering the hands; next results in an hour.",
+            "All right, the limit is now reset. You can continue." to "Resumed all six paused workers where they stopped; the week-1 posting batches are next.",
+            "Please keep on pushing on all fronts." to "Pushing on every front: three new workers on the drop-shipping strategies, the rest continue.",
+            "Fable 5.1 temporarily hit limits, but it is back so you can keep on working now. Thank you." to "All six paused workers are resumed where they stopped; next results due: the week-1 posting batches for the three winners and the ten pitch packages.",
+        )
+        val injectedPerGap = 30
+        // The record: each of the user's turns as narration alone (the SendMessage lives in the run's log, not here),
+        // then the injected turns, each answered with a remark.
+        val record = ArrayList<JsonObject>()
+        val runIds = ArrayList<String>()
+        var t = now - 6 * 3_600_000L
+        userTurns.forEachIndexed { u, (prompt, _) ->
+            record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", prompt); put("agentMode", "AGENT_MODE_PROJECT"); put("createdAt", t.toString()) }) }
+            record += buildJsonObject { put("text", "All paused workers are resumed on Fable, Bennett is told what comes next, and the blocker entry is cleared from notes.") }
+            record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
+            runIds += "run-user-$u"
+            t += 60_000L
+            repeat(injectedPerGap) { j ->
+                record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", wall[(u * injectedPerGap + j) % wall.size]); put("agentMode", "AGENT_MODE_PROJECT"); put("createdAt", t.toString()) }) }
+                record += buildJsonObject { put("text", "Noted; nothing for Bennett in this one.") }
+                record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
+                runIds += "run-inj-$u-$j"
+                t += 60_000L
+            }
+        }
+        served = record
+        // One run per turn, finished, a minute apart, in the same order as the record's turns.
+        var at = now - 6 * 3_600_000L
+        val prompts = runIds.map { id -> Triple(id, if (id.startsWith("run-user")) userTurns[id.removePrefix("run-user-").toInt()].first else "<system_notification>…</system_notification>", "") }
+        api.addFinishedAgent(agentId, "Revenue Scaling Pipeline", *prompts.toTypedArray(), firstRunAt = Instant.ofEpochMilli(at).toString())
+        // addFinishedAgent spaces the runs an hour apart; the order is what pairs them, and it is the record's.
+        agents.refresh()
+        // The logs: the user's runs still have the coordinator's SendMessage whole; the injected turns' logs are gone.
+        userTurns.forEachIndexed { u, (_, reply) ->
+            val runId = "run-user-$u"
+            streamer.emit(runId, RunStreamEvent.Status(runId, RunStatus.RUNNING))
+            streamer.emit(runId, RunStreamEvent.Assistant("Resuming the workers."))
+            streamer.emit(runId, RunStreamEvent.ToolCall(SseToolCallDto("send-$u", "sendMessage", ToolCall.STATUS_COMPLETED, buildJsonObject { put("text", buildJsonObject { put("content", reply) }) }, buildJsonObject { put("success", buildJsonObject { put("messageId", "msg-$u") }) })))
+            streamer.emit(runId, RunStreamEvent.Assistant("All paused workers are resumed on Fable, Bennett is told what comes next, and the blocker entry is cleared from notes."))
+            streamer.emit(runId, RunStreamEvent.Result(runId, RunStatus.FINISHED, "", 253_000, null))
+            streamer.emit(runId, RunStreamEvent.Done)
+        }
+        // The injected turns' logs, of the same day, are there too: the remark and the end — nothing to the user.
+        runIds.filter { it.startsWith("run-inj") }.forEach { id ->
+            streamer.emit(id, RunStreamEvent.Status(id, RunStatus.RUNNING))
+            streamer.emit(id, RunStreamEvent.Assistant("Noted; nothing for Bennett in this one."))
+            streamer.emit(id, RunStreamEvent.Result(id, RunStatus.FINISHED, "", 9_000, null))
+            streamer.emit(id, RunStreamEvent.Done)
+        }
+
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.isNotEmpty() }
+        // The reader scrolls up to the first message: the window widens over every turn.
+        var pages = 0
+        while (conversations.state(agentId).value.hasOlder && pages++ < 40) {
+            awaitUntil { !conversations.state(agentId).value.isLoadingOlder }
+            val before = conversations.state(agentId).value.items.size
+            conversations.loadOlder(agentId)
+            awaitUntil(10_000) { val s = conversations.state(agentId).value; (s.items.size > before && !s.isLoadingOlder) || !s.hasOlder }
+        }
+        awaitUntil { conversations.state(agentId).value.items.count { it is com.cursorforandroid.domain.UserMessage } >= userTurns.size }
+        // Every reply, from the logs, in order — the turns behind more than a page of injected runs included.
+        awaitUntil(30_000) { conversations.state(agentId).value.messages().size >= userTurns.size }
+        val state = conversations.state(agentId).value
+        assertThat(state.messages()).containsExactlyElementsIn(userTurns.map { it.second }).inOrder()
+        // The run list was paged until it covered the window: every turn paired with its run, a footer per turn.
+        val diagnostics = conversations.loadDiagnostics(agentId)!!
+        assertThat(diagnostics.runsLoaded).isEqualTo(runIds.size)
+        assertThat(diagnostics.runsComplete).isTrue()
+        val footers = state.items.filterIsInstance<com.cursorforandroid.domain.RunFooter>()
+        assertThat(footers.size).isEqualTo(runIds.size)
+        assertThat(footers.all { it.status == RunStatus.FINISHED }).isTrue()
+        // On screen as messages, not as notes: the narration stays a note in the stretch beside them.
+        val rows = state.rows()
+        assertThat(rows.filterIsInstance<TranscriptRow.Message>().map { (it.call.payload as ToolPayload.CoordinatorMessage).message }).containsExactlyElementsIn(userTurns.map { it.second }).inOrder()
+        // The diagnostics say, turn by turn, where the message stands: the record has none, the log's copy is what is shown.
+        val userLines = diagnostics.runs.filter { it.idTail.contains("user-") }
+        assertThat(userLines).hasSize(userTurns.size)
+        userLines.forEach { line ->
+            assertThat(line.trace).isEqualTo("shown(log)")
+            assertThat(line.message).isEqualTo("record=none rendered=yes via=log")
+        }
+        val injectedLine = diagnostics.runs.first { it.idTail.contains("nj-") }
+        assertThat(injectedLine.message).isEqualTo("record=none rendered=none via=log")
+    }
+
     @Test
     fun `a turn the record shows without the coordinator's update is completed from the run's own log while it lasts`() = runBlocking<Unit> {
         // The record's copy of the update in a shape nothing reads: a call without an id of any kind.
