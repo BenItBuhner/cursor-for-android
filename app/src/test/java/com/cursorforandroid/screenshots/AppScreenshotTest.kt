@@ -289,6 +289,13 @@ class AppScreenshotTest {
         waitForText("Follow up")
         val cesiumId = graph.agents.state.value.agents.first { it.name == "Cesium Revenue Strategy" }.id
         compose.waitUntil(90_000) { graph.conversations.state(cesiumId).value.items.any { it is RunFooter } }
+        // The screen follows the repository a beat later, through the view model on the main dispatcher; wait for
+        // the finished run to have reached it — its footer on, the working row gone — so the capture is the settled
+        // chat and not a frame of the one still streaming.
+        compose.waitUntil(30_000) {
+            compose.onAllNodes(hasText("Worked", substring = true)).fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodes(hasText("Working…")).fetchSemanticsNodes().isEmpty()
+        }
         compose.waitForIdle()
         capture("06_conversation")
 
@@ -365,6 +372,10 @@ class AppScreenshotTest {
             val items = graph.conversations.state(limbsId).value.items
             items.count { it is RunFooter } == 4 && items.count { it is ActivityGroup } == 4
         }
+        // The repository has the turns a beat before the transcript shows them: the rows arrive through the view
+        // model on the main dispatcher, which `waitForIdle` does not wait on. Wait for the live run's reply, the
+        // newest row and so always composed in the bottom-anchored list, before asking the list to scroll.
+        waitForText("Switched the arm and leg meshes", 30_000)
         compose.waitForIdle()
         // The turn Cursor injected is inside the stretch of the run it started — "Worked 38m · 1 event · …" — as its
         // line: opened, the goal's row reads "Goal continued" with the objective beside it, and a tap on it opens the
