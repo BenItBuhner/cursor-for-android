@@ -74,11 +74,11 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.SpinnerRing
-import kotlinx.coroutines.flow.distinctUntilChanged
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.settings.ExtendedModeCopy
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 enum class SidebarDestination { NewChat, Settings }
 
