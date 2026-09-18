@@ -17,6 +17,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
@@ -102,9 +103,12 @@ class ProjectApiTest {
 
     @Test
     fun `the lineage of a root folds both reads into who belongs to it`() = runBlocking<Unit> {
-        server.enqueue(session("s"))
-        server.enqueue(MockResponse().setBody("""{"memberships":[{"workerBcId":"bc-w","managerBcId":"bc-m","spawnKind":"MANAGER_SPAWN_KIND_CREATED"}]}"""))
-        server.enqueue(MockResponse().setBody("""{"composers":[{"bcId":"bc-s","sideChatInfo":{"parentBcId":"bc-m"}},{"bcId":"bc-w","managerAgentId":"bc-m"}]}"""))
+        // The two reads go out together (`lineage` asks for the workers and the children at once), so the fake
+        // answers each by the method asked for rather than in the order the requests happen to arrive.
+        server.dispatcher = byMethod(
+            "ListWorkersForManager" to MockResponse().setBody("""{"memberships":[{"workerBcId":"bc-w","managerBcId":"bc-m","spawnKind":"MANAGER_SPAWN_KIND_CREATED"}]}"""),
+            "ListBackgroundComposerChildren" to MockResponse().setBody("""{"composers":[{"bcId":"bc-s","sideChatInfo":{"parentBcId":"bc-m"}},{"bcId":"bc-w","managerAgentId":"bc-m"}]}"""),
+        )
 
         val lineage = api.lineage("bc-m")
 
@@ -397,6 +401,21 @@ class ProjectApiTest {
     }
 
     private fun session(token: String) = MockResponse().setBody("""{"accessToken":"$token","refreshToken":"rt"}""")
+
+    /**
+     * A fake api2 that answers by what is asked — the token exchange, and each `BackgroundComposerService` method by
+     * name — whatever order the requests arrive in; anything else is a 404. For calls the API makes concurrently,
+     * which a queue of responses in a fixed order would serve swapped.
+     */
+    private fun byMethod(vararg responses: Pair<String, MockResponse>): Dispatcher {
+        val byPath = responses.associate { (method, response) -> "/${BackgroundComposerApi.SERVICE}/$method" to response }
+        return object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/auth/exchange_user_api_key" -> session("s")
+                else -> byPath[request.path]?.clone() ?: MockResponse().setResponseCode(404)
+            }
+        }
+    }
 
     private fun RecordedRequest.json() = Json.parseToJsonElement(body.readUtf8()).jsonObject
 }
