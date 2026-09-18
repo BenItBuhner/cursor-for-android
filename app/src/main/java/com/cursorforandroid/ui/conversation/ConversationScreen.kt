@@ -75,7 +75,7 @@ import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.cursorSurface
-import com.cursorforandroid.ui.components.keyboardInsetPadding
+import com.cursorforandroid.ui.components.composerDockPadding
 import com.cursorforandroid.ui.components.AttachmentCounts
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.rememberFilePicker
@@ -497,11 +497,12 @@ fun ConversationScreen(
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
         val willQueue = isActive || queue.isNotEmpty() || (accountQueue && controls.queue.isNotEmpty())
-        // The composer rests 10dp above the keyboard's edge while there is one, and above the navigation bar otherwise
-        // (keyboardInsetPadding); the transcript above takes whatever height is left and keeps its newest turn on the
-        // composer through the change, being a bottom-anchored list.
+        // The composer and the strips over it dock at the bottom (composerDockPadding): the gutter at each side, and
+        // under the box a gap a shade wider than the gutter, above the keyboard's edge while there is one and above
+        // the navigation bar — or the window's edge — otherwise. The transcript above takes whatever height is left
+        // and keeps its newest turn on the composer through the change, being a bottom-anchored list.
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 10.dp).keyboardInsetPadding(),
+            Modifier.fillMaxWidth().composerDockPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
@@ -568,7 +569,7 @@ fun ConversationScreen(
                 modePill = picker.modePill,
                 onModePill = viewModel::setModePill,
                 extendedModes = capabilities.agentModes && !isDemo,
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).testTag("follow-up-composer"),
             )
         }
     }
