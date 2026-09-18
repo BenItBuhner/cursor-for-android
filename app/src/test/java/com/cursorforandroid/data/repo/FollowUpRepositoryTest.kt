@@ -359,6 +359,31 @@ class FollowUpRepositoryTest {
     }
 
     @Test
+    fun `a message the composer's own send had refused arrives waiting, and its first attempt from here is a pause away`() = runBlocking<Unit> {
+        api.addIdleAgent("bc-1", "Agent", "run-0")
+        agents.refresh()
+        api.busyCreateRun = true
+        val followUps = repository(retryBaseMs = 300)
+
+        val item = followUps.enqueue("bc-1", "Go on", refusedAsBusy = true)
+
+        // Held from the first frame — the card reads "waiting", not "sending" — and nothing is asked at once.
+        assertThat(item.isHeld).isTrue()
+        assertThat(item.busyRefusals).isEqualTo(1)
+        delay(150)
+        assertThat(api.runRequests).isEmpty()
+        assertThat(followUps.state("bc-1").value.queue.single().isHeld).isTrue()
+        // The pause over, the server is asked; refused again, the message keeps waiting and the count grows.
+        awaitUntil { api.runRequests.size == 1 }
+        awaitUntil { followUps.state("bc-1").value.queue.single().busyRefusals == 2 }
+        assertThat(followUps.state("bc-1").value.queue.single().heldSinceMillis).isEqualTo(item.heldSinceMillis)
+        // The turn ends: the message goes out.
+        api.busyCreateRun = false
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        assertThat(followUps.sendDiagnostics("bc-1")!!.attempts.map { it.outcome }).containsExactly("busy", "accepted").inOrder()
+    }
+
+    @Test
     fun `a busy refusal in Extended mode hands the message to the account's queue, once`() = runBlocking<Unit> {
         api.busyCreateRun = true
         val handed = mutableListOf<String>()

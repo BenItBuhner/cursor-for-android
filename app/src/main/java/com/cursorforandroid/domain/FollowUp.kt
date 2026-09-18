@@ -80,6 +80,8 @@ data class QueuedFollowUp(
     val busyRefusals: Int = 0,
     /** The server's own words for the refusal, kept from the third refusal in a row on, for the card to show. */
     val serverReason: String? = null,
+    /** The earliest the next attempt may go out — the pause after a refusal (see [busyRefusals]); null when it may go now. */
+    val notBeforeMillis: Long? = null,
 ) {
     /** The text a card shows: the message itself, or what the request will say for an attachment-only follow-up. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(images.size, files.size) }

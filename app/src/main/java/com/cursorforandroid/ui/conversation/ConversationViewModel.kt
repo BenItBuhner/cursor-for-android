@@ -598,7 +598,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 // have put it had it known: the account's queue in Extended mode, which sends it when the agent is
                 // free; this device's otherwise, which waits with a growing pause and says so on the card.
                 if (it.toCursorError()?.code == "agent_busy") {
-                    if (capabilities.value.accountQueue && !graph.session.isDemo) queueOnAccount(text, images, emptyList(), options) else enqueue(text, images, emptyList(), options)
+                    if (capabilities.value.accountQueue && !graph.session.isDemo) queueOnAccount(text, images, emptyList(), options) else enqueue(text, images, emptyList(), options, refusedAsBusy = true)
                 } else {
                     restoreDraft(text, images, emptyList(), it)
                 }
@@ -607,7 +607,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    private fun enqueue(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
+    private fun enqueue(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState, refusedAsBusy: Boolean = false) {
         graph.followUps.enqueue(
             agentId,
             text,
@@ -617,6 +617,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             modelParams = options.override?.params.orEmpty(),
             modelDisplayName = options.override?.label,
             files = attached.map { DraftFile(it.id, it.file) },
+            refusedAsBusy = refusedAsBusy,
         )
         draft.value = ""
         attachments.value = emptyList()

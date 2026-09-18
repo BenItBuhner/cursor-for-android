@@ -2,12 +2,17 @@ package com.cursorforandroid.ui.conversation
 
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
 import org.junit.Rule
 import org.junit.Test
@@ -70,6 +75,50 @@ class QueuedFollowUpsTest {
         )
         compose.waitForIdle()
         compose.onNodeWithText(QueuedFollowUp.MAY_HAVE_BEEN_SENT).assertExists()
+    }
+
+    @Test
+    fun `a held row reads as waiting with the time waited, steadily, whether or not an attempt is in flight`() {
+        AppClock.nowMillis = { 100_000L + 83_000L }
+        try {
+            show(
+                QueuedFollowUp(
+                    id = "q1",
+                    text = "Follow up text",
+                    queuedAtMillis = 0L,
+                    heldSinceMillis = 100_000L,
+                    busyRefusals = 2,
+                    isSending = true,
+                ),
+            )
+            compose.waitForIdle()
+            // One steady line — no ring, no "sending" — even though this frame has an attempt out.
+            compose.onNodeWithTag("queued-held").assertExists()
+            compose.onNodeWithText(QueuedFollowUp.WAITING_FOR_AGENT, substring = true).assertExists()
+            compose.onNodeWithText("1m 23s", substring = true).assertExists()
+            compose.onAllNodesWithContentDescription("Sending").assertCountEquals(0)
+            // Not yet the server's words: two refusals so far.
+            compose.onAllNodesWithTag("queued-held-reason").assertCountEquals(0)
+        } finally {
+            AppClock.nowMillis = System::currentTimeMillis
+        }
+    }
+
+    @Test
+    fun `from the third refusal the card carries the server's own reason`() {
+        show(
+            QueuedFollowUp(
+                id = "q1",
+                text = "Follow up text",
+                queuedAtMillis = 0L,
+                heldSinceMillis = 0L,
+                busyRefusals = 3,
+                serverReason = "Agent is busy.",
+            ),
+        )
+        compose.waitForIdle()
+        compose.onNodeWithTag("queued-held-reason").assertExists()
+        compose.onNodeWithText("Cursor says: Agent is busy.").assertExists()
     }
 
     private fun Rect.intersects(other: Rect): Boolean =
