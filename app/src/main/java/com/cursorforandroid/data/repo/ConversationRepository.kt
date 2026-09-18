@@ -641,10 +641,18 @@ class ConversationRepository(
                 }
             }
             // The footer: the run's when known and over, else the timing's for a turn that is over. Its id is the
-            // turn's whichever gives it, so the row keeps its place when the run list lands.
+            // turn's whichever gives it, so the row keeps its place when the run list lands. A run the server says
+            // failed takes its reason from the record's own error when the run's record carries none; a run that
+            // logged an error and finished is not a failure for it (see RecordTurn.errorMessage).
             when {
                 inputs.liveNewest -> Unit
-                run != null -> if (inputs.runStatus?.isActive == false) items += TimelineBuilder.footer(run).copy(id = "rec-footer-${turn.stepIndex}")
+                run != null -> {
+                    val status = inputs.runStatus
+                    if (status != null && !status.isActive) {
+                        val footer = TimelineBuilder.footer(run).copy(id = "rec-footer-${turn.stepIndex}", status = status)
+                        items += if (footer.isFailure && footer.reason == null) footer.copy(reason = turn.errorMessage) else footer
+                    }
+                }
                 timing?.durationMs != null ->
                     items += RunFooter("rec-footer-${turn.stepIndex}", "rec-${turn.stepIndex}", RunStatus.FINISHED, timing.durationMs, emptyList())
             }
@@ -880,7 +888,7 @@ class ConversationRepository(
                     total = w.total,
                     firstStep = kept.firstOrNull()?.stepIndex ?: w.firstStep,
                     turnCount = w.state?.turnCount ?: 0,
-                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode) },
+                    turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage) },
                     timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
                 )
             },
@@ -941,6 +949,26 @@ class ConversationRepository(
 
     /** True while at least one conversation screen shows this agent. */
     fun isAttached(agentId: String): Boolean = synchronized(entries) { (entries[agentId]?.attached ?: 0) > 0 }
+
+    /**
+     * Why the chat, or its newest run, reads as failed — for the diagnostics' `status:` line. The newest run's
+     * footer among the items shown, when the server's status for that run is a failure: the run, the reason as
+     * shown, where the word came from (the stream's own `result`, the run's record, the account's record for the
+     * reason), and whether the conversation has moved past it (the chat's status is then not the failure's). Null
+     * when the newest run did not fail. Under the entry's monitor.
+     */
+    private fun Entry.failureLine(latest: RunDto?, window: RecordWindow?): TranscriptLoadDiagnostics.FailureLine? {
+        val items = state.value.items
+        val footer = items.lastOrNull { it is RunFooter && it.isFailure } as? RunFooter ?: return null
+        // The failure is the newest run's, or an older run's the conversation moved past.
+        val newest = latest == null || footer.runId == latest.id
+        val snapshot = hub.current(agentId, footer.runId)
+        val turn = window?.turns?.lastOrNull { turn -> footer.id == "rec-footer-${turn.stepIndex}" }
+        val reasonFromRecord = footer.reason != null && footer.reason == turn?.errorMessage
+        val source = (if (snapshot?.finished == true && snapshot.streamed) "stream" else "run-record") + (if (reasonFromRecord) "+account-record" else "")
+        val current = newest && state.value.runStatus?.isActive != true && items.lastOrNull() === footer
+        return TranscriptLoadDiagnostics.FailureLine(ProjectDiagnostics.tail(footer.runId), source, footer.reason, current)
+    }
 
     /** The load's account of [agentId] for the diagnostics export (see [TranscriptLoadDiagnostics]); null for a chat never opened. */
     fun loadDiagnostics(agentId: String): TranscriptLoadDiagnostics? {
@@ -1027,6 +1055,7 @@ class ConversationRepository(
                         rowRunning = row?.isRunning == true,
                         accountRunning = agents.runningScan.value.accountIds?.contains(agentId) == true,
                         rowNewerThanRecordMs = if (row != null && latest != null) row.updatedAtMillis - parseIsoMillis(latest.updatedAt) else null,
+                        failure = e.failureLine(latest, window),
                     )
                 },
                 traceQueue = e.traceQueue.size,
@@ -2220,7 +2249,7 @@ class ConversationRepository(
             val older = saved.turns.dropLast(newest.size)
             var restored: RecordWindow? = null
             fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
-                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList()) }
+                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList(), errorMessage = turn.errorMessage) }
                 val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L)
                 var project = false
                 e.publish(

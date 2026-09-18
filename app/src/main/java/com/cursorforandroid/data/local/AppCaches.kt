@@ -196,7 +196,7 @@ data class CachedRecordWindow(
 )
 
 @Serializable
-data class CachedRecordTurn(val stepIndex: Int, val stepCount: Int, val prompt: String? = null, val projectMode: Boolean = false)
+data class CachedRecordTurn(val stepIndex: Int, val stepCount: Int, val prompt: String? = null, val projectMode: Boolean = false, val errorMessage: String? = null)
 
 @Serializable
 data class CachedTurnTiming(val durationMs: Long? = null, val timestampMs: Long? = null)

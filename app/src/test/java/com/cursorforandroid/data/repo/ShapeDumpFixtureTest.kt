@@ -3,7 +3,6 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.CoordinatorTranscript
 import com.cursorforandroid.domain.NoticeCard
-import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptDiagnostics
@@ -104,20 +103,27 @@ class ShapeDumpFixtureTest {
     }
 
     @Test
-    fun `a turn the record ends on an error carries the server's reason as its notice, a silent turn carries nothing`() {
+    fun `a turn the record ends on an error keeps the server's reason for the run's footer, and is no failure on its own`() {
+        // The record's error step is the server's account of what went wrong, not of how the run ended: the turn's
+        // body says nothing of failure, and the message is kept for the footer of a run the server says failed.
         val failed = HeadlessTranscript.body(turns[3], "rec-4040")
-        val notice = failed.filterIsInstance<NoticeCard>().single()
-        assertThat(notice.title).isEqualTo("Run failed")
-        assertThat(notice.subtitle).isEqualTo(error)
-        assertThat(notice.tone).isEqualTo(NoticeTone.Error)
+        assertThat(failed.filterIsInstance<NoticeCard>()).isEmpty()
+        assertThat(failed.filterIsInstance<com.cursorforandroid.domain.RunFooter>()).isEmpty()
+        assertThat(HeadlessTranscript.errorMessage(turns[3])).isEqualTo(error)
+        assertThat(HeadlessTranscript.errorMessage(turns[1])).isNull()
         val silent = HeadlessTranscript.body(turns[1], "rec-4029")
         assertThat(silent.filterIsInstance<NoticeCard>()).isEmpty()
         assertThat(silent.map { it::class.simpleName }).containsExactly("AssistantMessage")
-        // The run's own record still decides the footer: a failed run's trace closes on its status too.
+        // The run's own record decides: a failed run's trace closes on its status, the record's error as the reason.
         val run = com.cursorforandroid.data.api.dto.RunDto("run-4040", "bc-revenue", status = "ERROR", createdAt = "2026-09-16T11:00:00Z", updatedAt = "2026-09-16T11:02:00Z", durationMs = 120_000)
         val traced = HeadlessTranscript.trace(turns[3], run)
-        assertThat(traced.filterIsInstance<NoticeCard>().single().subtitle).isEqualTo(error)
-        assertThat(traced.filterIsInstance<com.cursorforandroid.domain.RunFooter>().single().status).isEqualTo(RunStatus.ERROR)
+        assertThat(traced.filterIsInstance<NoticeCard>()).isEmpty()
+        val footer = traced.filterIsInstance<com.cursorforandroid.domain.RunFooter>().single()
+        assertThat(footer.status).isEqualTo(RunStatus.ERROR)
+        assertThat(footer.reason).isEqualTo(error)
+        // The same turn under a run the server says finished: the error was on the way, not the end.
+        val finished = HeadlessTranscript.trace(turns[3], run.copy(status = "FINISHED"))
+        assertThat(finished.filterIsInstance<com.cursorforandroid.domain.RunFooter>().single().let { it.status to it.reason }).isEqualTo(RunStatus.FINISHED to null)
     }
 
     @Test

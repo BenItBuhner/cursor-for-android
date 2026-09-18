@@ -601,22 +601,56 @@ class TimelineBuilderTest {
     }
 
     @Test
-    fun `a run that fails without a final text is explained by the stream's last error`() {
+    fun `a run that fails without a final text is explained by the stream's last error, on its footer and not as a banner`() {
         val live = TimelineBuilder.LiveRun("run-1", timed = false)
         live.apply(RunStreamEvent.Assistant("Starting on it."))
         live.apply(RunStreamEvent.Error("upstream_error", "Worker disconnected", resumeFrom = "3-0"))
         // The record has no reason of its own (`result` is null for failed runs).
         live.apply(RunStreamEvent.Result("run-1", RunStatus.ERROR, null, 9_000, null))
-        val notice = live.snapshot().filterIsInstance<NoticeCard>().single()
-        assertThat(notice.title).isEqualTo("Run failed")
-        assertThat(notice.subtitle).isEqualTo("Worker disconnected")
-        assertThat((live.snapshot().last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
+        assertThat(live.snapshot().filterIsInstance<NoticeCard>()).isEmpty()
+        val footer = live.snapshot().last() as RunFooter
+        assertThat(footer.status).isEqualTo(RunStatus.ERROR)
+        assertThat(footer.isFailure).isTrue()
+        assertThat(footer.reason).isEqualTo("Worker disconnected")
 
         // An expired log says nothing about why the run failed.
         val expired = TimelineBuilder.LiveRun("run-2", timed = false)
         expired.apply(RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
         expired.apply(RunStreamEvent.Result("run-2", RunStatus.ERROR, null, null, null))
-        assertThat(expired.snapshot().filterIsInstance<NoticeCard>().single().subtitle).isNull()
+        assertThat((expired.snapshot().single() as RunFooter).reason).isNull()
+    }
+
+    /**
+     * An error the stream reported mid-turn — the infrastructure's "Tool result not found" that cut a coordinator's
+     * tool call short — and then the run going on to finish: the error is not the run's end, and nothing says failed.
+     * The same error before a run the server ends as failed is that failure's reason.
+     */
+    @Test
+    fun `an error the run went on from is not a failure, and one it ended on is the failure's reason`() {
+        val continued = TimelineBuilder.LiveRun("run-1", timed = false)
+        continued.apply(RunStreamEvent.Assistant("Resuming the workers."))
+        continued.apply(tool("c1", "sendToAgent", "running", "agentId" to "bc-w1", "message" to "Resume."))
+        continued.apply(RunStreamEvent.Error("upstream_error", "Tool result not found", resumeFrom = "3-0"))
+        // The next connection carries the turn on: the call's outcome, the coordinator's word, the end.
+        continued.apply(tool("c1", "sendToAgent", "completed", "agentId" to "bc-w1", "message" to "Resume."))
+        continued.apply(tool("c2", "sendMessage", "completed", "text" to "All six workers are resumed."))
+        continued.apply(RunStreamEvent.Result("run-1", RunStatus.FINISHED, "", 253_000, null))
+        val items = continued.snapshot()
+        assertThat(items.filterIsInstance<NoticeCard>()).isEmpty()
+        val footer = items.last() as RunFooter
+        assertThat(footer.status).isEqualTo(RunStatus.FINISHED)
+        assertThat(footer.isFailure).isFalse()
+        assertThat(footer.reason).isNull()
+        assertThat(continued.group().calls.map { it.status }).containsExactly("completed", "completed").inOrder()
+
+        val ended = TimelineBuilder.LiveRun("run-2", timed = false)
+        ended.apply(tool("c1", "sendToAgent", "running", "agentId" to "bc-w1", "message" to "Resume."))
+        ended.apply(RunStreamEvent.Error("upstream_error", "Tool result not found", resumeFrom = "1-0"))
+        ended.apply(RunStreamEvent.Result("run-2", RunStatus.ERROR, null, 41_000, null, fromRecord = true))
+        val failed = ended.snapshot().last() as RunFooter
+        assertThat(failed.isFailure).isTrue()
+        assertThat(failed.reason).isEqualTo("Tool result not found")
+        assertThat(ended.group().calls.single().status).isEqualTo(ToolCall.STATUS_INTERRUPTED)
     }
 
     @Test
@@ -660,15 +694,17 @@ class TimelineBuilderTest {
     }
 
     @Test
-    fun `a failed run still gets its final reply, ahead of the notice`() {
+    fun `a failed run still gets its final reply, which is also its footer's reason`() {
         val live = TimelineBuilder.LiveRun("run-1", timed = false)
         live.apply(RunStreamEvent.Assistant("Trying the build."))
         live.apply(tool("c1", "run_terminal_cmd", "completed", "command" to "./gradlew build"))
         live.apply(RunStreamEvent.Result("run-1", RunStatus.ERROR, "The build failed on a missing dependency.", 9_000, null))
         val items = live.snapshot()
-        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "NoticeCard", "RunFooter").inOrder()
+        assertThat(items.map { it::class.simpleName }).containsExactly("AssistantMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat((items[2] as AssistantMessage).markdown).isEqualTo("The build failed on a missing dependency.")
-        assertThat((items.last() as RunFooter).status).isEqualTo(RunStatus.ERROR)
+        val footer = items.last() as RunFooter
+        assertThat(footer.status).isEqualTo(RunStatus.ERROR)
+        assertThat(footer.reason).isEqualTo("The build failed on a missing dependency.")
     }
 
     /**

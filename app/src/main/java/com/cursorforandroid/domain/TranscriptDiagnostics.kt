@@ -65,9 +65,30 @@ data class TranscriptLoadDiagnostics(
     /**
      * [shown] is the status the screen has; [latestRun] the latest run record's; [streaming] whether a stream is open
      * on it; [rowRunning] the row's word; [accountRunning] the account list's running set's (Extended mode);
-     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older).
+     * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older). [failure] is
+     * why the chat reads as failed when it does — or why its newest run does — see [FailureLine].
      */
-    data class StatusLine(val shown: String, val latestRun: String, val streaming: Boolean, val rowRunning: Boolean, val accountRunning: Boolean, val rowNewerThanRecordMs: Long?)
+    data class StatusLine(
+        val shown: String,
+        val latestRun: String,
+        val streaming: Boolean,
+        val rowRunning: Boolean,
+        val accountRunning: Boolean,
+        val rowNewerThanRecordMs: Long?,
+        val failure: FailureLine? = null,
+    )
+
+    /**
+     * The failure the chat shows, and where the word came from: [runIdTail] the run the server says failed; [source]
+     * which of the server's words said so — `stream` (the run's own `result` event), `run-record` (`GET …/runs/{id}`),
+     * `account-record` (the account's transcript, `FetchBackgroundComposer`, for the reason) — with `+account-record`
+     * when the reason came from the account's transcript while the status came from the run's record; [reason] the
+     * server's reason as shown (redacted in the report); [current] whether the conversation has moved past it
+     * (false: demoted to a line inside its stretch; true: the row of its own and the chat's status).
+     */
+    data class FailureLine(val runIdTail: String, val source: String, val reason: String?, val current: Boolean) {
+        val text: String get() = "run=$runIdTail source=$source current=$current reason=${reason?.let { "\"$it\"" } ?: "-"}"
+    }
 
     /**
      * One run of the window (a record turn with the run it pairs with, in Extended mode). [message] is the
@@ -188,7 +209,10 @@ object TranscriptDiagnostics {
             appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
         }
         load.status?.let { st ->
-            appendLine("status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}")
+            appendLine(
+                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
+                    (st.failure?.let { f -> " failed: ${f.copy(reason = f.reason?.let(::redact)).text}" } ?: ""),
+            )
         }
         val shown = load.runs.count { it.trace.startsWith("shown") }
         appendLine(
@@ -240,7 +264,7 @@ object TranscriptDiagnostics {
             is AssistantMessage -> appendLine("  assistant chars=${item.markdown.length}${if (item.isStreaming) " streaming" else ""}")
             is SummaryRow -> appendLine("  summary")
             is NoticeCard -> appendLine("  notice tone=${item.tone.name}")
-            is RunFooter -> appendLine("  footer status=${item.status.name} duration=${item.durationMs ?: "-"} branches=${item.branches.size}")
+            is RunFooter -> appendLine("  footer status=${item.status.name} duration=${item.durationMs ?: "-"} branches=${item.branches.size}" + (item.reason?.let { " reasonChars=${it.length}" } ?: ""))
             is SystemNotification -> appendLine(
                 "  notification kind=${item.kind.name} title=\"${item.title}\" tone=${item.tone.name} summaryChars=${item.summary?.length ?: 0} bodyChars=${item.body?.length ?: 0}" +
                     (item.agentId?.let { " agent=${ProjectDiagnostics.tail(it)}" } ?: "") + (item.narration?.let { " narrationChars=${it.length}" } ?: ""),

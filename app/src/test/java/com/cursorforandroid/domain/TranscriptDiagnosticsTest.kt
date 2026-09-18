@@ -92,7 +92,11 @@ class TranscriptDiagnosticsTest {
             liveStream = TranscriptLoadDiagnostics.LiveStreamLine(events = 3, status = "RUNNING", reconnecting = false, expired = false, finished = false, items = 2),
             lastError = null, transcriptError = "Cursor took too long to respond. https://api.cursor.com/v0/agents/bc-1234/conversation", transcriptUnavailable = false,
             source = "record", record = TranscriptLoadDiagnostics.RecordLine(total = 8_320, firstStep = 8_060, turnsLoaded = 10, turnCount = 320, stateRead = true, empty = false, error = null),
-            status = TranscriptLoadDiagnostics.StatusLine(shown = "RUNNING", latestRun = "CANCELLED", streaming = false, rowRunning = false, accountRunning = true, rowNewerThanRecordMs = 600_000L),
+            status = TranscriptLoadDiagnostics.StatusLine(
+                shown = "RUNNING", latestRun = "CANCELLED", streaming = false, rowRunning = false, accountRunning = true, rowNewerThanRecordMs = 600_000L,
+                // Why the newest failed run reads as failed: the run, the server's word it came from, the reason (redacted), and whether the chat moved past it.
+                failure = TranscriptLoadDiagnostics.FailureLine("…run158", "run-record+account-record", "Tool result not found for toolu_01CRGAspS8qhi8Wfr74zYnJA (agent bc-24e35e9f-1a2d-5218-8e2e-7464ea74f671)", current = false),
+            ),
             shapes = listOf(
                 TurnShape(
                     stepIndex = 8_301, prompt = "user", projectMode = true,
@@ -109,7 +113,8 @@ class TranscriptDiagnosticsTest {
         )
         assertThat(report).contains("load: source=record attached=1 paused=false fetched=true fetchedAt=2026-09-14T03:59:58Z messages=319 prompts=160 runs=160 complete=true olderCursor=false order=OLDEST_FIRST latestById=true window=10 turns=[150,160)")
         assertThat(report).contains("record: total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
-        assertThat(report).contains("status: shown=RUNNING latestRun=CANCELLED streaming=false rowRunning=false accountRunning=true rowNewerThanRecordMs=600000")
+        assertThat(report).contains("status: shown=RUNNING latestRun=CANCELLED streaming=false rowRunning=false accountRunning=true rowNewerThanRecordMs=600000 failed: run=…run158 source=run-record+account-record current=false reason=\"Tool result not found for toolu_01CRGAspS8qhi8Wfr74zYnJA (agent bc-…)\"")
+        assertThat(report).doesNotContain("bc-24e35e9f")
         assertThat(report).contains("traces: shown=3 of 5 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")
         assertThat(report).contains("  run …run151 FINISHED trace=expired items=0")
         assertThat(report).contains("  run …run152 FINISHED trace=failed items=0")

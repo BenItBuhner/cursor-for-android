@@ -442,8 +442,16 @@ data class NoticeCard(
      */
     val isLegacyCancelNotice: Boolean get() = title == RUN_CANCELLED && subtitle == null
 
+    /**
+     * The banner builds before 0.3.41 wrote for every failed run, still in the traces they left on disk, its
+     * subtitle the server's reason. The failure is the footer's to say now ([RunFooter.reason]): the notice is not
+     * drawn, and its reason goes to the footer that follows it (see `TranscriptRows`).
+     */
+    val isLegacyFailureNotice: Boolean get() = title == RUN_FAILED
+
     companion object {
         const val RUN_CANCELLED = "Run cancelled"
+        const val RUN_FAILED = "Run failed"
     }
 }
 
@@ -501,6 +509,11 @@ data class SystemNotification(
  * its record says (`updatedAt` of a run that is over), when the footer was built from the record; a footer the
  * stream built carries none. It is what tells a run the user's next message interrupted from one they stopped and
  * came back to (see `TranscriptRows`).
+ *
+ * [reason] is the server's word on why a run failed ([status] `ERROR`): the run's final text, the last error its
+ * stream reported, or the error the account's record ends the turn on. Null for a run that did not fail, and for a
+ * failure the server gave no reason for. The failure is this footer's to say — as a line of its own with the
+ * reason and the time (see `TranscriptRows`), never a banner — and only the server's status makes it one.
  */
 @Serializable
 @SerialName("footer")
@@ -511,7 +524,11 @@ data class RunFooter(
     val durationMs: Long?,
     val branches: List<GitBranch>,
     val endedAtMillis: Long? = null,
-) : TimelineItem
+    val reason: String? = null,
+) : TimelineItem {
+    /** The server's status for the run is a failure. */
+    val isFailure: Boolean get() = status == RunStatus.ERROR
+}
 
 /**
  * The names the Cloud Agents API gives tool calls (`read_file`, `run_terminal_cmd`, `grep`, `mcp`, `task_v2`…), the
