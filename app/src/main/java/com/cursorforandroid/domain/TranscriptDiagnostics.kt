@@ -211,7 +211,15 @@ object TranscriptDiagnostics {
      */
     private fun StringBuilder.describe(shapes: List<TurnShape>) {
         appendLine()
-        appendLine("shapes: newest ${shapes.size} turns of the record, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
+        append(renderShapes(shapes, "newest ${shapes.size} turns of the record"))
+    }
+
+    /**
+     * The shape dump on its own, for [describe] and for the verification harness (`tools/transcript-verify`), which
+     * dumps every turn it read rather than the newest few: [scope] is the words after `shapes:` that say which turns.
+     */
+    fun renderShapes(shapes: List<TurnShape>, scope: String): String = buildString {
+        appendLine("shapes: $scope, oldest first (step: index · branch · keys:types; call: id · name · steps · args · result):")
         for (turn in shapes) {
             // The coordinator's word to the user as the record gave it: with its body, read leniently, in pieces that
             // never read, without arguments — or no such call in the record at all, which is what the run's log then answers for.
