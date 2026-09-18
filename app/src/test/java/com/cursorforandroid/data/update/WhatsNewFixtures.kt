@@ -16,9 +16,9 @@ import java.util.concurrent.TimeUnit
  * shown with.
  */
 object WhatsNewFixtures {
-    const val VERSION = "0.3.37"
-    const val TAG = "v0.3.37"
-    const val HTML_URL = "https://github.com/BenItBuhner/cursor-for-android/releases/tag/v0.3.37"
+    const val VERSION = "0.3.11"
+    const val TAG = "v0.3.11"
+    const val HTML_URL = "https://github.com/BenItBuhner/cursor-for-android/releases/tag/v0.3.11"
     /** Within the screenshot clock's year (2025-01-15 14:00 UTC), so the header reads "Released Jan 14". */
     const val PUBLISHED_AT = "2025-01-14T15:12:11Z"
     const val PUBLISHED_AT_MS = 1_736_867_531_000L
@@ -26,13 +26,13 @@ object WhatsNewFixtures {
     val HEADER = """
         | | |
         |---|---|
-        | versionName | `0.3.37` |
-        | versionCode | `33799` |
-        | Commit | a189fca55460ccfb496bed16d1b304a461b68664 |
+        | versionName | `0.3.11` |
+        | versionCode | `31199` |
+        | Commit | 2e47231069407fb6a3d94f7cc76c3ef4bda7d5da |
         | Signing certificate (SHA-256) | `379a87854ada552f58933bf981624333bf8f6a170cd70999d3d35060da2be56b` |
         | Crash reports | None - this build was made without a project to report to. |
 
-        **Install:** download `cursor-for-android-0.3.37.apk`, then `adb install -r cursor-for-android-0.3.37.apk` (or open it on the device). `SHA256SUMS.txt` holds the checksums of the APK and AAB; `*-mapping.txt` is the R8 mapping for de-obfuscating stack traces. Installs of **v0.2.0 and later** update in place — same signing key.
+        **Install:** download `cursor-for-android-0.3.11.apk`, then `adb install -r cursor-for-android-0.3.11.apk` (or open it on the device). `SHA256SUMS.txt` holds the checksums of the APK and AAB; `*-mapping.txt` is the R8 mapping for de-obfuscating stack traces. Installs of **v0.2.0 and later** update in place — same signing key.
     """.trimIndent()
 
     const val LEAD = "Active Goals are shown above the composer with the objective, active time and status, and as events in the transcript."
@@ -50,19 +50,19 @@ object WhatsNewFixtures {
     val REINSTALL_NOTICE = """
         ## Upgrading from v0.1.0: uninstall, then install
 
-        **v0.2.0 and later are signed with the project's release key; v0.1.0 was signed with a debug key.** Android cannot update between the two, so the update check in v0.1.0 cannot install this in place. Download `cursor-for-android-0.3.37.apk` above, **uninstall Cursor, install the APK, and sign in again.** From v0.2.0 on, updates install in place, and the app refuses any APK not signed with the certificate named in the header.
+        **v0.2.0 and later are signed with the project's release key; v0.1.0 was signed with a debug key.** Android cannot update between the two, so the update check in v0.1.0 cannot install this in place. Download `cursor-for-android-0.3.11.apk` above, **uninstall Cursor, install the APK, and sign in again.** From v0.2.0 on, updates install in place, and the app refuses any APK not signed with the certificate named in the header.
     """.trimIndent()
 
     val GENERATED = """
-        <!-- Release notes generated using configuration in .github/release.yml at a189fca55460ccfb496bed16d1b304a461b68664 -->
+        <!-- Release notes generated using configuration in .github/release.yml at 2e47231069407fb6a3d94f7cc76c3ef4bda7d5da -->
 
         ## What's Changed
         ### Other changes
-        * Bump app.versionName to 0.3.37 now that v0.3.36 is tagged by @BenItBuhner in https://github.com/BenItBuhner/cursor-for-android/pull/201
-        * Coordinator replies in Extended mode: the run list is paged to cover the record's window by @BenItBuhner in https://github.com/BenItBuhner/cursor-for-android/pull/202
+        * Bump app.versionName to 0.3.11 now that v0.3.10 is tagged by @BenItBuhner in https://github.com/BenItBuhner/cursor-for-android/pull/134
+        * Goal strip above the composer; goal events as rows in the transcript by @BenItBuhner in https://github.com/BenItBuhner/cursor-for-android/pull/133
 
 
-        **Full Changelog**: https://github.com/BenItBuhner/cursor-for-android/compare/v0.3.36...v0.3.37
+        **Full Changelog**: https://github.com/BenItBuhner/cursor-for-android/compare/v0.3.10...v0.3.11
     """.trimIndent()
 
     /** The whole body, the parts joined as GitHub holds them. */

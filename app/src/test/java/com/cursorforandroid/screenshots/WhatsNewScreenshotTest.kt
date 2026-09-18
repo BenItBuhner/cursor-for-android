@@ -68,8 +68,10 @@ import java.util.TimeZone
  * What's new for the installed version: the page (the version and its release date in the header, the curated notes
  * in the transcript's markdown, the release page and Done in the footer) and the two ways in — the row beneath
  * "Check for updates" in Settings and the card in the sidebar's slot above the account footer. The notes are a
- * release's own (see [WhatsNewFixtures]), titled with the build under test so the Settings frame reads as one
- * version throughout. Same device qualifiers as [AppScreenshotTest].
+ * release's own (see [WhatsNewFixtures]); the page and the card carry that release's version, so those frames stand
+ * across version bumps, while the Settings frame is titled with the build under test so it reads as one version
+ * with the row above it — and is re-recorded with the other Settings frames when the version moves. Same device
+ * qualifiers as [AppScreenshotTest].
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalRoborazziApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -84,7 +86,6 @@ class WhatsNewScreenshotTest {
     val folder = TemporaryFolder()
 
     private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
-    private lateinit var graph: AppGraph
 
     @Before
     fun setUp() {
@@ -92,11 +93,14 @@ class WhatsNewScreenshotTest {
         TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
         Locale.setDefault(Locale.US)
         AppClock.nowMillis = { FIXED_NOW }
+    }
+
+    /** A graph on a device running [version], with that version's notes already on its disk, unread; nothing here reaches GitHub. */
+    private fun graph(version: String): AppGraph {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        // The installed version's notes are already on this device's disk, unread; nothing here reaches GitHub.
-        val notes = WhatsNewFixtures.repository(PreferencesStore(context), folder.newFolder(), versionName = VERSION, notes = WhatsNewFixtures.notes(VERSION))
+        val notes = WhatsNewFixtures.repository(PreferencesStore(context), folder.newFolder(), versionName = version, notes = WhatsNewFixtures.notes(version))
         // Robolectric has no Android Keystore; an ordinary private file stands in, as in AppScreenshotTest.
-        graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, releaseNotes = notes)
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, releaseNotes = notes)
     }
 
     @After
@@ -122,9 +126,10 @@ class WhatsNewScreenshotTest {
     /** The page: header, notes, footer. */
     @Test
     fun page() {
+        val graph = graph(WhatsNewFixtures.VERSION)
         compose.setContent { Scene { WhatsNewScreen(graph = graph, onBack = {}) } }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(WhatsNewTags.NOTES)).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText(WhatsNewCopy.title(VERSION)).assertIsDisplayed()
+        compose.onNodeWithText(WhatsNewCopy.title(WhatsNewFixtures.VERSION)).assertIsDisplayed()
         compose.onNodeWithText("Released Jan 14").assertIsDisplayed()
         compose.onNodeWithText("Goals").assertIsDisplayed()
         compose.onNodeWithTag(WhatsNewTags.DONE).assertIsDisplayed()
@@ -134,11 +139,12 @@ class WhatsNewScreenshotTest {
     /** Settings, at the Version and updates card: the row directly beneath the version and its Check for updates. */
     @Test
     fun settingsRow() {
+        val graph = graph(BuildConfig.VERSION_NAME)
         compose.setContent { Scene { SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {}) } }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.WHATS_NEW_ROW)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).performScrollTo()
         compose.waitForIdle()
-        compose.onNodeWithText(WhatsNewCopy.title(VERSION)).assertIsDisplayed()
+        compose.onNodeWithText(WhatsNewCopy.title(BuildConfig.VERSION_NAME)).assertIsDisplayed()
         compose.onNodeWithText("Check for updates").assertIsDisplayed()
         capture("91_whats_new_settings_row")
     }
@@ -163,7 +169,7 @@ class WhatsNewScreenshotTest {
                         onRefresh = {},
                         rowActions = AgentRowActions({}, {}, {}, {}, null, { _, _ -> }, {}),
                     ),
-                    whatsNewHint = WhatsNewCopy.title(VERSION),
+                    whatsNewHint = WhatsNewCopy.title(WhatsNewFixtures.VERSION),
                 )
             }
         }
@@ -175,7 +181,6 @@ class WhatsNewScreenshotTest {
     private companion object {
         /** Wednesday 2025-01-15 14:00 UTC, the walkthrough's clock; the release reads "Jan 14" and the rows' ages "15m" against it. */
         val FIXED_NOW: Long = Instant.parse("2025-01-15T14:00:00Z").toEpochMilli()
-        val VERSION: String = BuildConfig.VERSION_NAME
         val USER = CursorUser("Cursor for Android (Pixel 9)", "alex@example.com", "Alex", "Rivera", 7L)
 
         fun agent(id: String, name: String, ageMinutes: Long, running: Boolean = false, branch: String? = null) = Agent(

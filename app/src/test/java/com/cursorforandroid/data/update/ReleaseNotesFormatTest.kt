@@ -13,7 +13,7 @@ class ReleaseNotesFormatTest {
         assertThat(curated).isEqualTo(WhatsNewFixtures.CURATED)
         assertThat(curated).startsWith("## Goals")
         assertThat(curated).contains("(`/goal …`)")
-        listOf("versionCode", "Signing certificate", "**Install:**", "Upgrading from v0.1.0", "uninstall Cursor", "Release notes generated", "What's Changed", "Full Changelog", "pull/202")
+        listOf("versionCode", "Signing certificate", "**Install:**", "Upgrading from v0.1.0", "uninstall Cursor", "Release notes generated", "What's Changed", "Full Changelog", "pull/133")
             .forEach { assertThat(curated).doesNotContain(it) }
     }
 
@@ -119,8 +119,8 @@ class ReleaseNotesFormatTest {
         val dto = GitHubReleaseDto(tagName = WhatsNewFixtures.TAG, publishedAt = WhatsNewFixtures.PUBLISHED_AT, htmlUrl = WhatsNewFixtures.HTML_URL, body = WhatsNewFixtures.BODY)
 
         val notes = ReleaseNotesFormat.from(dto)!!
-        assertThat(notes.tagName).isEqualTo("v0.3.37")
-        assertThat(notes.versionName).isEqualTo("0.3.37")
+        assertThat(notes.tagName).isEqualTo(WhatsNewFixtures.TAG)
+        assertThat(notes.versionName).isEqualTo(WhatsNewFixtures.VERSION)
         assertThat(notes.publishedAtMs).isEqualTo(WhatsNewFixtures.PUBLISHED_AT_MS)
         assertThat(notes.htmlUrl).isEqualTo(WhatsNewFixtures.HTML_URL)
         assertThat(notes.markdown).isEqualTo(WhatsNewFixtures.CURATED)

@@ -51,7 +51,7 @@ class WhatsNewRepositoryTest {
     fun setUp() {
         prefs = PreferencesStore(context)
         cacheDir = folder.newFolder("whats-new")
-        responses["v0.3.37"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests += request
@@ -65,7 +65,7 @@ class WhatsNewRepositoryTest {
     @After
     fun tearDown() = server.shutdown()
 
-    private fun repository(version: String = "0.3.37"): WhatsNewRepository = WhatsNewRepository(
+    private fun repository(version: String = WhatsNewFixtures.VERSION): WhatsNewRepository = WhatsNewRepository(
         client = GitHubReleasesClient(
             OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build(),
             GitHubFixtures.OWNER_REPO,
@@ -85,13 +85,13 @@ class WhatsNewRepositoryTest {
     fun `the installed version's notes are read by its tag once, kept on disk, and never asked for again`() = runBlocking {
         val repo = repository()
         assertThat(repo.notes.value).isNull()
-        assertThat(repo.tagName).isEqualTo("v0.3.37")
+        assertThat(repo.tagName).isEqualTo(WhatsNewFixtures.TAG)
 
         repo.refreshNow()
 
         val notes = repo.notes.value!!
         assertThat(notes).isEqualTo(WhatsNewFixtures.notes())
-        assertThat(paths()).containsExactly("/repos/BenItBuhner/cursor-for-android/releases/tags/v0.3.37")
+        assertThat(paths()).containsExactly("/repos/BenItBuhner/cursor-for-android/releases/tags/${WhatsNewFixtures.TAG}")
 
         // Again in the same process, and in the next one: the disk answers.
         repo.refreshNow()
@@ -103,7 +103,7 @@ class WhatsNewRepositoryTest {
 
     @Test
     fun `a tag with no release, or one whose notes are not written yet, is asked about again after a while`() = runBlocking {
-        responses["v0.3.37"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson(body = WhatsNewFixtures.BODY_WITHOUT_NOTES)) }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setBody(WhatsNewFixtures.releaseJson(body = WhatsNewFixtures.BODY_WITHOUT_NOTES)) }
         val repo = repository()
 
         repo.refreshNow()
@@ -118,7 +118,7 @@ class WhatsNewRepositoryTest {
 
         // Past it, the question is asked again — and this time the notes are there.
         now += WhatsNewRepository.NO_NOTES_RETRY_MS
-        responses["v0.3.37"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
         val later = repository()
         later.refreshNow()
         assertThat(later.notes.value).isEqualTo(WhatsNewFixtures.notes())
@@ -133,7 +133,7 @@ class WhatsNewRepositoryTest {
 
     @Test
     fun `a failed request leaves the notes as they were and is retried an hour later at the earliest`() = runBlocking {
-        responses["v0.3.37"] = { MockResponse().setResponseCode(500) }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setResponseCode(500) }
         val repo = repository()
 
         repo.refreshNow()
@@ -147,7 +147,7 @@ class WhatsNewRepositoryTest {
         assertThat(paths()).hasSize(1)
 
         now += WhatsNewRepository.FAILED_RETRY_MS
-        responses["v0.3.37"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setBody(WhatsNewFixtures.releaseJson()) }
         repo.refreshNow()
         assertThat(repo.notes.value).isEqualTo(WhatsNewFixtures.notes())
         assertThat(paths()).hasSize(2)
@@ -155,7 +155,7 @@ class WhatsNewRepositoryTest {
 
     @Test
     fun `GitHub's rate limit is a failure like any other, nothing is written for it, and the hour is waited out`() = runBlocking {
-        responses["v0.3.37"] = { MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "0").setBody("""{"message":"API rate limit exceeded"}""") }
+        responses[WhatsNewFixtures.TAG] = { MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "0").setBody("""{"message":"API rate limit exceeded"}""") }
         val repo = repository()
 
         repo.refreshNow()
@@ -193,7 +193,7 @@ class WhatsNewRepositoryTest {
         assertThat(repo.unread.first()).isEqualTo(WhatsNewFixtures.notes())
 
         repo.markRead()
-        assertThat(prefs.whatsNewReadVersion.first()).isEqualTo("0.3.37")
+        assertThat(prefs.whatsNewReadVersion.first()).isEqualTo(WhatsNewFixtures.VERSION)
         assertThat(repo.unread.first()).isNull()
         // Still known, still read, in the next process.
         val restarted = repository()
@@ -202,15 +202,15 @@ class WhatsNewRepositoryTest {
         assertThat(restarted.unread.first()).isNull()
 
         // The next release installs: its notes replace the previous version's on disk and are unread once more.
-        responses["v0.3.38"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson(tag = "v0.3.38")) }
-        val updated = repository("0.3.38")
+        responses["v0.3.12"] = { MockResponse().setBody(WhatsNewFixtures.releaseJson(tag = "v0.3.12")) }
+        val updated = repository("0.3.12")
         updated.refreshNow()
-        assertThat(updated.notes.value!!.versionName).isEqualTo("0.3.38")
-        assertThat(updated.unread.first()!!.versionName).isEqualTo("0.3.38")
-        assertThat(paths().last()).endsWith("/releases/tags/v0.3.38")
+        assertThat(updated.notes.value!!.versionName).isEqualTo("0.3.12")
+        assertThat(updated.unread.first()!!.versionName).isEqualTo("0.3.12")
+        assertThat(paths().last()).endsWith("/releases/tags/v0.3.12")
 
         updated.markRead()
         assertThat(updated.unread.first()).isNull()
-        assertThat(prefs.whatsNewReadVersion.first()).isEqualTo("0.3.38")
+        assertThat(prefs.whatsNewReadVersion.first()).isEqualTo("0.3.12")
     }
 }

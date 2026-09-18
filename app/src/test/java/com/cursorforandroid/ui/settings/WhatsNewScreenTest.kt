@@ -99,7 +99,7 @@ class WhatsNewScreenTest {
 
         show(graph)
 
-        compose.onNodeWithText(WhatsNewCopy.title("0.3.37")).assertIsDisplayed()
+        compose.onNodeWithText(WhatsNewCopy.title(WhatsNewFixtures.VERSION)).assertIsDisplayed()
         compose.onNodeWithText("Released Jan 14").assertIsDisplayed()
         // The heading, the lead, a bullet — each its own block of the transcript's markdown.
         compose.onNodeWithText("Goals").assertIsDisplayed()
@@ -114,7 +114,7 @@ class WhatsNewScreenTest {
         compose.onNodeWithTag(WhatsNewTags.DONE).assertIsDisplayed()
 
         // Opening the page is what reads it: the row and the card are gone for this version from here on.
-        compose.waitUntil(10_000) { readVersion() == "0.3.37" }
+        compose.waitUntil(10_000) { readVersion() == WhatsNewFixtures.VERSION }
         assertThat(runBlocking { graph.whatsNew.unread.first() }).isNull()
         assertThat(backs).isEqualTo(0)
     }
@@ -130,7 +130,7 @@ class WhatsNewScreenTest {
 
         compose.onNodeWithTag(WhatsNewTags.DONE).performClick()
         compose.waitUntil(10_000) { backs == 1 }
-        compose.waitUntil(10_000) { readVersion() == "0.3.37" }
+        compose.waitUntil(10_000) { readVersion() == WhatsNewFixtures.VERSION }
         assertThat(runBlocking { graph.whatsNew.unread.first() }).isNull()
     }
 
