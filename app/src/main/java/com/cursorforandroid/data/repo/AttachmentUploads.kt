@@ -8,6 +8,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,8 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * The uploads of the files attached to the composers, run the moment a file is attached rather than when its prompt
@@ -56,11 +56,34 @@ class AttachmentUploads(
     /** Every tracked file's status by its attachment id; a file that was cancelled or forgotten has none. */
     val states: StateFlow<Map<String, Status>> = _states.asStateFlow()
 
+    /**
+     * One run of one file's upload. An id has at most one at a time — the newest [start] for it. A chip taken off
+     * and put back (a [cancel], then a [start] of the same id, the removed chip's upload perhaps still in flight)
+     * makes a new one, and the old one, wherever it has got to, writes nothing more under the id: not its progress,
+     * not a failure, not even its completion, whose upload it drops instead. Every write a run makes is guarded by
+     * "am I still the attempt this id is on", under [lock], so nothing an older run does can reach a newer one's state.
+     */
+    private inner class Attempt(val id: String, val file: PromptFile) {
+        /** Set under [lock] before the lock is released, and read only under it. */
+        lateinit var job: Job
+    }
+
     private val lock = Any()
-    private val jobs = HashMap<String, Job>()
+    /**
+     * The attempt each id is on while its upload runs. A terminal state — Done, Failed — takes the attempt off here
+     * in the same step that writes it (see [settle]), so a [retry] or [start] that meets the state never finds a
+     * finished attempt still registered in its way.
+     */
+    private val attempts = HashMap<String, Attempt>()
     private val files = HashMap<String, PromptFile>()
-    /** One file at a time, in the order attached. */
-    private val turn = Mutex()
+    /**
+     * The running attempts in the order they were attached: the first is the one uploading, the rest wait for it.
+     * The order is fixed here, under [lock], when the attempt is made — not by which coroutine happens to reach a
+     * mutex first — so "one at a time, in the order attached" holds, and the composer's "Uploading 2 of 3" is right.
+     */
+    private val queue = ArrayDeque<Attempt>()
+    /** The head of [queue]: the attempt whose turn it is. Its run waits here until it is. */
+    private val turn = MutableStateFlow<Attempt?>(null)
 
     /**
      * Tracks [file] under [id] and starts its upload, unless it is tracked already or carries a reference, which
@@ -68,7 +91,7 @@ class AttachmentUploads(
      */
     fun start(id: String, file: PromptFile) {
         synchronized(lock) {
-            if (id in jobs || _states.value[id] is Status.Done) return
+            if (id in attempts || _states.value[id] is Status.Done) return
             files[id] = file
             val ref = file.upload
             if (ref != null) {
@@ -76,7 +99,11 @@ class AttachmentUploads(
                 return
             }
             _states.update { it + (id to Status.Uploading(0f)) }
-            jobs[id] = scope.launch { run(id, file) }
+            val attempt = Attempt(id, file)
+            attempts[id] = attempt
+            queue.addLast(attempt)
+            turn.value = queue.first()
+            attempt.job = scope.launch { run(attempt) }
         }
     }
 
@@ -97,7 +124,7 @@ class AttachmentUploads(
     fun cancel(id: String) {
         val done: UploadRef?
         synchronized(lock) {
-            jobs.remove(id)?.cancel()
+            attempts.remove(id)?.let { stop(it) }
             files.remove(id)
             done = (_states.value[id] as? Status.Done)?.file?.ref
             _states.update { it - id }
@@ -110,11 +137,41 @@ class AttachmentUploads(
         if (ids.isEmpty()) return
         synchronized(lock) {
             for (id in ids) {
-                jobs.remove(id)?.cancel()
+                attempts.remove(id)?.let { stop(it) }
                 files.remove(id)
             }
             _states.update { it - ids.toSet() }
         }
+    }
+
+    /** Under [lock]: [attempt] is no longer wanted — its run is cancelled and its place in the order given up. */
+    private fun stop(attempt: Attempt) {
+        attempt.job.cancel()
+        leaveQueue(attempt)
+    }
+
+    /** Under [lock]: [attempt] is out of the order; the next in line, if any, gets its turn. */
+    private fun leaveQueue(attempt: Attempt) {
+        if (queue.remove(attempt)) turn.value = queue.firstOrNull()
+    }
+
+    /** Under [lock]: [transform] on the states, if [attempt] is still the one its id is on; false, and nothing written, otherwise. */
+    private fun write(attempt: Attempt, transform: (Map<String, Status>) -> Map<String, Status>): Boolean {
+        if (attempts[attempt.id] !== attempt) return false
+        _states.update(transform)
+        return true
+    }
+
+    /**
+     * Under [lock]: [attempt]'s run is over. Its terminal state is written and the attempt taken off its id in the
+     * one step — a retry or a start that meets the state finds no attempt registered against it — and it leaves the
+     * order either way. False when the attempt had been superseded, in which case nothing is written.
+     */
+    private fun settle(attempt: Attempt, transform: (Map<String, Status>) -> Map<String, Status>): Boolean {
+        val current = write(attempt, transform)
+        if (current) attempts.remove(attempt.id)
+        leaveQueue(attempt)
+        return current
     }
 
     /** What the prompt names [id] as, once its upload is done; null while it is going up, failed, or unknown. */
@@ -142,30 +199,29 @@ class AttachmentUploads(
         }
     }
 
-    private suspend fun run(id: String, file: PromptFile) {
+    private suspend fun run(attempt: Attempt) {
+        val id = attempt.id
         try {
-            val uploaded = turn.withLock {
-                uploader().upload(file) { done, total ->
-                    val progress = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 1f
-                    // A file taken off the composer meanwhile is not put back by a late report of its bytes.
-                    _states.update { if (id in it) it + (id to Status.Uploading(progress)) else it }
-                }
+            turn.first { it === attempt }
+            val uploaded = uploader().upload(attempt.file) { done, total ->
+                val progress = if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 1f
+                // A late report from a run that has been superseded — the chip taken off, and perhaps put back — writes nothing.
+                synchronized(lock) { write(attempt) { it + (id to Status.Uploading(progress)) } }
             }
-            val kept = synchronized(lock) {
-                val tracked = id in files
-                if (tracked) _states.update { it + (id to Status.Done(uploaded)) }
-                tracked
-            }
-            // Taken off between the last part and here: the completed upload is dropped as a cancel drops one.
-            if (!kept) uploaded.ref?.let { uploader().abort(it) }
+            val kept = synchronized(lock) { settle(attempt) { it + (id to Status.Done(uploaded)) } }
+            // Superseded between the last part and here: the completed upload is dropped as a cancel drops one. The
+            // run may well have been cancelled by then, so the abort is made regardless.
+            if (!kept) uploaded.ref?.let { ref -> withContext(NonCancellable) { uploader().abort(ref) } }
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
-            synchronized(lock) {
-                if (id in files) _states.update { it + (id to Status.Failed(t.message ?: t.userMessage())) }
-            }
+            synchronized(lock) { settle(attempt) { it + (id to Status.Failed(t.message ?: t.userMessage())) } }
         } finally {
-            synchronized(lock) { jobs.remove(id) }
+            // A cancelled run: off the order (its id was taken off it by the cancel); a settled one is off already.
+            synchronized(lock) {
+                if (attempts[id] === attempt) attempts.remove(id)
+                leaveQueue(attempt)
+            }
         }
     }
 

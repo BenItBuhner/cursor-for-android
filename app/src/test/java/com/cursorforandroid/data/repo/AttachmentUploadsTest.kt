@@ -8,17 +8,15 @@ import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.UploadRef
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -74,7 +72,14 @@ class AttachmentUploadsTest {
         val completes = CopyOnWriteArrayList<String>()
         val aborts = CopyOnWriteArrayList<Pair<String, String>>()
         var completion = PromptUploadCompletion.COMPLETED
-        var failPresignOf: String? = null
+        @Volatile var failPresignOf: String? = null
+        /**
+         * Holds `complete()` for the named upload id on a blocking latch: no suspension point, so a run cancelled
+         * meanwhile does not notice and completes anyway — the shape of a chip taken off between its last part and
+         * its completion. [completing] records the upload id the moment the call is in.
+         */
+        val completeGates = ConcurrentHashMap<String, CountDownLatch>()
+        val completing = CopyOnWriteArrayList<String>()
 
         override suspend fun presign(filename: String, mimeType: String, contentLengthBytes: Long, teamId: Int?): PresignedPromptUpload {
             presigns += filename
@@ -84,6 +89,8 @@ class AttachmentUploadsTest {
         }
 
         override suspend fun complete(uploadId: String, s3UploadId: String): PromptUploadCompletion {
+            completing += uploadId
+            completeGates[uploadId]?.await(20, TimeUnit.SECONDS)
             completes += uploadId
             return completion
         }
@@ -118,10 +125,9 @@ class AttachmentUploadsTest {
         assertThat(AttachmentUploads.isUploading(uploads.states.value, listOf("f1"))).isFalse()
         assertThat(AttachmentUploads.hint(uploads.states.value, listOf("f1"))).isNull()
 
-        // The send: the same file named by its reference, at once, and nothing more on the wire.
-        val named = withTimeoutOrNull(500) { uploads.awaitAll(listOf("f1" to spec)) }
-        assertThat(named).isNotNull()
-        assertThat(named!!.single().uploadId).isEqualTo("up-spec.pdf")
+        // The send: the same file named by its reference, and nothing more on the wire — no presign, no PUT, no wait.
+        val named = uploads.awaitAll(listOf("f1" to spec))
+        assertThat(named.single().uploadId).isEqualTo("up-spec.pdf")
         assertThat(api.presigns).hasSize(1)
         assertThat(puts).hasSize(1)
     }
@@ -153,6 +159,73 @@ class AttachmentUploadsTest {
         assertThat(AttachmentUploads.isUploading(uploads.states.value, ids)).isFalse()
         assertThat(AttachmentUploads.hint(uploads.states.value, ids)).isNull()
         assertThat(uploads.awaitAll(ids.map { it to file(it) }).map { it.uploadId }).containsExactly("up-a.bin", "up-b.bin", "up-c.bin").inOrder()
+        // The order attached, every time: it is fixed when the attempt is made, not by which coroutine reached the turn first.
+        assertThat(api.presigns).containsExactly("a.bin", "b.bin", "c.bin").inOrder()
+        assertThat(api.completes).containsExactly("up-a.bin", "up-b.bin", "up-c.bin").inOrder()
+    }
+
+    /**
+     * A chip taken off and put back while its first upload is between its last part and its completion — cancelled
+     * too late to notice, it completes anyway. Nothing of that run reaches the re-added chip: its state is only ever
+     * the new run's, the old completed upload is aborted as a cancel aborts one, and the id stays under one attempt.
+     * (Before this was guarded, the old run wrote its `Done` — a send in that window named the wrong upload — and
+     * its `finally` took the new run off the registry, so a further start launched a duplicate.)
+     */
+    @Test
+    fun `a chip removed and re-added mid-transfer keeps only the new attempt's result and aborts the old upload`() = runBlocking<Unit> {
+        api.completeGates["up-old.bin"] = CountDownLatch(1)
+        uploads.start("f1", file("old.bin"))
+        withTimeout(10_000) { while ("up-old.bin" !in api.completing) delay(10) }
+
+        // Off, and back on under the same id with a new file, before the old run has completed.
+        uploads.cancel("f1")
+        assertThat(uploads.states.value).doesNotContainKey("f1")
+        val fresh = file("new.bin")
+        uploads.start("f1", fresh)
+        api.completeGates.getValue("up-old.bin").countDown()
+
+        var sawOld = false
+        val done = withTimeout(10_000) {
+            uploads.states.map { it["f1"] }.first { s ->
+                if (s is AttachmentUploads.Status.Done && s.file.uploadId == "up-old.bin") sawOld = true
+                s is AttachmentUploads.Status.Done && s.file.uploadId == "up-new.bin"
+            }
+        }
+        assertThat(sawOld).isFalse()
+        assertThat((done as AttachmentUploads.Status.Done).file.s3UploadId).isEqualTo("s3-new.bin")
+        // The old run did complete — and its upload was dropped for it, since nothing will reference it.
+        withTimeout(10_000) { while (api.aborts.none { it.first == "up-old.bin" }) delay(10) }
+        assertThat(api.completes).containsAtLeast("up-old.bin", "up-new.bin")
+        assertThat(api.aborts).contains("up-old.bin" to "s3-old.bin")
+        assertThat(api.aborts.map { it.first }).doesNotContain("up-new.bin")
+        // Still one attempt under the id: a further start is the no-op it should be, and the send names the new upload.
+        uploads.start("f1", fresh)
+        assertThat(uploads.awaitAll(listOf("f1" to fresh)).single().uploadId).isEqualTo("up-new.bin")
+        assertThat(api.presigns).containsExactly("old.bin", "new.bin").inOrder()
+    }
+
+    /**
+     * The retry lands the instant the failure shows — as the composer's tap does, and as the send's own retry does.
+     * `Failed` and the run's deregistration are one step, so there is never a moment where the state says failed
+     * but a finished run still holds the id and turns the retry into a no-op that strands the chip with no state
+     * at all (the load-order flake this class had: `settled` then waited on nothing until its timeout).
+     */
+    @Test
+    fun `a retry that lands as the failed run finishes always runs`() = runBlocking<Unit> {
+        repeat(60) { i ->
+            val zip = file("flaky$i.zip")
+            api.failPresignOf = "flaky$i.zip"
+            uploads.start("f1", zip)
+            val failed = withTimeout(10_000) { uploads.states.map { it["f1"] }.first { it != null && it !is AttachmentUploads.Status.Uploading } }
+            assertThat(failed).isInstanceOf(AttachmentUploads.Status.Failed::class.java)
+            api.failPresignOf = null
+            uploads.retry("f1")
+            // A retry that did not run leaves no state at all; one that did ends in Done.
+            val after = withTimeout(10_000) { uploads.states.map { it["f1"] }.first { it !is AttachmentUploads.Status.Uploading } }
+            assertThat(after).isInstanceOf(AttachmentUploads.Status.Done::class.java)
+            assertThat((after as AttachmentUploads.Status.Done).file.uploadId).isEqualTo("up-flaky$i.zip")
+            uploads.cancel("f1")
+        }
     }
 
     /** A chip taken off mid-flight stops its upload and drops what was staged; one taken off when done is aborted too. */
