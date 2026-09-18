@@ -117,6 +117,7 @@ import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
 import com.cursorforandroid.data.update.UpdateManager
+import com.cursorforandroid.data.update.WhatsNewRepository
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.conversation.AttachmentImages
 import com.cursorforandroid.update.AndroidUpdatePlatform
@@ -151,6 +152,11 @@ class AppGraph(
      * end — the sign-in screen, the first-run flow behind it — against a scripted `/v1/me` rather than the real host.
      */
     real: CursorBackend? = null,
+    /**
+     * Injectable for tests only: the installed version's release notes as a test has them — any version, notes
+     * already on disk — so the What's new surfaces can be driven without GitHub.
+     */
+    private val releaseNotes: WhatsNewRepository? = null,
 ) {
     private val app = context.applicationContext
 
@@ -620,17 +626,25 @@ class AppGraph(
     val runMonitor: RunMonitor get() = lazyRunMonitor.value
 
     /**
+     * The GitHub releases of [BuildConfig.GITHUB_REPO], read anonymously: one client for the updater and the What's
+     * new notes, so the rate limit GitHub answers one of them with is remembered for both.
+     */
+    private val lazyReleases = lazy {
+        GitHubReleasesClient(
+            CursorApiFactory.updateClient(),
+            BuildConfig.GITHUB_REPO,
+            apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
+            freeSpace = { allocatableBytes(app, it) },
+        )
+    }
+
+    /**
      * In-app updates from the GitHub releases of [BuildConfig.GITHUB_REPO]. Device-level, not account-level: its
      * cache and downloads sit next to (not inside) [caches], so signing out leaves them alone.
      */
     private val lazyUpdates = lazy {
         UpdateManager(
-            client = GitHubReleasesClient(
-                CursorApiFactory.updateClient(),
-                BuildConfig.GITHUB_REPO,
-                apiBaseUrl = BuildConfig.UPDATE_API_BASE_URL,
-                freeSpace = { allocatableBytes(app, it) },
-            ),
+            client = lazyReleases.value,
             prefs = prefs,
             cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check"))),
             platform = AndroidUpdatePlatform(app),
@@ -641,6 +655,20 @@ class AppGraph(
         )
     }
     val updates: UpdateManager get() = lazyUpdates.value
+
+    /**
+     * The installed version's release notes — the What's new page, its row in Settings and its card in the sidebar.
+     * Device-level like the updater, with a cache of its own beside the updater's; signing out leaves it alone.
+     */
+    private val lazyWhatsNew = lazy {
+        releaseNotes ?: WhatsNewRepository(
+            client = lazyReleases.value,
+            prefs = prefs,
+            cache = JsonDiskCache(File(app.cacheDir, "whats-new")),
+            installedVersionName = BuildConfig.VERSION_NAME,
+        )
+    }
+    val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
 
     init {
         // A sign-in through the sign-in screen owes the first-run choice; a restored session never does.
@@ -767,7 +795,9 @@ class AppGraph(
             "storeFiles" to lazyStoreFiles,
             "media" to lazyMedia,
             "runMonitor" to lazyRunMonitor,
+            "releases" to lazyReleases,
             "updates" to lazyUpdates,
+            "whatsNew" to lazyWhatsNew,
         )
 
     /** Which of [deferredParts] this process has actually built. */

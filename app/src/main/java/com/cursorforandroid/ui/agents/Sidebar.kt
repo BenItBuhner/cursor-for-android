@@ -54,6 +54,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -98,7 +99,15 @@ data class SidebarCallbacks(
      * ([AgentListUiState.collapsedSections]); the sidebar reads it back from the state rather than keeping its own.
      */
     val onSectionCollapsed: (sectionKey: String, collapsed: Boolean) -> Unit = { _, _ -> },
+    /** The "What's new in …" card above the account footer was tapped: opens the installed version's notes. */
+    val onWhatsNew: () -> Unit = {},
 )
+
+/** Test tags for the card slot above the account footer: one card at a time, the update's or the notes'. */
+object SidebarTags {
+    const val UPDATE_HINT = "sidebar_update_hint"
+    const val WHATS_NEW_HINT = "sidebar_whats_new_hint"
+}
 
 /**
  * The Cursor sidebar as it appears on cursor.com/agents and in the desktop Agents window: cube logo with the flat
@@ -120,6 +129,11 @@ fun Sidebar(
     modifier: Modifier = Modifier,
     /** "Update available: v0.3.0" and the like; a row above the account footer that opens Settings. Null hides it. */
     updateHint: String? = null,
+    /**
+     * "What's new in 0.3.37": the same card slot, once the installed version's notes are there and unread. The update
+     * takes the slot when both are due — after it lands, the new version's notes are what is new.
+     */
+    whatsNewHint: String? = null,
     /** Extended mode is on: the account footer says so, quietly, for as long as it is. */
     extendedMode: Boolean = false,
 ) {
@@ -265,9 +279,11 @@ fun Sidebar(
             }
         }
 
-        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart.
-        if (updateHint != null) {
-            UpdateHintRow(updateHint, onClick = callbacks.onSettings)
+        // Like the list above it, the hint sits on the fade with no rule; the accent colour sets it apart. One card
+        // at a time: an update to move to, else the notes of the version that was moved to.
+        when {
+            updateHint != null -> SidebarHintRow(CursorIcons.ArrowDown, updateHint, onClick = callbacks.onSettings, tag = SidebarTags.UPDATE_HINT)
+            whatsNewHint != null -> SidebarHintRow(CursorIcons.Sparkle, whatsNewHint, onClick = callbacks.onWhatsNew, tag = SidebarTags.WHATS_NEW_HINT)
         }
         AccountFooter(user, isDemo, extendedMode, selected = selectedDestination == SidebarDestination.Settings, onClick = callbacks.onSettings)
     }
@@ -336,15 +352,18 @@ internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Mod
     }
 }
 
-/** The desktop app's "Restart to update" affordance, sized to the sidebar rows; leads to the Updates card in Settings. */
+/**
+ * The desktop app's "Restart to update" affordance, sized to the sidebar rows: one card in the slot above the account
+ * footer, an accent glyph and line leading somewhere — the Updates card in Settings, or the What's new page.
+ */
 @Composable
-private fun UpdateHintRow(text: String, onClick: () -> Unit) {
+private fun SidebarHintRow(icon: ImageVector, text: String, onClick: () -> Unit, tag: String) {
     val colors = CursorTheme.colors
     Row(
-        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
+        Modifier.fillMaxWidth().pressable(onClick, RectangleShape).testTag(tag).height(CursorDimens.sidebarRow).padding(start = 16.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(CursorIcons.ArrowDown, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+        Icon(icon, null, tint = colors.accent, modifier = Modifier.size(14.dp))
         Spacer(Modifier.width(8.dp))
         Text(text, style = CursorTheme.typography.small, color = colors.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         Icon(CursorIcons.ChevronRight, null, tint = colors.iconQuaternary, modifier = Modifier.size(14.dp))

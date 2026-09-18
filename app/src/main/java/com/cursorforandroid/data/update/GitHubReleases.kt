@@ -14,6 +14,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -190,6 +191,29 @@ class GitHubReleasesClient(
     /** The `rel="next"` page of GitHub's `Link` header, ignoring anything that does not belong to the API being read. */
     private fun nextPageUrl(link: String?): String? =
         link?.let { NEXT_LINK.find(it)?.groupValues?.get(1) }?.takeIf { it.startsWith(apiBaseUrl) }
+
+    /**
+     * One release by its tag (`GET /repos/{repo}/releases/tags/{tag}`), the request the What's new page's notes come
+     * from: the installed build knows its own tag, and the list would cost a page to find it in. Null when the tag has
+     * no release — a build that was never released as such, or one whose release is not published yet. Spends one of
+     * the anonymous requests like every other call here, and honours the same recorded rate limit.
+     */
+    suspend fun releaseByTag(tag: String): GitHubReleaseDto? {
+        (rateLimitedUntilMs - now()).takeIf { it > 0 }?.let { throw rateLimitException(it) }
+        val url = apiBaseUrl.toHttpUrl().newBuilder().addPathSegments("repos/$repo/releases/tags").addPathSegment(tag).build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .build()
+        client.newCall(request).await().use { response ->
+            if (response.code == 404) return null
+            if (!response.isSuccessful) throw response.toCheckException()
+            val body = withContext(Dispatchers.IO) { response.body?.string() } ?: ""
+            return runCatching { json.decodeFromString(GitHubReleaseDto.serializer(), body) }
+                .getOrElse { throw UpdateCheckException("GitHub sent a release the app couldn't read.") }
+        }
+    }
 
     /** A small text asset such as `SHA256SUMS.txt`. */
     suspend fun text(url: String): String {

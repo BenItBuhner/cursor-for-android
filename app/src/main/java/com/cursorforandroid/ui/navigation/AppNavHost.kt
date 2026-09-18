@@ -55,6 +55,8 @@ import com.cursorforandroid.ui.projects.ProjectEditorHost
 import com.cursorforandroid.ui.projects.ProjectEditorTarget
 import com.cursorforandroid.ui.settings.SettingsScreen
 import com.cursorforandroid.ui.settings.UpdateCopy
+import com.cursorforandroid.ui.settings.WhatsNewCopy
+import com.cursorforandroid.ui.settings.WhatsNewScreen
 import com.cursorforandroid.ui.share.ShareDestinationScreen
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -162,6 +164,12 @@ internal fun AppShell(
         stack.resetTo(screen)
     }
 
+    /** The What's new page, over whatever is on top — Settings' row or the sidebar's card is where it was asked for. */
+    fun openWhatsNew() {
+        closeDrawer()
+        if (stack.top.screen != Screen.WhatsNew) stack.push(Screen.WhatsNew)
+    }
+
     /** A chat opened on its launch that did not go through: back to the composer, if the user is still looking at it. */
     fun leaveFailedLaunch(agentId: String) {
         if ((stack.top.screen as? Screen.Agent)?.id == agentId) stack.pop()
@@ -239,7 +247,7 @@ internal fun AppShell(
     val destination = when (topScreen) {
         Screen.Home -> SidebarDestination.NewChat
         Screen.Settings -> SidebarDestination.Settings
-        is Screen.Agent -> null
+        Screen.WhatsNew, is Screen.Agent -> null
     }
     val updateState by graph.updates.state.collectAsStateWithLifecycle()
     val updateHint = when (val s = updateState) {
@@ -248,6 +256,9 @@ internal fun AppShell(
         is UpdateState.Installing -> if (s.awaitingConfirmation) "Update waiting for your confirmation" else null
         else -> null
     }
+    // The installed version's notes, until the page has been opened once; the Settings row reads the same flow.
+    val whatsNewUnread by graph.whatsNew.unread.collectAsStateWithLifecycle(initialValue = null)
+    val whatsNewHint = whatsNewUnread?.let { WhatsNewCopy.title(it.versionName) }
 
     @Composable
     fun sidebar(inDrawer: Boolean, modifier: Modifier = Modifier) {
@@ -258,11 +269,13 @@ internal fun AppShell(
             selectedAgentId = selectedAgentId,
             selectedDestination = destination,
             updateHint = updateHint,
+            whatsNewHint = whatsNewHint,
             extendedMode = extendedMode && !isDemo,
             onQueryChange = agentsViewModel::setQuery,
             callbacks = SidebarCallbacks(
                 onNewChat = { navigateTop(Screen.Home) },
                 onSettings = { navigateTop(Screen.Settings) },
+                onWhatsNew = ::openWhatsNew,
                 onCustomize = { customizeOpen = true },
                 onToggleSidebar = if (inDrawer) ({ closeDrawer() }) else ({ sidebarCollapsed = true }),
                 onRefresh = agentsViewModel::refresh,
@@ -305,7 +318,10 @@ internal fun AppShell(
                         isDemo = pane.isDemo,
                         onOpenSidebar = pane.openSidebar,
                         onBack = pane.onBack,
+                        onOpenWhatsNew = ::openWhatsNew,
                     )
+                    // A page of its own under Settings (or the sidebar's card); back is the stack's in either layout.
+                    Screen.WhatsNew -> WhatsNewScreen(graph = graph, onBack = { stack.pop() })
                     is Screen.Agent -> ConversationScreen(
                         graph = graph,
                         agentId = screen.id,

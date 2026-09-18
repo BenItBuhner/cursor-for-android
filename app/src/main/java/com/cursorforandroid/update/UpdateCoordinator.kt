@@ -33,7 +33,12 @@ object UpdateCoordinator {
         process.lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_START -> process.lifecycleScope.launch { graph.updates.onAppStarted() }
+                    Lifecycle.Event.ON_START -> {
+                        process.lifecycleScope.launch { graph.updates.onAppStarted() }
+                        // The installed version's notes, for the What's new page: from the disk after the first time,
+                        // and not tied to the automatic-updates switch — nothing here installs anything.
+                        graph.whatsNew.refresh()
+                    }
                     Lifecycle.Event.ON_STOP -> process.lifecycleScope.launch { graph.updates.onAppStopped() }
                     else -> Unit
                 }
