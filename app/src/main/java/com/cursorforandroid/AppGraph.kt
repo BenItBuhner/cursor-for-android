@@ -113,6 +113,7 @@ import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.TranscriptDiagnostics
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
@@ -891,9 +892,24 @@ class AppGraph(
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
-                send = agentId?.let { if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(it) else null },
+                send = agentId?.let { sendDiagnostics(it) },
             ),
         )
+    }
+
+    /**
+     * The `send:` block's input for one chat: the follow-up path's account of it (the send-or-queue decision, the
+     * queue, the attempts) with the launch that started the chat from here, when this process did — so a chat whose
+     * launch failed, or never reached the API, has a block even though nothing was ever queued for it.
+     */
+    private fun sendDiagnostics(agentId: String): SendDiagnostics? {
+        val sends = if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(agentId) else null
+        val launch = if (lazyAgents.isInitialized()) agents.launchDiagnostics(agentId) else null
+        return when {
+            sends != null -> sends.copy(launch = launch)
+            launch != null -> SendDiagnostics(decision = null, decidedAtIso = null, queue = emptyList(), attempts = emptyList(), accepted = emptyList(), launch = launch)
+            else -> null
+        }
     }
 
     /**

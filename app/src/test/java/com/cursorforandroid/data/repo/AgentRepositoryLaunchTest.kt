@@ -399,6 +399,43 @@ class AgentRepositoryLaunchTest {
         assertThat(agents.state.value.agents).isEmpty()
     }
 
+    /** The `send:` block's launch line: which request the launch went out as, what it named, and what came of it. */
+    @Test
+    fun `the launch's decision and outcome are kept for the diagnostics`() = runBlocking<Unit> {
+        // Accepted, with a repository at a branch.
+        val accepted = LaunchIdempotency.agentId(request, "a")
+        agents.launch(request.copy(agentId = accepted), "Auto").getOrThrow()
+        val line = agents.launchDiagnostics(accepted)!!
+        assertThat(line.via).isEqualTo("v1")
+        assertThat(line.target).isEqualTo("repo(ref)")
+        assertThat(line.files).isEqualTo(0)
+        assertThat(line.outcome).isEqualTo("accepted run=${com.cursorforandroid.domain.ProjectDiagnostics.tail(api.agents.getValue(accepted).latestRunId!!)}")
+
+        // Refused with the server's code; the words kept, redacted.
+        val refused = LaunchIdempotency.agentId(request.copy(repoUrl = null, ref = null), "b")
+        api.failNextCreate = FakeCursorApi.httpError(400, "repository_required", "Repository is required. Configure a default at https://cursor.com/settings (agent bc-00000000-0000-0000-0000-000000000001).")
+        agents.launch(request.copy(repoUrl = null, ref = null, agentId = refused), "Auto")
+        val refusal = agents.launchDiagnostics(refused)!!
+        assertThat(refusal.target).isEqualTo("no-repo(repos:[])")
+        assertThat(refusal.outcome).isEqualTo("refused http=400 code=repository_required")
+        assertThat(refusal.detail).isEqualTo("Repository is required. Configure a default at <url> (agent bc-…).")
+
+        // Unanswered, and the chat nowhere.
+        val unanswered = LaunchIdempotency.agentId(request, "c")
+        api.failNextCreate = SocketTimeoutException("timeout")
+        agents.launch(request.copy(agentId = unanswered), "Auto")
+        assertThat(agents.launchDiagnostics(unanswered)!!.outcome).isEqualTo("unanswered (SocketTimeoutException)")
+
+        // A pool with the repository, a repo-less pool, and a launch never made this process.
+        val pool = LaunchIdempotency.agentId(request.copy(env = DeviceTarget.pool("gpu")), "d")
+        agents.launch(request.copy(env = DeviceTarget.pool("gpu"), agentId = pool), "Auto").getOrThrow()
+        assertThat(agents.launchDiagnostics(pool)!!.target).isEqualTo("repo(ref) on pool")
+        val anyRepoPool = LaunchIdempotency.agentId(request.copy(env = DeviceTarget.pool("gpu"), repoUrl = null, ref = null), "e")
+        agents.launch(request.copy(env = DeviceTarget.pool("gpu"), repoUrl = null, ref = null, agentId = anyRepoPool), "Auto").getOrThrow()
+        assertThat(agents.launchDiagnostics(anyRepoPool)!!.target).isEqualTo("env(pool)")
+        assertThat(agents.launchDiagnostics("bc-never")).isNull()
+    }
+
     @Test
     fun `sending the same id twice never creates a duplicate`() = runBlocking<Unit> {
         val id = LaunchIdempotency.agentId(request, "nonce")
