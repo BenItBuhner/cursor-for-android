@@ -32,6 +32,7 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.PullRequestState
+import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
@@ -94,7 +95,7 @@ class RefreshBenchmarkTest {
         fun counts(): Map<String, Int> = calls.groupingBy { it.kind }.eachCount().toSortedMap()
         fun lastEndMs(): Long = calls.maxOfOrNull { it.endMs } ?: 0L
         /** Each kind's first departure and last arrival: the stage's span. */
-        fun stages(): List<Triple<String, Long, Long>> = calls.groupBy { it.kind }.map { (kind, list) -> Triple(kind, list.minOf { it.startMs }, list.maxOf { it.endMs }) }.sortedBy { it.second }
+        fun stages(of: List<Call> = calls.toList()): List<Triple<String, Long, Long>> = of.groupBy { it.kind }.map { (kind, list) -> Triple(kind, list.minOf { it.startMs }, list.maxOf { it.endMs }) }.sortedBy { it.second }
     }
 
     /** The public API, every call recorded and delayed. */
@@ -302,17 +303,19 @@ class RefreshBenchmarkTest {
     private inner class Process(val log: CallLog) {
         val api = LoggingApi(fake, log)
         val account = Account(log)
+        val stats = RefreshStats()
         val session = SessionManager(SecureKeyStore(context), prefs, CursorBackend(api, FakeRunStreamer(), isDemo = false), CursorBackend(api, FakeRunStreamer(), isDemo = true), capabilities = capabilities)
-        val agents = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, recordOf = { id -> account.record(id) })
-        val projects = ProjectRepository(session, agents, account, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L)).also { it.watchList() }
+        val agents = AgentRepository(session, prefs, AttachmentStore(context), cache, scope, persistDelayMs = 1, capabilities = capabilities, recordOf = { id -> account.record(id) }, stats = stats)
+        val projects = ProjectRepository(session, agents, account, scope = scope, pollIntervalMs = 60_000, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L), stats = stats).also { it.watchList() }
         val pullRequests = PullRequestRepository(
             account = { url -> log.record("GetPullRequestMergeStatus (PR badge)", url) { PullRequestLookup.Found(PullRequestState.Open) } },
             demo = { PullRequestLookup.Unreadable },
             isDemo = { false },
             scope = scope,
+            stats = stats,
         )
         val pins = PinRepository(
-            session, prefs, agents, account, scope = scope, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L),
+            session, prefs, agents, account, scope = scope, capabilities = capabilities, retryDelaysMs = listOf(50L, 50L, 50L), stats = stats,
             onList = { list, token ->
                 agents.applySources(list.sources, token)
                 pullRequests.seed(list.pullRequests)
@@ -371,20 +374,54 @@ class RefreshBenchmarkTest {
         val pullReturned = log.nowMs()
         process.settle()
         watcher.cancel()
+        val coldCalls = log.calls.toList()
+        val coldSettled = log.lastEndMs()
+
+        // A second pull a moment later, in the same process: what a refresh costs once the account has been read.
+        val warmFrom = log.calls.size
+        val warmStarted = log.nowMs()
+        process.pull()
+        process.settle()
+        val warmCalls = log.calls.drop(warmFrom)
 
         val report = buildString {
             appendLine("Cold pull-to-refresh on Bennett's account shape, ${LATENCY_MS} ms per network call")
             appendLine("rows: ${chats.size} chats (${projects.size} Projects, ${chats.count { it.manager != null || it.adoptedBy != null || it.sideChatOf != null }} members, ${chats.count { it.prUrl != null }} with a PR); public pages of 100, account pages of 200")
-            appendLine("first rows shown at +${firstRows.get()} ms (disk copy); spinner released at +${spinner.get()} ms; refresh() returned at +${pullReturned - pullStarted} ms; last call landed at +${log.lastEndMs()} ms")
-            appendLine("calls: ${log.calls.size} in total")
-            log.counts().forEach { (kind, n) -> appendLine("  $n × $kind") }
+            appendLine("first rows shown at +${firstRows.get()} ms (disk copy); spinner released at +${spinner.get()} ms; refresh() returned at +${pullReturned - pullStarted} ms; last call landed at +$coldSettled ms")
+            appendLine("calls: ${coldCalls.size} in total")
+            coldCalls.groupingBy { it.kind }.eachCount().toSortedMap().forEach { (kind, n) -> appendLine("  $n × $kind") }
             appendLine("stages (first departure → last arrival):")
-            log.stages().forEach { (kind, start, end) -> appendLine("  +${start.toString().padStart(6)} → +${end.toString().padStart(6)} ms  $kind") }
+            log.stages(coldCalls).forEach { (kind, start, end) -> appendLine("  +${start.toString().padStart(6)} → +${end.toString().padStart(6)} ms  $kind") }
             appendLine("order of the first thirty calls:")
-            log.calls.sortedBy { it.startMs }.take(30).forEach { appendLine("  +${it.startMs.toString().padStart(6)} ms  ${it.kind}  ${it.detail}") }
+            coldCalls.sortedBy { it.startMs }.take(30).forEach { appendLine("  +${it.startMs.toString().padStart(6)} ms  ${it.kind}  ${it.detail}") }
+            appendLine()
+            appendLine("Second pull in the same process: ${warmCalls.size} calls, settled in ${log.lastEndMs() - warmStarted} ms")
+            warmCalls.groupingBy { it.kind }.eachCount().toSortedMap().forEach { (kind, n) -> appendLine("  $n × $kind") }
+            appendLine()
+            appendLine("refresh block as the diagnostics export prints it (last pull):")
+            appendLine(com.cursorforandroid.domain.ProjectDiagnostics.render(
+                com.cursorforandroid.domain.ProjectDiagnostics.Input(
+                    appVersion = "bench", nowIso = "-", extendedMode = true, projectsCapability = true, accountSession = true, listFromCache = false,
+                    lastRefreshedIso = null, agents = emptyList(), placementOf = { null }, rootSyncs = emptyMap(), refresh = process.stats.snapshot.value,
+                ),
+            ).substringAfter("refresh:").substringBefore("rows (").trimEnd())
         }
         println(report)
         File(System.getProperty("user.dir"), "build/reports/refresh-benchmark.txt").apply { parentFile?.mkdirs() }.writeText(report)
+
+        // What the refresh is held to from here on.
+        // The indicator is let go before any per-root or by-id call goes out: the first page and the status scan are all it waits for.
+        val firstTail = coldCalls.filter { it.kind.contains("per root") || it.kind.contains("by id") || it.kind.contains("PR badge") }.minOf { it.startMs }
+        assertThat(spinner.get()).isLessThan(firstTail)
+        // The discovery scan stops at the registry's oldest live Project rather than reading the whole account.
+        assertThat(coldCalls.count { it.kind == "ListBackgroundComposers (discovery scan page)" }).isLessThan((chats.size + 199) / 200)
+        // Every membership read of a root goes out alongside another's, not one root after another.
+        val membershipReads = coldCalls.filter { it.kind == "ListWorkersForManager (per root)" }.sortedBy { it.startMs }
+        assertThat(membershipReads.zipWithNext().count { (a, b) -> b.startMs < a.endMs }).isAtLeast(membershipReads.size / 2)
+        // A second pull re-reads no memberships (no root's record moved), no discovery pages and no badge already fresh.
+        assertThat(warmCalls.count { it.kind.contains("per root") }).isEqualTo(0)
+        assertThat(warmCalls.count { it.kind.contains("discovery scan") }).isEqualTo(0)
+        assertThat(warmCalls.size).isLessThan(coldCalls.size / 2)
 
         // The invariants a pull must keep: every Project a root, every member placed, no leak among the account's own.
         val rows = process.agents.state.value.agents

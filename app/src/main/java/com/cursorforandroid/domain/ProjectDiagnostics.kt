@@ -169,7 +169,7 @@ object ProjectDiagnostics {
         if (refresh == null) {
             appendLine("  none this process")
         } else {
-            appendLine("  started=${Instant.ofEpochMilli(refresh.startedAtMillis)} spinnerReleased=${refresh.spinnerMs?.let { "+${it}ms" } ?: "-"} settled=${refresh.settledMs?.let { "+${it}ms" } ?: "still syncing"} calls=${refresh.totalCalls}")
+            appendLine("  started=${Instant.ofEpochMilli(refresh.startedAtMillis)} spinnerReleased=${refresh.spinnerMs?.let { "+${it}ms" } ?: "-"} lastStageEnded=${refresh.settledMs?.let { "+${it}ms" } ?: "-"} calls=${refresh.totalCalls}")
             appendLine("  stages (start → end, calls):")
             refresh.stages.sortedBy { it.startedAtMillis }.forEach { stage ->
                 val start = stage.startedAtMillis - refresh.startedAtMillis

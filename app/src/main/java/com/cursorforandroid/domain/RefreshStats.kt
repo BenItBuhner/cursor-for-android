@@ -23,12 +23,12 @@ class RefreshStats(private val now: () -> Long = AppClock::now) {
         val startedAtMillis: Long,
         /** When the pull-to-refresh indicator was let go (the first page and the status scan landed); null until it was. */
         val spinnerReleasedAtMillis: Long? = null,
-        /** When the last pass of the refresh ended; null while something is still on the wire. */
-        val settledAtMillis: Long? = null,
         val stages: List<Stage> = emptyList(),
     ) {
         val totalCalls: Int get() = stages.sumOf { it.calls }
         val spinnerMs: Long? get() = spinnerReleasedAtMillis?.let { it - startedAtMillis }
+        /** When the last pass recorded so far ended — the refresh's settle, once nothing else appends; null before any pass. */
+        val settledAtMillis: Long? get() = stages.maxOfOrNull { it.endedAtMillis }
         val settledMs: Long? get() = settledAtMillis?.let { it - startedAtMillis }
     }
 
@@ -46,7 +46,7 @@ class RefreshStats(private val now: () -> Long = AppClock::now) {
     fun stage(name: String, calls: Int, startedAtMillis: Long, endedAtMillis: Long = now(), note: String? = null) {
         _snapshot.update { current ->
             val base = current ?: Snapshot(startedAtMillis = startedAtMillis)
-            base.copy(stages = base.stages + Stage(name, calls, startedAtMillis, endedAtMillis, note), settledAtMillis = null)
+            base.copy(stages = base.stages + Stage(name, calls, startedAtMillis, endedAtMillis, note))
         }
     }
 
@@ -60,10 +60,5 @@ class RefreshStats(private val now: () -> Long = AppClock::now) {
 
     fun spinnerReleased() {
         _snapshot.update { it?.copy(spinnerReleasedAtMillis = it.spinnerReleasedAtMillis ?: now()) }
-    }
-
-    /** The last pass ended: what the record holds is the whole refresh — until another pass appends to it. */
-    fun settled() {
-        _snapshot.update { it?.copy(settledAtMillis = now()) }
     }
 }

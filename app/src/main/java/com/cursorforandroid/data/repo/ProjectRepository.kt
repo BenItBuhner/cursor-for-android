@@ -241,7 +241,6 @@ class ProjectRepository(
             syncLineage(rootIds)
             // The roots the memberships admitted have their rows fetched like the ones the pass named.
             agents.materializeRoots(budget = ROOT_FETCH_BUDGET)
-            stats.settled()
         }
     }
 

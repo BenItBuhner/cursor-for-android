@@ -892,9 +892,15 @@ class AgentRepository(
                     page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
                     if (page.items.isNotEmpty()) {
                         if (pagesRead == 1) prime?.let { withTimeoutOrNull(ACCOUNT_WORD_WAIT_MS) { it.join() } }
-                        // Rows the earlier legacy read knew are enriched as their page lands, not only at the end.
+                        // Rows the earlier legacy read knew are enriched as their page lands, not only at the end;
+                        // the demo's account word — which chats are Projects, which hang off which — is local and
+                        // free, so its rows are published placed from the first page, as the account's are.
                         val enrichment = legacyRead.rows
-                        publish { it.withPage(page.items).let { withRows -> if (enrichment.isNotEmpty()) withRows.withLegacy(enrichment) else withRows } }
+                        publish { s ->
+                            s.withPage(page.items)
+                                .let { withRows -> if (enrichment.isNotEmpty()) withRows.withLegacy(enrichment) else withRows }
+                                .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
+                        }
                     }
                     if (pagesRead == 1) {
                         // The first page is on screen and the status scan is about to land: the pull-to-refresh indicator
@@ -964,7 +970,6 @@ class AgentRepository(
                 stats.timed("account records by id", calls = { n: Int -> n }) { materializeRecords(startedIn) }
             }
             publish { it.copy(isSettling = false) }
-            stats.settled()
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->

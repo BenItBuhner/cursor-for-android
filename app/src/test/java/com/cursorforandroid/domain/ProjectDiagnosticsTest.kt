@@ -85,7 +85,6 @@ class ProjectDiagnosticsTest {
         stats.spinnerReleased()
         clock += 240
         stats.stage("memberships (workers + children per root)", calls = 12, startedAtMillis = 1_000_100L, endedAtMillis = clock, note = "6 roots read, 2 unchanged and skipped")
-        stats.settled()
         val report = ProjectDiagnostics.render(
             ProjectDiagnostics.Input(
                 appVersion = "0.3.30", nowIso = "2026-09-18T15:00:00Z", extendedMode = true, projectsCapability = true, accountSession = true,
@@ -94,7 +93,7 @@ class ProjectDiagnosticsTest {
             ),
         )
         assertThat(report).contains("refresh:")
-        assertThat(report).contains("spinnerReleased=+60ms settled=+300ms calls=14")
+        assertThat(report).contains("spinnerReleased=+60ms lastStageEnded=+300ms calls=14")
         assertThat(report).contains("+0ms → +60ms (60ms)  2 × v1 pages · 180 rows")
         assertThat(report).contains("+100ms → +300ms (200ms)  12 × memberships (workers + children per root) · 6 roots read, 2 unchanged and skipped")
         // Before any refresh this process, the block says so rather than inventing one.
