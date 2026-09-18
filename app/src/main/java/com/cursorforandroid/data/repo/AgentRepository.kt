@@ -41,11 +41,13 @@ import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LineageSignal
 import com.cursorforandroid.domain.McpServer
 import com.cursorforandroid.domain.ModelParam
+import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
+import com.cursorforandroid.domain.SendDiagnostics
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
@@ -203,6 +205,27 @@ fun LaunchRequest.toCreateAgentDto(): CreateAgentRequestDto {
         mcpServers = mcpServers.toInlineServers(),
         mode = if (planMode) "plan" else null,
     )
+}
+
+/**
+ * What the launch names as the place to run, for the diagnostics (see [SendDiagnostics.LaunchLine]) — the decision
+ * [toCreateAgentDto] encodes, in words: a repository at a branch, the explicit no-repo form, a named cloud environment,
+ * a pool or a machine; on the account's start ([via] `account`) a repository, a named environment, or the account's
+ * personal no-repo environment. No URL or name: the export carries none.
+ */
+fun LaunchRequest.launchTarget(via: String): String {
+    val where = when {
+        env.type == EnvType.POOL -> "pool"
+        env.type == EnvType.MACHINE -> "machine"
+        env.apiName != null -> "named cloud"
+        else -> null
+    }
+    return when {
+        repoUrl != null -> "repo(" + (ref?.takeIf { it.isNotBlank() }?.let { "ref" } ?: "default branch") + ")" + (where?.let { " on $it" } ?: "")
+        where != null -> "env($where)"
+        via == "account" -> "no-repo(personal environment)"
+        else -> "no-repo(repos:[])"
+    }
 }
 
 /**
@@ -447,6 +470,7 @@ class AgentRepository(
         rootUnresolved.clear()
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
+        synchronized(launchTraces) { launchTraces.clear() }
     }
 
     /**
@@ -1458,20 +1482,23 @@ class AgentRepository(
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, saveImages: Boolean = true, progress: UploadProgress = UploadProgress.NONE): Result<Launched> {
         val startedIn = token()
+        val trace = LaunchTrace(request)
+        request.agentId?.let { id -> synchronized(launchTraces) { launchTraces[id] = trace } }
         val result = runCatching {
             val api = session.current.api
             val (dto, run) = if (request.files.isNotEmpty()) {
-                startWithFiles(api, request, progress)
+                startWithFiles(api, request, progress, trace)
             } else try {
                 // Off the main thread: base64-encoding the images and serializing the body happen before the call is
                 // enqueued, on whichever thread makes it.
-                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }
+                withContext(Dispatchers.IO) { api.createAgent(request.toCreateAgentDto()) }.let { it.agent to it.run }.also { (_, run) -> trace.accepted(run) }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 val id = request.agentId ?: throw t
                 when {
-                    t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id)
-                    t.isLostReply() -> recoverLostReply(api, id) ?: throw LaunchUnansweredException(t)
+                    t.toCursorError()?.code == AGENT_ID_CONFLICT -> adopt(api, id).also { (_, run) -> trace.adopted("after 409 agent_id_conflict", run) }
+                    t.isLostReply() -> recoverLostReply(api, id)?.also { (_, run) -> trace.adopted("after a lost reply (${t.javaClass.simpleName})", run) }
+                        ?: throw LaunchUnansweredException(t)
                     else -> throw t
                 }
             }
@@ -1495,11 +1522,75 @@ class AgentRepository(
             Launched(agent, run)
         }
         if (result.isFailure) {
+            val failure = result.exceptionOrNull()
+            trace.failed(failure)
             request.agentId?.let { discardLaunch(it, startedIn) }
-            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+            if (failure is CancellationException) throw failure
         }
         return result
     }
+
+    /**
+     * One launch's decision and its outcome, for the diagnostics' `send:` block (see [SendDiagnostics.LaunchLine]):
+     * which request it went out as, what it named as the place to run, and what came of it.
+     */
+    private class LaunchTrace(request: LaunchRequest) {
+        val atMillis: Long = AppClock.now()
+        /** `account` for a prompt with files (the account's start), `v1` for the documented create. */
+        val via: String = if (request.files.isNotEmpty()) "account" else "v1"
+        val target: String = request.launchTarget(via)
+        val files: Int = request.files.size
+        val images: Int = request.images.size
+        @Volatile var outcome: String = "in flight"
+        @Volatile var detail: String? = null
+
+        fun accepted(run: RunDto?) = settle("accepted" + run.tail())
+
+        /** The chat an earlier attempt created was taken over ([how] says what told the launch so), with its run when that could be read. */
+        fun adopted(how: String, run: RunDto?) = settle("adopted $how" + run.tail())
+
+        fun settle(outcome: String, detail: String? = null) {
+            this.outcome = outcome
+            this.detail = detail?.let(::redact)
+        }
+
+        fun failed(t: Throwable?) {
+            if (outcome != "in flight") return
+            val error = t?.toCursorError()
+            val connect = t as? ConnectRpcException
+            settle(
+                when {
+                    t is CancellationException -> "cancelled"
+                    t is LaunchCancelledException -> "stopped from the chat"
+                    t is LaunchUnansweredException -> "unanswered" + (t.cause?.let { " (${it.javaClass.simpleName})" } ?: "")
+                    error != null -> "refused http=${error.httpCode} code=${error.code}"
+                    connect != null -> "refused by the account http=${connect.httpCode}" + (connect.code?.let { " code=$it" } ?: "")
+                    t is IOException -> "no answer (${t.javaClass.simpleName})"
+                    else -> "failed before the request (${t?.javaClass?.simpleName ?: "-"})"
+                },
+                // The server's words when it gave any (the API's body, the account's reason); the exception's otherwise.
+                error?.message ?: t?.message,
+            )
+        }
+
+        fun line(): SendDiagnostics.LaunchLine = SendDiagnostics.LaunchLine(Instant.ofEpochMilli(atMillis).toString(), via, target, files, images, outcome, detail)
+
+        private companion object {
+            fun RunDto?.tail(): String = this?.let { " run=${ProjectDiagnostics.tail(it.id)}" } ?: ""
+
+            /** The server's words without any id, URL or quoted text, as the export prints them. */
+            fun redact(text: String): String =
+                text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").replace(Regex("\"[^\"]*\""), "\"…\"").take(160)
+        }
+    }
+
+    /** The launches made from here this process, by chat id, the newest [MAX_LAUNCH_TRACES] kept; cleared with the list. */
+    private val launchTraces = object : LinkedHashMap<String, LaunchTrace>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LaunchTrace>?): Boolean = size > MAX_LAUNCH_TRACES
+    }
+
+    /** How [agentId] was launched from this device, and how that ended (see [SendDiagnostics.LaunchLine]); null for a chat not launched here this process. */
+    fun launchDiagnostics(agentId: String): SendDiagnostics.LaunchLine? = synchronized(launchTraces) { launchTraces[agentId] }?.line()
 
     /**
      * A launch whose prompt carries files, the way the desktop starts one: the files are up already, from the moment
@@ -1511,7 +1602,7 @@ class AgentRepository(
      * first run is read once it is named, asked for a few times as [recoverLostReply] does. A machine or pool is
      * refused here, before anything is sent: the desktop's private-worker start has no equivalent in this request.
      */
-    private suspend fun startWithFiles(api: CursorApi, request: LaunchRequest, progress: UploadProgress): Pair<AgentDto, RunDto?> {
+    private suspend fun startWithFiles(api: CursorApi, request: LaunchRequest, progress: UploadProgress, trace: LaunchTrace): Pair<AgentDto, RunDto?> {
         val id = requireNotNull(request.agentId) { "A launch with files needs the client-minted agent id." }
         val startApi = start ?: throw IllegalStateException(FILES_NEED_EXTENDED)
         val uploader = uploads ?: throw IllegalStateException(FILES_NEED_EXTENDED)
@@ -1519,7 +1610,7 @@ class AgentRepository(
         if (request.env.type == EnvType.POOL || request.env.type == EnvType.MACHINE) throw IllegalArgumentException(FILES_NEED_CLOUD)
         // The files went up when they were attached and carry their references; one that did not is uploaded here.
         val uploaded = uploader().ensure(request.files, progress)
-        startApi().start(
+        val record = startApi().start(
             StartRequest(
                 agentId = id,
                 text = request.prompt,
@@ -1536,7 +1627,29 @@ class AgentRepository(
                 mcpServers = request.mcpServers,
             ),
         )
-        return recoverLostReply(api, id) ?: throw LaunchUnansweredException(IOException("The chat was started on your account but has not appeared in the API yet."))
+        recoverLostReply(api, id)?.let { (dto, run) -> return (dto to run).also { trace.accepted(run) } }
+        // The account started the chat and said so; the documented API has not listed it in the moments since. The
+        // chat exists, so the row stands — from the account's record and what the request asked for — rather than
+        // being rolled back as if nothing had been created: the list's next read brings the API's record, and the
+        // transcript loads when the API has the chat. Sending the draft again would only start a second chat.
+        trace.settle("stood in from the account's record, not listed by the API after $lostReplyProbes reads")
+        return request.standIn(id, record.name) to null
+    }
+
+    /** The row for a chat the account created under [id] and the API has not listed yet: the record's name over the request's facts. */
+    private fun LaunchRequest.standIn(id: String, recordName: String?): AgentDto {
+        val now = Instant.ofEpochMilli(AppClock.now()).toString()
+        return AgentDto(
+            id = id,
+            name = recordName?.trim()?.takeIf { it.isNotEmpty() },
+            status = "ACTIVE",
+            env = AgentEnvDto(type = "cloud", name = env.apiName),
+            url = "https://cursor.com/agents/$id",
+            createdAt = now,
+            updatedAt = now,
+            latestRunId = null,
+            repos = listOfNotNull(repoUrl?.let { RepoConfigDto(url = it, startingRef = ref?.ifBlank { null }) }),
+        )
     }
 
     /** The agent an earlier attempt created under the client-minted [id], with its latest run when that can be read. */
@@ -1978,6 +2091,8 @@ class AgentRepository(
         /** Reads of the chat by id after a launch's reply was lost, and the wait between them: about a quarter of a minute in all. */
         const val LOST_REPLY_PROBES = 5
         const val LOST_REPLY_PROBE_DELAY_MS = 3_000L
+        /** Launches remembered for the diagnostics, by chat id. */
+        private const val MAX_LAUNCH_TRACES = 32
         /** Same cap as `POST /v1/agents` `name` and the official rename field. */
         private const val MAX_NAME_LENGTH = 100
         /** Why [rename] refuses with Extended mode off; the screens hide the action, this is for whatever still asks. */

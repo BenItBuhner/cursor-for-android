@@ -183,17 +183,24 @@ class TranscriptDiagnosticsTest {
                 SendDiagnostics.Attempt("2026-09-17T10:00:08Z", "…q-0", "runs", "accepted", "run-9"),
             ),
             accepted = listOf("…run-9"),
+            launch = SendDiagnostics.LaunchLine("2026-09-17T09:59:00Z", via = "account", target = "no-repo(personal environment)", files = 1, images = 1, outcome = "refused by the account http=400 code=invalid_argument", detail = "At least one model details is required"),
         )
         val report = TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = send),
         )
         assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle accountAgeMs=-2000")
+        // The launch that started the chat from here: which request, what it named as the place to run, what came of it.
+        assertThat(report).contains("  launch: at=2026-09-17T09:59:00Z via=account target=no-repo(personal environment) files=1 images=1 outcome=refused by the account http=400 code=invalid_argument \"At least one model details is required\"")
         assertThat(report).contains("  queue: 1 […q-1 chars=42 busyRefusals=3 heldFor=83s]")
         assertThat(report).contains("  attempts: 3 accepted=[…run-9]")
         assertThat(report).contains("    2026-09-17T10:00:05Z …q-1 via=runs busy \"Agent is busy.\"")
         assertThat(report).contains("    2026-09-17T10:00:08Z …q-0 via=runs accepted \"run-9\"")
-        // A chat nothing was sent or queued from has no block.
+        // A chat nothing was sent or queued from has no block; one only launched from here has the block with the launch alone.
         assertThat(TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList())))).doesNotContain("send:")
+        val launchedOnly = send.copy(decision = null, decidedAtIso = null, queue = emptyList(), attempts = emptyList(), accepted = emptyList())
+        val onlyLaunch = TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = launchedOnly))
+        assertThat(onlyLaunch).contains("send: decision=none\n  launch: at=2026-09-17T09:59:00Z via=account")
+        assertThat(onlyLaunch).contains("  queue: 0\n  attempts: 0\n")
     }
 
     @Test
