@@ -3,10 +3,12 @@ package com.cursorforandroid.ui.components
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import com.cursorforandroid.ui.theme.CursorDimens
 
 /**
  * Keeps whatever it wraps — the follow-up composer — resting on the top edge of the keyboard while there is one, and
@@ -30,3 +32,22 @@ import androidx.compose.ui.Modifier
  */
 @Composable
 fun Modifier.keyboardInsetPadding(): Modifier = this.windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+
+/**
+ * Docks the follow-up composer (with the queue and goal strips stacked over it) at the bottom of a chat:
+ * [CursorDimens.composerGutter] of air at each side of the window, and under the box [CursorDimens.composerBottomGap]
+ * on top of the keyboard-or-navigation-bar inset ([keyboardInsetPadding]).
+ *
+ * The inset is added under the gap rather than traded against it. With `max(gutter, inset)` the box would sit
+ * `gutter` above the window's edge on a device that hides its bar but flush against a three-button bar, and the gap
+ * the eye reads — to the bar, to the keyboard, or to the edge when there is neither — would differ by mode. Added,
+ * that gap is the same everywhere: on a gesture bar the box stands above the bar's 24dp region with the home handle
+ * in it, on three buttons above their 48dp, over a keyboard above its top edge, and on a hidden bar above the
+ * display's edge, [CursorDimens.composerBottomGap] each time. Because the inset is the union of the two, the
+ * keyboard never adds the bar's height a second time.
+ */
+@Composable
+fun Modifier.composerDockPadding(): Modifier = this
+    .padding(horizontal = CursorDimens.composerGutter)
+    .padding(bottom = CursorDimens.composerBottomGap)
+    .keyboardInsetPadding()
