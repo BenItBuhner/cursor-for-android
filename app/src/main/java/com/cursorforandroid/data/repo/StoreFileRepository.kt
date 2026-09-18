@@ -2,6 +2,7 @@ package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.StoreReadTarget
+import com.cursorforandroid.data.api.await
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.MediaRef
@@ -14,8 +15,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 
 /**
  * Reads the files an agent's reply points into an Agent Store for (`/cursor/stores/<mount>/…`, see
@@ -159,6 +162,41 @@ class StoreFileRepository(
     /** The text kept for [ref], if any, without asking the account. */
     suspend fun cachedText(ref: MediaRef.Store): String? = cache?.child(TEXTS)?.read(textKey(ref), CachedText.serializer(), VERSION)?.value?.text
 
+    /**
+     * Writes [text] as a new file at [relativePath] of the store [ownerId] owns, the way the agents' own store mount
+     * writes a small file (Cursor 3.20.21's `cursor-agent-store-fuse`): `PresignAgentStoreWrites` for the URL and the
+     * headers, then one `PUT` of the bytes to it with those headers — the SHA-256 checksum and `If-None-Match: *`
+     * among them; the length OkHttp writes from the body itself. Never overwrites: the write expects no file at the
+     * path, and a path already taken is said so. Returns the path written, as the store names it.
+     */
+    suspend fun writeText(ownerId: String, relativePath: String, text: String): String {
+        if (!available()) throw IOException(NOT_AVAILABLE)
+        val storeId = storeId(ownerId) ?: throw IOException(NO_STORE)
+        val store = api() ?: throw IOException(NOT_AVAILABLE)
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        val instruction = store.presignWrite(storeId, relativePath, bytes.size.toLong(), sha) ?: throw IOException(NO_WRITE)
+        if (instruction.preconditionFailed) throw IOException(FILE_EXISTS)
+        val request = Request.Builder()
+            .url(instruction.url)
+            .put(bytes.toRequestBody(null))
+            .apply { instruction.headers.forEach { (name, value) -> if (!name.equals("Content-Length", ignoreCase = true)) header(name, value) } }
+            .build()
+        withContext(Dispatchers.IO) {
+            http.newCall(request).await().use { response ->
+                when {
+                    response.isSuccessful -> Unit
+                    response.code == 412 -> throw IOException(FILE_EXISTS)
+                    else -> {
+                        val code = PromptUploader.s3ErrorCode(response.body?.string().orEmpty())
+                        throw IOException("The store answered ${response.code} for the write${code?.let { " ($it)" }.orEmpty()}.")
+                    }
+                }
+            }
+        }
+        return instruction.relativePath
+    }
+
     /** On sign-out or a backend switch: nothing resolved for the previous account counts for the next; the files kept go too. */
     suspend fun resetAll() {
         synchronized(stores) { stores.clear() }
@@ -221,6 +259,8 @@ class StoreFileRepository(
         const val NOT_AVAILABLE = "The Project's context can be read with Extended mode on."
         const val NO_STORE = "The account lists no context store for this Project."
         const val NO_FILE = "The store has no such file."
+        const val NO_WRITE = "The store gave no place to write the file."
+        const val FILE_EXISTS = "The store already has a file at that path."
         private const val VERSION = 1
         private const val STORES = "stores"
         private const val TEXTS = "texts"

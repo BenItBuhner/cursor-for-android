@@ -94,7 +94,7 @@ class SettingsScreenTest {
         assertAbsent(
             "Signed in with", "Key expires", "Key storage", "Manage this app's key", "Manage API keys", "Open cursor.com/agents",
             "Warning acknowledged", "Sync pinned chats", "Last synced",
-            ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
+            ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE,
             SettingsDebugCopy.GROUP_ABOUT, SettingsDebugCopy.GROUP_DIAGNOSTICS, SettingsDebugCopy.GROUP_CREDITS, SettingsCopy.CREDITS, "Advanced", "Privacy", "Updates",
         )
         // No explanatory paragraph but the disclaimer: nothing on the page mentions a license.
@@ -138,7 +138,7 @@ class SettingsScreenTest {
         version.performTouchInput { longClick() }
         compose.waitUntil(10_000) { debugSheetShown() }
         listOf(
-            SettingsDebugCopy.TITLE, SettingsDebugCopy.GROUP_DIAGNOSTICS, ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE,
+            SettingsDebugCopy.TITLE, SettingsDebugCopy.GROUP_DIAGNOSTICS, ProjectDiagnosticsCopy.TITLE, TranscriptDiagnosticsCopy.TITLE, SendDiagnosticsCopy.TITLE,
             SettingsDebugCopy.GROUP_ABOUT, SettingsDebugCopy.API_DOCS, SettingsDebugCopy.SOURCE, SettingsDebugCopy.GROUP_CREDITS, SettingsCopy.CREDITS,
         ).forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("Cloud Agents v1 · v0 transcript").assertExists()

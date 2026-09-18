@@ -3,6 +3,7 @@ package com.cursorforandroid.data.repo
 import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.PresignedStoreWrite
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.local.JsonDiskCache
 import com.cursorforandroid.domain.Capabilities
@@ -24,6 +25,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
+import java.util.Base64
 
 /**
  * The reads behind a `/cursor/stores/…` path in a reply: which store the Project's coordinator owns, found once and
@@ -56,6 +59,15 @@ class StoreFileRepositoryTest {
             targets += target
             val url = if (serve) server.url("/signed/$relativePath?n=${calls.size}").toString() else "https://files.cursor.sh/$relativePath?n=${calls.size}"
             return PresignedStoreRead(relativePath, url, expiresAt)
+        }
+        /** Each write presigned: the path, the size and the checksum declared for it. */
+        val writes = mutableListOf<Triple<String, Long, String>>()
+        var writeExists = false
+        override suspend fun presignWrite(storeId: String, relativePath: String, sizeBytes: Long, sha256Hex: String): PresignedStoreWrite? {
+            calls += "presignWrite:$storeId:$relativePath"
+            writes += Triple(relativePath, sizeBytes, sha256Hex)
+            val headers = mapOf("Content-Length" to sizeBytes.toString(), "x-amz-checksum-sha256" to Base64.getEncoder().encodeToString(sha256Hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()), "If-None-Match" to "*")
+            return PresignedStoreWrite(relativePath, server.url("/put/$relativePath").toString(), headers, expiresAt, preconditionFailed = writeExists)
         }
     }
 
@@ -235,5 +247,54 @@ class StoreFileRepositoryTest {
         repository(cache = cache).readText(document)
         capabilities = Capabilities.DOCUMENTED
         assertThat(repository(cache = cache).readText(document)).isEqualTo("# Project UI parity\n\nThe tabbed panel.")
+    }
+
+    /**
+     * The one write: a new file, presigned by its size and SHA-256 and `PUT` to the URL the store named with the
+     * headers it named — the checksum and `If-None-Match: *`, the length from the body itself — and the path written
+     * answered. The way the agents' own store mount writes a small file (Cursor 3.20.21's `cursor-agent-store-fuse`).
+     */
+    @Test
+    fun `a diagnostics file is written as a new store file, presigned by size and checksum and PUT with the headers named`() = runBlocking<Unit> {
+        server.start()
+        server.enqueue(MockResponse().setResponseCode(200))
+        val text = "hello store probe two\n"
+        val files = repository()
+
+        val written = files.writeText("bc-coordinator", "inbox/diagnostics/20260918T180802Z.txt", text)
+
+        assertThat(written).isEqualTo("inbox/diagnostics/20260918T180802Z.txt")
+        val sha = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+        assertThat(sha).isEqualTo("198efd78ec2c7bb8a82427622370c72851efc8503bf5a4ad7cc323db8b4bbf34")
+        assertThat(api.writes).containsExactly(Triple("inbox/diagnostics/20260918T180802Z.txt", 22L, sha))
+        assertThat(api.calls.first()).isEqualTo("store:bc-coordinator")
+        val put = server.takeRequest()
+        assertThat(put.method).isEqualTo("PUT")
+        assertThat(put.path).isEqualTo("/put/inbox/diagnostics/20260918T180802Z.txt")
+        assertThat(put.getHeader("x-amz-checksum-sha256")).isEqualTo("GY79eOwse7ioJCdiI3DHKFHvyFA79aStfMMj24tLvzQ=")
+        assertThat(put.getHeader("If-None-Match")).isEqualTo("*")
+        assertThat(put.getHeader("Content-Length")).isEqualTo("22")
+        assertThat(put.getHeader("Authorization")).isNull()
+        assertThat(put.body.readUtf8()).isEqualTo(text)
+    }
+
+    @Test
+    fun `a write is refused before anything is sent when the path is taken, and the storage's refusal is said with its code`() = runBlocking<Unit> {
+        server.start()
+        val files = repository()
+        api.writeExists = true
+        assertThat(assertThrows(IOException::class.java) { runBlocking { files.writeText("bc-coordinator", "inbox/taken.txt", "x") } }).hasMessageThat().isEqualTo(StoreFileRepository.FILE_EXISTS)
+        assertThat(server.requestCount).isEqualTo(0)
+        api.writeExists = false
+        server.enqueue(MockResponse().setResponseCode(412))
+        assertThat(assertThrows(IOException::class.java) { runBlocking { files.writeText("bc-coordinator", "inbox/raced.txt", "x") } }).hasMessageThat().isEqualTo(StoreFileRepository.FILE_EXISTS)
+        server.enqueue(MockResponse().setResponseCode(403).setBody("<Error><Code>SignatureDoesNotMatch</Code></Error>"))
+        assertThat(assertThrows(IOException::class.java) { runBlocking { files.writeText("bc-coordinator", "inbox/refused.txt", "x") } }).hasMessageThat().isEqualTo("The store answered 403 for the write (SignatureDoesNotMatch).")
+        // No store listed for the owner, and no account at all: said as such, nothing presigned.
+        api.storeId = null
+        assertThat(assertThrows(IOException::class.java) { runBlocking { repository(cache = null).writeText("bc-other", "inbox/x.txt", "x") } }).hasMessageThat().isEqualTo(StoreFileRepository.NO_STORE)
+        capabilities = Capabilities.DOCUMENTED
+        assertThat(assertThrows(IOException::class.java) { runBlocking { files.writeText("bc-coordinator", "inbox/x.txt", "x") } }).hasMessageThat().isEqualTo(StoreFileRepository.NOT_AVAILABLE)
+        assertThat(api.writes.map { it.first }).containsExactly("inbox/taken.txt", "inbox/raced.txt", "inbox/refused.txt").inOrder()
     }
 }

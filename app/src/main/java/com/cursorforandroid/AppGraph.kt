@@ -36,6 +36,7 @@ import com.cursorforandroid.data.api.InteractionApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
+import com.cursorforandroid.data.api.PresignedStoreWrite
 import com.cursorforandroid.data.api.StoreReadTarget
 import com.cursorforandroid.data.api.ProjectActionsApi
 import com.cursorforandroid.data.api.ConnectProjectCreationApi
@@ -104,6 +105,7 @@ import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.ContextEntry
 import com.cursorforandroid.domain.DesktopPage
+import com.cursorforandroid.domain.DiagnosticsInbox
 import com.cursorforandroid.domain.InteractionResolution
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.ProjectAppearance
@@ -330,6 +332,7 @@ class AppGraph(
         override suspend fun entries(storeId: String, relativePath: String): List<ContextEntry> = lazyProjectApi.value.entries(storeId, relativePath)
         override suspend fun readFile(storeId: String, relativePath: String): String = lazyProjectApi.value.readFile(storeId, relativePath)
         override suspend fun presignRead(target: StoreReadTarget, relativePath: String): PresignedStoreRead? = lazyProjectApi.value.presignRead(target, relativePath)
+        override suspend fun presignWrite(storeId: String, relativePath: String, sizeBytes: Long, sha256Hex: String): PresignedStoreWrite? = lazyProjectApi.value.presignWrite(storeId, relativePath, sizeBytes, sha256Hex)
     }
     private val agentFiles = object : WorkspaceFilesApi, DiffDetailsApi {
         override suspend fun listFiles(agentId: String): WorkspaceTree = lazyAgentFiles.value.listFiles(agentId)
@@ -861,6 +864,20 @@ class AppGraph(
                 send = agentId?.let { if (lazyFollowUps.isInitialized()) followUps.sendDiagnostics(it) else null },
             ),
         )
+    }
+
+    /**
+     * Both exports above, written as one file into the Cursor for Android Project's context store
+     * (`inbox/diagnostics/<timestamp>.txt`, see [DiagnosticsInbox]) through the account's store writes, so the
+     * Project's workers read them from the store rather than from a paste. Extended mode: the store is found and
+     * written through the same client the Context browser reads with. Returns the path written; throws with the
+     * reason when it could not be — the mode off, no store listed, the account refusing, the storage refusing.
+     */
+    suspend fun sendDiagnosticsToProject(): String {
+        if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
+        val now = AppClock.now()
+        val text = DiagnosticsInbox.compose(BuildConfig.VERSION_NAME, now, projectDiagnosticsReport(), transcriptDiagnosticsReport())
+        return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.path(now), text)
     }
 
     suspend fun signOut() = session.signOut()

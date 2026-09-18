@@ -331,6 +331,52 @@ class ProjectApiTest {
         assertThat(failure.userMessage()).isEqualTo("Exactly one of share_id, store_id, or legacy agent_id is required.")
     }
 
+    /**
+     * `PresignAgentStoreWrites {agent_id, files[{rel_path, size_bytes, sha, expect_absent}], store_id?, supports_signed_content_length}`
+     * → `{instructions: AgentStoreWriteInstruction {rel_path, url, headers, expires_at_ms, conflict?}[]}` (aiserver.v1, Cursor
+     * 3.20.21), as the agents' own store mount makes it for a small file: the store by its id and no agent, the file by
+     * its size (an int64 string) and its SHA-256 in hex, expected absent; the answer names the URL and the headers the
+     * `PUT` must carry, and nothing else is called for a single part.
+     */
+    @Test
+    fun `a new store file is written to the URL PresignAgentStoreWrites hands out, declared by size and checksum`() = runBlocking<Unit> {
+        server.enqueue(session("s"))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"instructions":[{"relPath":"inbox/diagnostics/20260918T180802Z.txt","url":"https://agent-stores.s3.us-east-1.amazonaws.com/stores/st-proj/inbox/diagnostics/20260918T180802Z.txt?X-Amz-Signature=sig",
+                     "headers":{"Content-Length":"22","x-amz-checksum-sha256":"GY79eOwse7ioJCdiI3DHKFHvyFA79aStfMMj24tLvzQ=","If-None-Match":"*"},"expiresAtMs":"1789755782726",
+                     "conflict":{"relPath":"inbox/diagnostics/20260918T180802Z.conflict.txt","url":"https://agent-stores.s3.us-east-1.amazonaws.com/conflict","headers":{},"expiresAtMs":"1789755782726"}}]}""",
+            ),
+        )
+        server.enqueue(MockResponse().setBody("""{"instructions":[{"relPath":"inbox/x.txt","url":"https://agent-stores.s3.us-east-1.amazonaws.com/x","headers":{},"primaryPreconditionFailed":true}]}"""))
+        server.enqueue(MockResponse().setBody("""{"instructions":[]}"""))
+
+        val write = api.presignWrite("st-proj", "inbox/diagnostics/20260918T180802Z.txt", 22L, "198efd78ec2c7bb8a82427622370c72851efc8503bf5a4ad7cc323db8b4bbf34")!!
+        assertThat(write.relativePath).isEqualTo("inbox/diagnostics/20260918T180802Z.txt")
+        assertThat(write.url).startsWith("https://agent-stores.s3.us-east-1.amazonaws.com/stores/st-proj/inbox/diagnostics/")
+        assertThat(write.headers).containsExactly("Content-Length", "22", "x-amz-checksum-sha256", "GY79eOwse7ioJCdiI3DHKFHvyFA79aStfMMj24tLvzQ=", "If-None-Match", "*")
+        assertThat(write.expiresAtMillis).isEqualTo(1_789_755_782_726L)
+        assertThat(write.preconditionFailed).isFalse()
+        // The storage already has a file at the path: the instruction says so before anything is sent.
+        assertThat(api.presignWrite("st-proj", "inbox/x.txt", 1L, "00")!!.preconditionFailed).isTrue()
+        assertThat(api.presignWrite("st-proj", "inbox/y.txt", 1L, "00")).isNull()
+
+        server.takeRequest() // the exchange
+        val request = server.takeRequest()
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/PresignAgentStoreWrites")
+        assertThat(request.getHeader("Authorization")).isEqualTo("Bearer s")
+        val body = request.json()
+        assertThat(body.keys).containsExactly("storeId", "files", "supportsSignedContentLength")
+        assertThat(body["storeId"]?.jsonPrimitive?.content).isEqualTo("st-proj")
+        assertThat(body["supportsSignedContentLength"]?.jsonPrimitive?.content).isEqualTo("true")
+        val file = body["files"]!!.jsonArray.single().jsonObject
+        assertThat(file.keys).containsExactly("relPath", "sizeBytes", "sha", "expectAbsent")
+        assertThat(file["relPath"]?.jsonPrimitive?.content).isEqualTo("inbox/diagnostics/20260918T180802Z.txt")
+        assertThat(file["sizeBytes"]?.jsonPrimitive?.content).isEqualTo("22")
+        assertThat(file["sha"]?.jsonPrimitive?.content).isEqualTo("198efd78ec2c7bb8a82427622370c72851efc8503bf5a4ad7cc323db8b4bbf34")
+        assertThat(file["expectAbsent"]?.jsonPrimitive?.content).isEqualTo("true")
+    }
+
     @Test
     fun `steer outcomes are read as the account spells them`() {
         assertThat(SteerOutcome.parse("OUTCOME_QUEUED")).isEqualTo(SteerOutcome.QUEUED)
