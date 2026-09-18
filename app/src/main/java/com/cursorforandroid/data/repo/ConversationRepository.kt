@@ -699,7 +699,10 @@ class ConversationRepository(
          */
         fun recordNeedsRuns(): Boolean {
             val window = recordWindow ?: return false
-            return !runsComplete && olderRunsCursor != null && allRuns().size < window.turns.size
+            if (runsComplete || olderRunsCursor == null) return false
+            // The runs of prompts sent from here that the record has not caught up with pair with no turn of the window.
+            val trailing = local.count { window.turnOf(it) == null }
+            return allRuns().size - trailing < window.turns.size
         }
 
         /**
