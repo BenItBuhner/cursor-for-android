@@ -1625,7 +1625,14 @@ class AgentRepository(
         if (composers.none { it.status != null }) return
         synchronized(publishLock) {
             if (generation.get() == startedIn) {
-                _runningScan.update { it.copy(accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id }, accountAtMillis = AppClock.now()) }
+                val now = AppClock.now()
+                _runningScan.update {
+                    it.copy(
+                        accountIds = composers.filter { c -> c.isRunning }.mapTo(LinkedHashSet()) { c -> c.id },
+                        accountAtMillis = now,
+                        accountWord = it.accountWord + composers.filter { c -> c.status != null }.associate { c -> c.id to RunningScan.AccountWord(c.isRunning, now) },
+                    )
+                }
             }
         }
     }

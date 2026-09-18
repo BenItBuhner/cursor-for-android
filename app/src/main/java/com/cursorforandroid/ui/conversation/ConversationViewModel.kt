@@ -476,7 +476,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         val attached = files.value
         if ((text.isEmpty() && images.isEmpty() && attached.isEmpty()) || sending.value) return
         val options = picker.value
-        val busy = conversation.value.let { it.runStatus?.isActive == true || it.isStreaming } || graph.agents.agent(agentId)?.isRunning == true
+        // One reading, one source at a time — the freshest that has spoken — shared with the queue's dispatcher, so
+        // what the composer decides and what the queue does never disagree (see SendGate; the `send:` diagnostics).
+        val busy = graph.followUps.decide(agentId).busy
         val caps = capabilities.value
         val accountMode = options.mode?.needsAccountService == true
         if (accountMode && !caps.agentModes) {
@@ -614,14 +616,21 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 picker.update { if (it.override == options.override) it.copy(override = null) else it }
             }.onFailure {
                 // The composer stays editable while a follow-up is in flight, so what was typed since wins; the
-                // prompt that did not go out only comes back to an empty one.
-                if (it.toCursorError()?.code == "agent_busy") enqueue(text, images, emptyList(), options) else restoreDraft(text, images, it)
+                // prompt that did not go out only comes back to an empty one. Refused as busy against every word
+                // here — the server still winding down the last turn — the message goes where the composer would
+                // have put it had it known: the account's queue in Extended mode, which sends it when the agent is
+                // free; this device's otherwise, which waits with a growing pause and says so on the card.
+                if (it.toCursorError()?.code == "agent_busy") {
+                    if (capabilities.value.accountQueue && !graph.session.isDemo) queueOnAccount(text, images, emptyList(), options) else enqueue(text, images, emptyList(), options, refusedAsBusy = true)
+                } else {
+                    restoreDraft(text, images, it)
+                }
             }
             sending.value = false
         }
     }
 
-    private fun enqueue(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
+    private fun enqueue(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState, refusedAsBusy: Boolean = false) {
         graph.followUps.enqueue(
             agentId,
             text,
@@ -632,6 +641,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             modelDisplayName = options.override?.label,
             // The queued message carries the references its files' uploads settled on, so it goes out by them when its turn comes.
             files = attached.map { DraftFile(it.id, it.file.withUpload(graph.attachmentUploads.ref(it.id) ?: it.file.upload)) },
+            refusedAsBusy = refusedAsBusy,
         )
         draft.value = ""
         attachments.value = emptyList()
