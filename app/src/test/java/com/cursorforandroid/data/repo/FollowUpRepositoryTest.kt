@@ -497,7 +497,16 @@ class FollowUpRepositoryTest {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         agents.refresh()
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.activeRunId == "run-1" }
+        // The whole load, not its first word: the runs render ahead of the transcript (activeRunId is run-1 from
+        // then on) while the transcript is still on its way, and the load anchors its newest run on the row's latest
+        // once it lands — a row that had moved to run-2 by then would take the chat with it (seen on a loaded CI
+        // runner). Only the transcript's landing clears isLoading.
+        awaitUntil { conversations.state("bc-1").value.let { it.activeRunId == "run-1" && !it.isLoading } }
+        // And the chat is not to follow the row there on its own either: the load's tail keeps a chat the row calls
+        // running followed, which starts by reading the agent's record — held here, so the chat stays on run-1 until
+        // the steer has stopped the turn, which is the case under test. Released before the send, which settles the row.
+        val detail = CompletableDeferred<Unit>()
+        api.getAgentGate = detail
         // A turn started elsewhere: the list learns of run-2 on its next refresh, the open chat has not reloaded.
         api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
         api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
@@ -512,6 +521,8 @@ class FollowUpRepositoryTest {
 
         // The turn cancelled is the one under way, not the finished one the chat happened to be looking at.
         awaitUntil { api.cancelled == listOf("run-2") }
+        detail.complete(Unit)
+        api.getAgentGate = null
         awaitUntil { sent() == listOf("Now") }
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
     }
