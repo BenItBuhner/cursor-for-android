@@ -83,14 +83,30 @@ fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
  *
  * Not for a surface with a scrollable or a pager inside it: a child's touch-slop detection re-reads every move
  * short of the slop on the Final pass and gives the gesture up if anyone has consumed it — which this does, so a
- * drag on such a child would only ever be taken when fast enough to clear the slop on its first move. There the
- * hit-testing alone does the job (an empty pointer node is enough; see the media viewer's `hitTestBoundary`).
+ * drag on such a child would only ever be taken when fast enough to clear the slop on its first move. There
+ * [hitTestBoundary] does the job: hit testing alone keeps the shell out of reach, and it consumes nothing.
  */
 fun Modifier.opaqueToPointerInput(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
             awaitPointerEvent().changes.forEach { it.consume() }
         }
+    }
+}
+
+/**
+ * A pointer node that takes nothing and answers nothing. Hit testing stops at the topmost sibling that has a
+ * pointer node under the finger, so this alone keeps a touch on a surface drawn over the shell from reaching the
+ * shell — a tap on the surface's blank band, a drag that would have pulled the drawer. It consumes nothing, which
+ * is what makes it right for a surface with a scrollable or a pager inside ([opaqueToPointerInput] is not): a
+ * parent that consumes a move is read by the child's touch-slop detection — on the Final pass, for each move short
+ * of the slop — as someone else having taken the gesture, and only a drag that clears the slop on its first move
+ * is ever taken (the media viewer's pager, #220; the share picker's list). Where a surface has nothing scrollable
+ * in it, either serves.
+ */
+fun Modifier.hitTestBoundary(): Modifier = this.pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) awaitPointerEvent()
     }
 }
 
