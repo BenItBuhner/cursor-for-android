@@ -246,7 +246,8 @@ class ConversationRepository(
      * these agree: the turn's own steps and prompt (its items by identity — a re-read that reuses them is the same
      * turn, whatever object carries it), its run and how this device reads the run's status, its timing, the
      * prompt's images, the trace or the live story standing in for the body (by identity: either is replaced
-     * whole when it changes), whether it is the live newest turn, and the word on a missing body.
+     * whole when it changes), whether it is the live newest turn, the word on a missing body, and which of the
+     * stand-in's message calls are an earlier turn's message said again ([repeats], see `recordItems`).
      */
     private class TurnInputs(
         val turn: RecordTurn,
@@ -258,12 +259,14 @@ class ConversationRepository(
         val liveItems: List<TimelineItem>?,
         val liveNewest: Boolean,
         val notice: NoticeCard?,
+        val repeats: Set<String> = emptySet(),
     ) {
         fun sameAs(other: TurnInputs): Boolean =
             turn.stepIndex == other.turn.stepIndex && turn.stepCount == other.turn.stepCount && turn.items === other.turn.items &&
                 turn.projectMode == other.turn.projectMode && turn.prompt == other.turn.prompt &&
                 run == other.run && runStatus == other.runStatus && timing == other.timing && attachments == other.attachments &&
-                complete === other.complete && liveItems === other.liveItems && liveNewest == other.liveNewest && notice == other.notice
+                complete === other.complete && liveItems === other.liveItems && liveNewest == other.liveNewest && notice == other.notice &&
+                repeats == other.repeats
     }
 
     /** A record turn's items as last rendered, with the inputs they were rendered from. */
@@ -571,6 +574,9 @@ class ConversationRepository(
                 if (sentAt == null) null else window.turns.indices.firstOrNull { i -> (startOf(i) ?: Long.MIN_VALUE) > sentAt }
             }
             val appended = trailing.filter { insertBefore[it] == null }
+            // The coordinator's messages drawn so far in this pass, as their text reads: what a later turn's stand-in
+            // is compared with (see [repeats] below). Only the turns' own rendering adds to it, in window order.
+            var messagesShown: MutableSet<String>? = null
             for ((i, turn) in window.turns.withIndex()) {
                 trailing.forEach { prompt -> if (insertBefore[prompt] == i) items += echo(prompt) }
                 val run = paired.getOrNull(offset + i)
@@ -579,6 +585,14 @@ class ConversationRepository(
                 val complete = run?.let { traces[it.id] }
                 val liveItems = if (complete == null && run != null && current?.runId == run.id && current.items.isNotEmpty()) current.items else null
                 val liveNewest = newest && chatRunning
+                // A run's log (or its stream) standing in for a turn the record shows without any call of the
+                // coordinator's message tool: the turn sent nothing, so a message the log carries that reads as one
+                // drawn earlier is that earlier turn's message said again — a coordinator's log can carry the last
+                // message ahead of the run's own events (Bennett's 2026-09-19 frame: one reply per silent run, the
+                // same words each time). Left out here, where the sources are known; a message the log carries that
+                // no earlier turn showed is drawn, the record having kept the call in no shape this app reads (#202).
+                val standIn = complete ?: liveItems
+                val repeats = if (standIn != null && !turn.hasMessageCall) CoordinatorTranscript.messageCallsReading(standIn, messagesShown ?: emptySet()) else emptySet()
                 val inputs = TurnInputs(
                     turn = turn,
                     run = run,
@@ -589,6 +603,7 @@ class ConversationRepository(
                     liveItems = liveItems,
                     liveNewest = liveNewest,
                     notice = if (complete == null && liveItems == null && !turn.hasBody && !liveNewest) turnBodyNotice(turn, run) else null,
+                    repeats = repeats,
                 )
                 // A turn whose inputs have not moved is the items it was last rendered to — the same instances, so
                 // everything downstream (the rows, the screen's rows) can tell it has not changed without reading it.
@@ -596,6 +611,8 @@ class ConversationRepository(
                     ?: RenderedTurn(inputs, renderTurn(inputs)).also { renderedTurns[turn.stepIndex] = it; perf.turnRendered() }
                 items.addAll(rendered.items)
                 shown += turn.stepIndex
+                val texts = CoordinatorTranscript.messageTexts(rendered.items)
+                if (texts.isNotEmpty()) (messagesShown ?: HashSet<String>().also { messagesShown = it }).addAll(texts)
             }
             // The cache holds the window's turns and nothing else: a turn paged out (see [trimWindow]) leaves it.
             if (renderedTurns.size > shown.size) renderedTurns.keys.retainAll(shown)
@@ -608,6 +625,16 @@ class ConversationRepository(
 
         /** The items the turn at [stepIndex] was last rendered to (see [recordItems]), for the diagnostics; null before it was. */
         fun renderedItems(stepIndex: Int): List<TimelineItem>? = renderedTurns[stepIndex]?.items
+
+        /**
+         * The stand-in the turn at [stepIndex] was last rendered from (its run's log or stream) and the keys of the
+         * message calls left out of it as an earlier turn's message said again (see [recordItems]), for the
+         * diagnostics; nothing when the turn was rendered from the record.
+         */
+        fun renderedRepeats(stepIndex: Int): Pair<List<TimelineItem>, Set<String>> {
+            val inputs = renderedTurns[stepIndex]?.inputs ?: return emptyList<TimelineItem>() to emptySet()
+            return (inputs.complete ?: inputs.liveItems ?: emptyList()) to inputs.repeats
+        }
 
         /**
          * One turn of the record as the transcript shows it: its prompt (an injected turn as its rows), then its
@@ -627,11 +654,12 @@ class ConversationRepository(
                     ?: listOf(UserMessage(promptId, text, startedAt, attachments = inputs.attachments ?: emptyList()))
             }
             when {
-                // The trace the stream gave, whole: its own footer included.
-                inputs.complete != null -> { items += inputs.complete; return items }
+                // The trace the stream gave, whole: its own footer included — less an earlier turn's message it
+                // carries again (see [recordItems]).
+                inputs.complete != null -> { items += CoordinatorTranscript.withoutRepeats(inputs.complete, inputs.repeats); return items }
                 // The story the stream tells so far — unless it has told nothing yet (a stream that will not
                 // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
-                inputs.liveItems != null -> { items += inputs.liveItems; return items }
+                inputs.liveItems != null -> { items += CoordinatorTranscript.withoutRepeats(inputs.liveItems, inputs.repeats); return items }
                 turn.hasBody -> items += turn.items
                 // The record has the turn without its steps: the run's log stands in when it has been replayed
                 // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
@@ -988,14 +1016,25 @@ class ConversationRepository(
                 else -> "none"
             }
             val window = e.recordWindow
+            val coordinator = e.projectMode || CoordinatorTranscript.hasCoordinatorContent(e.state.value.items)
+            // The message calls the rows leave out as copies of an earlier message (see CoordinatorTranscript.repeatedMessages).
+            val presenterRepeats = if (coordinator) CoordinatorTranscript.repeatedMessages(e.state.value.items).keys else emptySet()
+            /** The ids of the message calls of [items] keyed in [keys], as the shape dump names ids. */
+            fun repeatIds(items: List<TimelineItem>, keys: Set<String>): List<String> = CoordinatorTranscript.messageCallIds(items, keys).map { ProjectDiagnostics.tail(it) }
+            /** `rendered=yes|recovered|missing|none via=… [repeat=…]`: what is drawn of [shown], from where, and which calls were copies. */
+            fun renderedWords(shown: List<TimelineItem>, via: String, copies: List<String>): String {
+                val drawn = CoordinatorTranscript.withoutRepeats(shown, presenterRepeats)
+                val stage = CoordinatorTranscript.messageStage(drawn).substringBefore(' ').let { if (it == "body") "yes" else it }
+                return "rendered=$stage via=$via" + (if (copies.isEmpty()) "" else " repeat=${copies.distinct().joinToString(",")}")
+            }
             val runLines = if (window != null) {
                 // From the record: one line per loaded turn, with the run the turn pairs with when the list has it
                 // (paired as [recordItems] pairs them), and in a coordinator's chat the message's stages: what the
-                // record has of the coordinator's word, and what reached the screen from which source.
+                // record has of the coordinator's word, what reached the screen from which source, and which message
+                // call a stand-in carried that was an earlier turn's message again.
                 val trailing = with(e) { local.filter { window.turnOf(it) == null } }.mapTo(HashSet()) { it.run.id }
                 val paired = e.allRuns().filter { it.id !in trailing }
                 val offset = paired.size - window.turns.size
-                val coordinator = e.projectMode || CoordinatorTranscript.hasCoordinatorContent(e.state.value.items)
                 window.turns.mapIndexed { i, turn ->
                     val run = paired.getOrNull(offset + i)
                     val complete = run?.let { e.traces[it.id] }
@@ -1014,13 +1053,17 @@ class ConversationRepository(
                             liveItems != null -> "live"
                             else -> "record"
                         }
-                        "record=${CoordinatorTranscript.messageStage(turn.items)} rendered=${CoordinatorTranscript.messageStage(shown).substringBefore(' ').let { if (it == "body") "yes" else it }} via=$via"
+                        // The copies the rendering left out of the stand-in, and the ones the rows leave out of what was rendered.
+                        val copies = e.renderedRepeats(turn.stepIndex).let { (standIn, keys) -> repeatIds(standIn, keys) } + repeatIds(shown, presenterRepeats)
+                        "record=${CoordinatorTranscript.messageStage(turn.items)} " + renderedWords(shown, via, copies)
                     }
                     TranscriptLoadDiagnostics.RunLine("turn@${turn.stepIndex}" + (run?.let { "/" + ProjectDiagnostics.tail(it.id) } ?: ""), run?.status ?: "-", trace, turn.items.size, message)
                 }
             } else {
                 (layout.paired + layout.standing).map { run ->
-                    TranscriptLoadDiagnostics.RunLine(ProjectDiagnostics.tail(run.id), run.status, traceOf(run), e.traces[run.id]?.size ?: 0)
+                    val shown = e.traces[run.id] ?: e.live?.takeIf { it.runId == run.id }?.items
+                    val message = if (!coordinator || shown == null) null else renderedWords(shown, if (e.traces[run.id] != null) "log" else "live", repeatIds(shown, presenterRepeats))
+                    TranscriptLoadDiagnostics.RunLine(ProjectDiagnostics.tail(run.id), run.status, traceOf(run), e.traces[run.id]?.size ?: 0, message)
                 }
             }
             TranscriptLoadDiagnostics(

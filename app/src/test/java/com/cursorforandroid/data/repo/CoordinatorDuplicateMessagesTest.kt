@@ -198,10 +198,19 @@ class CoordinatorDuplicateMessagesTest {
     private fun ConversationState.messageCalls(): List<ToolCall> = items.filterIsInstance<ActivityGroup>().flatMap { it.calls }
         .map { CoordinatorTranscript.reinterpret(it) }.filter { CoordinatorTranscript.isUserMessageCall(it) }
 
-    /** Runs 1 to 6 replayed and the running run's story on screen: the frame as the phone would have it. */
+    /**
+     * Runs 1 to 6 on screen with their footers and the running run's story: the frame as the phone would have it.
+     * On the documented path every finished run's log is replayed before the traces read as whole; on the record
+     * path a silent turn reads as shown from its record body, so its log's arrival is waited for by the diagnostics'
+     * word that the turn is drawn from the log.
+     */
     private suspend fun awaitLoaded(conversations: ConversationRepository) {
         awaitUntil { !conversations.state(agentId).value.isLoading && conversations.state(agentId).value.items.isNotEmpty() }
         awaitUntil { conversations.state(agentId).value.items.filterIsInstance<RunFooter>().size >= 6 && conversations.state(agentId).value.traceStatus.pending == 0 }
+        awaitUntil {
+            val load = conversations.loadDiagnostics(agentId)!!
+            load.source != "record" || load.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }.let { it.size == 3 && it.all { line -> line.trace == "shown(log)" } }
+        }
         // The running run's stream is being followed: its calls are on screen.
         awaitUntil { conversations.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.any { it.callId.startsWith("turn-6:") } }
     }
@@ -228,20 +237,26 @@ class CoordinatorDuplicateMessagesTest {
         assertThat(rows.filterIsInstance<TranscriptRow.Message>().map { it.call.callId }).containsNoDuplicates()
         assertThat(rows.map { it.key }).containsNoDuplicates()
         // Between the second and the third message: run 2's remaining work and the three silent runs, as one stretch
-        // worked for all their time — 20 s + 21 s + 22 s + 2 m 7 s — with every run's edit counted.
+        // worked for all their time — 20 s + 21 s + 22 s + 2 m 7 s — counting every run's work (the four edits of
+        // one file read as one edit, as the desktop counts files; the seven workers addressed or checked; the six notes).
         val between = rows.between(SevenRunCoordinator.M2, SevenRunCoordinator.M6)
         assertThat(between.map { it::class.simpleName }).containsExactly("Stretch")
         val stretch = between.single() as TranscriptRow.Stretch
         assertThat(stretch.summary.action).isEqualTo("Worked 3m 10s")
-        assertThat(stretch.summary.details).contains("4 edits")
+        assertThat(stretch.summary.details).isEqualTo("1 edit · 7 agents · 6 notes")
+        assertThat(stretch.summary.lineStats).isEqualTo("+4 -4")
         assertThat(stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer.durationMs }).containsExactly(20_000L, 21_000L, 22_000L, 127_000L).inOrder()
         // Between the first two: run 1's tail and run 2's opening — its one footer, 59 s.
         val first = rows.between(SevenRunCoordinator.M1, SevenRunCoordinator.M2).single() as TranscriptRow.Stretch
         assertThat(first.summary.action).isEqualTo("Worked 59s")
-        // After the third: run 6's tail closed by its footer, then the running run's stretch, live.
-        val after = rows.drop(rows.indexOfLast { it is TranscriptRow.Message } + 1).stretches()
-        assertThat(after.map { it.summary.action }).containsExactly("Worked 1m 1s", "Working").inOrder()
-        assertThat(after.last().summary.details).isEqualTo("5 agents · 1 step")
+        // After the third: run 6's tail and the running run, with no prompt between them on this path, are one
+        // stretch — live, since the run still writes into it — run 6's footer inside it.
+        val after = rows.drop(rows.indexOfLast { it is TranscriptRow.Message } + 1)
+        assertThat(after.map { it::class.simpleName }).containsExactly("Stretch")
+        val tail = after.single() as TranscriptRow.Stretch
+        assertThat(tail.summary.action).isEqualTo("Working")
+        assertThat(tail.summary.details).isEqualTo("1 edit · 5 agents · 1 note")
+        assertThat(tail.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer.durationMs }).containsExactly(61_000L)
         // The diagnostics name the repeats, so a dump says which run's log said what again.
         val lines = conversations.loadDiagnostics(agentId)!!.runs
         assertThat(lines.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }.map { it.message }).containsExactly(
@@ -285,7 +300,7 @@ class CoordinatorDuplicateMessagesTest {
         assertThat(stretch.eventCount).isEqualTo(4)
         assertThat(stretch.summary.action).isEqualTo("Worked 3m 10s")
         assertThat(stretch.entries.filterIsInstance<TranscriptRow.Entry.Footer>().map { it.footer.durationMs }).containsExactly(20_000L, 21_000L, 22_000L, 127_000L).inOrder()
-        assertThat(stretch.summary.details).contains("4 edits")
+        assertThat(stretch.summary.details).isEqualTo("4 events · 1 edit · 7 agents")
         // The diagnostics: the record had none for the silent turns, the log brought a repeat, nothing of it is drawn.
         val lines = conversations.loadDiagnostics(agentId)!!.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }
         assertThat(lines).hasSize(3)

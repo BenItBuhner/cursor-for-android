@@ -164,11 +164,13 @@ sealed interface ToolPayload {
      * the arguments with the rest (see `CoordinatorTranscript.reinterpret`). The row then says so rather than
      * standing bare, and the turn is asked for again where it can be. [recovered] marks a body read leniently out of
      * arguments that did not parse — the pieces of a streamed call the record never completed (see
-     * `MessageRecovery`) — which the row shows with a word that it may not be the whole message.
+     * `MessageRecovery`) — which the row shows with a word that it may not be the whole message. [messageId] is the
+     * server's id for the message once it was delivered (`SendMessageResult.success.messageId`): the one name two
+     * copies of the same message share whatever call carried them (see `CoordinatorTranscript.repeatedMessages`).
      */
     @Serializable
     @SerialName("coordinator_message")
-    data class CoordinatorMessage(val message: String, val missing: Boolean = false, val recovered: Boolean = false) : ToolPayload
+    data class CoordinatorMessage(val message: String, val missing: Boolean = false, val recovered: Boolean = false, val messageId: String? = null) : ToolPayload
 
     /**
      * The agent filing or moving the chat's goal (`agent.v1.CreateGoalToolCall` / `UpdateGoalToolCall`; see [Goal]).

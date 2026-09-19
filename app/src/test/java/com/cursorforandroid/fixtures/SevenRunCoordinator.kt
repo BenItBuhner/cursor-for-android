@@ -2,8 +2,12 @@ package com.cursorforandroid.fixtures
 
 import com.cursorforandroid.data.api.RunStreamEvent
 import com.cursorforandroid.data.api.dto.SseToolCallDto
+import com.cursorforandroid.data.repo.TimelineBuilder
 import com.cursorforandroid.domain.RunStatus
+import com.cursorforandroid.domain.SystemNotifications
+import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
+import com.cursorforandroid.domain.UserMessage
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -144,6 +148,24 @@ object SevenRunCoordinator {
     /** The ids of the runs whose record turn holds no `SendMessage`: the ones the app asks the log for. */
     val SILENT_RUNS = setOf("run-3", "run-4", "run-5")
 
+    /** [run]'s log replayed through the accumulator the stream's events go through: its trace, footer included when it ended. */
+    fun logItems(run: Run): List<TimelineItem> {
+        val live = TimelineBuilder.LiveRun(run.id, timed = false)
+        run.events.forEach { if (it != RunStreamEvent.Done) live.apply(it) }
+        return live.snapshot()
+    }
+
+    /**
+     * The chat as the conversation would hold it from the runs' logs alone: each run's trace, after its prompt as
+     * its row when [prompts] (an injected turn as its notification, the user's as their message) — the documented
+     * path lays runs the transcript has no prompt for bare, which is [prompts] false.
+     */
+    fun transcript(runs: List<Run>, prompts: Boolean, firstAt: Long): List<TimelineItem> = runs.flatMap { run ->
+        val at = firstAt + run.index * 60_000L
+        val head = if (!prompts) emptyList() else SystemNotifications.parse("prompt-${run.id}", run.prompt, at)?.items ?: listOf(UserMessage("prompt-${run.id}", run.prompt, at))
+        head + logItems(run)
+    }
+
     private class Call(val turn: Int, val step: Int, val name: String, val args: JsonObject, val result: JsonObject) {
         val streamId: String get() = "turn-$turn:step:$step:tool"
         val recordId: String get() = "toolu_${turn}_${step}_${name.take(4)}"
@@ -155,25 +177,26 @@ object SevenRunCoordinator {
         val events = ArrayList<RunStreamEvent>()
         events += RunStreamEvent.Status(id, RunStatus.RUNNING)
         events += leaked
-        // The narration around the calls: a note before the first call, the rest after the last one.
-        narration.firstOrNull()?.let { events += RunStreamEvent.Assistant(it) }
-        calls.forEach { c ->
+        // The first call (a run's message comes first), a note, the rest of the calls, the last note: the frame's
+        // every stretch has its notes after the run's message, and two notes with a call between them read as two.
+        calls.forEachIndexed { i, c ->
             events += RunStreamEvent.ToolCall(SseToolCallDto(c.streamId, c.name, ToolCall.STATUS_RUNNING, c.args))
             events += RunStreamEvent.ToolCall(SseToolCallDto(c.streamId, c.name, ToolCall.STATUS_COMPLETED, c.args, c.result))
+            if (i == 0 && narration.size > 1) events += RunStreamEvent.Assistant(narration.first())
         }
-        narration.drop(1).forEach { events += RunStreamEvent.Assistant(it) }
+        (if (narration.size > 1) narration.drop(1) else narration).forEach { events += RunStreamEvent.Assistant(it) }
         if (durationMs != null) {
             events += RunStreamEvent.Result(id, RunStatus.FINISHED, "", durationMs, null)
             events += RunStreamEvent.Done
         }
         val record = ArrayList<JsonObject>()
         record += buildJsonObject { put("humanMessage", buildJsonObject { put("text", prompt); put("agentMode", "AGENT_MODE_PROJECT"); put("createdAt", at.toString()) }) }
-        narration.firstOrNull()?.let { record += buildJsonObject { put("text", it) } }
-        calls.forEach { c ->
+        calls.forEachIndexed { i, c ->
             record += buildJsonObject { put("toolCall", buildJsonObject { put("tool", "CLIENT_SIDE_TOOL_V2_UNSPECIFIED"); put("toolCallId", c.recordId); put("name", recordName(c.name)); put("rawArgs", c.args.toString()); put("modelCallId", "model_${c.turn}_${c.step}") }) }
             record += buildJsonObject { put("finalToolResult", buildJsonObject { put("toolCallId", c.recordId); put("result", if (c.name == "sendMessage") buildJsonObject {} else c.result) }) }
+            if (i == 0 && narration.size > 1) record += buildJsonObject { put("text", narration.first()) }
         }
-        narration.drop(1).forEach { record += buildJsonObject { put("text", it) } }
+        (if (narration.size > 1) narration.drop(1) else narration).forEach { record += buildJsonObject { put("text", it) } }
         if (durationMs != null) record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
         check(calls.count { it.name == "sendMessage" } == messageCalls) { "$id carries ${calls.count { it.name == "sendMessage" }} messages, not $messageCalls" }
         return Run(id, index, prompt, durationMs, events, record)

@@ -101,8 +101,13 @@ object ToolPayloads {
     private fun coordinator(name: String, args: JsonObject?, value: JsonObject?): ToolPayload? {
         val tool = ToolNames.coordinatorTool(name) ?: return null
         if (tool == ToolNames.USER_MESSAGE_TOOL) {
-            val message = coordinatorMessage(args) ?: value?.deepString("message", "text") ?: return null
-            return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first)
+            // The text is the arguments' alone: neither tool's result carries it (`SendMessageResult.success` is a
+            // timestamp and a message id, `SendToUserResult.success` empty), and a result's `message` is a status
+            // note, not the coordinator's word. Without arguments the call is a message without its text (see
+            // ToolCallMapper), never one given another field's words.
+            val message = coordinatorMessage(args) ?: return null
+            // The server's id for the delivered message (`SendMessageResult.success.messageId`), when the result carries it.
+            return ToolPayload.CoordinatorMessage(ToolPayloadLimits.clip(message).first, messageId = value?.deepString("messageId", "message_id"))
         }
         val note = value?.deepString("message")
         val argAgent = args.string(AGENT_ID_KEYS)

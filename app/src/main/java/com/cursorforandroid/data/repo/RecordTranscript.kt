@@ -71,6 +71,13 @@ class RecordTurn(
      */
     val hasRecoveredMessage: Boolean by lazy { CoordinatorTranscript.hasRecoveredMessage(items) }
 
+    /**
+     * The record shows the coordinator calling its message tool in this turn at all — with the body, without it, in
+     * pieces. A turn without the call sent nothing to the user: a message a run's log then carries for it is an
+     * earlier turn's said again, not this turn's (see `ConversationRepository.recordItems`).
+     */
+    val hasMessageCall: Boolean by lazy { CoordinatorTranscript.hasMessageCall(items) }
+
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
 

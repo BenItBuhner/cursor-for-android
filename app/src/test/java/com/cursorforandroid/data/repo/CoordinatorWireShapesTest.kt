@@ -61,7 +61,8 @@ class CoordinatorWireShapesTest {
         // The SDK's public name, proto3 JSON.
         val sdkName = calls.getValue("c2")
         assertThat(sdkName.kind).isEqualTo(ToolKind.Coordinator)
-        assertThat(sdkName.payload).isEqualTo(ToolPayload.CoordinatorMessage(update))
+        // The message with the id the result gave it once delivered (`SendMessageResult.success.messageId`).
+        assertThat(sdkName.payload).isEqualTo(ToolPayload.CoordinatorMessage(update, messageId = "msg_01R9x"))
         assertThat(sdkName.summary).isEqualTo(update.take(45) + "...")
         assertThat(sdkName.detail).isEqualTo(update)
         assertThat(sdkName.argKeys).containsExactly("text")
@@ -70,14 +71,14 @@ class CoordinatorWireShapesTest {
         // The desktop's model-facing name, the desktop's own serialisation: the same message.
         val desktopName = calls.getValue("c4")
         assertThat(desktopName.kind).isEqualTo(ToolKind.Coordinator)
-        assertThat(desktopName.payload).isEqualTo(ToolPayload.CoordinatorMessage(second))
+        assertThat(desktopName.payload).isEqualTo(ToolPayload.CoordinatorMessage(second, messageId = "msg_01R9x"))
         assertThat(desktopName.argKeys).containsExactly("text")
     }
 
     @Test
     fun `an attachment sent instead of text is the markdown for it`() {
         val call = calls(replay()).getValue("c5")
-        assertThat(call.payload).isEqualTo(ToolPayload.CoordinatorMessage("![The board after the merge](https://cursor.com/agents/bc-demo/artifacts/board.png)"))
+        assertThat(call.payload).isEqualTo(ToolPayload.CoordinatorMessage("![The board after the merge](https://cursor.com/agents/bc-demo/artifacts/board.png)", messageId = "msg_01R9x"))
     }
 
     @Test
