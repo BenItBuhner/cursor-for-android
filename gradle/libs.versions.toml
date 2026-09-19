@@ -27,6 +27,11 @@ sentry = "8.16.0"
 junit = "4.13.2"
 truth = "1.4.4"
 robolectric = "4.16.1"
+# The pre-instrumented android-all jar Robolectric 4.16.1 runs `sdk = 35` tests on (DefaultSdkProvider: Android 15 build
+# 13954326, instrumentation round i7). Declared as a Gradle dependency so the unit tests never fetch it from Maven Central
+# themselves; see "Robolectric SDK jars" in app/build.gradle.kts. Bump it together with `robolectric`: a mismatch fails
+# every Robolectric test with "Path is not a file: .../android-all-instrumented-<expected>.jar", naming the version to use.
+robolectricAndroidAll = "15-robolectric-13954326-i7"
 roborazzi = "1.73.0"
 androidxTestExt = "1.2.1"
 androidxTestCore = "1.6.1"
@@ -76,6 +81,7 @@ sentry-android-core = { group = "io.sentry", name = "sentry-android-core", versi
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+robolectric-android-all-instrumented = { group = "org.robolectric", name = "android-all-instrumented", version.ref = "robolectricAndroidAll" }
 roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
 roborazzi-compose = { group = "io.github.takahirom.roborazzi", name = "roborazzi-compose", version.ref = "roborazzi" }
 roborazzi-junit-rule = { group = "io.github.takahirom.roborazzi", name = "roborazzi-junit-rule", version.ref = "roborazzi" }
