@@ -25,19 +25,19 @@ work = "2.10.1"
 # Opt-in crash reports (crash/CrashReporting.kt). Only the core artifact: the app has no native code, so no NDK payload.
 sentry = "8.16.0"
 junit = "4.13.2"
-truth = "1.4.4"
-robolectric = "4.16.1"
+truth = "1.4.5"
+robolectric = "4.17"
 # The pre-instrumented android-all jars Robolectric 4.16.1 runs the tests on, one per SDK level src/test asks for
 # (Robolectric's DefaultSdkProvider: Android 15 build 13954326 for `sdk = [35]`, Android 11 build 6757853 for `sdk = [30]`,
 # instrumentation round i7). Declared as Gradle dependencies so the unit tests never fetch them from Maven Central
 # themselves; see "Robolectric SDK jars" in app/build.gradle.kts. Bump them together with `robolectric`, and add one
 # when a test asks for a new SDK level: the test fails with "Path is not a file: .../android-all-instrumented-<version>.jar",
 # naming exactly the version to declare.
-robolectricAndroidAllSdk35 = "15-robolectric-13954326-i7"
-robolectricAndroidAllSdk30 = "11-robolectric-6757853-i7"
-roborazzi = "1.73.0"
-androidxTestExt = "1.2.1"
-androidxTestCore = "1.6.1"
+robolectricAndroidAllSdk35 = "17-robolectric-15733970-i7"
+robolectricAndroidAllSdk30 = "17-robolectric-15733970-i7"
+roborazzi = "1.74.0"
+androidxTestExt = "1.3.0"
+androidxTestCore = "1.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
