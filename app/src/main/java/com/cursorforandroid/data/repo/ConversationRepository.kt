@@ -1561,9 +1561,10 @@ class ConversationRepository(
                 // The latest run is the row's execution state (a turn that ended in an error is only visible here),
                 // so the sidebar reflects it right away. The full agent record then enriches the row (repo, PR,
                 // duration); it never holds up the transcript, and reuses this run, saving a round-trip. As this
-                // device knows the run (see [Entry.known]): a record read before a Stop does not put the row back to running.
+                // device knows the run (see [Entry.known], and the list's own memory in `AgentRepository.recordRun`):
+                // a record read before a Stop, or before the run's end on its stream, does not put the row back to running.
                 val knownLatest = latest?.let { e.known(it) }
-                knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+                knownLatest?.let { run -> agents.recordRun(agentId, run) }
                 launch { agents.loadDetail(agentId, knownLatest) }
                 if (fetched) {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
@@ -1618,7 +1619,7 @@ class ConversationRepository(
             // Still loading: the transcript is on its way. The screen shows what there is meanwhile.
             transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest)) },
         )
-        latest?.let { run -> agents.patch(agentId) { it.withLatestRun(e.known(run)) } }
+        latest?.let { run -> agents.recordRun(agentId, e.known(run)) }
         val active = latest?.takeIf { it.statusEnum().isActive }
         if (active != null) startStreaming(e, agentId, active, unlessMovedOn = true)
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
@@ -1709,7 +1710,7 @@ class ConversationRepository(
                 },
             )
             val knownLatest = latest?.let { e.known(it) }
-            knownLatest?.let { run -> agents.patch(agentId) { it.withLatestRun(run) } }
+            knownLatest?.let { run -> agents.recordRun(agentId, run) }
             launch { agents.loadDetail(agentId, knownLatest) }
             val active = latest?.takeIf { it.statusEnum().isActive }
             if (active != null) {
@@ -3103,7 +3104,7 @@ class ConversationRepository(
                     // The list only said the agent went idle; the run says how the turn ended (an error, say), and the
                     // row is the one place the sidebar learns that from without the chat being opened.
                     val e = entry(agent.id)
-                    latest?.let { run -> agents.patch(agent.id) { it.withLatestRun(e.known(run)) } }
+                    latest?.let { run -> agents.recordRun(agent.id, e.known(run)) }
                     // A screen that opened it in the meantime owns the entry now.
                     if (e.attached == 0 && e.streamJob == null) {
                         e.publish(

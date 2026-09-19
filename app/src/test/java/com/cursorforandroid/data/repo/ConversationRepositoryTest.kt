@@ -464,9 +464,12 @@ class ConversationRepositoryTest {
         retainWholeRun("run-1", "Shipped.")
 
         conversations.attach("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The transcript, the run page and the replayed log land in whichever order the scheduler has them, and
+        // each is shown as it lands: with the transcript ahead of the replay the turn reads prompt, reply, footer
+        // for a moment, its trace pending (the same footer this wait used to stop at — the flake in a full run).
+        // Settled is when the one trace shown is on screen and nothing is pending.
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && it.traceStatus.pending == 0 && it.traceStatus.shown == 1 && it.items.lastOrNull() is RunFooter } }
         val state = conversations.state("bc-1").value
-        assertThat(state.isLoading).isFalse()
         assertThat(state.isStreaming).isFalse()
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
         // Not the two items the screen left with: the edit that followed, the final reply and the footer are all there.
@@ -474,10 +477,64 @@ class ConversationRepositoryTest {
         assertThat(state.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(state.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat((state.items.last() as RunFooter).durationMs).isEqualTo(30_000L)
-        // The whole story is kept for the next open, and the transcript's copy of the reply too.
+        // The whole story is kept for the next open, and the transcript's copy of the reply too. The two writes are
+        // the load's and the replay's, in either order.
         awaitUntil { traces.read("bc-1")["run-1"] != null }
         assertThat(traces.read("bc-1").getValue("run-1").items.last()).isInstanceOf(RunFooter::class.java)
-        assertThat(cache.read("bc-1")!!.value.messages.map { it.text }).containsExactly("Ship it", "Shipped.").inOrder()
+        awaitUntil { cache.read("bc-1")?.value?.messages?.map { it.text } == listOf("Ship it", "Shipped.") }
+    }
+
+    /**
+     * The chat's load ends by reading the agent's record and its latest run (`AgentRepository.loadDetail`), and its
+     * run page is folded into the row when it lands. Either read can be in flight when the run finishes on its
+     * stream — a phone's round trip is long, a turn about to end is short — and both read the run as `RUNNING`, the
+     * record a moment behind the stream. Landing after the hub had settled the row, either put it back to running
+     * for the finished run: the spinner back on a finished chat until the next refresh's verification, and a queued
+     * message waiting its whole busy recheck on it. The hub now tells the list which run it saw end, and every run
+     * record reaches a row through that memory (`AgentRepository.known`).
+     */
+    @Test
+    fun `a record read that predates the run's finish does not put the row back to running`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        // Held from before the open: the load's run page and its record read are in flight across the finish.
+        val runPage = CompletableDeferred<Unit>()
+        val detail = CompletableDeferred<Unit>()
+        api.runsGate = runPage
+        api.getAgentGate = detail
+        conversations.attach("bc-1")
+        awaitUntil { api.listRunsCalls == 1 }
+        // The run ends on its stream while the reads are out; the monitor's subscription is what follows it here.
+        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        awaitUntil { streamer.connections.contains("run-1") }
+        now += 30_000
+        retainWholeRun("run-1", "Shipped.")
+        awaitUntil { agents.agent("bc-1")!!.runStatus == RunStatus.FINISHED }
+        val settled = agents.agent("bc-1")!!
+        assertThat(settled.durationMs).isEqualTo(30_000L)
+
+        // The run page lands, RUNNING as it was read: the row stays finished, with what the finish gave it.
+        runPage.complete(Unit)
+        api.runsGate = null
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        // Then the record read, the same run still RUNNING in it: the same.
+        awaitUntil { api.getAgentCalls >= 1 }
+        detail.complete(Unit)
+        api.getAgentGate = null
+        awaitUntil { agents.agent("bc-1")!!.lifecycle == com.cursorforandroid.domain.AgentLifecycle.ACTIVE }
+        val row = agents.agent("bc-1")!!
+        assertThat(row.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.latestRunId).isEqualTo("run-1")
+        assertThat(row.durationMs).isEqualTo(30_000L)
+        assertThat(row.summary).isEqualTo("Shipped.")
+        // The chat itself reads finished too, and whole.
+        awaitUntil { conversations.state("bc-1").value.let { it.runStatus == RunStatus.FINISHED && it.items.lastOrNull() is RunFooter } }
+        monitor.cancel()
     }
 
     @Test
@@ -488,8 +545,11 @@ class ConversationRepositoryTest {
         val conversations = repository()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
-        // The live notification keeps the stream open after the screen leaves.
-        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { } }
+        // The live notification keeps the stream open after the screen leaves: subscribed — its first snapshot in
+        // hand — before the screen goes, so the hub's grace period is never what keeps the one connection alive.
+        val subscribed = CompletableDeferred<Unit>()
+        val monitor = scope.launch { hub.snapshots("bc-1", "run-1").collect { subscribed.complete(Unit) } }
+        subscribed.await()
         conversations.detach("bc-1")
         delay(150)
         retainWholeRun("run-1", "Shipped.")

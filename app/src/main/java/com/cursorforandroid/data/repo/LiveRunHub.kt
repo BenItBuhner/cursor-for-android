@@ -466,6 +466,9 @@ class LiveRunHub(
                 )
             }
             if (historical) return
+            // Remembered before the row is patched: a record of this run read before its end — a chat's load, a
+            // refresh's verification — must not put the row back to running for it once it lands.
+            agents.noteRunEnded(entry.agentId, entry.runId, result.status)
             agents.patch(entry.agentId) { a ->
                 if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
                 a.copy(

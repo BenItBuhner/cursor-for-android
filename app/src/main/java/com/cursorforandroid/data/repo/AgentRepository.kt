@@ -351,17 +351,21 @@ class AgentRepository(
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /**
-     * The run of each chat this device last stopped, by chat id: the server agreed to the [cancelRun], so a run
-     * record that still calls that run active is a read the cancel had not reached — the detail read a chat's load
-     * launched before the Stop, the refresh's verification of the row a second after it, a settle of the queue's
-     * read while the server is still winding the turn down. Folded into the row as it stood, such a record put the
-     * row back to running for the very run this device had stopped, after the cancel had settled it; nothing settled
-     * it again but the follow-up queue's next look at the record (`IDLE_SETTLE_MS` later, and again for as long as
-     * the record lagged), which is what held a steered message ten seconds and more with its spinner back on. The
-     * same hole `ConversationRepository.Entry.known` closed for the chat's own run page. The run's terminal word,
-     * from anywhere, still stands; so does any other run the server names. Cleared with the list.
+     * The run of each chat this device last knew to end, by chat id, and how: the run it stopped (the server agreed
+     * to the [cancelRun]), or the run whose own stream or record the hub followed to its end ([noteRunEnded]). A run
+     * record that still calls that run active is a read the end had not reached — the detail read a chat's load
+     * launched before the Stop or the finish, the refresh's verification of the row a second after, a settle of the
+     * queue's read while the server is still winding the turn down. Folded into the row as it stood, such a record
+     * put the row back to running for the very run this device had seen end, after the end had settled it: the
+     * spinner back on a stopped or finished chat until the next refresh, and a queued or steered message waiting its
+     * whole busy recheck (`IDLE_SETTLE_MS`, and again for as long as the record lagged) on a row nothing else would
+     * settle — the hub reports a run's end once. The same hole `ConversationRepository.Entry.known` closed for the
+     * chat's own run page after a Stop (#179). The run's terminal word, from anywhere, still stands; so does any
+     * other run the server names. Cleared with the list.
      */
-    private val cancelledRuns = ConcurrentHashMap<String, String>()
+    private val endedRuns = ConcurrentHashMap<String, EndedRun>()
+
+    private class EndedRun(val runId: String, val status: RunStatus)
     /**
      * The parent links stamped onto chats beside their records, the way the desktop stamps them (see
      * [AgentsWindowList]): a root's `ListWorkersForManager` answer naming a worker (the desktop's seeded
@@ -482,16 +486,36 @@ class AgentRepository(
         rootUnresolved.clear()
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
-        cancelledRuns.clear()
+        endedRuns.clear()
         synchronized(launchTraces) { launchTraces.clear() }
     }
 
     /**
-     * [run]'s record as this device knows it: an active status for the run it stopped reads cancelled (see
-     * [cancelledRuns]). Applied to every run record read here before it reaches a row.
+     * [run]'s record as this device knows it: an active status for a run it saw end reads as it ended (see
+     * [endedRuns]). Applied to every run record before it reaches a row, here and through [recordRun].
      */
-    private fun known(agentId: String, run: RunDto): RunDto =
-        if (run.statusEnum().isActive && cancelledRuns[agentId] == run.id) run.copy(status = RunStatus.CANCELLED.name) else run
+    private fun known(agentId: String, run: RunDto): RunDto {
+        if (!run.statusEnum().isActive) return run
+        val ended = endedRuns[agentId]?.takeIf { it.runId == run.id } ?: return run
+        return run.copy(status = ended.status.name)
+    }
+
+    /**
+     * The hub followed [runId] to its end, on its own stream or its record: remembered so a record read that predates
+     * the end cannot put the row back to running for it (see [endedRuns]). Called before the row is patched with the end.
+     */
+    fun noteRunEnded(agentId: String, runId: String, status: RunStatus) {
+        synchronized(publishLock) { endedRuns[agentId] = EndedRun(runId, status) }
+    }
+
+    /**
+     * Folds a run record a caller read into the row, when it is the row's latest run (see [Agent.withLatestRun]) — as
+     * this device knows the run (see [known]), under the lock a cancel or a finish patches under, so a record read
+     * before either does not undo it. The one way a run record read outside this repository reaches a row.
+     */
+    fun recordRun(agentId: String, run: RunDto, startedIn: Int = token()) {
+        synchronized(publishLock) { patch(agentId, startedIn) { it.withLatestRun(known(agentId, run)) } }
+    }
 
     /**
      * Records a root in the registry, merging what was known (see [KnownRoot.merged]); true when the registry
@@ -1796,7 +1820,7 @@ class AgentRepository(
         // Remembered and patched as one step: a record read landing between the two would put the row back to
         // running for the run just stopped, and the memory is what tells the next read not to.
         synchronized(publishLock) {
-            if (generation.get() == startedIn) cancelledRuns[agentId] = runId
+            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(runId, RunStatus.CANCELLED)
             patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
         }
     }
