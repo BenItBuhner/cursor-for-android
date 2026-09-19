@@ -270,6 +270,53 @@ roborazzi {
     outputDir.set(file("$rootDir/screenshots"))
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Robolectric SDK jars
+//
+// Every Robolectric test runs on a pre-instrumented android-all jar for its SDK level: `@Config(sdk = [35])` almost
+// everywhere in src/test (35 is also the default, being the targetSdk) and `sdk = [30]` for AppNightModeTest's pre-31
+// case. Left to itself Robolectric downloads those jars (200 MB for SDK 35) from Maven Central *inside the test JVM*
+// (MavenArtifactFetcher, into ~/.m2), on every CI run because nothing caches ~/.m2 - and when Maven Central refuses or
+// rate-limits the runner, every test class fails in `classMethod` before a single test runs. Declaring the jars as
+// Gradle dependencies moves that download into dependency resolution, where the Gradle dependency cache (restored by
+// setup-gradle in CI) serves them and Gradle's repository retries apply; `robolectric.offline` +
+// `robolectric.dependency.dir` then point Robolectric at the resolved files, so the tests never touch the network for
+// them. The versions live next to `robolectric` in gradle/libs.versions.toml and move with it.
+//
+// One configuration per jar: they are all versions of the same module, org.robolectric:android-all-instrumented, and a
+// single configuration would conflict-resolve them down to the highest one.
+// ---------------------------------------------------------------------------------------------------------------------
+val robolectricSdkJars = mapOf(35 to libs.robolectric.android.all.sdk35, 30 to libs.robolectric.android.all.sdk30)
+val robolectricSdkConfigurations: List<Configuration> = robolectricSdkJars.keys.map { sdk ->
+    configurations.create("robolectricSdk$sdk") {
+        description = "The android-all-instrumented jar Robolectric runs SDK $sdk unit tests on."
+        isCanBeConsumed = false
+        isCanBeResolved = true
+        isTransitive = false
+    }
+}
+
+dependencies {
+    robolectricSdkJars.forEach { (sdk, jar) -> add("robolectricSdk$sdk", jar) }
+}
+
+// Robolectric wants one directory holding `android-all-instrumented-<version>.jar` files; the Gradle cache keeps each
+// artifact in its own hash directory, so the resolved jars are gathered here (Sync also drops the jar of a previous
+// version, which would otherwise linger after a bump).
+val robolectricSdkDir: Provider<Directory> = layout.buildDirectory.dir("robolectric-sdks")
+val syncRobolectricSdks by tasks.registering(Sync::class) {
+    description = "Gathers the Robolectric android-all jars for offline test runs."
+    robolectricSdkConfigurations.forEach { from(it) }
+    into(robolectricSdkDir)
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(syncRobolectricSdks)
+    inputs.dir(robolectricSdkDir).withPropertyName("robolectricSdkDir").withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricSdkDir.get().asFile.absolutePath)
+}
+
 // `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything
 // else in src/test still runs.
 if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).getOrElse(false)) {

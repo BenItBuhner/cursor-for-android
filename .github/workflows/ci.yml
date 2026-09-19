@@ -118,6 +118,11 @@ jobs:
       # Renders the demo walkthrough and the home-screen widget through Robolectric and compares them pixel-for-pixel
       # with screenshots/. When the UI changes on purpose, run the "Update screenshots" workflow (or
       # `./gradlew :app:recordRoborazziDebug`) and commit the result.
+      #
+      # Robolectric's android-all jars are Gradle dependencies served from the Gradle cache restored above ("Robolectric
+      # SDK jars" in app/build.gradle.kts), and the tests run with robolectric.offline=true. Maven Central trouble
+      # therefore shows up as a Gradle "Could not resolve org.robolectric:android-all-instrumented" failure while the task
+      # graph is being built - never as every test class failing in classMethod, which is a real regression.
       - name: Verify screenshots against screenshots/
         run: ./gradlew :app:verifyRoborazziDebug --tests '*ScreenshotTest*'
 
