@@ -111,7 +111,7 @@ class ShareDestinationScreenTest {
 
     /**
      * A drag that starts gently — 4 px a frame, well short of the touch slop on any one move, as a finger settling
-     * into a scroll does — scrolls the list. It did not: the root's `opaqueToPointerInput` consumed every move, and
+     * into a scroll does — scrolls the list. It did not: the root consumed every move (`opaqueToPointerInput`, since removed), and
      * the list's touch-slop detection, which re-reads each sub-slop move on the Final pass, took that as someone
      * else owning the gesture, so only a drag that cleared the slop on its first move ever scrolled (the class of
      * bug #220 found in the media viewer). The root is now a hit-test boundary that consumes nothing.

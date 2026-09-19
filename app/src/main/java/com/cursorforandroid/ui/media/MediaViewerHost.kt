@@ -281,7 +281,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
         Modifier
             .fillMaxSize()
             .onSizeChanged { viewport = it }
-            // Never opaqueToPointerInput here: consuming every move cancelled the pager's touch-slop detection
+            // Never a root that consumes here: consuming every move cancelled the pager's touch-slop detection
             // (which re-reads each move on the Final pass), so only a swipe fast enough to clear the slop on its
             // first move ever turned a page. Hit testing alone keeps the shell underneath out of reach.
             .hitTestBoundary()
