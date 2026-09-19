@@ -861,8 +861,15 @@ class ConversationRepositoryTest {
         assertThat(degraded.items.filterIsInstance<UserMessage>().map { it.text }).containsExactly("Prompt 1", "Prompt 2").inOrder()
         assertThat(degraded.activeRunId).isEqualTo("run-2")
         assertThat(degraded.runStatus).isEqualTo(RunStatus.FINISHED)
+        // Said under the transcript in the server's words, with the way to ask again, rather than swallowed.
+        assertThat(degraded.transcriptError).isEqualTo("Try again later.")
         // And the degraded shape is never the one written back.
         assertThat(cache.read("bc-1")!!.value.runs.map { it.id }).containsExactly("run-1", "run-2")
+
+        // The next read that goes through clears the word.
+        api.failListRuns = null
+        conversations.reload("bc-1")
+        awaitUntil { !state(conversations).isLoading && state(conversations).transcriptError == null }
     }
 
     @Test

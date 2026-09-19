@@ -5,6 +5,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -119,6 +120,35 @@ class QueuedFollowUpsTest {
         compose.waitForIdle()
         compose.onNodeWithTag("queued-held-reason").assertExists()
         compose.onNodeWithText("Cursor says: Agent is busy.").assertExists()
+    }
+
+    @Test
+    fun `a row the server asked to slow down reads as rate limited, with its words, not as waiting on the agent`() {
+        AppClock.nowMillis = { 100_000L + 12_000L }
+        try {
+            show(
+                QueuedFollowUp(
+                    id = "q1",
+                    text = "Follow up text",
+                    queuedAtMillis = 0L,
+                    heldSinceMillis = 100_000L,
+                    notBeforeMillis = 100_000L + 30_000L,
+                    holdReason = QueuedFollowUp.RATE_LIMITED,
+                    serverReason = "Too many requests from this key.",
+                    throttleRefusals = 1,
+                ),
+            )
+            compose.waitForIdle()
+            compose.onNodeWithTag("queued-held").assertExists()
+            compose.onNodeWithText(QueuedFollowUp.RATE_LIMITED, substring = true).assertExists()
+            compose.onNodeWithText("12s", substring = true).assertExists()
+            compose.onAllNodesWithText(QueuedFollowUp.WAITING_FOR_AGENT, substring = true).assertCountEquals(0)
+            compose.onNodeWithText("Cursor says: Too many requests from this key.").assertExists()
+            // Held, not failed: nothing red, and no "sending" ring for the attempt the pause leads to.
+            compose.onAllNodesWithContentDescription("Sending").assertCountEquals(0)
+        } finally {
+            AppClock.nowMillis = System::currentTimeMillis
+        }
     }
 
     private fun Rect.intersects(other: Rect): Boolean =

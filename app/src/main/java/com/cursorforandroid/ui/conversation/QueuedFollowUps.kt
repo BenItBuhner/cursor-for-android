@@ -194,7 +194,8 @@ private fun HeldNote(item: QueuedFollowUp) {
     }
     val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))
     Text(
-        listOfNotNull(QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
+        // What is waited for: the agent's turn, or — the server having asked every caller to slow down — the wait it named.
+        listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
         style = type.small.copy(fontFeatureSettings = "tnum"),
         color = colors.textQuaternary,
         maxLines = 1,

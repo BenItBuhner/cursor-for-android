@@ -40,11 +40,11 @@ class CursorErrorTest {
     }
 
     @Test
-    fun `a code the app has its own wording for wins over the server's message`() {
+    fun `a code the app has its own wording for frames the server's words rather than dropping them`() {
         val failure = httpFailure(429, """{"error":{"code":"rate_limited","message":"Too many requests."}}""")
 
         assertThat(failure.toCursorError()?.isRateLimited).isTrue()
-        assertThat(failure.userMessage()).isEqualTo("Rate limited by Cursor. Try again in a moment.")
+        assertThat(failure.userMessage()).isEqualTo("Rate limited by Cursor: Too many requests. Try again in a moment.")
     }
 
     @Test
