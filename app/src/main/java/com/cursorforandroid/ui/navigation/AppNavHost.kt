@@ -46,7 +46,7 @@ import com.cursorforandroid.ui.conversation.ConversationScreen
 import com.cursorforandroid.ui.customize.CustomizeSheet
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.ui.components.SpinnerRing
-import com.cursorforandroid.ui.components.opaqueToPointerInput
+import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.home.HomeScreen
 import com.cursorforandroid.ui.media.MediaViewerHost
 import com.cursorforandroid.ui.media.rememberMediaViewerState
@@ -381,7 +381,7 @@ internal fun AppShell(
     val pendingShare = shareOffer
     when {
         shareLoading -> {
-            Box(Modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(colors.canvas).hitTestBoundary(), contentAlignment = Alignment.Center) {
                 SpinnerRing(size = 22.dp, strokeWidth = 2.dp)
             }
         }

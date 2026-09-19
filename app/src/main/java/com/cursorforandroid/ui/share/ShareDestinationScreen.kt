@@ -45,7 +45,7 @@ import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
 import com.cursorforandroid.ui.components.GroupLabel
-import com.cursorforandroid.ui.components.opaqueToPointerInput
+import com.cursorforandroid.ui.components.hitTestBoundary
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorDimens
@@ -85,8 +85,10 @@ fun ShareDestinationScreen(
     )
 
     // The picker is drawn over the shell, not in its place: without this the drawer's edge drag and whatever
-    // control sits under a blank part of the list are still live behind an opaque background.
-    Column(modifier.fillMaxSize().background(colors.canvas).opaqueToPointerInput()) {
+    // control sits under a blank part of the list are still live behind an opaque background. A boundary that
+    // consumes nothing — a root that consumed every move cancelled the list's touch-slop detection, so only a drag
+    // fast enough to clear the slop on its first move ever scrolled it (see hitTestBoundary).
+    Column(modifier.fillMaxSize().background(colors.canvas).hitTestBoundary()) {
         CursorHeader(
             title = "Add to",
             subtitle = draft.summary().ifBlank { null },

@@ -38,7 +38,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -69,6 +68,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.PredictiveBackEasing
+import com.cursorforandroid.ui.components.hitTestBoundary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -281,7 +281,7 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
         Modifier
             .fillMaxSize()
             .onSizeChanged { viewport = it }
-            // Never opaqueToPointerInput here: consuming every move cancelled the pager's touch-slop detection
+            // Never a root that consumes here: consuming every move cancelled the pager's touch-slop detection
             // (which re-reads each move on the Final pass), so only a swipe fast enough to clear the slop on its
             // first move ever turned a page. Hit testing alone keeps the shell underneath out of reach.
             .hitTestBoundary()
@@ -413,18 +413,6 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
             }
         },
     )
-}
-
-/**
- * A pointer node that takes nothing and answers nothing. Hit testing stops at the topmost sibling that has a
- * pointer node under the finger, so this alone keeps a touch on the viewer from reaching the shell it covers; it
- * must not consume, because a parent that consumes a move is read by the pager's touch-slop detection — on the
- * Final pass, for each move short of the slop — as someone else having taken the gesture.
- */
-private fun Modifier.hitTestBoundary(): Modifier = pointerInput(Unit) {
-    awaitPointerEventScope {
-        while (true) awaitPointerEvent()
-    }
 }
 
 /** Where a page of a picture of [imageSize] rests in [viewport]: the fitted rect, or the viewport when neither is known yet. */

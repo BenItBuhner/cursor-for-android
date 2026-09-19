@@ -77,20 +77,21 @@ fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
     this.clip(shape).background(fill, shape).then(if (border.alpha > 0f) Modifier.border(CursorDimens.hairline, border, shape) else Modifier)
 
 /**
- * Takes every pointer event that reaches this node and answers none of them. For a surface drawn over the shell
- * rather than in place of it: an opaque background paints the shell out but leaves its drags and taps live
- * underneath, and a hit that finds no pointer node here goes on to whatever is at those coordinates below.
+ * A pointer node that takes nothing and answers nothing. For a surface drawn over the shell rather than in place
+ * of it: an opaque background paints the shell out but leaves its drags and taps live underneath, and a hit that
+ * finds no pointer node on the surface goes on to whatever is at those coordinates below. Hit testing stops at the
+ * topmost sibling that has a pointer node under the finger, so this alone keeps a tap on the surface's blank band,
+ * or a drag that would have pulled the drawer, from reaching the shell.
  *
- * Not for a surface with a scrollable or a pager inside it: a child's touch-slop detection re-reads every move
- * short of the slop on the Final pass and gives the gesture up if anyone has consumed it — which this does, so a
- * drag on such a child would only ever be taken when fast enough to clear the slop on its first move. There the
- * hit-testing alone does the job (an empty pointer node is enough; see the media viewer's `hitTestBoundary`).
+ * It consumes nothing — and a surface over the shell must not, however natural taking every event looks. A parent
+ * that consumes a move is read by a child's touch-slop detection — on the Final pass, for each move short of the
+ * slop — as someone else having taken the gesture, so a scrollable or a pager inside would only ever take a drag
+ * fast enough to clear the slop on its first move: the media viewer's pager (#220) and the share picker's list both
+ * lost every slow drag to a root that consumed. There is no consuming variant of this any more, for that reason.
  */
-fun Modifier.opaqueToPointerInput(): Modifier = this.pointerInput(Unit) {
+fun Modifier.hitTestBoundary(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
-        while (true) {
-            awaitPointerEvent().changes.forEach { it.consume() }
-        }
+        while (true) awaitPointerEvent()
     }
 }
 
