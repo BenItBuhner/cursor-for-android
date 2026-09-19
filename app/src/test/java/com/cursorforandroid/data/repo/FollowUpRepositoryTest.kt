@@ -20,6 +20,7 @@ import com.cursorforandroid.domain.FollowUpDraft
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
@@ -222,17 +223,20 @@ class FollowUpRepositoryTest {
         awaitUntil { prompts("bc-1").any { it.text == "Actually, stop and do this" && it.isPending } }
         awaitUntil { api.cancelled == listOf("run-1") }
         awaitUntil { api.runRequests.isNotEmpty() }
-        // Refused as busy, the row takes the server's word again; the message stays pending on screen and nothing
-        // behind it moves.
-        awaitUntil { agents.agent("bc-1")?.runStatus == RunStatus.RUNNING }
-        delay(100)
+        // Refused as busy — the server still winding the cancelled turn down — the message stays pending on screen,
+        // asked again after a pause that grows, and nothing behind it moves. The record the settle reads still calls
+        // run-1 running; it does not put the row back to running for the run this device stopped (the spinner back
+        // on after a Stop, and the send held ten seconds on it: the flap Bennett saw in 0.3.33).
+        awaitUntil { api.runRequests.size >= 2 }
+        assertThat(agents.agent("bc-1")?.isRunning).isFalse()
+        assertThat(agents.agent("bc-1")?.runStatus).isEqualTo(RunStatus.CANCELLED)
         assertThat(prompts("bc-1").single { it.text == "Actually, stop and do this" }.isPending).isTrue()
         assertThat(sent()).doesNotContain("First")
+        assertThat(followUps.sendDiagnostics("bc-1")!!.attempts.map { it.outcome }.distinct()).containsExactly("busy")
 
         // The turn is over: the steered message is the next thing the server hears, ahead of the other.
         api.busyCreateRun = false
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "CANCELLED")
-        agents.patch("bc-1") { it.copy(runStatus = RunStatus.CANCELLED) }
         awaitUntil { api.runs.values.any { it.id.startsWith("run-followup") } }
         assertThat(sent().last()).isEqualTo("Actually, stop and do this")
         awaitUntil { followUps.state("bc-1").value.queue.map { it.text } == listOf("First") }
@@ -492,21 +496,34 @@ class FollowUpRepositoryTest {
         assertThat(sent().last()).isEqualTo("Now")
     }
 
+    /**
+     * The chat is open on a finished turn while the row, a refresh later, reports a newer run under way. The steer
+     * stops the run the row names, not the one the chat happens to be looking at.
+     *
+     * The load's last read — the agent's record, `GET /v1/agents/{id}`, and the run it names — is held from before
+     * the chat opens, so it is in flight across everything below, the way a phone's slow round trip holds it, and
+     * the order the steps land in is the test's rather than the scheduler's. Two orderings of that read flaked this
+     * test on CI. Landing while the row said run-2, it took the chat to run-2 before the steer (35317258909; the
+     * hold fixed that). Landing after the steer's cancel and before the send — the runner loaded, the scheduler's
+     * choice — it read run-2 as the server still had it, `RUNNING`, the cancel not yet reached, and folded that
+     * into the row: the row went back to running for the very run this device had stopped, and the steered message
+     * waited its whole busy recheck on it, twice over, since every settle re-read the same lagging record
+     * (35440131899, the 20 s timeout). `AgentRepository.cancelRun` now remembers the run it stopped and every record
+     * read there — the detail read, the refresh's verification — reads that run as cancelled (`known`), the way the
+     * chat's own run page has since #179. Here the read lands exactly there, between the cancel and the send, and
+     * the message goes out at once, on its first attempt, with no settle of the row.
+     */
     @Test
     fun `a steer stops the run the row reports when the chat still follows an older one`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1")
         agents.refresh()
-        conversations.attach("bc-1")
-        // The whole load, not its first word: the runs render ahead of the transcript (activeRunId is run-1 from
-        // then on) while the transcript is still on its way, and the load anchors its newest run on the row's latest
-        // once it lands — a row that had moved to run-2 by then would take the chat with it (seen on a loaded CI
-        // runner). Only the transcript's landing clears isLoading.
-        awaitUntil { conversations.state("bc-1").value.let { it.activeRunId == "run-1" && !it.isLoading } }
-        // And the chat is not to follow the row there on its own either: the load's tail keeps a chat the row calls
-        // running followed, which starts by reading the agent's record — held here, so the chat stays on run-1 until
-        // the steer has stopped the turn, which is the case under test. Released before the send, which settles the row.
         val detail = CompletableDeferred<Unit>()
         api.getAgentGate = detail
+        conversations.attach("bc-1")
+        // The whole load, not its first word: the runs render ahead of the transcript (activeRunId is run-1 from
+        // then on), and only the transcript's landing clears isLoading. The record read is the load's tail, held.
+        awaitUntil { conversations.state("bc-1").value.let { it.activeRunId == "run-1" && !it.isLoading } }
+        awaitUntil { api.getAgentCalls == 1 }
         // A turn started elsewhere: the list learns of run-2 on its next refresh, the open chat has not reloaded.
         api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
         api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "ACTIVE", latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
@@ -515,16 +532,73 @@ class FollowUpRepositoryTest {
         awaitUntil { agents.agent("bc-1")?.let { it.isRunning && it.latestRunId == "run-2" } == true }
         assertThat(conversations.state("bc-1").value.activeRunId).isEqualTo("run-1")
         val followUps = repository()
+        // The steered send is held just before its request, once the row has read idle to it.
+        mcpGate = CompletableDeferred()
         val item = followUps.enqueue("bc-1", "Now")
 
         assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
 
         // The turn cancelled is the one under way, not the finished one the chat happened to be looking at.
         awaitUntil { api.cancelled == listOf("run-2") }
+        awaitUntil { mcpCalls.get() == 1 }
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.CANCELLED)
+        // The load's record lands now, between the cancel and the send: it names run-2, whose record the server
+        // still has as RUNNING. The row learns the record (its lifecycle) but not a status for the run this device stopped.
         detail.complete(Unit)
         api.getAgentGate = null
+        awaitUntil { agents.agent("bc-1")!!.lifecycle == AgentLifecycle.ACTIVE }
+        val row = agents.agent("bc-1")!!
+        assertThat(row.latestRunId).isEqualTo("run-2")
+        assertThat(row.isRunning).isFalse()
+        assertThat(row.runStatus).isEqualTo(RunStatus.CANCELLED)
+
+        mcpGate!!.complete(Unit)
         awaitUntil { sent() == listOf("Now") }
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        // First attempt, no busy recheck: the record was read once, by the load, never by a settle of the row.
+        assertThat(api.getAgentCalls).isEqualTo(1)
+        assertThat(followUps.sendDiagnostics("bc-1")!!.attempts.map { it.outcome }).containsExactly("accepted")
+        assertThat(agents.agent("bc-1")!!.let { it.isRunning && it.latestRunId == "run-followup-1" }).isTrue()
+    }
+
+    /**
+     * The same record read landing after a plain Stop — no steer, nothing queued: the row stays stopped, so the
+     * refresh a moment later (which verifies the row against the same lagging record) does not put the spinner
+     * back on a turn the user just ended, and a follow-up queued now goes out rather than waiting on the row.
+     */
+    @Test
+    fun `a record read that predates a Stop does not put the row back to running for the stopped run`() = runBlocking<Unit> {
+        // Active a minute ago by the clock, so the refresh below verifies the row against its run record.
+        api.addRunningAgent("bc-1", "Agent", "run-1", createdAt = java.time.Instant.ofEpochMilli(now - 60_000).toString())
+        agents.refresh()
+        val detail = CompletableDeferred<Unit>()
+        api.getAgentGate = detail
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { it.activeRunId == "run-1" && !it.isLoading } }
+        awaitUntil { api.getAgentCalls == 1 }
+
+        assertThat(conversations.cancelRun("bc-1", "run-1").isSuccess).isTrue()
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        // The detail read lands after the Stop; the server's record of run-1 still reads RUNNING.
+        detail.complete(Unit)
+        api.getAgentGate = null
+        awaitUntil { agents.agent("bc-1")!!.lifecycle == AgentLifecycle.ACTIVE }
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.CANCELLED)
+        // So does the refresh's own verification of the row, a second after the Stop: the record it reads is the same.
+        val runReads = api.getRunCalls
+        agents.refresh()
+        assertThat(api.getRunCalls).isGreaterThan(runReads)
+        assertThat(agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.CANCELLED)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+
+        val followUps = repository()
+        followUps.enqueue("bc-1", "Now")
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        // The next run the server names is followed as it is: the memory is of run-1 alone.
+        assertThat(agents.agent("bc-1")!!.let { it.isRunning && it.latestRunId == "run-followup-1" }).isTrue()
+        // And a record of that run lands as running, as it should.
+        assertThat(agents.loadDetail("bc-1").getOrThrow().isRunning).isTrue()
     }
 
     @Test

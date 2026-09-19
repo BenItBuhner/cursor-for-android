@@ -351,6 +351,18 @@ class AgentRepository(
      */
     private val pendingLaunches: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /**
+     * The run of each chat this device last stopped, by chat id: the server agreed to the [cancelRun], so a run
+     * record that still calls that run active is a read the cancel had not reached — the detail read a chat's load
+     * launched before the Stop, the refresh's verification of the row a second after it, a settle of the queue's
+     * read while the server is still winding the turn down. Folded into the row as it stood, such a record put the
+     * row back to running for the very run this device had stopped, after the cancel had settled it; nothing settled
+     * it again but the follow-up queue's next look at the record (`IDLE_SETTLE_MS` later, and again for as long as
+     * the record lagged), which is what held a steered message ten seconds and more with its spinner back on. The
+     * same hole `ConversationRepository.Entry.known` closed for the chat's own run page. The run's terminal word,
+     * from anywhere, still stands; so does any other run the server names. Cleared with the list.
+     */
+    private val cancelledRuns = ConcurrentHashMap<String, String>()
+    /**
      * The parent links stamped onto chats beside their records, the way the desktop stamps them (see
      * [AgentsWindowList]): a root's `ListWorkersForManager` answer naming a worker (the desktop's seeded
      * `managerAgentId`), a root's children answer, an action taken here (`_stampListedCloudAgentManager`), a
@@ -470,8 +482,16 @@ class AgentRepository(
         rootUnresolved.clear()
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
+        cancelledRuns.clear()
         synchronized(launchTraces) { launchTraces.clear() }
     }
+
+    /**
+     * [run]'s record as this device knows it: an active status for the run it stopped reads cancelled (see
+     * [cancelledRuns]). Applied to every run record read here before it reaches a row.
+     */
+    private fun known(agentId: String, run: RunDto): RunDto =
+        if (run.statusEnum().isActive && cancelledRuns[agentId] == run.id) run.copy(status = RunStatus.CANCELLED.name) else run
 
     /**
      * Records a root in the registry, merging what was known (see [KnownRoot.merged]); true when the registry
@@ -1288,7 +1308,9 @@ class AgentRepository(
                 async {
                     byIdPool.withPermit {
                         val run = runCatching { api.getRun(agent.id, agent.latestRunId!!) }.getOrNull() ?: return@withPermit
-                        publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(run) else it }) }
+                        // As this device knows the run, read under the lock a cancel patches under: a Stop that landed
+                        // while the record was on its way is not undone by it.
+                        publish { s -> s.copy(agents = s.agents.map { if (it.id == agent.id) it.withLatestRun(known(agent.id, run)) else it }) }
                     }
                 }
             }.awaitAll()
@@ -1408,18 +1430,24 @@ class AgentRepository(
         } else {
             dto.latestRunId?.let { runId -> runCatching { api.getRun(id, runId) }.getOrNull() }
         }
-        val merged = dto.mergeInto(agent(id), run)
         // Extended mode: the row lands with its account record, as every row of the desktop's list does, so it is
         // published placed rather than published bare and moved once the record has been read.
-        val record = if (merged.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
-        if (record != null && noteRecords(listOf(record), startedIn)) {
-            publish(null, startedIn) { s ->
-                val exists = s.agents.any { it.id == merged.id }
-                s.copy(agents = if (exists) s.agents.map { if (it.id == merged.id) merged else it } else listOf(merged) + s.agents).withAccountSnapshots(listOf(record))
+        val record = if (agent(id)?.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
+        // Merged into the row as it is at publication, under the lock a cancel patches under, and with the run as
+        // this device knows it (see [known]): a Stop that landed while the record was on its way — the read a chat's
+        // load launched before it — is not undone by a record that predates it.
+        val merged = synchronized(publishLock) {
+            val merged = dto.mergeInto(agent(id), run?.let { known(id, it) })
+            if (record != null && noteRecords(listOf(record), startedIn)) {
+                publish(null, startedIn) { s ->
+                    val exists = s.agents.any { it.id == merged.id }
+                    s.copy(agents = if (exists) s.agents.map { if (it.id == merged.id) merged else it } else listOf(merged) + s.agents).withAccountSnapshots(listOf(record))
+                }
+                noteRunning(listOf(record), startedIn)
+            } else {
+                upsert(merged, startedIn)
             }
-            noteRunning(listOf(record), startedIn)
-        } else {
-            upsert(merged, startedIn)
+            merged
         }
         agent(id) ?: merged
     }
@@ -1765,7 +1793,12 @@ class AgentRepository(
     suspend fun cancelRun(agentId: String, runId: String): Result<Unit> = runCatching {
         val startedIn = token()
         session.current.api.cancelRun(agentId, runId)
-        patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
+        // Remembered and patched as one step: a record read landing between the two would put the row back to
+        // running for the run just stopped, and the memory is what tells the next read not to.
+        synchronized(publishLock) {
+            if (generation.get() == startedIn) cancelledRuns[agentId] = runId
+            patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
+        }
     }
 
     suspend fun archive(agentId: String): Result<Unit> = setArchived(agentId, archived = true)

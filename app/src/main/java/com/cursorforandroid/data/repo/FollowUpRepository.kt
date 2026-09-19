@@ -502,10 +502,23 @@ class FollowUpRepository(
      * v0.3.33). Now nothing is written to the row: a steered message waits [busyPause] for its [busyStreak], then
      * the record and the agent's detail are read so the row is where the server has it, and it is tried again. (A
      * queued message's pause is [QueuedFollowUp.notBeforeMillis], which [dispatchLoop] waits out the same way.)
+     * Nor does the record put the row back to running for the run this device stopped (see
+     * `AgentRepository.cancelRun`): a steer's send refused while the cancelled turn winds down is paced by this pause
+     * alone, cut short by the turn's end when the hub sees it.
      */
     private suspend fun awaitBusyTurn(agentId: String, busyStreak: Int = 0) {
-        delay(busyPause(busyStreak))
+        awaitPauseOrFinish(agentId, busyPause(busyStreak))
         settleRow(agentId)
+    }
+
+    /**
+     * Waits [pauseMs], or less: a run of the chat ending meanwhile — the hub reports the finish of every run it
+     * follows live, the turn a steer cancelled among them — is the moment the server is most likely free, and is not
+     * waited past. A pause cut short is still a pause taken: the next refusal's is longer.
+     */
+    private suspend fun awaitPauseOrFinish(agentId: String, pauseMs: Long) {
+        if (pauseMs <= 0) return
+        withTimeoutOrNull(pauseMs) { hub.finishes.first { it.agentId == agentId } }
     }
 
     /** The pause before the attempt after [busyStreak] refusals in a row: [retryBaseMs] doubled each time, to [MAX_BUSY_PAUSE_MS]. */
@@ -692,7 +705,7 @@ class FollowUpRepository(
                 // clock stands still.
                 val pending = e.state.value.queue.firstOrNull()?.let { h -> h.notBeforeMillis?.let { nb -> h.id to nb } }
                 if (pending != null && e.pausedFor != pending) {
-                    delay((pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
+                    awaitPauseOrFinish(e.agentId, (pending.second - AppClock.now()).coerceIn(0L, MAX_BUSY_PAUSE_MS))
                     e.pausedFor = pending
                     settleRow(e.agentId)
                     continue
