@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -19,10 +20,12 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -87,10 +90,16 @@ internal class PagePresentation(initial: ImageBitmap?) {
 internal class PageEnvironment(
     val loader: MediaLoader,
     val dismiss: DismissState,
+    /** The pager the pages sit in: a zoomed picture's drag drives it past the picture's edge, and a page left behind rests once out of its view. */
+    val pagerState: PagerState,
+    val handover: PagerHandover,
     val scope: CoroutineScope,
     val onTap: () -> Unit,
     val onDismiss: (velocityY: Float) -> Unit,
-)
+) {
+    /** Whether [page] is anywhere in the pager's viewport, however little of it. */
+    fun isVisible(page: Int): Boolean = pagerState.layoutInfo.visiblePagesInfo.any { it.index == page }
+}
 
 /**
  * A picture: decoded progressively — the thumbnail's own decode is on screen from the first frame, a quick small
@@ -136,30 +145,37 @@ internal fun ImagePage(
             if (presentation.bitmap == null) presentation.error = t.userMessage().takeIf { it.isNotBlank() } ?: "Couldn't load this image."
         }
     }
-    // The page that scrolled out of view rests again: zoom resets on every page change. The page on screen reports
-    // its zoom to the viewer's state, where the chrome and the tests read it.
+    // The page on screen reports its zoom to the viewer's state, where the chrome and the tests read it. A page
+    // left behind rests again — zoom resets on every page change — but only once it is out of view: it stops being
+    // the current page as soon as the next one is past halfway, while it is still sliding out, and a picture that
+    // snapped to the fit there would be seen doing it.
     LaunchedEffect(isCurrent) {
-        if (!isCurrent) {
+        if (isCurrent) {
+            snapshotFlow { Triple(zoom.scale, zoom.pan, presentation.imageSize) }.collect { (scale, pan, decoded) ->
+                state.zoomScale = scale
+                state.zoomPan = pan
+                state.currentDecodeSize = decoded
+            }
+        } else {
+            snapshotFlow { environment.isVisible(page) }.first { !it }
             zoom.reset()
-            return@LaunchedEffect
-        }
-        snapshotFlow { Triple(zoom.scale, zoom.pan, presentation.imageSize) }.collect { (scale, pan, decoded) ->
-            state.zoomScale = scale
-            state.zoomPan = pan
-            state.currentDecodeSize = decoded
         }
     }
+    val enabled = rememberUpdatedState(isCurrent && state.phase == MediaViewerState.Phase.Open)
 
     val bitmap = presentation.bitmap
     val gestures = Modifier.viewerGestures(
         zoom = zoom,
         dismiss = environment.dismiss,
+        handover = environment.handover,
         scope = environment.scope,
-        enabled = isCurrent && state.phase == MediaViewerState.Phase.Open,
+        enabled = enabled,
         onTap = environment.onTap,
         onDismiss = environment.onDismiss,
     )
-    Box(Modifier.fillMaxSize().then(gestures).testTag("viewer-page-$page"), contentAlignment = Alignment.Center) {
+    // Clipped to the page: a zoomed picture hangs past its page on both sides, and the page pulled in beside it
+    // would otherwise be drawn under (or over) that overhang.
+    Box(Modifier.fillMaxSize().clipToBounds().then(gestures).testTag("viewer-page-$page"), contentAlignment = Alignment.Center) {
         when {
             bitmap != null -> {
                 val fitted = ViewerGeometry.fitted(viewport.toSize(), bitmap.width, bitmap.height)
@@ -280,6 +296,7 @@ internal fun VideoPage(
             snapshotFlow { presentation.imageSize }.collect { state.currentDecodeSize = it }
         }
     }
+    val enabled = rememberUpdatedState(isCurrent && state.phase == MediaViewerState.Phase.Open)
     val poster = presentation.bitmap
     // The frame the video is drawn in: the video's own size once the decoder reports it, the poster's until then.
     val videoSize = playback?.videoSize?.takeIf { it.width > 0 } ?: presentation.imageSize.takeIf { it.width > 0 } ?: IntSize(16, 9)
@@ -291,14 +308,16 @@ internal fun VideoPage(
     val gestures = Modifier.viewerGestures(
         zoom = null,
         dismiss = environment.dismiss,
+        handover = null,
         scope = environment.scope,
-        enabled = isCurrent && state.phase == MediaViewerState.Phase.Open,
+        enabled = enabled,
         onTap = environment.onTap,
         onDismiss = environment.onDismiss,
     )
     Box(
         Modifier
             .fillMaxSize()
+            .clipToBounds()
             .then(gestures)
             .semantics { contentDescription = "Video: ${entry.title}" }
             .testTag("viewer-page-$page"),

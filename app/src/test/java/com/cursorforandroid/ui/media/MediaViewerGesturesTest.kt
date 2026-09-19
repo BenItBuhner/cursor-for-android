@@ -152,45 +152,6 @@ class MediaViewerGesturesTest {
     }
 
     @Test
-    fun `while zoomed a sideways drag pans the picture up to its edge, and only the next swipe turns the page`() {
-        open("Wide", page = 0)
-        compose.onNodeWithTag("viewer-page-0").performTouchInput { doubleClick(center) }
-        compose.waitForIdle()
-        val scale = state.zoomScale
-        assertThat(scale).isGreaterThan(3f)
-        val zoomed = displayed(0, 640, 360)
-
-        // A swipe the width of the screen: absorbed as a pan, the picture moves left, the page stays.
-        compose.onNodeWithTag("viewer-pager").performTouchInput { swipeLeft() }
-        compose.waitForIdle()
-        assertThat(state.currentIndex).isEqualTo(0)
-        assertThat(state.zoomScale).isEqualTo(scale)
-        val panned = displayed(0, 640, 360)
-        assertThat(panned.left).isLessThan(zoomed.left - 200f)
-
-        // Dragged on until the picture's right edge meets the viewport's: it resists past that, and settles on it.
-        compose.onNodeWithTag("viewer-pager").performTouchInput { swipeLeft() }
-        compose.waitForIdle()
-        assertThat(state.currentIndex).isEqualTo(0)
-        val atEdge = displayed(0, 640, 360)
-        assertThat(atEdge.right).isWithin(2f).of(root().right)
-
-        // At the edge, the next swipe is the pager's.
-        compose.onNodeWithTag("viewer-pager").performTouchInput { swipeLeft() }
-        settle { state.currentIndex == 1 }
-        compose.waitForIdle()
-        assertThat(index()).isEqualTo("2 of 3")
-        assertThat(state.zoomScale).isEqualTo(1f)
-
-        // Back on the first page: the zoom has reset with the page change.
-        compose.onNodeWithTag("viewer-pager").performTouchInput { swipeRight() }
-        settle { state.currentIndex == 0 }
-        compose.waitForIdle()
-        assertThat(state.zoomScale).isEqualTo(1f)
-        assertThat(state.zoomPan).isEqualTo(Offset.Zero)
-    }
-
-    @Test
     fun `a tap toggles the chrome`() {
         open("Wide", page = 0)
         compose.onNodeWithTag("viewer-top-bar").assertIsDisplayed()

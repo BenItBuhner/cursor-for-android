@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.hasContentDescription
@@ -151,6 +152,30 @@ class MediaViewerScreenshotTest {
         }
         settle { compose.onAllNodes(hasContentDescription("Play video")).fetchSemanticsNodes().isNotEmpty() }
         capture("85_media_viewer_video")
+    }
+
+    /**
+     * A slow drag held a third of the way: the page follows the finger and the next picture is pulled in beside it,
+     * with the gap between pages, under the chrome of the page that is still current.
+     */
+    @Test
+    fun mediaViewerSwipe() {
+        compose.setContent { ViewerScene(state, ViewerFixtures.loader(), entries, playerFactory = { FakeVideoPlayer() }) { Transcript() } }
+        waitForTranscript()
+        compose.onAllNodes(hasContentDescription("Settings row with the new theme toggle"))[0].performClick()
+        settle { state.phase == MediaViewerState.Phase.Open && exists("viewer-image-0") && exists("viewer-top-bar") }
+        // The neighbour is composed ahead; its picture has to have landed for the frame to show it being pulled in.
+        settle { exists("viewer-image-1") }
+        val width = compose.onNodeWithTag("viewer-pager").fetchSemanticsNode().boundsInRoot.width
+        compose.onNodeWithTag("viewer-pager").performTouchInput {
+            down(center)
+            // 300 px/s: a crawl, a fifth of the touch slop a frame, held rather than let go.
+            repeat(75) { moveBy(Offset(-width * 0.35f / 75, 0f), delayMillis = 16) }
+        }
+        compose.waitForIdle()
+        check(compose.onNodeWithTag("viewer-page-0").fetchSemanticsNode().positionInRoot.x < -width * 0.25f) { "the page should be following the finger" }
+        capture("96_media_viewer_swipe")
+        compose.onNodeWithTag("viewer-pager").performTouchInput { up() }
     }
 
     @Test
