@@ -369,9 +369,13 @@ private fun UnavailableMessageRow(modifier: Modifier) {
     }
 }
 
-/** What a coordinator's message row says when the body did not reach this device, and the action beside it. */
-internal const val MISSING_MESSAGE = "Message text unavailable"
-internal const val MISSING_MESSAGE_DETAIL = "The coordinator sent a message whose text did not reach this device. Reload reads the run's log and the account's record again."
+/**
+ * What a coordinator's message row says when the body did not reach this device, and the action beside it. The row
+ * names the update it stands for and never borrows another message's words for it; the call's shape — its keys, its
+ * truncation, the record's steps — is in the transcript diagnostics export (Settings › Advanced).
+ */
+internal const val MISSING_MESSAGE = "Couldn't read this update"
+internal const val MISSING_MESSAGE_DETAIL = "The coordinator sent an update whose text did not reach this device; its shape is in the transcript diagnostics. Reload reads the run's log and the account's record again."
 internal const val RELOAD_MESSAGE = "Reload"
 
 /** The line under a message whose body was read out of a record that did not give it whole. */

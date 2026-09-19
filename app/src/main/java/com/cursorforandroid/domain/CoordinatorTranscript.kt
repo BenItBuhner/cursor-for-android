@@ -97,14 +97,133 @@ object CoordinatorTranscript {
     }
 
     /**
-     * The items as the transcript shows them. Every call is [reinterpret]ed. In a coordinator's chat
-     * ([coordinatorMode]) a turn Cursor injected — a subagent's report, a subscribed pull request's change, a timer
-     * — that the coordinator answered with a brief remark and nothing to the user has that remark folded under the
-     * turn's row ([SystemNotification.narration]) rather than standing as a "Background" line of its own; a turn
-     * that spoke to the user, or wrote more than a remark, keeps its rows.
+     * True when [items] hold a call of the coordinator's message tool at all — with its body, without it, or in
+     * pieces — as against a turn that never called it (see `ConversationRepository.recordItems`: a turn the
+     * account's record shows without the call sent nothing, whatever a run's log says).
      */
-    fun present(items: List<TimelineItem>, coordinatorMode: Boolean): List<TimelineItem> {
-        val read = items.map { item -> if (item is ActivityGroup) reinterpret(item) else item }
+    fun hasMessageCall(items: List<TimelineItem>): Boolean = calls(items).any { isUserMessageCall(reinterpret(it)) }
+
+    /** The key a message call is drawn under (see `TranscriptRow.Message.key`): its group's id and its own. */
+    fun messageKey(group: ActivityGroup, call: ToolCall): String = "${group.id}:${call.callId}"
+
+    /**
+     * The message calls of [items] that say again what an earlier one among them said, each by its [messageKey],
+     * mapped to the id of the call it repeats. Two calls carry the same message when they read the same and are
+     * the same call — the same id — or the same delivered message — the same `SendMessageResult.success.messageId`,
+     * when both have one. The first of them is the message; the rest are copies.
+     *
+     * Where copies come from: a run's log is the run's own events, and a Project coordinator's log can carry the
+     * last message the coordinator sent ahead of the run's own events although the run sent nothing — the same
+     * `SendMessage`, id and result included (Bennett's 2026-09-19 frame, the seven-run fixture). Drawn as it came,
+     * that was one reply per run under it. The text is always part of the identity and never the whole of it: the
+     * stream's call ids are positional (`turn-N:step:M:tool`) and a fixture or a server may hand out one message
+     * id twice, so two different messages must never be taken for one because a name came round; and a coordinator
+     * is free to say the same words twice in two calls of its own. Nothing is read from anywhere else and no text
+     * is made up: a copy is left out, that is all.
+     */
+    fun repeatedMessages(items: List<TimelineItem>): Map<String, String> {
+        var repeats: MutableMap<String, String>? = null
+        var seen: MutableMap<String, String>? = null
+        for (item in items) {
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) {
+                if (step !is ToolCall) continue
+                val call = reinterpret(step)
+                val payload = call.payload as? ToolPayload.CoordinatorMessage ?: continue
+                if (payload.missing && payload.message.isBlank()) continue
+                val text = normalize(payload.message)
+                val names = listOfNotNull(
+                    call.callId.takeIf { it.isNotBlank() }?.let { "call\u0000$it\u0000$text" },
+                    payload.messageId?.takeIf { it.isNotBlank() }?.let { "message\u0000$it\u0000$text" },
+                )
+                if (names.isEmpty()) continue
+                val original = names.firstNotNullOfOrNull { seen?.get(it) }
+                if (original != null) {
+                    (repeats ?: LinkedHashMap<String, String>().also { repeats = it })[messageKey(item, call)] = original
+                    continue
+                }
+                val known = seen ?: HashMap<String, String>().also { seen = it }
+                names.forEach { known[it] = call.callId }
+            }
+        }
+        return repeats ?: emptyMap()
+    }
+
+    /**
+     * [items] without the message calls keyed in [repeats] (see [repeatedMessages]): a group loses the call, and a
+     * group left with nothing goes. The same list when nothing is left out.
+     */
+    fun withoutRepeats(items: List<TimelineItem>, repeats: Set<String>): List<TimelineItem> {
+        if (repeats.isEmpty()) return items
+        var changed = false
+        val out = ArrayList<TimelineItem>(items.size)
+        for (item in items) {
+            if (item !is ActivityGroup || item.steps.none { it is ToolCall && messageKey(item, it) in repeats }) {
+                out += item
+                continue
+            }
+            changed = true
+            val steps = item.steps.filterNot { it is ToolCall && messageKey(item, it) in repeats }
+            if (steps.isNotEmpty()) out += item.copy(steps = steps)
+        }
+        return if (changed) out else items
+    }
+
+    /** The message texts of [items] as they read once whitespace is normalised, for telling a copy from its message. */
+    fun messageTexts(items: List<TimelineItem>): Set<String> {
+        var out: MutableSet<String>? = null
+        for (call in calls(items)) {
+            val payload = (reinterpret(call).payload as? ToolPayload.CoordinatorMessage) ?: continue
+            if (payload.missing && payload.message.isBlank()) continue
+            (out ?: HashSet<String>().also { out = it }) += normalize(payload.message)
+        }
+        return out ?: emptySet()
+    }
+
+    /** The message calls of [items] whose text, normalised, is among [texts]: the copies of messages already shown. */
+    fun messageCallsReading(items: List<TimelineItem>, texts: Set<String>): Set<String> {
+        if (texts.isEmpty()) return emptySet()
+        var out: MutableSet<String>? = null
+        for (item in items) {
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) {
+                if (step !is ToolCall) continue
+                val payload = (reinterpret(step).payload as? ToolPayload.CoordinatorMessage) ?: continue
+                if (payload.missing && payload.message.isBlank()) continue
+                if (normalize(payload.message) in texts) (out ?: HashSet<String>().also { out = it }) += messageKey(item, step)
+            }
+        }
+        return out ?: emptySet()
+    }
+
+    /** The ids of the message calls of [items] keyed in [keys] (see [messageKey]), in order, for the diagnostics. */
+    fun messageCallIds(items: List<TimelineItem>, keys: Set<String>): List<String> {
+        if (keys.isEmpty()) return emptyList()
+        val out = ArrayList<String>()
+        for (item in items) {
+            if (item !is ActivityGroup) continue
+            for (step in item.steps) if (step is ToolCall && messageKey(item, step) in keys) out += step.callId
+        }
+        return out
+    }
+
+    /** [text] as compared: trimmed, every run of whitespace one space. */
+    fun normalize(text: String): String = text.trim().replace(WHITESPACE, " ")
+
+    private val WHITESPACE = Regex("\\s+")
+
+    /**
+     * The items as the transcript shows them. Every call is [reinterpret]ed; the message calls keyed in [repeats]
+     * — copies of a message drawn earlier (see [repeatedMessages]; the copies within [items] alone unless the
+     * caller, seeing the whole transcript, says which) — are left out. In a coordinator's chat ([coordinatorMode])
+     * a turn Cursor injected — a subagent's report, a subscribed pull request's change, a timer — that the
+     * coordinator answered with a brief remark and nothing to the user has that remark folded under the turn's row
+     * ([SystemNotification.narration]) rather than standing as a "Background" line of its own; a turn that spoke
+     * to the user, or wrote more than a remark, keeps its rows.
+     */
+    fun present(items: List<TimelineItem>, coordinatorMode: Boolean, repeats: Set<String> = repeatedMessages(items).keys): List<TimelineItem> {
+        val once = withoutRepeats(items, repeats)
+        val read = once.map { item -> if (item is ActivityGroup) reinterpret(item) else item }
         return if (coordinatorMode) foldRemarks(read) else read
     }
 
