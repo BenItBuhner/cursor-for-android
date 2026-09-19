@@ -66,18 +66,40 @@ class ViewerGeometryTest {
     // -- rubber band --------------------------------------------------------------------------------------------------
 
     @Test
-    fun `a drag inside the bounds is taken whole and one past them at a fraction`() {
-        val limit = Offset(1080f, 420f)
-        assertThat(ViewerGeometry.rubberBandPan(Offset(200f, -100f), Offset(50f, 30f), limit)).isEqualTo(Offset(250f, -70f))
-        // At the right edge already: another 100 px of finger moves the picture 35.
-        val past = ViewerGeometry.rubberBandPan(Offset(1080f, 0f), Offset(100f, 0f), limit)
-        assertThat(past.x).isWithin(0.01f).of(1115f)
-        assertThat(past.y).isEqualTo(0f)
+    fun `a drag inside the edges is taken whole, up to the edge, and the rest is overflow`() {
+        val limit = 1080f
+        assertThat(ViewerGeometry.panWithin(200f, 50f, limit)).isEqualTo(ViewerGeometry.AxisPan(250f, 0f))
+        // 900 of room to the right: 900 taken, 100 left over for the pager or the band.
+        assertThat(ViewerGeometry.panWithin(180f, 1000f, limit)).isEqualTo(ViewerGeometry.AxisPan(1080f, 100f))
+        // At the edge already: nothing taken.
+        assertThat(ViewerGeometry.panWithin(1080f, 40f, limit)).isEqualTo(ViewerGeometry.AxisPan(1080f, 40f))
+        // From the edge, back inside: taken whole.
+        assertThat(ViewerGeometry.panWithin(1080f, -40f, limit)).isEqualTo(ViewerGeometry.AxisPan(1040f, 0f))
     }
 
     @Test
-    fun `an axis with no overhang does not move at all`() {
-        assertThat(ViewerGeometry.rubberBandPan(Offset.Zero, Offset(80f, 80f), Offset(500f, 0f))).isEqualTo(Offset(80f, 0f))
+    fun `an axis with no overhang has no edge to move within`() {
+        assertThat(ViewerGeometry.panWithin(0f, 80f, limit = 0f)).isEqualTo(ViewerGeometry.AxisPan(0f, 80f))
+        // And the band does not stretch it either: a fitted picture does not slide off a horizontal pan.
+        assertThat(ViewerGeometry.stretch(0f, 80f, limit = 0f)).isEqualTo(0f)
+    }
+
+    @Test
+    fun `the band takes overflow at a fraction, and a stretched picture comes back the way it went out`() {
+        val limit = 1080f
+        // 100 of overflow past the right edge: the picture gives 35.
+        val stretched = ViewerGeometry.stretch(1080f, 100f, limit)
+        assertThat(stretched).isWithin(0.01f).of(1115f)
+        // Further out: all of it is still overflow (the caller feeds it to the band again).
+        assertThat(ViewerGeometry.panWithin(stretched, 20f, limit)).isEqualTo(ViewerGeometry.AxisPan(stretched, 20f))
+        // Back toward the inside: 100 of finger undoes the 35 of stretch exactly, and nothing is left over.
+        val back = ViewerGeometry.panWithin(stretched, -100f, limit)
+        assertThat(back.value).isWithin(0.01f).of(1080f)
+        assertThat(back.overflow).isEqualTo(0f)
+        // Back further than the stretch: the finger past the edge continues inside, one for one.
+        val through = ViewerGeometry.panWithin(stretched, -150f, limit)
+        assertThat(through.value).isWithin(0.01f).of(1030f)
+        assertThat(through.overflow).isEqualTo(0f)
     }
 
     @Test

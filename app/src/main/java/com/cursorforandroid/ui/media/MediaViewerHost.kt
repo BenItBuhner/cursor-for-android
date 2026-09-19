@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -37,6 +38,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -51,11 +53,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import androidx.core.view.WindowCompat
@@ -64,7 +69,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.MediaRef
 import com.cursorforandroid.ui.components.PredictiveBackEasing
-import com.cursorforandroid.ui.components.opaqueToPointerInput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -251,10 +255,17 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
         scope.launch { finishClose() }
     }
 
-    val environment = remember(loader, dismiss, scope) {
+    // A zoomed picture's drag drives the pager past the picture's edge (see PagerHandover): in a left-to-right
+    // layout the finger and the pager's offset run opposite ways, and a fling past this speed commits the page.
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val minFlingPx = with(LocalDensity.current) { PageFlingVelocity.toPx() }
+    val handover = remember(pagerState, rtl, minFlingPx) { PagerHandover(pagerState, reverse = !rtl, minFlingVelocityPx = minFlingPx) }
+    val environment = remember(loader, dismiss, scope, pagerState, handover) {
         PageEnvironment(
             loader = loader,
             dismiss = dismiss,
+            pagerState = pagerState,
+            handover = handover,
             scope = scope,
             onTap = {
                 state.controlsVisible = !state.controlsVisible
@@ -270,7 +281,10 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
         Modifier
             .fillMaxSize()
             .onSizeChanged { viewport = it }
-            .opaqueToPointerInput()
+            // Never opaqueToPointerInput here: consuming every move cancelled the pager's touch-slop detection
+            // (which re-reads each move on the Final pass), so only a swipe fast enough to clear the slop on its
+            // first move ever turned a page. Hit testing alone keeps the shell underneath out of reach.
+            .hitTestBoundary()
             .semantics { paneTitle = "Media viewer" }
             .testTag("media-viewer"),
     ) {
@@ -285,6 +299,9 @@ private fun MediaViewerOverlay(state: MediaViewerState, session: MediaViewerStat
             modifier = Modifier.fillMaxSize().testTag("viewer-pager"),
             beyondViewportPageCount = 1,
             pageSpacing = 16.dp,
+            // A slow drag commits on how far the page was pulled — past two fifths of the width — rather than
+            // Compose's half; a fast one commits on its speed, as it always did. The settle is the pager's spring.
+            flingBehavior = PagerDefaults.flingBehavior(state = pagerState, snapPositionalThreshold = ViewerGeometry.PageCommitShare),
             userScrollEnabled = state.phase == MediaViewerState.Phase.Open,
             key = { session.entries[it].src },
         ) { page ->
@@ -398,6 +415,18 @@ private fun TransformLayer(state: MediaViewerState, frames: TransformFrames, dis
     )
 }
 
+/**
+ * A pointer node that takes nothing and answers nothing. Hit testing stops at the topmost sibling that has a
+ * pointer node under the finger, so this alone keeps a touch on the viewer from reaching the shell it covers; it
+ * must not consume, because a parent that consumes a move is read by the pager's touch-slop detection — on the
+ * Final pass, for each move short of the slop — as someone else having taken the gesture.
+ */
+private fun Modifier.hitTestBoundary(): Modifier = pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) awaitPointerEvent()
+    }
+}
+
 /** Where a page of a picture of [imageSize] rests in [viewport]: the fitted rect, or the viewport when neither is known yet. */
 private fun restingRect(viewport: IntSize, imageSize: IntSize): Rect {
     val size = viewport.toSize()
@@ -405,6 +434,9 @@ private fun restingRect(viewport: IntSize, imageSize: IntSize): Rect {
     if (imageSize.width <= 0 || imageSize.height <= 0) return Rect(Offset.Zero, size)
     return ViewerGeometry.fitted(size, imageSize.width, imageSize.height)
 }
+
+/** Compose's own line between a drag that is let go and a fling: a page flung faster than this commits whatever the distance. */
+private val PageFlingVelocity = 400.dp
 
 /** The transform's curve: Material's emphasised decelerate, the drawer's and sheets' slide, over the same 300 ms. */
 internal val TransformSpec: AnimationSpec<Float> = tween(TransformMillis, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))

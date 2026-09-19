@@ -80,6 +80,11 @@ fun Modifier.cursorSurface(fill: Color, border: Color, shape: Shape): Modifier =
  * Takes every pointer event that reaches this node and answers none of them. For a surface drawn over the shell
  * rather than in place of it: an opaque background paints the shell out but leaves its drags and taps live
  * underneath, and a hit that finds no pointer node here goes on to whatever is at those coordinates below.
+ *
+ * Not for a surface with a scrollable or a pager inside it: a child's touch-slop detection re-reads every move
+ * short of the slop on the Final pass and gives the gesture up if anyone has consumed it — which this does, so a
+ * drag on such a child would only ever be taken when fast enough to clear the slop on its first move. There the
+ * hit-testing alone does the job (an empty pointer node is enough; see the media viewer's `hitTestBoundary`).
  */
 fun Modifier.opaqueToPointerInput(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {

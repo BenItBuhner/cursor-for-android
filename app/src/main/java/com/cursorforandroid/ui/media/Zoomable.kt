@@ -9,7 +9,9 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +29,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.sign
 
 /**
  * A page's zoom: the scale about the viewport's centre and the pan, as the gestures leave them and as the springs
@@ -72,17 +76,33 @@ class ZoomState(private val maxScale: Float = ViewerGeometry.MaxScale) {
     fun pinch(zoomChange: Float, centroid: Offset, panChange: Offset) {
         pinchScale *= zoomChange
         val next = ViewerGeometry.rubberBandScale(pinchScale, ViewerGeometry.MinScale, maxScale)
-        val zoomed = ViewerGeometry.panForZoom(pan, scale, next, centroid)
+        pan = ViewerGeometry.panForZoom(pan, scale, next, centroid)
         scale = next
-        pan = ViewerGeometry.rubberBandPan(zoomed, panChange, ViewerGeometry.panLimit(fitted, viewport, next))
+        // Two fingers own the picture outright: whatever they move past an edge is the band's, not the pager's.
+        stretchBy(panWithin(panChange))
     }
 
-    /** A one-finger drag while zoomed: the picture follows, resisting past its edges. */
-    fun dragBy(delta: Offset) {
-        pan = ViewerGeometry.rubberBandPan(pan, delta, panLimit)
+    /**
+     * Pans by [delta] as far as the picture's edges allow, and answers what did not fit — the overflow past an edge
+     * on each axis, in finger pixels — for the caller to hand to the pager or give back as a stretch. See
+     * [ViewerGeometry.panWithin] for the edge and the band's behaviour.
+     */
+    fun panWithin(delta: Offset): Offset {
+        val limit = panLimit
+        val x = ViewerGeometry.panWithin(pan.x, delta.x, limit.x)
+        val y = ViewerGeometry.panWithin(pan.y, delta.y, limit.y)
+        pan = Offset(x.value, y.value)
+        return Offset(x.overflow, y.overflow)
     }
 
-    /** Whether a horizontal drag of [dx] is this picture's to take, rather than the pager's. */
+    /** Takes [overflow] as a rubber band: the picture gives a fraction of it past its edge, on the axes that have one, and springs back on release. */
+    fun stretchBy(overflow: Offset) {
+        if (overflow == Offset.Zero) return
+        val limit = panLimit
+        pan = Offset(ViewerGeometry.stretch(pan.x, overflow.x, limit.x), ViewerGeometry.stretch(pan.y, overflow.y, limit.y))
+    }
+
+    /** Whether a horizontal drag of [dx] starts on this picture rather than on the pager: zoomed, and not already at that edge. */
     fun canPanHorizontally(dx: Float): Boolean = isZoomed && ViewerGeometry.canPanHorizontally(pan, panLimit, dx)
 
     /** A gesture is starting: whatever spring was still running yields to the finger, and a pinch starts from where the picture is. */
@@ -185,24 +205,98 @@ class DismissState {
 }
 
 /**
+ * The pager's share of a zoomed picture's drag. The pager cannot be handed a gesture part-way — its own detector
+ * gave the gesture up when the picture took it and waits for the next finger — so the page drives it instead: once
+ * the picture has been panned to its edge, what the finger moves past that edge pulls the next page in
+ * ([dragBy], raw, with the finger), a finger that turns back brings the pager to rest before the picture pans
+ * again ([returnBy]), and the lift settles the pager on the page it was pulled past [ViewerGeometry.PageCommitShare]
+ * of the way toward, or flung toward faster than [minFlingVelocityPx], else back where it was ([settle]).
+ */
+@Stable
+class PagerHandover internal constructor(
+    private val pagerState: PagerState,
+    /** In a left-to-right layout the finger and the pager's offset run opposite ways: a finger moving left scrolls forward. */
+    private val reverse: Boolean,
+    private val minFlingVelocityPx: Float,
+) {
+    /** How far the pager has been pulled by the gesture under way, in its own scroll pixels (positive toward the next page); 0 at rest. */
+    var travel by mutableFloatStateOf(0f)
+        private set
+    private var startPage = 0
+    private var settling: Job? = null
+
+    val engaged: Boolean get() = travel != 0f
+
+    private fun toScroll(finger: Float) = if (reverse) -finger else finger
+    private fun toFinger(scroll: Float) = if (reverse) -scroll else scroll
+
+    /** A gesture is starting: a settle still running yields to the finger. */
+    fun interrupt() {
+        settling?.cancel()
+        settling = null
+        travel = 0f
+    }
+
+    /** Brings the pager back toward rest with as much of [dx] (finger pixels) as heads that way; answers what is left of [dx]. */
+    fun returnBy(dx: Float): Float {
+        if (travel == 0f || dx == 0f) return dx
+        val scroll = toScroll(dx)
+        if (sign(scroll) == sign(travel)) return dx
+        val back = sign(scroll) * min(abs(scroll), abs(travel))
+        val consumed = pagerState.dispatchRawDelta(back)
+        travel += consumed
+        if (abs(travel) < RestEpsilon) travel = 0f
+        return dx - toFinger(consumed)
+    }
+
+    /** Pulls the pager by [dx] (finger pixels), from rest or further out; answers what it would not take — there is no page that way. */
+    fun dragBy(dx: Float): Float {
+        if (dx == 0f) return 0f
+        if (travel == 0f) startPage = pagerState.currentPage
+        val consumed = pagerState.dispatchRawDelta(toScroll(dx))
+        travel += consumed
+        return dx - toFinger(consumed)
+    }
+
+    /** The finger lifted at [velocityX] (finger px/s): forward to the page pulled in when pulled or flung far enough, else back to rest. */
+    fun settle(scope: CoroutineScope, velocityX: Float) {
+        if (travel == 0f) return
+        val extent = (pagerState.layoutInfo.pageSize + pagerState.layoutInfo.pageSpacing).toFloat().coerceAtLeast(1f)
+        val velocity = toScroll(velocityX)
+        val committed = abs(travel) / extent >= ViewerGeometry.PageCommitShare ||
+            (abs(velocity) >= minFlingVelocityPx && sign(velocity) == sign(travel))
+        val target = (startPage + if (committed) sign(travel).toInt() else 0).coerceIn(0, (pagerState.pageCount - 1).coerceAtLeast(0))
+        travel = 0f
+        settling = scope.launch { pagerState.animateScrollToPage(target) }
+    }
+
+    private companion object {
+        const val RestEpsilon = 0.5f
+    }
+}
+
+/**
  * The gestures of a page, and how they are shared with the pager underneath:
  *
  * - two fingers pinch the picture, around their centroid, however the page stands ([ZoomState.pinch]);
- * - one finger on a picture zoomed past the fit pans it — unless the drag is sideways and the picture is already
- *   at that edge, in which case nothing here touches the events and the pager takes the swipe;
- * - one finger on a picture at the fit that moves mostly downward or upward drags the page toward dismissal
- *   ([DismissState]); moving mostly sideways it is the pager's;
+ * - one finger on a picture at the fit: the first direction it moves in decides, once, whether the drag is the
+ *   pager's (sideways: nothing here touches the events, and the pager takes it from its own touch slop, at any
+ *   speed) or a dismiss (up or down: [DismissState]);
+ * - one finger on a picture zoomed past the fit pans it; a pan that reaches the picture's edge hands what the finger
+ *   moves past it to the pager, in the same drag ([PagerHandover]), and takes the finger back when it turns; a
+ *   sideways start on a picture already at that edge is the pager's outright;
  * - a tap toggles the chrome, a double tap zooms in and out.
  *
- * The decision is made once per gesture, when the finger has moved past touch slop, so a pan that reaches the edge
- * stops there and the *next* swipe turns the page. [enabled] false (the transform is running) lets nothing through
- * but the taps.
+ * [enabled] is read when a finger comes down (the transform running, the page not the one on screen): a gesture
+ * under way is never cut short by the page it is on ceasing to be the current one, which is exactly what happens
+ * when it pulls the next page past halfway.
  */
 fun Modifier.viewerGestures(
     zoom: ZoomState?,
     dismiss: DismissState,
+    handover: PagerHandover?,
     scope: CoroutineScope,
-    enabled: Boolean,
+    enabled: State<Boolean>,
     onTap: () -> Unit,
     onDismiss: (velocityY: Float) -> Unit,
 ): Modifier = this
@@ -210,24 +304,35 @@ fun Modifier.viewerGestures(
         detectTapGestures(
             onTap = { onTap() },
             onDoubleTap = { position ->
-                if (enabled && zoom != null && !dismiss.dragging) {
+                if (enabled.value && zoom != null && !dismiss.dragging) {
                     val centre = Offset(size.width / 2f, size.height / 2f)
                     zoom.doubleTap(scope, position - centre)
                 }
             },
         )
     }
-    .pointerInput(zoom, dismiss, enabled) {
-        if (!enabled) return@pointerInput
+    .pointerInput(zoom, dismiss, handover, enabled) {
         val velocity = VelocityTracker()
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false)
+            if (!enabled.value) return@awaitEachGesture
             zoom?.interrupt()
+            handover?.interrupt()
             var mode = GestureMode.Undecided
             var travelled = Offset.Zero
             val slop = viewConfiguration.touchSlop
             velocity.resetTracking()
             val centre = Offset(size.width / 2f, size.height / 2f)
+
+            /** One finger's move on a zoomed picture: the pager back to rest first, then the picture to its edges, then the pager, then the band. */
+            fun pan(delta: Offset) {
+                val picture = zoom ?: return
+                val toPicture = Offset(handover?.returnBy(delta.x) ?: delta.x, delta.y)
+                val overflow = picture.panWithin(toPicture)
+                val refused = Offset(handover?.takeIf { overflow.x != 0f }?.dragBy(overflow.x) ?: overflow.x, overflow.y)
+                picture.stretchBy(refused)
+            }
+
             while (true) {
                 val event = awaitPointerEvent()
                 val pressed = event.changes.filter { it.pressed }
@@ -246,7 +351,7 @@ fun Modifier.viewerGestures(
                     GestureMode.Zoom -> {
                         // One finger left of the pinch: it goes on as a pan of a zoomed picture, or is spent.
                         mode = if (zoom?.isZoomed == true) GestureMode.Pan else GestureMode.Spent
-                        if (mode == GestureMode.Pan) zoom?.dragBy(delta)
+                        if (mode == GestureMode.Pan) pan(delta)
                         change.consume()
                     }
                     GestureMode.Undecided -> {
@@ -261,7 +366,7 @@ fun Modifier.viewerGestures(
                         velocity.addPosition(change.uptimeMillis, change.position)
                         when (mode) {
                             GestureMode.Pan -> {
-                                zoom?.dragBy(travelled)
+                                pan(travelled)
                                 change.consume()
                             }
                             GestureMode.Dismiss -> {
@@ -273,7 +378,7 @@ fun Modifier.viewerGestures(
                         }
                     }
                     GestureMode.Pan -> {
-                        zoom?.dragBy(delta)
+                        pan(delta)
                         velocity.addPosition(change.uptimeMillis, change.position)
                         change.consume()
                     }
@@ -287,7 +392,11 @@ fun Modifier.viewerGestures(
                 }
             }
             when (mode) {
-                GestureMode.Zoom, GestureMode.Pan, GestureMode.Spent -> zoom?.settle(scope)
+                GestureMode.Pan -> {
+                    handover?.settle(scope, velocity.calculateVelocity().x)
+                    zoom?.settle(scope)
+                }
+                GestureMode.Zoom, GestureMode.Spent -> zoom?.settle(scope)
                 GestureMode.Dismiss -> {
                     val velocityY = velocity.calculateVelocity().y
                     if (ViewerGeometry.shouldDismiss(dismiss.drag, velocityY, dismiss.viewport)) {
