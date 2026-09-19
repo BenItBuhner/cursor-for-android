@@ -110,7 +110,7 @@ class CatalogRepositoryTest {
 
         assertThat(catalog.loadRepositories().isFailure).isTrue()
         // The endpoint allows one request a minute whether it answered or not, so the next two are refused here.
-        assertThat(catalog.loadRepositories().exceptionOrNull()!!.userMessage()).isEqualTo("Rate limited by Cursor. Try again in a moment.")
+        assertThat(catalog.loadRepositories().exceptionOrNull()!!.userMessage()).isEqualTo("Rate limited by Cursor: Cursor allows one repository refresh a minute. Try again in a moment.")
         assertThat(catalog.loadRepositories(force = true).isFailure).isTrue()
         assertThat(api.repositoriesCalls).isEqualTo(1)
 

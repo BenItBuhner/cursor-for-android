@@ -82,6 +82,15 @@ data class QueuedFollowUp(
     val serverReason: String? = null,
     /** The earliest the next attempt may go out — the pause after a refusal (see [busyRefusals]); null when it may go now. */
     val notBeforeMillis: Long? = null,
+    /**
+     * Why the message waits when it is not the agent's turn it waits for: the server asked every caller to slow
+     * down (`429`, or a `503` that named a wait), and the card says so in place of [WAITING_FOR_AGENT] — the
+     * server's own words under it ([serverReason]), the wait it named waited out ([notBeforeMillis]), then one more
+     * attempt. Null for a wait on the agent, and for a message that is not waiting.
+     */
+    val holdReason: String? = null,
+    /** Attempts the server refused with a wait it named, in a row: one is waited out; the second is the user's to hear. */
+    val throttleRefusals: Int = 0,
 ) {
     /** The text a card shows: the message itself, or what the request will say for an attachment-only follow-up. */
     val previewText: String get() = text.ifBlank { attachmentOnlyText(images.size, files.size) }
@@ -103,6 +112,8 @@ data class QueuedFollowUp(
         const val MAY_HAVE_BEEN_SENT = "This may already have been sent. Check the chat before sending it again."
         /** Said under a message the server keeps refusing as busy (see [heldSinceMillis]); the time waited follows it. */
         const val WAITING_FOR_AGENT = "Waiting for the agent to finish its last turn"
+        /** Said under a message the server asked to slow down (see [holdReason]); the time waited follows it. */
+        const val RATE_LIMITED = "Rate limited by Cursor, trying again shortly"
     }
 }
 

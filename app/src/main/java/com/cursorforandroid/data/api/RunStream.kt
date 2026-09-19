@@ -288,6 +288,8 @@ class SseRunStreamer(
         var attempt = 0
         /** The reconnection time the server last asked for, which outlives the connection that carried it. */
         var serverRetryMs: Long? = null
+        /** Whether this pass has handed the caller anything: until it has, a connection that starts over duplicates nothing. */
+        var delivered = false
         while (currentCoroutineContext().isActive) {
             val outcome = connectOnce(agentId, runId, lastId) { frame ->
                 frame.retryMillis?.let { serverRetryMs = it }
@@ -300,7 +302,7 @@ class SseRunStreamer(
                 when (parsed) {
                     is SseParser.Parsed.Delivered -> {
                         frame.id?.let { lastId = it }
-                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { emit(it) }
+                        parsed.event.takeUnless { it is RunStreamEvent.Error }?.let { delivered = true; emit(it) }
                     }
                     // Skipped on purpose, either way: resuming past them is right, since asking again brings the same frame.
                     SseParser.Parsed.Ignored, SseParser.Parsed.Oversized -> frame.id?.let { lastId = it }
@@ -325,8 +327,11 @@ class SseRunStreamer(
                     // Without a position to resume from, the next connection replays the run from its first event —
                     // into an accumulator that already holds part of it, which would read as the agent saying
                     // everything twice. Ending the pass hands that decision to the caller, which rebuilds from
-                    // nothing when it comes back (see [RunStreamEvent.Error.resumeFrom]).
-                    if (attempt > maxAttempts || lastId == null) {
+                    // nothing when it comes back (see [RunStreamEvent.Error.resumeFrom]). A pass that has handed
+                    // over nothing yet — the connection refused, or dropped before its first event — has nothing to
+                    // duplicate, and rides the blip out here like any other: a replay refused once with a `503` used
+                    // to read as a failed trace, with a Retry, for a moment's trouble.
+                    if (attempt > maxAttempts || (lastId == null && delivered)) {
                         emit(RunStreamEvent.Error("stream_unavailable", outcome.reason, resumeFrom = lastId))
                         return@flow
                     }

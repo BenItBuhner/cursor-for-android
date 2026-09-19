@@ -7,6 +7,7 @@ import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
+import com.cursorforandroid.data.api.isLostReply
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.AttachmentStore
@@ -314,6 +315,8 @@ class ConversationRepository(
         var latestFetchedById = false
         /** The last `/v0` transcript fetch failed while the runs answered (see [ConversationState.transcriptError]). */
         var transcriptError: String? = null
+        /** The reader's last scroll up met a page of run records that could not be read; the word under the transcript is that page's (see [loadOlderNow]). */
+        var olderPageFailed = false
         /**
          * Finished runs whose log could not be read on the last pass — the network, not the log's age — and are worth
          * asking for again (see [ConversationRepository.retryTraces]); cleared as each is queued again.
@@ -1562,7 +1565,15 @@ class ConversationRepository(
                 var merged: List<RunDto> = emptyList()
                 var unavailable = false
                 var pageOlder = false
-                val transcriptIssue = if (transcriptFailed) convResult.exceptionOrNull()?.userMessage() ?: "The transcript could not be read." else null
+                // What the load could not read, in the server's words: the transcript, or — the transcript answering
+                // and the run list not — the runs, without which the turns show no status, footer or trace. Either is
+                // said under the transcript with the way to ask again, never swallowed; the next fetch that reads it clears it.
+                val runsFailed = runResult.isFailure && runResult.exceptionOrNull()?.toCursorError()?.httpCode != 404
+                val transcriptIssue = when {
+                    transcriptFailed -> convResult.exceptionOrNull()?.userMessage() ?: "The transcript could not be read."
+                    runsFailed -> runResult.exceptionOrNull()?.userMessage() ?: "The run list could not be read."
+                    else -> null
+                }
                 if (fetched) {
                     // The traces are kept: they are complete, and a finished run's log does not change. Local prompts
                     // hand over to the server once it reports them in full.
@@ -2124,7 +2135,7 @@ class ConversationRepository(
      * Fetches up to [pages] pages of older run records and folds each in as it lands. Returns how many landed — a
      * failure leaves the cursor where it was for the next attempt.
      */
-    private suspend fun pageOlderRunsNow(e: Entry, agentId: String, pages: Int): Int {
+    private suspend fun pageOlderRunsNow(e: Entry, agentId: String, pages: Int, onFailure: (Throwable) -> Unit = {}): Int {
         val backend = session.current
         val tokens = cacheTokens()
         var fetched = 0
@@ -2133,6 +2144,7 @@ class ConversationRepository(
             val cursor = synchronized(e) { e.olderRunsCursor.takeUnless { e.runsComplete || (e.recordWindow != null && !e.recordNeedsRuns()) } } ?: break
             val page = runCatching { net(agentId, "runs"); backend.api.listRuns(agentId, limit = RUN_PAGE_SIZE, cursor = cursor) }.getOrElse { t ->
                 if (t is CancellationException) throw t
+                onFailure(t)
                 break
             }
             fetched++
@@ -2197,7 +2209,13 @@ class ConversationRepository(
             val needsRecords = synchronized(e) {
                 !e.runsComplete && e.olderRunsCursor != null && e.allRuns().size < e.window + WINDOW_RUNS
             }
-            if (needsRecords) pageOlderRunsNow(e, e.agentId, pages = 1)
+            // A page that could not be read is said under the transcript, in the server's words, with the way to
+            // ask again; what is shown stands, and the cursor stays where it was for the next scroll up, which
+            // clears the word when it goes through.
+            if (needsRecords) {
+                val fetched = pageOlderRunsNow(e, e.agentId, pages = 1) { t -> e.publish(mutate = { olderPageFailed = true }, transform = { copy(transcriptError = t.userMessage()) }) }
+                if (fetched > 0 && synchronized(e) { e.olderPageFailed }) e.publish(mutate = { olderPageFailed = false }, transform = { copy(transcriptError = null) })
+            }
             e.publish(mutate = { window += WINDOW_RUNS })
             persist(e, session.current)
             loadTraces(e, e.agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
@@ -2783,14 +2801,21 @@ class ConversationRepository(
      *
      * A failure is not an answer of no: the caller has to tell "it did not arrive" from "nobody could say".
      */
-    suspend fun wasSentSince(agentId: String, text: String, sinceMillis: Long): Result<Boolean> = runCatching {
+    suspend fun wasSentSince(agentId: String, text: String, sinceMillis: Long): Result<Boolean> = sentRunSince(agentId, text, sinceMillis).map { it != null }
+
+    /**
+     * [wasSentSince] with the run itself: the chat's newest run when the newest prompt the server holds is [text],
+     * filed no earlier than [sinceMillis]; null when the server does not have the message. What a send whose reply
+     * was lost files the message under, so the chat shows it sent and follows it rather than sending it again.
+     */
+    suspend fun sentRunSince(agentId: String, text: String, sinceMillis: Long): Result<RunDto?> = runCatching {
         val api = session.current.api
         coroutineScope {
             val conversation = async { api.conversationV0(agentId) }
             val runs = async { api.listRuns(agentId, limit = FIRST_RUN_PAGE) }
             val newest = conversation.await().messages.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
-            val newestRunAt = runs.await().items.maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
-            newest == text.trim() && newestRunAt >= sinceMillis - CLOCK_SKEW_ALLOWANCE_MS
+            val newestRun = runs.await().items.maxByOrNull { parseIsoMillis(it.createdAt) }
+            newestRun?.takeIf { newest == text.trim() && parseIsoMillis(it.createdAt) >= sinceMillis - CLOCK_SKEW_ALLOWANCE_MS }
         }
     }
 
@@ -2828,6 +2853,15 @@ class ConversationRepository(
      * Sends a [stageFollowUp]ed prompt. On success the server's run takes the placeholder's place — the bubble is no
      * longer pending — and its stream starts. On failure the bubble is left as it is, pending, for the caller to try
      * again or [discardStaged].
+     *
+     * A reply that never came back — the connection reset under the request, the reply cut before its status line,
+     * silence past the read timeout — says nothing about whether the server took the message, and the runs API has
+     * no idempotency key to ask with. So the server is asked in the one way there is ([sentRunSince]): a message it
+     * holds is filed under the run it started, shown as sent and followed, never sent again; one it does not hold
+     * goes out once more, once; and when nobody can say — the question itself failed — the failure stands for the
+     * caller, which for a queued message flags it rather than sending it. A network handoff mid-send used to send
+     * the message twice (OkHttp's own retry of the request, or the queue's after a `409 agent_busy` for the run the
+     * first attempt had started); see `OneShotWritesInterceptor`.
      */
     suspend fun sendStaged(
         agentId: String,
@@ -2840,16 +2874,33 @@ class ConversationRepository(
         modelDisplayName: String? = null,
     ): Result<RunDto> {
         val e = entry(agentId)
-        return agents.followUp(
-            agentId,
-            staged.text,
-            images,
-            planMode = planMode,
-            mcpServers = mcpServers,
-            modelId = modelId,
-            modelParams = modelParams,
-            modelDisplayName = modelDisplayName,
-        ).map { run -> accepted(e, agentId, staged, run); run }
+        var attempts = 0
+        while (true) {
+            attempts++
+            val result = agents.followUp(
+                agentId,
+                staged.text,
+                images,
+                planMode = planMode,
+                mcpServers = mcpServers,
+                modelId = modelId,
+                modelParams = modelParams,
+                modelDisplayName = modelDisplayName,
+            )
+            val t = result.exceptionOrNull() ?: return result.map { run -> accepted(e, agentId, staged, run); run }
+            if (t is CancellationException) throw t
+            if (!t.isLostReply()) return result
+            val filed = sentRunSince(agentId, staged.text, staged.stagedAt)
+            val run = filed.getOrNull()
+            when {
+                run != null -> {
+                    agents.noteFollowUp(agentId, run, modelId, modelParams, modelDisplayName)
+                    accepted(e, agentId, staged, run)
+                    return Result.success(run)
+                }
+                filed.isFailure || attempts >= LOST_REPLY_ATTEMPTS -> return result
+            }
+        }
     }
 
     /**
@@ -3194,6 +3245,8 @@ class ConversationRepository(
         const val RUN_PAGE_SIZE = 100
         /** Room for device and server clocks to disagree when matching a send marker to a run stamp. */
         const val CLOCK_SKEW_ALLOWANCE_MS = 60_000L
+        /** A send whose reply was lost, and which the server confirms it does not hold, goes out this many times in all (see [sendStaged]). */
+        const val LOST_REPLY_ATTEMPTS = 2
         /** Pages of older run records read past the first: beyond them the oldest prompts are shown without runs. */
         const val MAX_RUN_PAGES = 8
         /** How close two publications may come before the second waits for the burst (see [publishCoalesced]). */

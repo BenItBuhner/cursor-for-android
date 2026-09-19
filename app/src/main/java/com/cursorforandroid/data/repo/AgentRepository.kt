@@ -1763,12 +1763,21 @@ class AgentRepository(
                 ),
             )
         }
+        noteFollowUp(agentId, response.run, modelId, modelParams, modelDisplayName, startedIn)
+        response.run
+    }
+
+    /**
+     * The row after the server took a follow-up as [run]: running on it, active, touched now, and switched to the
+     * model the request named (see [switchedTo]). What [followUp] does with the server's answer, and what a caller
+     * does with a run it found on the server after the answer was lost (see `ConversationRepository.sendStaged`).
+     */
+    fun noteFollowUp(agentId: String, run: RunDto, modelId: String? = null, modelParams: List<ModelParam> = emptyList(), modelDisplayName: String? = null, startedIn: Int = token()) {
         patch(agentId, startedIn) { current ->
             current.switchedTo(modelId, modelParams, modelDisplayName)
-                .copy(runStatus = RunStatus.parse(response.run.status), latestRunId = response.run.id, lifecycle = AgentLifecycle.ACTIVE)
+                .copy(runStatus = RunStatus.parse(run.status), latestRunId = run.id, lifecycle = AgentLifecycle.ACTIVE)
                 .touched(AppClock.now())
         }
-        response.run
     }
 
     /**

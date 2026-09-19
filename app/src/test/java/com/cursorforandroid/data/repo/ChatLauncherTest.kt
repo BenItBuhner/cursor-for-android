@@ -144,7 +144,7 @@ class ChatLauncherTest {
         assertThat(failed.agentId).isEqualTo(id)
         assertThat(failed.request).isEqualTo(request)
         assertThat(failed.nonce).isEqualTo("nonce-1")
-        assertThat(failed.reason).isEqualTo("Rate limited by Cursor. Try again in a moment.")
+        assertThat(failed.reason).isEqualTo("Rate limited by Cursor: Slow down. Try again in a moment.")
         // Nothing of the chat is left behind.
         assertThat(prompts()).isEmpty()
         assertThat(agents.agent(id)).isNull()

@@ -119,7 +119,7 @@ fun Throwable.userMessage(): String {
     toCursorError()?.let { e ->
         return when {
             e.isUnauthorized -> "That API key was rejected. Create one at cursor.com/dashboard/api."
-            e.isRateLimited -> "Rate limited by Cursor. Try again in a moment."
+            e.isRateLimited -> rateLimitedMessage(e)
             e.code == "agent_busy" -> "The agent is still working on the previous prompt."
             e.code == "agent_archived" -> "This agent is archived. Unarchive it to send a follow-up."
             e.code == "usage_limit_exceeded" -> "Your Cursor usage limit has been reached."
@@ -129,7 +129,61 @@ fun Throwable.userMessage(): String {
     return when (this) {
         is java.net.UnknownHostException -> "You're offline. Check your connection."
         is java.net.SocketTimeoutException -> "Cursor took too long to respond."
+        is java.net.ConnectException -> "Cursor couldn't be reached. Check your connection."
+        is IOException -> transportWords() ?: message ?: "Something went wrong."
         else -> message ?: "Something went wrong."
+    }
+}
+
+/**
+ * A rate limit, framed by the app and carrying the server's own words and the wait it named, so the reader knows
+ * both what happened and when to try again: "Rate limited by Cursor: Too many requests from this key. Try again in
+ * 7 s." A body without words of its own — a bare `429` from a proxy — reads "Rate limited by Cursor. Try again in a moment."
+ */
+private fun Throwable.rateLimitedMessage(e: CursorApiException): String {
+    val words = e.message.trim().takeIf { it.isNotBlank() && !it.startsWith("Request failed") && !it.equals("Too Many Requests", ignoreCase = true) }
+    val wait = retryAfterMillis()?.let { "in ${((it + 999) / 1000).coerceAtLeast(1)} s" } ?: "in a moment"
+    return if (words == null) "Rate limited by Cursor. Try again $wait." else "Rate limited by Cursor: ${words.trimEnd('.')}. Try again $wait."
+}
+
+/**
+ * The connection's own failures, in plain words rather than OkHttp's: a socket reset or closed under the request, a
+ * reply cut before its status line or its end, a handshake that failed, the call's budget spent. Null for an
+ * [IOException] that carries a message of its own worth showing (an API error, a launch left unanswered).
+ */
+private fun IOException.transportWords(): String? = when (this) {
+    is java.io.InterruptedIOException -> if (message == "timeout") "Cursor took too long to respond." else null
+    is java.net.SocketException, is java.io.EOFException, is javax.net.ssl.SSLException, is okhttp3.internal.http2.StreamResetException -> CONNECTION_DROPPED
+    else -> if (message?.startsWith("unexpected end of stream") == true || message == "Socket closed" || message == "Canceled") CONNECTION_DROPPED else null
+}
+
+/** Said of a request whose reply never came back whole: the connection went, not the server. */
+const val CONNECTION_DROPPED = "The connection to Cursor dropped before it answered."
+
+/**
+ * Marks the body of every request that is not idempotent — a `POST`, a `DELETE`, anything but `GET` and `HEAD` —
+ * as one-shot, so OkHttp never sends it a second time on its own. OkHttp's transparent recovery — the same request
+ * again on a fresh connection when a pooled connection turns out dead, or the reply is cut before its status line —
+ * is what a `GET` wants and what `POST /v1/agents/{id}/runs` must never get: the runs API takes no idempotency key,
+ * so a follow-up whose reply was lost on a network handoff went out again on the retry — a second run when the
+ * server had already taken the first, or `409 agent_busy`, which queued the message to be sent once more when that
+ * run ended. Either way the agent heard it twice. Such a failure now reaches the repositories as the lost reply it
+ * is (see [isLostReply]), and they ask the server whether the message arrived before anything goes out again.
+ */
+class OneShotWritesInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val body = request.body
+        if (body == null || request.method == "GET" || request.method == "HEAD" || body.isOneShot()) return chain.proceed(request)
+        return chain.proceed(request.newBuilder().method(request.method, OneShot(body)).build())
+    }
+
+    private class OneShot(private val delegate: okhttp3.RequestBody) : okhttp3.RequestBody() {
+        override fun contentType() = delegate.contentType()
+        override fun contentLength() = delegate.contentLength()
+        override fun writeTo(sink: okio.BufferedSink) = delegate.writeTo(sink)
+        override fun isDuplex() = delegate.isDuplex()
+        override fun isOneShot() = true
     }
 }
 
@@ -146,6 +200,8 @@ object CursorApiFactory {
         // long chats' transcripts failed on every open, and the failure read as the chat not loading at all.
         .callTimeout(5, TimeUnit.MINUTES)
         .addInterceptor(AuthInterceptor(apiKeyProvider))
+        // Writes go out once: a lost reply is reported, not resent behind the app's back (see the class).
+        .addInterceptor(OneShotWritesInterceptor())
         .addInterceptor(RetryInterceptor())
         .apply {
             if (BuildConfig.DEBUG) {

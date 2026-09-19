@@ -1,6 +1,7 @@
 package com.cursorforandroid.data.repo
 
 import com.cursorforandroid.data.api.isTransientFailure
+import com.cursorforandroid.data.api.retryAfterMillis
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.local.FollowUpStore
@@ -298,7 +299,7 @@ class FollowUpRepository(
         val e = entry(agentId)
         synchronized(e) {
             e.update {
-                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null) else it })
+                copy(queue = queue.map { if (it.id == id) it.copy(error = null, needsConfirmation = false, sendStartedAtMillis = null, heldSinceMillis = null, busyRefusals = 0, serverReason = null, notBeforeMillis = null, holdReason = null, throttleRefusals = 0) else it })
             }
             e.ensureDispatcher()
         }
@@ -426,7 +427,8 @@ class FollowUpRepository(
                         return
                     }
                     e.attempt(item, VIA_STEER, "retry", t.userMessage())
-                    delay(retryBaseMs shl retries++)
+                    // The pause doubles each time, and is never shorter than the wait the server named.
+                    delay(maxOf(retryBaseMs shl retries++, t.retryAfterMillis() ?: 0L).coerceAtMost(MAX_BUSY_PAUSE_MS))
                 }
                 else -> {
                     e.attempt(item, VIA_STEER, "failed", t.userMessage())
@@ -818,6 +820,33 @@ class FollowUpRepository(
                                         notBeforeMillis = now + busyPause(item.busyRefusals),
                                         // The server's own reason, once it has refused three times: what the card says under the wait.
                                         serverReason = if (refusals >= REFUSALS_BEFORE_REASON) (error.message?.takeIf { m -> m.isNotBlank() } ?: it.serverReason) else it.serverReason,
+                                        // A wait on the agent, whatever the message waited for before.
+                                        holdReason = null,
+                                        throttleRefusals = 0,
+                                    )
+                                } else it
+                            })
+                        }
+                        e.scheduleSave()
+                    }
+                    // The server asked every caller to slow down: a `429`, or a `503` naming when to come back.
+                    // Once, the wait it named is waited out — the card saying so, the server's words under it — and
+                    // the message goes out by itself; a second refusal in a row is the user's to hear.
+                    error != null && (error.isRateLimited || (error.httpCode == 503 && t.retryAfterMillis() != null)) && item.throttleRefusals < THROTTLE_RETRIES -> {
+                        e.attempt(item, via, "throttled", error.message)
+                        val now = AppClock.now()
+                        val wait = (t.retryAfterMillis() ?: busyPause(0)).coerceIn(retryBaseMs, MAX_BUSY_PAUSE_MS)
+                        e.update {
+                            copy(queue = queue.map {
+                                if (it.id == item.id) {
+                                    it.copy(
+                                        isSending = false,
+                                        sendStartedAtMillis = null,
+                                        heldSinceMillis = it.heldSinceMillis ?: now,
+                                        notBeforeMillis = now + wait,
+                                        holdReason = QueuedFollowUp.RATE_LIMITED,
+                                        serverReason = error.message.takeIf { m -> m.isNotBlank() } ?: it.serverReason,
+                                        throttleRefusals = it.throttleRefusals + 1,
                                     )
                                 } else it
                             })
@@ -877,6 +906,8 @@ class FollowUpRepository(
         const val MAX_SEND_RETRIES = 3
         /** How many doublings the pause between refused attempts takes before [MAX_BUSY_PAUSE_MS] caps it. */
         const val MAX_BUSY_BACKOFF_STEPS = 6
+        /** A refusal that names a wait (`429`, `503` with `Retry-After`) is waited out and tried again this many times before it is shown. */
+        const val THROTTLE_RETRIES = 1
         const val AGENT_BUSY = "agent_busy"
         const val RUN_NOT_CANCELLABLE = "run_not_cancellable"
         /** The ids of the placeholder runs prompts sent from here are shown under until the server answers (see [ConversationRepository]). */
