@@ -7,6 +7,11 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # Robolectric's android-all-instrumented jars are pinned per SDK level (robolectricAndroidAllSdk35 / Sdk30 in
+      # gradle/libs.versions.toml) to the build Robolectric maps that level to; the newest version is an Android 17 jar
+      # and never the right one. They are moved by hand when a Robolectric bump asks for it.
+      - dependency-name: "org.robolectric:android-all-instrumented"
     groups:
       androidx:
         patterns:
