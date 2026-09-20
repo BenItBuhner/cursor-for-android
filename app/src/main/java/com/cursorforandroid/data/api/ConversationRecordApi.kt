@@ -103,6 +103,8 @@ class HeadlessConversationApi(
 
     override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
         val from = startIndex.coerceAtLeast(0)
+        // A refusal is heard at once: the transcript has the documented endpoints to fall back on, and the pause the
+        // refusal asks for is waited out by the next record read, not by this open (see ApiThrottle.call).
         val response = rpc.unaryWithSession(
             SERVICE,
             "FetchBackgroundComposer",
@@ -110,6 +112,7 @@ class HeadlessConversationApi(
             FetchRequestDto(bcId = agentId, startIndex = from, limit = limit.coerceAtLeast(1)),
             FetchRequestDto.serializer(),
             FetchResponseDto.serializer(),
+            retryRefusals = false,
         )
         // One step per response, a blank one for a response this app reads nothing from (a status, a done marker):
         // the record is paged by index, and a page's steps must line up with the indices it was asked for.
@@ -124,6 +127,7 @@ class HeadlessConversationApi(
             StateRequestDto(bcId = agentId),
             StateRequestDto.serializer(),
             StateResponseDto.serializer(),
+            retryRefusals = false,
         )
         val latest = response.latestConversationState
         val conversation = latest?.conversationState

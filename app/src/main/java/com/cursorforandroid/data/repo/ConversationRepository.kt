@@ -722,10 +722,11 @@ class ConversationRepository(
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
                 val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
-                // Without a body; or, in a coordinator's chat, with a body but without the coordinator's word to the
-                // user — the record has carried a streamed `SendMessage` in shapes this app did not read; the log has
-                // it whole — or with that word read leniently out of pieces (see `MessageRecovery`), which the log has as sent.
-                val wanting = !turn.hasBody || (projectMode && (!turn.hasUserMessage || turn.hasRecoveredMessage))
+                // Without a body; or, in a coordinator's chat, with a body the log may complete with the
+                // coordinator's word (see RecordTurn.wantsLogForMessage): a message read leniently out of pieces, the
+                // user's turn without one, an injected turn the record holds without any call. An injected turn
+                // whose calls the record holds, none of them a message, sent none and is left as the record has it.
+                val wanting = !turn.hasBody || (projectMode && turn.wantsLogForMessage)
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }

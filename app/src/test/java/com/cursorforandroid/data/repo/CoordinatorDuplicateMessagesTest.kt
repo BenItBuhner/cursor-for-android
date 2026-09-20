@@ -209,7 +209,7 @@ class CoordinatorDuplicateMessagesTest {
         awaitUntil { conversations.state(agentId).value.items.filterIsInstance<RunFooter>().size >= 6 && conversations.state(agentId).value.traceStatus.pending == 0 }
         awaitUntil {
             val load = conversations.loadDiagnostics(agentId)!!
-            load.source != "record" || load.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }.let { it.size == 3 && it.all { line -> line.trace == "shown(log)" } }
+            load.source != "record" || load.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }.let { it.size == 3 && it.all { line -> line.trace == "shown" } }
         }
         // The running run's stream is being followed: its calls are on screen.
         awaitUntil { conversations.state(agentId).value.items.filterIsInstance<ActivityGroup>().flatMap { it.calls }.any { it.callId.startsWith("turn-6:") } }
@@ -268,20 +268,20 @@ class CoordinatorDuplicateMessagesTest {
     }
 
     /**
-     * The same chat in Extended mode's record path: the record has every turn, the silent turns without any
-     * `SendMessage`, and their logs are asked for it (the record having carried streamed calls in shapes this app
-     * could not read before). The log's copy of run 2's message is not the silent turn's word: it is drawn once,
-     * where the record has it, and the silent turns read as the stretch under it, footers summed.
+     * The same chat in Extended mode's record path: the record has every turn, the silent turns with their calls
+     * and no `SendMessage` among them — so they sent none, and their logs are not asked for (see
+     * `RecordTurn.wantsLogForMessage`): the copies the logs carry never reach the screen, and the message is drawn
+     * once, where the record has it, the silent turns reading as the stretch under it, footers summed.
      */
     @Test
-    fun `the record path keeps the message in its own turn when the silent turns' logs carry it again`() = runBlocking<Unit> {
+    fun `the record path keeps the message in its own turn and asks no silent turn for its log`() = runBlocking<Unit> {
         seed()
         val conversations = repository()
         conversations.attach(agentId)
         awaitLoaded(conversations)
-        // The silent turns were asked for their logs, as before; the turns with their message were not.
-        awaitUntil { streamer.connections.containsAll(SevenRunCoordinator.SILENT_RUNS) }
-        assertThat(streamer.connections.distinct()).containsNoneOf("run-1", "run-2", "run-6")
+        // No finished turn's log was asked for: the record has each turn's calls, a message among them when one was sent.
+        delay(300)
+        assertThat(streamer.connections.distinct()).containsNoneOf("run-1", "run-2", "run-3", "run-4", "run-5", "run-6")
         val state = conversations.state(agentId).value
         assertThat(conversations.loadDiagnostics(agentId)!!.source).isEqualTo("record")
         assertThat(state.isProjectConversation).isTrue()
@@ -304,7 +304,7 @@ class CoordinatorDuplicateMessagesTest {
         // The diagnostics: the record had none for the silent turns, the log brought a repeat, nothing of it is drawn.
         val lines = conversations.loadDiagnostics(agentId)!!.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }
         assertThat(lines).hasSize(3)
-        lines.forEach { assertThat(it.message).isEqualTo("record=none rendered=none via=log repeat=…1:tool") }
+        lines.forEach { assertThat(it.message).isEqualTo("record=none rendered=none via=record") }
     }
 
     /** The control: the same seven runs with logs that carry their own events alone read the same. */
@@ -320,7 +320,7 @@ class CoordinatorDuplicateMessagesTest {
         assertThat(stretch.summary.action).isEqualTo("Worked 3m 10s")
         assertThat(stretch.eventCount).isEqualTo(4)
         val lines = conversations.loadDiagnostics(agentId)!!.runs.filter { line -> SevenRunCoordinator.SILENT_RUNS.any { line.idTail.endsWith(it) } }
-        lines.forEach { assertThat(it.message).isEqualTo("record=none rendered=none via=log") }
+        lines.forEach { assertThat(it.message).isEqualTo("record=none rendered=none via=record") }
     }
 
     /**
@@ -371,8 +371,8 @@ class CoordinatorDuplicateMessagesTest {
     }
 
     /**
-     * A restart: the traces the logs gave are read back from disk (the record's window too), and the message is
-     * drawn once from the copies as it was from the logs.
+     * A restart: the record's turns are read back from disk before the network answers, and the message is drawn
+     * once from the copies as it was from the record.
      */
     @Test
     fun `the copies restored from disk draw the message once as well`() = runBlocking<Unit> {
@@ -380,7 +380,7 @@ class CoordinatorDuplicateMessagesTest {
         val first = repository()
         first.attach(agentId)
         awaitLoaded(first)
-        awaitUntil { traces.runIds(agentId).containsAll(SevenRunCoordinator.SILENT_RUNS) }
+        awaitUntil { traces.runIds(agentId).count { it.startsWith(TraceCache.RECORD_KEY_PREFIX) } >= 7 && cache.read(agentId) != null }
         first.detach(agentId)
         // The next process: the disk answers before the network, and the network answers the same.
         val again = repository()
@@ -397,6 +397,8 @@ class CoordinatorDuplicateMessagesTest {
      */
     @Test
     fun `a message the stream left without its text is a row saying so, never another message's text`() = runBlocking<Unit> {
+        // The documented path: the logs are the source, and run 4's log is the one with the cut message.
+        recordRefused = true
         seed(leak = false)
         // Run 4's log: its own message, arguments truncated by the stream.
         streamer.reset("run-4")
@@ -413,6 +415,6 @@ class CoordinatorDuplicateMessagesTest {
         val unread = messages[2].call.payload as ToolPayload.CoordinatorMessage
         assertThat(unread.missing).isTrue()
         val line = conversations.loadDiagnostics(agentId)!!.runs.single { it.idTail.endsWith("run-4") }
-        assertThat(line.message).isEqualTo("record=none rendered=missing via=log")
+        assertThat(line.message).isEqualTo("rendered=missing via=log")
     }
 }

@@ -15,13 +15,15 @@ suspend fun <I, O> ConnectJsonClient.unaryWithSession(
     body: I,
     requestSerializer: KSerializer<I>,
     responseSerializer: KSerializer<O>,
+    /** Whether a rate limit is waited out and the call made once more (see `ApiThrottle.call`); off for a call with a fallback. */
+    retryRefusals: Boolean = true,
 ): O {
     val token = tokens.accessToken()
     return try {
-        unary(service, method, token, body, requestSerializer, responseSerializer)
+        unary(service, method, token, body, requestSerializer, responseSerializer, retryRefusals)
     } catch (e: ConnectRpcException) {
         if (!e.isUnauthenticated) throw e
         tokens.invalidate()
-        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer)
+        unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer, retryRefusals)
     }
 }

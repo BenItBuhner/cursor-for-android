@@ -252,16 +252,27 @@ fun ConversationScreen(
     LaunchedEffect(rows.size, newestKey, showWorking) {
         if (following) listState.requestScrollToItem(0)
     }
-    // The chat opens on its newest turns; the ones before them are paged in when the reader nears the top. In a
+    // The chat opens on its newest turns; the ones before them are paged in when the reader scrolls up to them. In a
     // reversed list the top is the highest index, so nearing it is the last visible item being within a few rows of
-    // the end. Asked once per approach: the repository ignores a request while one is under way.
+    // the end — and only the reader's scroll asks: a gesture arms one page, a fling under way keeps asking as its
+    // rows come into reach, and a transcript short enough to show its oldest row at rest asks for nothing until the
+    // reader moves it. Until 0.3.47 the list asked whenever its end was in view: a coordinator's turns fold into a
+    // few rows, so a Project of 240 turns paged itself in whole, page after page, every turn's log replayed behind
+    // it, and again on every reopen (Bennett, 2026-09-20). "Older messages" stays a tap away at rest.
     val hasOlder = conversation.hasOlder
     val isLoadingOlder = conversation.isLoadingOlder
+    var olderArmed by remember(agentId) { mutableStateOf(false) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (scrolling) olderArmed = true }
+    }
     LaunchedEffect(listState, hasOlder, isLoadingOlder) {
         if (!hasOlder || isLoadingOlder) return@LaunchedEffect
         snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
             .collect { (lastVisible, total) ->
-                if (total > 0 && lastVisible >= total - OlderTurnsPrefetchRows) viewModel.loadOlder()
+                if ((olderArmed || listState.isScrollInProgress) && total > 0 && lastVisible >= total - OlderTurnsPrefetchRows) {
+                    olderArmed = false
+                    viewModel.loadOlder()
+                }
             }
     }
 

@@ -112,8 +112,13 @@ class ApiThrottle(
         if (until > pausedUntilMillis) pausedUntilMillis = until
     }
 
-    /** [block] under a permit, once the pause (if any) has passed; a 429 pauses and is retried once. */
-    suspend fun <T> call(block: suspend () -> T): T {
+    /**
+     * [block] under a permit, once the pause (if any) has passed; a 429 pauses every caller and is retried once —
+     * unless [retryRefusals] is off: a caller with another way to what it asked for (the transcript, which the
+     * documented endpoints can also give) hears the refusal at once rather than waiting the pause out for a second
+     * try, and the pause still stands for everyone.
+     */
+    suspend fun <T> call(retryRefusals: Boolean = true, block: suspend () -> T): T {
         var attempt = 0
         while (true) {
             attempt++
@@ -125,7 +130,7 @@ class ApiThrottle(
                 if (!e.isRateLimited) throw e
                 refusals.incrementAndGet()
                 pause(e.retryAfterMillis ?: DEFAULT_PAUSE_MS)
-                if (attempt >= MAX_ATTEMPTS) throw e
+                if (!retryRefusals || attempt >= MAX_ATTEMPTS) throw e
             }
         }
     }
@@ -153,7 +158,9 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
         body: I,
         requestSerializer: KSerializer<I>,
         responseSerializer: KSerializer<O>,
-    ): O = throttle.call {
+        /** Whether a rate limit is waited out and the call made once more (see [ApiThrottle.call]); off for a call with a fallback. */
+        retryRefusals: Boolean = true,
+    ): O = throttle.call(retryRefusals) {
         withContext(Dispatchers.IO) {
             val json = CursorJson.encodeToString(requestSerializer, body)
             client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).await().use { response ->
