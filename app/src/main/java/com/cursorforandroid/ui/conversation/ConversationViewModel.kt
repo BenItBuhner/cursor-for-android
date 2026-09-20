@@ -240,6 +240,18 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         pickerState(a, models, local).copy(pinnedModelIds = pinned)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), pickerState(graph.agents.agent(agentId), graph.catalog.models.value, picker.value))
 
+    /** The notices about the load the reader has closed over this chat's composer, and when a closed one comes back (see [NoticeDismissals]). */
+    private val dismissals = NoticeDismissals(agentId, graph.prefs, conversation, viewModelScope)
+
+    /**
+     * The identities of the closed notices ([LoadNotice.identity]) the dock leaves out; null until the device's record
+     * of them has been read, when it shows none (see [LoadNotices.shown]).
+     */
+    val hiddenNotices: StateFlow<Set<String>?> = dismissals.hidden
+
+    /** The reader's X on a notice's card: hidden for this chat until its words change or its condition clears and recurs. */
+    fun dismissNotice(notice: LoadNotice) = dismissals.dismiss(notice)
+
     /** Which private surfaces the screen may offer: the answer chips, the account's queue, steering, Ask and Debug. */
     val capabilities: StateFlow<Capabilities> = graph.extendedMode.capabilities
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Capabilities.DOCUMENTED)
