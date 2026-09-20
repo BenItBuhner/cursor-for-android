@@ -27,6 +27,7 @@ import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.ThemeMode
@@ -72,10 +73,13 @@ class ChatsWidget : GlanceAppWidget() {
 
     /**
      * The launcher's live preview (Android 15+): the widget with sample rows. Follows the system theme like the
-     * picker around it does, and reads nothing of the account — it has to work before the app was ever opened.
+     * picker around it does, and reads nothing of the account — it has to work before the app was ever opened. The
+     * arrangement is pinned to the 4x2 one: the picker composes the preview at the smallest responsive size, and a
+     * one-line preview in a 4x2 box says nothing about the widget.
      */
     override suspend fun providePreview(context: Context, widgetCategory: Int) {
-        provideContent { ChatsWidgetContent(WidgetData.sample(ThemeMode.System), ChatsWidgetSettings(appearance = WidgetAppearance(theme = WidgetTheme.System)), AppWidgetManager.INVALID_APPWIDGET_ID) }
+        val settings = ChatsWidgetSettings(layout = WidgetLayout.Medium, appearance = WidgetAppearance(theme = WidgetTheme.System))
+        provideContent { ChatsWidgetContent(WidgetData.sample(ThemeMode.System), settings, AppWidgetManager.INVALID_APPWIDGET_ID) }
     }
 
     companion object {

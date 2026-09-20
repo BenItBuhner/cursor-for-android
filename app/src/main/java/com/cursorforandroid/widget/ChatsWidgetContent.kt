@@ -114,7 +114,7 @@ fun ChatsWidgetContent(
 
     Box(GlanceModifier.fillMaxSize().appWidgetBackground().surface(palette)) {
         when (layout) {
-            WidgetLayout.Small -> SmallLine(title, rows, settings.mode, palette, corner, appWidgetId, refreshing)
+            WidgetLayout.Small -> SmallLine(title, smallDetail(context, snapshot, rows, settings, refreshing), palette, corner, appWidgetId, refreshing)
             else -> Column(GlanceModifier.fillMaxSize()) {
                 Header(title, palette, appWidgetId, refreshing, settings)
                 // Whatever follows the header takes the rest of the widget.
@@ -241,7 +241,7 @@ private fun RefreshButton(palette: WidgetPalette, appWidgetId: Int, refreshing: 
  * and the corner action at the end. The line itself opens the app.
  */
 @Composable
-private fun SmallLine(title: String, rows: List<AgentRow>, mode: WidgetMode, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean) {
+private fun SmallLine(title: String, detail: String, palette: WidgetPalette, corner: CornerButtonSpec?, appWidgetId: Int, refreshing: Boolean) {
     val context = LocalContext.current
     Row(
         GlanceModifier.fillMaxSize().padding(start = 12.dp, end = if (corner != null) corner.inset else 12.dp).clickable(actionStartActivity(WidgetIntents.openApp(context))),
@@ -256,9 +256,19 @@ private fun SmallLine(title: String, rows: List<AgentRow>, mode: WidgetMode, pal
         Spacer(GlanceModifier.width(10.dp))
         Text(title, style = TextStyle(color = palette.textTertiary, fontSize = 12.sp), maxLines = 1)
         Spacer(GlanceModifier.width(8.dp))
-        Text(smallDetail(rows, mode), style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
+        Text(detail, style = TextStyle(color = palette.textPrimary, fontSize = 13.sp), maxLines = 1, modifier = GlanceModifier.defaultWeight())
         if (corner != null) CornerButton(corner, palette, appWidgetId, refreshing)
     }
+}
+
+/** The one-line arrangement's word on the list: the same notices the rows' arrangement shows, else [smallDetail]. */
+private fun smallDetail(context: Context, snapshot: WidgetSnapshot, rows: List<AgentRow>, settings: ChatsWidgetSettings, refreshing: Boolean): String = when {
+    snapshot.isSignedOut -> context.getString(R.string.widget_sign_in)
+    settings.mode == WidgetMode.Project && settings.projectId == null -> context.getString(R.string.widget_pick_project)
+    rows.isEmpty() && !snapshot.hasLoaded && refreshing -> context.getString(R.string.widget_loading)
+    rows.isEmpty() && !snapshot.hasLoaded -> context.getString(R.string.widget_open_app)
+    rows.isEmpty() -> settings.mode.emptyText
+    else -> smallDetail(rows, settings.mode)
 }
 
 /**
