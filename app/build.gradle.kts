@@ -317,6 +317,53 @@ tasks.withType<Test>().configureEach {
     systemProperty("robolectric.dependency.dir", robolectricSdkDir.get().asFile.absolutePath)
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Unit-test parallelism and sharding
+//
+// src/test is ~2000 Robolectric tests. One test JVM runs them one after another in about eleven minutes; several JVMs
+// side by side finish in a fraction of that, and CI splits the classes over several runners on top. Both are plain
+// Gradle properties so a developer can run the whole suite the ordinary way and CI can shape it:
+//
+//   -Papp.testForks=N       test JVMs run side by side (default: one fewer than the machine's cores, at most four -
+//                           each fork holds a Robolectric SDK in a 2 GB heap, and a hosted runner has four cores and
+//                           16 GB).
+//   -Papp.testShard=I/N     run only the I-th of N deterministic slices of the test classes (I from 1). A class's slice
+//                           is a hash of its name, so the slices are stable across runs and machines and together
+//                           cover every class exactly once; a nested class travels with its outer class. Combine
+//                           with `--tests` or `-Papp.skipScreenshotTests` as usual: both filters apply.
+// ---------------------------------------------------------------------------------------------------------------------
+val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
+    .getOrElse((Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4))
+val testShard: Pair<Int, Int>? = providers.gradleProperty("app.testShard").orNull?.let { spec ->
+    val match = Regex("""^(\d+)/(\d+)$""").matchEntire(spec) ?: error("app.testShard must look like I/N, e.g. 1/3; got '$spec'")
+    val (index, count) = match.destructured.toList().map(String::toInt)
+    require(count >= 1 && index in 1..count) { "app.testShard=$spec: I must be between 1 and N" }
+    index to count
+}
+
+/**
+ * Keeps the class files of slice [index] of [count]. A standalone class rather than a lambda: the configuration cache
+ * has to serialize the filter with the task, and a lambda in this script would drag the script object along.
+ */
+class TestShardFilter(private val index: Int, private val count: Int) : Spec<FileTreeElement>, java.io.Serializable {
+    // Directories have to pass or nothing under them is visited; only class files are assigned to a slice.
+    override fun isSatisfiedBy(element: FileTreeElement): Boolean =
+        element.isDirectory || !element.name.endsWith(".class") || shardOf(element.relativePath.pathString) == index
+
+    /** Which slice the test class compiled to [classFilePath] (relative, e.g. `com/x/FooTest$Inner.class`) belongs to, from 1. */
+    private fun shardOf(classFilePath: String): Int {
+        val outerClass = classFilePath.substringBefore('$').removeSuffix(".class")
+        return Math.floorMod(outerClass.hashCode(), count) + 1
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    maxParallelForks = testForks
+    maxHeapSize = "2g"
+    jvmArgs("-XX:+UseParallelGC")
+    testShard?.let { (index, count) -> include(TestShardFilter(index, count)) }
+}
+
 // `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything
 // else in src/test still runs.
 if (providers.gradleProperty("app.skipScreenshotTests").map(String::toBoolean).getOrElse(false)) {
