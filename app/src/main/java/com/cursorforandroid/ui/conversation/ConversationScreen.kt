@@ -138,7 +138,6 @@ fun ConversationScreen(
     val presentedTranscript by viewModel.presented.collectAsStateWithLifecycle()
     val conversation = presentedTranscript.state
     val draft by viewModel.draftText.collectAsStateWithLifecycle()
-    val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val toast by viewModel.toastMessage.collectAsStateWithLifecycle()
     val isPinned by viewModel.isPinned.collectAsStateWithLifecycle()
     val isSnoozed by viewModel.isSnoozed.collectAsStateWithLifecycle()
@@ -167,7 +166,8 @@ fun ConversationScreen(
     // (see [CoordinatorTranscript]). The list's word arrives late or not at all on a large account; the content is
     // in hand from the first frame. Decided with the rows, off the main thread (see [TranscriptPresenter]).
     val coordinatorMode = presentedTranscript.coordinatorMode
-    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode) {
+    val outgoing by viewModel.outgoingStatuses.collectAsStateWithLifecycle()
+    val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode, outgoing) {
         TranscriptControls(
             state = controls,
             onAnswer = if (capabilities.interactions && !isDemo) ({ callId, answers -> viewModel.answerQuestion(callId, answers) }) else null,
@@ -176,6 +176,10 @@ fun ConversationScreen(
             agentById = { id -> agentsById[id] },
             coordinatorMode = coordinatorMode,
             onReloadTranscript = viewModel::reloadTranscript,
+            // A message sent from here rides in the transcript from the tap: its send's progress and any failure on its bubble.
+            outgoing = outgoing,
+            onRetryOutgoing = viewModel::retryOutgoing,
+            onEditOutgoing = viewModel::editOutgoing,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -577,11 +581,10 @@ fun ConversationScreen(
                     else -> "Follow up…"
                 },
                 onSend = viewModel::send,
-                // Held only while an attached file is still going up: once every file carries its reference the send is instant.
-                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !isSending && !archived && uploadHint == null,
+                // Free the moment send is tapped: the message, its files' uploads and its send are the transcript's from then on.
+                canSend = (draft.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !archived,
                 isRunning = isActive,
                 onStop = viewModel::cancelRun,
-                isSending = isSending,
                 plusMenu = plusMenu,
                 commands = commands,
                 attachments = attachments,

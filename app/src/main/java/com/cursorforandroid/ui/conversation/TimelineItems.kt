@@ -87,6 +87,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownText
+import com.cursorforandroid.ui.components.ProgressRing
 import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
@@ -131,6 +132,46 @@ private fun HumanMessage(item: UserMessage, modifier: Modifier) {
                 }
                 if (hasText || item.attachments.isEmpty()) {
                     MarkdownText(item.text, style = CursorTheme.typography.message, color = colors.textPrimary.faded(alpha))
+                }
+                // Sent from here and not yet filed: where the send stands, on the bubble — never back in the composer.
+                val controls = LocalTranscriptControls.current
+                val outgoing = if (item.isPending) controls.outgoing[item.id] else null
+                if (outgoing != null) OutgoingStatusRow(outgoing, onRetry = controls.onRetryOutgoing?.let { retry -> { retry(item.id) } }, onEdit = controls.onEditOutgoing?.let { edit -> { edit(item.id) } })
+            }
+        }
+    }
+}
+
+/**
+ * What a message sent from the composer says of its send while the server has not filed it (see [OutgoingStatus]):
+ * its files still going up, with a ring and a count; nothing while the request itself is on its way (the bubble's
+ * fade says as much); or that it did not get through — the reason, and beside it Retry, which sends it again, and
+ * Edit, which hands the draft back to the composer. The message is never lost without a word.
+ */
+@Composable
+private fun OutgoingStatusRow(status: OutgoingStatus, onRetry: (() -> Unit)?, onEdit: (() -> Unit)?) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    when (status) {
+        is OutgoingStatus.Uploading -> Row(Modifier.padding(top = 6.dp).testTag("outgoing-uploading"), verticalAlignment = Alignment.CenterVertically) {
+            ProgressRing(progress = status.progress, size = 12.dp, color = colors.accent)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                if (status.total == 1) "Uploading…" else "Uploading ${(status.done + 1).coerceAtMost(status.total)} of ${status.total}…",
+                style = type.small,
+                color = colors.textTertiary,
+            )
+        }
+        OutgoingStatus.Sending -> Unit
+        is OutgoingStatus.Failed -> Column(Modifier.padding(top = 6.dp).testTag("outgoing-failed")) {
+            Text(status.message, style = type.small, color = colors.red)
+            Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (onRetry != null) {
+                    Text("Retry", style = type.small, color = colors.link, modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("outgoing-retry"))
+                }
+                if (onEdit != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Text("Edit", style = type.small, color = colors.link, modifier = Modifier.pressable(onEdit, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("outgoing-edit"))
                 }
             }
         }

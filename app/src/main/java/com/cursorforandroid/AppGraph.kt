@@ -33,6 +33,7 @@ import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.MachineApi
 import com.cursorforandroid.data.api.MachineLookupApi
 import com.cursorforandroid.data.api.InteractionApi
+import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
@@ -163,6 +164,13 @@ class AppGraph(
      * already on disk — so the What's new surfaces can be driven without GitHub.
      */
     private val releaseNotes: WhatsNewRepository? = null,
+    /**
+     * Injectable for tests only: the account's follow-up queue and prompt-upload services, so a send that carries
+     * files can be driven end to end — the composer, the bubble, the retry — against a scripted account (latency,
+     * refusals, rate limits, slow uploads) with none of api2's real network.
+     */
+    followupQueue: FollowupQueueApi? = null,
+    promptUploadApi: PromptUploadApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -406,7 +414,7 @@ class AppGraph(
      * A prompt's files of any type, staged the way the desktop stages them (`PresignPromptUpload`, the parts `PUT`,
      * `CompletePromptUpload`) and referenced from the account's follow-up or start (Extended mode, `promptFiles`).
      */
-    private val lazyPromptUploadApi = lazy { ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyPromptUploadApi = lazy { promptUploadApi ?: ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyPromptUploads = lazy { PromptUploader(lazyPromptUploadApi.value, lazyAccountClient.value) }
     val promptUploads: PromptUploader get() = lazyPromptUploads.value
 
@@ -613,7 +621,7 @@ class AppGraph(
             session = session,
             agents = agents,
             interactions = steeringAccount,
-            queueApi = steeringAccount,
+            queueApi = followupQueue ?: steeringAccount,
             runs = steeringAccount,
             goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },

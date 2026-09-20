@@ -3600,12 +3600,14 @@ class ConversationRepository(
     ): Result<Unit> {
         if (text.isBlank()) return Result.failure(IllegalArgumentException("Type a follow-up first."))
         val staged = stageFollowUp(agentId, text, images, files)
-        return sendStagedVia(agentId, staged, modelId, modelParams, modelDisplayName, send)
+        return sendStagedVia(agentId, staged, modelId, modelParams, modelDisplayName, send = send)
     }
 
     /**
      * [sendFollowUpVia] for a prompt already [stageFollowUp]ed — a queued message that carries files, which only the
-     * account's follow-up can take. The bubble comes down with the reason when [send] fails, as it does there.
+     * account's follow-up can take. The bubble comes down with the reason when [send] fails, as it does there —
+     * unless [discardOnFailure] is off: the composer's own sends keep the bubble up on a failure, with the reason
+     * and a retry on it (see `OutgoingMessages`), and take it down themselves when the reader gives the message up.
      */
     suspend fun sendStagedVia(
         agentId: String,
@@ -3613,6 +3615,7 @@ class ConversationRepository(
         modelId: String? = null,
         modelParams: List<ModelParam> = emptyList(),
         modelDisplayName: String? = null,
+        discardOnFailure: Boolean = true,
         send: suspend () -> String?,
     ): Result<Unit> {
         val e = entry(agentId)
@@ -3631,7 +3634,7 @@ class ConversationRepository(
                 }
             }
             // A bubble never shown has no error row to carry the reason: the composer's own word says it.
-            .onFailure { t -> discardStaged(agentId, staged, t.userMessage().takeIf { staged.shown }) }
+            .onFailure { t -> if (discardOnFailure) discardStaged(agentId, staged, t.userMessage().takeIf { staged.shown }) }
     }
 
     /** The server has filed [staged] as [run]: the bubble is no longer pending, its images follow it, and its stream starts. */
