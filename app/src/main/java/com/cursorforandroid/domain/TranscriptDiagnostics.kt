@@ -103,7 +103,16 @@ data class TranscriptLoadDiagnostics(
      * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
      * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
      */
-    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?)
+    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?, val fallback: FallbackLine? = null)
+
+    /**
+     * The record refused or failed with nothing of it on screen and the documented path stands in (see
+     * `ConversationState.recordFallback`): since when, how long the read took, the pause the server named, and until
+     * when the record is left alone.
+     */
+    data class FallbackLine(val sinceIso: String, val readMs: Long, val retryAfterMs: Long?, val refusedUntilIso: String?) {
+        val text: String get() = "fallback=runs since=$sinceIso readMs=$readMs retryAfterMs=${retryAfterMs ?: "-"} refusedUntil=${refusedUntilIso ?: "-"}"
+    }
 
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)
 }
@@ -206,7 +215,7 @@ object TranscriptDiagnostics {
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
         load.record?.let { r ->
-            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: ""))
+            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
         }
         load.status?.let { st ->
             appendLine(

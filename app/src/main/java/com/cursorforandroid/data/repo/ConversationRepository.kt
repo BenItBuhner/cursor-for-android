@@ -8,6 +8,7 @@ import com.cursorforandroid.data.api.dto.ListRunsResponseDto
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
+import com.cursorforandroid.data.api.ConnectRpcException
 import com.cursorforandroid.data.api.isLostReply
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
@@ -113,7 +114,22 @@ data class ConversationState(
     val transcriptError: String? = null,
     /** Where the traces of the turns shown stand: how many are on screen, still coming, gone for good, or failed. */
     val traceStatus: TraceStatus = TraceStatus(),
+    /**
+     * Extended mode: the account's record could not be read and the documented endpoints stand in for it — the run
+     * activity and the `/v0` text, without the account's copy of the turns and, in a Project, without the
+     * coordinator's messages the record alone carries whole. Said on the screen in the server's words, never
+     * silently (see [RecordFallback]); null while the record serves the chat, or when it has nothing for it.
+     */
+    val recordFallback: RecordFallback? = null,
 )
+
+/**
+ * The account's record refused or failed and the documented path stands in (see [ConversationState.recordFallback]):
+ * [reason] in the server's words, [sinceMillis] when, [readMillis] how long the read took before it failed, and
+ * [retryAfterMillis] the pause the server asked for when it named one — until it has passed the record is not
+ * asked again (see `ConversationRepository.RECORD_RETRY_MS` for a failure that named none).
+ */
+data class RecordFallback(val reason: String, val sinceMillis: Long, val readMillis: Long, val retryAfterMillis: Long?)
 
 /**
  * Of the finished runs the window shows, how many have their trace (thoughts, tool calls, payloads) on screen and
@@ -360,6 +376,12 @@ class ConversationRepository(
         var recordEmpty = false
         /** The last read of the record failed (the network); what stands is the copy last read, or the documented path. */
         var recordError: String? = null
+        /**
+         * Until when the record is not asked again after it refused or failed with nothing of it on screen: the pause
+         * the server named, else [RECORD_RETRY_MS]. A load meanwhile is the documented path's at once, the refusal
+         * standing on the screen (see [ConversationState.recordFallback]); the next load after it asks again.
+         */
+        var recordRefusedUntil = 0L
         /** The transcript is built from the account's record (see [recordWindow]). */
         val fromRecord: Boolean get() = recordWindow != null
         /**
@@ -1105,7 +1127,18 @@ class ConversationRepository(
                 runs = runLines,
                 source = if (window != null) "record" else "runs",
                 record = if (window != null || e.recordEmpty || e.recordError != null) {
-                    TranscriptLoadDiagnostics.RecordLine(window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError)
+                    val fallback = e.state.value.recordFallback
+                    TranscriptLoadDiagnostics.RecordLine(
+                        window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError,
+                        fallback = fallback?.let { f ->
+                            TranscriptLoadDiagnostics.FallbackLine(
+                                sinceIso = Instant.ofEpochMilli(f.sinceMillis).toString(),
+                                readMs = f.readMillis,
+                                retryAfterMs = f.retryAfterMillis,
+                                refusedUntilIso = e.recordRefusedUntil.takeIf { it > 0 }?.let { Instant.ofEpochMilli(it).toString() },
+                            )
+                        },
+                    )
                 } else null,
                 // The newest turns' steps and calls as the record gave them this session, keys and value types only.
                 shapes = window?.turns?.mapNotNull { it.shape }.orEmpty(),
@@ -1308,6 +1341,7 @@ class ConversationRepository(
                 recordWindow = null
                 recordEmpty = false
                 recordError = null
+                recordRefusedUntil = 0L
                 expiredRuns.clear()
                 expiredBefore = Long.MIN_VALUE
                 recordedFinishes.clear()
@@ -1766,6 +1800,10 @@ class ConversationRepository(
     private suspend fun loadFromRecord(e: Entry, agentId: String, api: ConversationRecordApi, backend: CursorBackend, tokens: CacheTokens): RecordLoad = coroutineScope {
         val cursorApi = backend.api
         val (known, wantTurns) = synchronized(e) { e.recordWindow to e.window }
+        // The record refused a moment ago and nothing of it is on screen: the documented path, at once, until the
+        // pause the refusal asked for has passed — the refusal stands on the screen meanwhile.
+        if (known == null && AppClock.now() < synchronized(e) { e.recordRefusedUntil }) return@coroutineScope RecordLoad(served = false)
+        val readStartedAt = System.nanoTime()
         // A window in hand with its newest turn's steps is read on from its end — the record's delta, one small
         // round trip when nothing changed — rather than its newest page again: a reopen, a return to the foreground,
         // cost the steps the chat added since and not the megabytes it already has (see [RecordTranscript.append]).
@@ -1785,16 +1823,26 @@ class ConversationRepository(
         if (raw.isSuccess && rawWindow == null) {
             // Nothing in the record for this chat: the documented endpoints are its only account — with the run page
             // read beside the record, so the fallback does not ask for it again.
-            synchronized(e) { e.recordEmpty = true; e.recordError = null }
+            e.publish(mutate = { recordEmpty = true; recordError = null; recordRefusedUntil = 0L }, transform = { copy(recordFallback = null) })
             stateRead.cancel()
             return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
         }
         if (rawWindow == null) {
-            val message = raw.exceptionOrNull()?.userMessage() ?: "The account's record could not be read."
+            val failure = raw.exceptionOrNull()
+            val message = failure?.userMessage() ?: "The account's record could not be read."
             synchronized(e) { e.recordError = message }
             if (known == null) {
-                // Nothing on screen from the record and none to be had now: the documented path shows what it can.
+                // Nothing on screen from the record and none to be had now: the documented path shows what it can —
+                // and says so, in the server's words, with the pause the refusal asked for kept, so the record is not
+                // asked again on every open meanwhile (see [ConversationState.recordFallback]).
                 stateRead.cancel()
+                val now = AppClock.now()
+                val retryAfter = (failure as? ConnectRpcException)?.retryAfterMillis
+                val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter)
+                e.publish(
+                    mutate = { recordRefusedUntil = now + (retryAfter?.coerceAtLeast(RECORD_RETRY_MIN_MS) ?: RECORD_RETRY_MS) },
+                    transform = { copy(recordFallback = fallback) },
+                )
                 return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
             }
             e.publish(transform = { copy(isLoading = false, transcriptError = message) })
@@ -1810,6 +1858,7 @@ class ConversationRepository(
                     recordWindow = built
                     recordEmpty = false
                     recordError = null
+                    recordRefusedUntil = 0L
                     transcriptError = null
                     transcriptUnavailable = false
                     fetched = true
@@ -1820,7 +1869,7 @@ class ConversationRepository(
                     pruneLocal()
                     promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
                 },
-                transform = { copy(isLoading = false, error = null, transcriptError = null, transcriptUnavailable = false, isProjectConversation = project) },
+                transform = { copy(isLoading = false, error = null, transcriptError = null, transcriptUnavailable = false, isProjectConversation = project, recordFallback = null) },
             )
             persistRecord(e, built, known, backend, tokens)
         }
@@ -2639,6 +2688,8 @@ class ConversationRepository(
     private suspend fun fillFromRecord(e: Entry, agentId: String, runs: List<RunDto>, tokens: CacheTokens) {
         val api = record ?: return
         if (session.isDemo || !capabilities().accountTranscript) return
+        // The record refused a moment ago: not asked again for the pause it named (see [Entry.recordRefusedUntil]).
+        if (AppClock.now() < synchronized(e) { e.recordRefusedUntil }) return
         // The record is the transcript already (see [recordWindow]): what it has of these turns is on screen.
         if (synchronized(e) { e.recordWindow != null }) return
         val (ordered, total, prompts) = synchronized(e) {
@@ -3373,6 +3424,10 @@ class ConversationRepository(
         const val REOPEN_FRESH_MS = 30_000L
         /** How long after the last screen left a widened window is kept whole, for a reader who comes back (see [trimWindow]). */
         const val TRIM_AFTER_DETACH_MS = 60_000L
+        /** How long the record is left alone after it refused or failed without naming a pause (see [Entry.recordRefusedUntil]). */
+        const val RECORD_RETRY_MS = 30_000L
+        /** The least a pause the server named holds the record off for: a `Retry-After: 0` is still a refusal. */
+        const val RECORD_RETRY_MIN_MS = 2_000L
         /** The two message types of `/v0/agents/{id}/conversation`. */
         const val USER_MESSAGE = "user_message"
         const val ASSISTANT_MESSAGE = "assistant_message"

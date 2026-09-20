@@ -1,0 +1,108 @@
+package com.cursorforandroid.screenshots
+
+import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.dp
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.cursorforandroid.data.api.dto.RunDto
+import com.cursorforandroid.data.repo.RecordFallback
+import com.cursorforandroid.data.repo.TimelineBuilder
+import com.cursorforandroid.domain.TranscriptPresenter
+import com.cursorforandroid.fixtures.LongProject
+import com.cursorforandroid.ui.conversation.LocalTranscriptControls
+import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_DETAIL
+import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_TITLE
+import com.cursorforandroid.ui.conversation.RecordFallbackRow
+import com.cursorforandroid.ui.conversation.TranscriptControls
+import com.cursorforandroid.ui.conversation.TranscriptRowView
+import com.cursorforandroid.ui.theme.CursorTheme
+import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
+import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
+import com.github.takahirom.roborazzi.RoborazziOptions
+import com.github.takahirom.roborazzi.captureScreenRoboImage
+import com.google.common.truth.Truth.assertThat
+import org.junit.After
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
+
+/**
+ * The account's record refused and the documented endpoints standing in, said as such (see
+ * `ConversationState.recordFallback`): the newest runs of the 240-turn Project bare, the row under them naming the
+ * refusal in the server's words and what is on screen because of it, with Retry and the diagnostics beside it —
+ * what Bennett's 2026-09-20 frame showed without a word. Written to `screenshots/` and compared pixel for pixel in CI.
+ */
+@RunWith(AndroidJUnit4::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(sdk = [35], qualifiers = "w411dp-h914dp-night-420dpi")
+class RecordFallbackScreenshotTest {
+
+    @get:Rule
+    val compose = createAndroidComposeRule<ComponentActivity>()
+
+    private val outDir = File(System.getProperty("user.dir"), "../screenshots").normalize()
+    private val firstAt = 1_800_000_000_000L - LongProject.TURNS * LongProject.TURN_SPACING_MS
+    private val turns = LongProject.turns(firstAt)
+
+    @Before
+    fun pinClock() {
+        AppClock.nowMillis = { turns.last().startedAt + 90_000L }
+    }
+
+    @After
+    fun unpinClock() {
+        AppClock.nowMillis = System::currentTimeMillis
+    }
+
+    @OptIn(ExperimentalRoborazziApi::class)
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun recordFallbackRow() {
+        val newest = turns.takeLast(10)
+        val runs = newest.map { RunDto(id = it.runId, agentId = LongProject.AGENT_ID, status = it.status, createdAt = LongProject.iso(it.startedAt), updatedAt = LongProject.iso(it.endedAt), durationMs = it.durationMs, result = null) }
+        val rows = TranscriptPresenter().present(TimelineBuilder.fromHistory(emptyList(), runs), coordinatorMode = true, runActive = true).rows
+        val fallback = RecordFallback("Rate limited by Cursor: Too many requests. Try again in 2 s.", sinceMillis = AppClock.now(), readMillis = 640L, retryAfterMillis = 2_000L)
+        var retried = 0
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides TranscriptControls(onOpenAgent = {}, agentById = { null }, coordinatorMode = true)) {
+                    Column(
+                        Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        rows.forEach { TranscriptRowView(it) }
+                        RecordFallbackRow(fallback, onRetry = { retried++ }, onShareDiagnostics = {})
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("$RECORD_FALLBACK_TITLE: ${fallback.reason}").assertExists()
+        compose.onNodeWithText(RECORD_FALLBACK_DETAIL).assertExists()
+        compose.onNodeWithTag("record-fallback-retry").performClick()
+        assertThat(retried).isEqualTo(1)
+        capture("100_record_fallback_row")
+    }
+}

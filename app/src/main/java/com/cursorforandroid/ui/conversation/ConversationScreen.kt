@@ -56,6 +56,7 @@ import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
+import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
@@ -505,6 +506,17 @@ fun ConversationScreen(
                 modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
+        // Extended mode's record refused or failed and the documented endpoints stand in: said here, in the server's
+        // words, with what that means for what is on screen — never a quiet fallback that looks like the chat itself
+        // (Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why).
+        conversation.recordFallback?.takeIf { conversation.error == null }?.let { fallback ->
+            RecordFallbackRow(
+                fallback = fallback,
+                onRetry = viewModel::reload,
+                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
 
         val archived = agent?.isArchived == true
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
@@ -679,6 +691,44 @@ internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnosti
         }
     }
 }
+
+/**
+ * The account's record refused or failed and the documented endpoints stand in for it (see
+ * [ConversationState.recordFallback]): what the server said, what is on screen because of it — the runs' activity
+ * and the transcript's text, not the account's copy of the turns nor, in a Project, the coordinator's messages the
+ * record alone carries whole — and the two ways out: Retry, which asks the record again, and the diagnostics.
+ */
+@Composable
+internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    Column(modifier.testTag("record-fallback")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(CursorIcons.Warning, null, tint = colors.textTertiary, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("$RECORD_FALLBACK_TITLE: ${fallback.reason}", style = type.small, color = colors.textSecondary, maxLines = 3, modifier = Modifier.weight(1f))
+        }
+        Text(RECORD_FALLBACK_DETAIL, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(start = 20.dp, top = 2.dp))
+        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                "Retry",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("record-fallback-retry"),
+            )
+            Text(
+                "Share diagnostics",
+                style = type.small,
+                color = colors.textSecondary,
+                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("record-fallback-diagnostics"),
+            )
+        }
+    }
+}
+
+/** What the row says when the account's record could not be read and the documented endpoints stand in. */
+internal const val RECORD_FALLBACK_TITLE = "Account transcript unavailable"
+internal const val RECORD_FALLBACK_DETAIL = "Showing run activity only. The account's copy of the turns — and a Project's messages — aren't loaded."
 
 /**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
