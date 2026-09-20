@@ -14,13 +14,22 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.local.SecureKeyStore
+import com.cursorforandroid.domain.ChatsWidgetSettings
+import com.cursorforandroid.domain.CornerAction
+import com.cursorforandroid.domain.CornerStyle
+import com.cursorforandroid.domain.RowDensity
+import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetLayout
 import com.cursorforandroid.domain.WidgetMode
+import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import com.cursorforandroid.widget.ChatsWidgetContent
+import com.cursorforandroid.widget.ChatsWidgetOptions
 import com.cursorforandroid.widget.WidgetConfigureScreen
 import com.cursorforandroid.widget.WidgetData
+import com.cursorforandroid.widget.WidgetSizes
 import com.cursorforandroid.widget.WidgetSnapshot
 import com.github.takahirom.roborazzi.RoborazziOptions
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -76,14 +85,32 @@ class WidgetScreenshotTest {
             WidgetData.snapshot(graph)
         }
         val dark = snapshot.copy(theme = ThemeMode.Dark)
+        val defaults = ChatsWidgetSettings()
         // A 4x2 widget on a typical phone grid, then a 4x3 one for the list that has the most to show.
-        capture("14_widget_pinned", dark, WidgetMode.Pinned, DpSize(320.dp, 158.dp))
-        capture("15_widget_running", dark.copy(prefs = dark.prefs.copy(showRuntime = true)), WidgetMode.Running, DpSize(320.dp, 158.dp))
-        capture("16_widget_recent", dark, WidgetMode.Recent, DpSize(320.dp, 268.dp))
-        capture("17_widget_recent_light", snapshot.copy(theme = ThemeMode.Light), WidgetMode.Recent, DpSize(320.dp, 268.dp))
+        capture("14_widget_pinned", dark, defaults.copy(mode = WidgetMode.Pinned), DpSize(320.dp, 158.dp))
+        capture("15_widget_running", dark, defaults.copy(mode = WidgetMode.Running), DpSize(320.dp, 158.dp))
+        capture("16_widget_recent", dark, defaults, DpSize(320.dp, 268.dp))
+        capture("17_widget_recent_light", snapshot.copy(theme = ThemeMode.Light), defaults, DpSize(320.dp, 268.dp))
         // The sample rows the widget picker shows before any account is signed in; also the source of
         // res/drawable-nodpi/widget_chats_preview.png, the picker image for launchers before Android 12.
-        capture("18_widget_preview", WidgetData.sample(ThemeMode.Dark, FIXED_NOW), WidgetMode.Recent, DpSize(320.dp, 158.dp))
+        capture("18_widget_preview", WidgetData.sample(ThemeMode.Dark, FIXED_NOW), defaults.copy(appearance = WidgetAppearance(theme = WidgetTheme.System)), DpSize(320.dp, 158.dp))
+        // The other two arrangements: the one-line 2x1 cell, and the two-line rows of a tall placement — the latter
+        // in the OLED theme at 70 % over the wallpaper, comfortable rows, a glass corner button that refreshes.
+        capture("101_widget_small", dark, defaults.copy(mode = WidgetMode.Running), WidgetSizes.sizeFor(WidgetLayout.Small))
+        capture(
+            "102_widget_large_oled_glass",
+            dark,
+            defaults.copy(appearance = WidgetAppearance(WidgetTheme.Oled, opacity = 70), density = RowDensity.Comfortable, cornerAction = CornerAction.Refresh, cornerStyle = CornerStyle.Glass),
+            WidgetSizes.sizeFor(WidgetLayout.Large),
+        )
+        // One Project's chats, tinted corner button, compact rows without the metadata.
+        val project = snapshot.projects.first()
+        capture(
+            "103_widget_project_tinted",
+            dark,
+            defaults.copy(mode = WidgetMode.Project, projectId = project.id, density = RowDensity.Compact, cornerStyle = CornerStyle.Tinted, elements = setOf(com.cursorforandroid.domain.RowElement.Status, com.cursorforandroid.domain.RowElement.UnreadDot)),
+            DpSize(320.dp, 158.dp),
+        )
     }
 
     /**
@@ -107,22 +134,33 @@ class WidgetScreenshotTest {
         host.captureRoboImage(File(outDir, "117_widget_preview_layout.png").path, RoborazziOptions())
     }
 
-    /** The screen the launcher opens when the widget is placed (and the widget's title reopens). */
+    /** The screen the launcher opens when the widget is placed (and the widget's title reopens): preview on its stage, then the options. */
     @Test
     fun configure() {
+        val graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+        val snapshot = runBlocking {
+            graph.session.enterDemo()
+            graph.agents.refresh()
+            WidgetData.snapshot(graph)
+        }.copy(theme = ThemeMode.Dark)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                WidgetConfigureScreen(selected = WidgetMode.Recent, onPick = {}, onClose = {})
+                WidgetConfigureScreen(title = "Chats widget", subtitle = "What it shows and how it looks", onDone = {}, onClose = {}) {
+                    ChatsWidgetOptions(settings = ChatsWidgetSettings(), snapshot = snapshot, onChange = {})
+                }
             }
         }
+        compose.waitForIdle()
+        // The preview composes its RemoteViews a moment after the first frame.
+        compose.mainClock.advanceTimeBy(500)
         compose.waitForIdle()
         captureScreenRoboImage(File(outDir, "19_widget_configure.png").path, RoborazziOptions())
     }
 
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    private fun capture(name: String, snapshot: WidgetSnapshot, mode: WidgetMode, size: DpSize) {
+    private fun capture(name: String, snapshot: WidgetSnapshot, settings: ChatsWidgetSettings, size: DpSize) {
         val remoteViews = runBlocking {
-            GlanceRemoteViews().compose(context, size) { ChatsWidgetContent(snapshot, mode, AppWidgetManager.INVALID_APPWIDGET_ID) }.remoteViews
+            GlanceRemoteViews().compose(context, size) { ChatsWidgetContent(snapshot, settings, AppWidgetManager.INVALID_APPWIDGET_ID) }.remoteViews
         }
         lateinit var host: AppWidgetHostView
         compose.activityRule.scenario.onActivity { activity ->

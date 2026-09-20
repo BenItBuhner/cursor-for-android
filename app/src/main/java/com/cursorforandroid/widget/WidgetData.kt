@@ -12,6 +12,7 @@ import com.cursorforandroid.data.repo.SessionState
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentRow
+import com.cursorforandroid.domain.ChatsWidgetSettings
 import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.GitBranch
 import com.cursorforandroid.domain.ListPreferences
@@ -48,7 +49,17 @@ data class WidgetSnapshot(
 ) {
     val isSignedOut: Boolean get() = session is SessionState.SignedOut
 
-    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now()): List<AgentRow> = WidgetList.rows(mode, agents, prefs, local, nowMillis)
+    fun rows(mode: WidgetMode, nowMillis: Long = AppClock.now(), projectId: String? = null): List<AgentRow> =
+        WidgetList.rows(mode, agents, prefs, local, nowMillis, projectId = projectId)
+
+    /** The header's title for [settings]: the list's name, or the chosen Project's. */
+    fun title(settings: ChatsWidgetSettings): String = when (settings.mode) {
+        WidgetMode.Project -> settings.projectId?.let { id -> agents.firstOrNull { it.id == id }?.name } ?: WidgetMode.Project.title
+        else -> settings.mode.title
+    }
+
+    /** The Projects a widget can be set to list. */
+    val projects: List<Agent> get() = WidgetList.projects(agents)
 }
 
 /**

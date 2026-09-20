@@ -16,7 +16,9 @@ enum class WidgetMode(
 ) {
     Recent("Recent", "Recent chats", "Every chat, newest first", "No chats yet"),
     Running("Running", "Running agents", "Only the agents working right now", "No agents running"),
-    Pinned("Pinned", "Pinned chats", "The chats you pinned in the sidebar", "No pinned chats");
+    Pinned("Pinned", "Pinned chats", "The chats you pinned in the sidebar", "No pinned chats"),
+    /** One Project's chats: its coordinator first, then the workers and side chats nested under it. */
+    Project("Project", "One Project", "A Project's coordinator and its chats", "No chats in this Project yet");
 
     companion object {
         val Default = Recent
@@ -42,6 +44,8 @@ object WidgetList {
         local: LocalAgentState,
         nowMillis: Long = AppClock.now(),
         zone: ZoneId = ZoneId.systemDefault(),
+        /** The Project a [WidgetMode.Project] widget lists; ignored by the other modes. */
+        projectId: String? = null,
     ): List<AgentRow> = when (mode) {
         // The New Chat pane's recent list: every row the Chats filters let through, newest first. Sidebar search
         // is a find-in-rail, not a second filter on this list.
@@ -58,5 +62,30 @@ object WidgetList {
             .map { AgentListOrganizer.toRow(it, local, nowMillis) }
             .filter { it.indicator == AgentIndicator.Running && AgentListOrganizer.matchesFilters(it, prefs.copy(statuses = prefs.statuses + StatusFilter.Running)) }
             .sortedByDescending { it.agent.listedAtMillis }
+        // The Project's subtree as the sidebar nests it: the coordinator, then its workers and side chats, each with
+        // its own children, in the sidebar's order. The Project's own row leads so the widget is that Project's, and
+        // the Status filter does not apply inside it (a Project's chats are shown under it whatever their state,
+        // as in the sidebar), only the archive rule does.
+        WidgetMode.Project -> projectRows(projectId, agents, prefs, local, nowMillis, zone)
     }.take(MAX_ROWS)
+
+    private fun projectRows(projectId: String?, agents: List<Agent>, prefs: ListPreferences, local: LocalAgentState, nowMillis: Long, zone: ZoneId): List<AgentRow> {
+        if (projectId == null) return emptyList()
+        // Every Project the sidebar would draw, with the archive rule off so the chosen one is found even when its
+        // coordinator is archived (the widget was set to it; a blank widget says less than an archived one).
+        val everything = prefs.copy(statuses = StatusFilter.entries.toSet(), repos = null, git = GitFilter.entries.toSet(), sources = SourceFilter.entries.toSet(), environments = EnvironmentFilter.entries.toSet())
+        val root = AgentListOrganizer.organize(agents, everything, local, nowMillis = nowMillis, zone = zone)
+            .firstOrNull { it.key == AgentListOrganizer.PROJECTS_KEY }?.rows.orEmpty()
+            .firstOrNull { it.agent.id == projectId } ?: return emptyList()
+        val flat = ArrayList<AgentRow>()
+        fun walk(row: AgentRow) {
+            if (!row.isPlaceholder) flat += row
+            row.children.forEach(::walk)
+        }
+        walk(root)
+        return flat
+    }
+
+    /** The Projects a widget can be set to: every root the list holds a row for, by name. */
+    fun projects(agents: List<Agent>): List<Agent> = agents.filter { it.isProjectRoot && !it.isArchived }.sortedBy { it.name.lowercase() }
 }
