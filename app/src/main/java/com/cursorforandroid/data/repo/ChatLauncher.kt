@@ -67,13 +67,14 @@ class ChatLauncher(
      * [launch], waited out: returns once the server has answered — the chat created, or the launch refused, stopped or
      * failed — rather than once the chat is on screen. For a composer with no screen of the app behind it to hand the
      * chat to (the quick composer over the launcher), which opens the app on the chat only once there is one, and
-     * otherwise stays up with the reason. The failure still goes out on [failures] like any other, so the composer
-     * takes the draft back the same way; the caller is told the outcome as well. Cancelling the caller does not reach
-     * the request, which completes in this launcher's scope regardless.
+     * otherwise stays up with the reason. A failure comes back to the caller alone, not on [failures]: the composer
+     * that waited never gave the draft up, so there is nothing for another composer to take back, and no chat was
+     * shown for the shell to leave. Cancelling the caller does not reach the request, which completes in this
+     * launcher's scope regardless.
      */
     suspend fun launchAndAwait(request: LaunchRequest, modelDisplayName: String?, nonce: String): Result<Unit> {
         val outcome = CompletableDeferred<Result<Unit>>()
-        val job = start(request, modelDisplayName, nonce, onStaged = {}, onDone = { outcome.complete(it) })
+        val job = start(request, modelDisplayName, nonce, onStaged = {}, broadcastFailure = false, onDone = { outcome.complete(it) })
         job.invokeOnCompletion { cause ->
             // The scope went away before the request could say: not a success, and not the server's word either.
             if (!outcome.isCompleted) outcome.complete(Result.failure(cause ?: IllegalStateException("The launch did not complete.")))
@@ -82,20 +83,28 @@ class ChatLauncher(
     }
 
     /**
-     * Runs the request in this launcher's scope, [isLaunching] until it answers; an acceptance is put on [accepted] and
-     * a failure on [failures] before [onDone] hears of it.
+     * Runs the request in this launcher's scope, [isLaunching] until it answers; an acceptance is put on [accepted]
+     * and, with [broadcastFailure], a failure on [failures] before [onDone] hears of it.
      */
-    private fun start(request: LaunchRequest, modelDisplayName: String?, nonce: String, onStaged: () -> Unit, onDone: (Result<Unit>) -> Unit = {}): Job {
+    private fun start(
+        request: LaunchRequest,
+        modelDisplayName: String?,
+        nonce: String,
+        onStaged: () -> Unit,
+        broadcastFailure: Boolean = true,
+        onDone: (Result<Unit>) -> Unit = {},
+    ): Job {
         val agentId = requireNotNull(request.agentId) { "A launch needs the client-minted agent id the chat is shown under." }
         inFlight += agentId
         return scope.launch {
             val result = conversations.launch(request, modelDisplayName, onStaged = onStaged)
             inFlight -= agentId
-            result
-                .onSuccess { _accepted.emit(agentId) }
-                .onFailure { t ->
+            result.onSuccess { _accepted.emit(agentId) }
+            if (broadcastFailure) {
+                result.onFailure { t ->
                     _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage(), (t as? MachineStartRefusedException)?.asked))
                 }
+            }
             onDone(result.map { })
         }.also { job -> job.invokeOnCompletion { inFlight -= agentId } }
     }

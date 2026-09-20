@@ -142,7 +142,7 @@ internal object ShortcutIntents {
 
     /** The quick composer over the launcher; its own task, so the launcher is what a dismissal returns to. */
     fun quickComposer(context: Context): Intent =
-        Intent(context, QuickComposerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        Intent(Intent.ACTION_MAIN, null, context, QuickComposerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
     /** The app with the sidebar's search open. */
     fun search(context: Context): Intent =
