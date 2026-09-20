@@ -589,7 +589,9 @@ class ConversationRepositoryTest {
         api.conversationGate = CompletableDeferred()
         val next = repository()
         next.attach("bc-1")
-        awaitUntil { next.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The disk copy renders in two steps — the transcript and its runs, then the traces from their own files —
+        // so the wait is for the trace it asserts, not for the footer the first step already shows.
+        awaitUntil { next.state("bc-1").value.let { s -> s.items.lastOrNull() is RunFooter && s.items.any { it is ActivityGroup } } }
         val fromDisk = next.state("bc-1").value
         assertThat(fromDisk.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(fromDisk.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
