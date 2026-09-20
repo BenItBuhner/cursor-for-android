@@ -47,9 +47,29 @@ class RecordTurn(
      * says the run failed. A turn that logged one and went on is not a failure for it.
      */
     val errorMessage: String? = null,
+    /**
+     * The turn's reply came from the documented `/v0` transcript rather than the record: the record gave the turn
+     * without its text and the run's log was gone (see `ConversationRepository.fillTextFromTranscript`).
+     */
+    val textFromTranscript: Boolean = false,
+    /**
+     * With [textFromTranscript]: whether the record gave the turn's steps (its calls) and only the reply was wanting
+     * — the turn is whole — or nothing but the prompt, so the activity is gone with the log and the turn says so.
+     */
+    val stepsFromRecord: Boolean = true,
 ) {
     /** The key the turn's items are filed under on disk (see `TraceCache`); stable while the record is append-only. */
     val traceKey: String get() = traceKey(stepIndex)
+
+    /** The record gave the agent's words for the turn: a reply, or a coordinator's message with its body. */
+    val hasText: Boolean by lazy { items.any { it is AssistantMessage && it.markdown.isNotBlank() } || hasUserMessage }
+
+    /** This turn with [replies] — the `/v0` transcript's — as its text, marked as such (see [textFromTranscript]). */
+    fun withTranscriptText(replies: List<TimelineItem>): RecordTurn =
+        RecordTurn(stepIndex, stepCount, prompt, projectMode, items + replies, shape, errorMessage, textFromTranscript = true, stepsFromRecord = hasBody)
+
+    /** The turn's steps are not to be had: the record gave none and the reply is the transcript's (see [withTranscriptText]). */
+    val activityMissing: Boolean get() = textFromTranscript && !stepsFromRecord
 
     /**
      * The record gave the turn's steps, not the prompt alone: a thought, a tool call or a reply is among the items.
@@ -143,6 +163,10 @@ class RecordWindow(
     fun timing(i: Int): TurnTiming? = state?.timings?.getOrNull(turnIndex(i))
 
     fun withState(state: RecordState): RecordWindow = RecordWindow(total, firstStep, turns, leading, state, readAtMillis, newestTurn)
+
+    /** This window with [replacements] standing for the turns of the same step index. */
+    fun withTurns(replacements: Map<Int, RecordTurn>): RecordWindow =
+        if (replacements.isEmpty()) this else RecordWindow(total, firstStep, turns.map { replacements[it.stepIndex] ?: it }, leading, state, readAtMillis, newestTurn)
 }
 
 /**

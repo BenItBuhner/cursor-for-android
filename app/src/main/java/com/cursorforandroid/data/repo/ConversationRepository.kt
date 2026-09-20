@@ -25,6 +25,7 @@ import com.cursorforandroid.data.local.StagedAttachments
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.TimelineBuilder.withUniqueIds
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.AgentParentKind
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.CoordinatorLineage
@@ -630,7 +631,8 @@ class ConversationRepository(
                     complete = complete,
                     liveItems = liveItems,
                     liveNewest = liveNewest,
-                    notice = if (complete == null && liveItems == null && !turn.hasBody && !liveNewest) turnBodyNotice(turn, run) else null,
+                    // A turn without its steps says so; so does one whose reply the transcript gave while its log is gone.
+                    notice = if (complete == null && liveItems == null && (!turn.hasBody || turn.activityMissing) && !liveNewest) turnBodyNotice(turn, run) else null,
                     repeats = repeats,
                 )
                 // A turn whose inputs have not moved is the items it was last rendered to — the same instances, so
@@ -688,7 +690,12 @@ class ConversationRepository(
                 // The story the stream tells so far — unless it has told nothing yet (a stream that will not
                 // open, a machine agent's): then the record's copy of the turn, as far as it has been read.
                 inputs.liveItems != null -> { items += CoordinatorTranscript.withoutRepeats(inputs.liveItems, inputs.repeats); return items }
-                turn.hasBody -> items += turn.items
+                // The record's own body — with the reply the transcript gave when the record lacked it and the log
+                // was gone, in which case the turn still says its activity is not to be had (see [fillTextFromTranscript]).
+                turn.hasBody -> {
+                    items += turn.items
+                    if (turn.activityMissing) inputs.notice?.let { items += it }
+                }
                 // The record has the turn without its steps: the run's log stands in when it has been replayed
                 // (see [recordTurnsNeedingReplay]); until then, or when it is gone, the turn says so itself.
                 else -> {
@@ -722,9 +729,10 @@ class ConversationRepository(
          */
         private fun turnBodyNotice(turn: RecordTurn, run: RunDto?): NoticeCard? {
             val id = "rec-body-${turn.stepIndex}"
+            val replyWord = if (turn.textFromTranscript) "the reply is the transcript's." else "the reply is shown when the record has it."
             return when {
                 run == null -> null
-                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> NoticeCard(id, "This turn's activity is no longer available", "Cursor no longer has its log; the reply is shown when the record has it.", NoticeTone.Neutral)
+                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> NoticeCard(id, "This turn's activity is no longer available", "Cursor no longer has its log; $replyWord", NoticeTone.Neutral)
                 run.id in failedTraces -> NoticeCard(id, "This turn's activity couldn't be loaded", "Retry from the line above the transcript.", NoticeTone.Warning)
                 else -> null
             }
@@ -744,11 +752,13 @@ class ConversationRepository(
             val offset = paired.size - window.turns.size
             return window.turns.withIndex().mapNotNull { (i, turn) ->
                 val run = paired.getOrNull(offset + i) ?: return@mapNotNull null
-                // Without a body; or, in a coordinator's chat, with a body the log may complete with the
-                // coordinator's word (see RecordTurn.wantsLogForMessage): a message read leniently out of pieces, the
-                // user's turn without one, an injected turn the record holds without any call. An injected turn
-                // whose calls the record holds, none of them a message, sent none and is left as the record has it.
-                val wanting = !turn.hasBody || (projectMode && turn.wantsLogForMessage)
+                // Without a body; with a body and no reply in an ordinary chat — the record gave the calls and not the
+                // agent's words, which the log has (and the transcript after it, see [fillTextFromTranscript]); or,
+                // in a coordinator's chat, with a body the log may complete with the coordinator's word (see
+                // RecordTurn.wantsLogForMessage): a message read leniently out of pieces, the user's turn without
+                // one, an injected turn the record holds without any call. An injected turn whose calls the record
+                // holds, none of them a message, sent none and is left as the record has it.
+                val wanting = !turn.hasBody || (if (projectMode) turn.wantsLogForMessage else !turn.hasText)
                 run.takeIf { wanting && statusOf(it).isTerminal && it.id !in traces }
             }.asReversed()
         }
@@ -1094,6 +1104,7 @@ class ConversationRepository(
                         val via = when {
                             complete != null -> "log"
                             liveItems != null -> "live"
+                            turn.textFromTranscript -> "record+transcript"
                             else -> "record"
                         }
                         // The copies the rendering left out of the stand-in, and the ones the rows leave out of what was rendered.
@@ -1524,7 +1535,9 @@ class ConversationRepository(
         window.turns.forEachIndexed { i, turn ->
             val run = paired.getOrNull(offset + i)
             when {
-                turn.hasBody || (run != null && run.id in traces) || (run != null && live?.runId == run.id) -> shown++
+                // A turn whose reply the transcript gave and whose steps the record never had has its words, not its
+                // activity: counted by its log's state below.
+                (turn.hasBody && !turn.activityMissing) || (run != null && run.id in traces) || (run != null && live?.runId == run.id) -> shown++
                 run == null -> if (i == window.turns.lastIndex && isChatRunning()) shown++ else pending++
                 run.statusEnum().isActive -> shown++
                 run.id in traceQueue || run.id in traceInFlight -> pending++
@@ -1915,6 +1928,8 @@ class ConversationRepository(
             // A window the first page of runs does not reach (a Project's injected turns, dozens between two of the
             // user's) has its older runs paged in behind it; the replays of the turns they pair with follow.
             if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
+            // A turn the record gave without its text and no log left to ask: the transcript's copy of its reply.
+            fillTextFromTranscript(e, agentId)
         } else if (rawWindow == null) {
             // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
         }
@@ -2116,6 +2131,7 @@ class ConversationRepository(
         // its run has no footer and no reply from the run's log (see [Entry.recordNeedsRuns]).
         if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRunsNow(e, e.agentId, pages = MAX_RUN_PAGES)
         loadTraces(e, e.agentId, e.shownRuns())
+        fillTextFromTranscript(e, e.agentId)
     }
 
     /** Whether this page ends exactly where [window] begins: the page before it. */
@@ -2275,7 +2291,10 @@ class ConversationRepository(
                     e.publish(mutate = { if (!runsComplete && olderRunsCursor != null) runsComplete = true })
                     persist(e, session.current)
                 }
-                if (pages > 0 && synchronized(e) { e.attached > 0 }) loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
+                if (pages > 0 && synchronized(e) { e.attached > 0 }) {
+                    loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
+                    if (synchronized(e) { e.recordWindow != null }) fillTextFromTranscript(e, agentId)
+                }
             }
         }
     }
@@ -2670,6 +2689,9 @@ class ConversationRepository(
                 // The runs whose logs are gone: in Extended mode the account's own transcript still has their turns.
                 val gone = synchronized(e) { if (e.recordWindow != null) emptyList() else pending.filter { it.id in e.expiredRuns && (it.id !in e.traces || it.id in e.staleTraces) } }
                 if (gone.isNotEmpty()) fillFromRecord(e, agentId, gone, tokens)
+                // And the other way round: on the record path, a turn the record gave without its text whose log
+                // this pass found gone takes its reply from the documented transcript (see [fillTextFromTranscript]).
+                if (synchronized(e) { e.recordWindow != null }) fillTextFromTranscript(e, agentId)
             } finally {
                 // Runs this pass did not get to (paused half-way) wait on the queue for the next one — unless a pause
                 // already put them there and moved on (see [pause]). What the pass found out about the runs that
@@ -2721,6 +2743,78 @@ class ConversationRepository(
             val trace = settleTrace(e, run, items)
             withContext(NonCancellable) { writeTraces(agentId, listOf(trace), tokens) }
         }
+    }
+
+    /**
+     * The record path's last resort for a turn's words: a turn the record gives without the agent's text — no body
+     * at all, or its calls without the reply — whose run's log is out of reach (expired, unreadable this session, or
+     * no run to replay) takes its reply from the documented `/v0` transcript, which carries every turn's prompt and
+     * text however old. The transcript is read once for the chat (kept in [Entry.messages]) and only when such a
+     * turn exists; a turn is paired with its `/v0` prompt by the prompt's text, in order, and takes the assistant
+     * messages that follow it up to the next prompt — the same turn's words from the other source, never another's
+     * (see `RecordTurn.textFromTranscript`). Bennett's 2026-09-20 report: regular chats "empty except some tool
+     * calls here and there" — the record's calls on screen, the reply nowhere, although `/v0` had it all along.
+     */
+    private suspend fun fillTextFromTranscript(e: Entry, agentId: String) {
+        if (session.isDemo) return
+        val (window, wanting) = synchronized(e) {
+            val window = e.recordWindow ?: return
+            val ordered = e.allRuns()
+            val trailing = with(e) { local.filter { window.turnOf(it) == null } }.mapTo(HashSet()) { it.run.id }
+            val paired = ordered.filter { it.id !in trailing }
+            val offset = paired.size - window.turns.size
+            val chatRunning = e.isChatRunning()
+            window to window.turns.withIndex().filter { (i, turn) ->
+                if (turn.prompt == null || turn.hasText || turn.textFromTranscript) return@filter false
+                // The newest turn while the chat runs is being written: its words are on their way.
+                if (i == window.turns.lastIndex && chatRunning) return@filter false
+                val run = paired.getOrNull(offset + i)
+                when {
+                    run == null -> e.runsComplete || e.olderRunsCursor == null
+                    run.id in e.traces -> false
+                    run.statusEnum().isActive -> false
+                    run.id in e.expiredRuns || parseIsoMillis(run.createdAt) < e.expiredBefore || run.id in e.failedTraces -> true
+                    else -> false
+                }
+            }.map { it.value }
+        }
+        if (wanting.isEmpty()) return
+        val messages = synchronized(e) { e.messages }.takeIf { it.isNotEmpty() }
+            ?: runCatching { net(agentId, "transcript"); session.current.api.conversationV0(agentId).messages }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+            ?: return
+        synchronized(e) { if (e.messages.isEmpty()) e.messages = messages }
+        // The transcript's turns: each prompt with the replies up to the next.
+        val turns = ArrayList<Pair<String, List<V0ConversationMessageDto>>>()
+        var prompt: String? = null
+        var replies = ArrayList<V0ConversationMessageDto>()
+        for (message in messages) {
+            if (message.type == USER_MESSAGE) {
+                prompt?.let { turns += it to replies }
+                prompt = message.text
+                replies = ArrayList()
+            } else if (prompt != null) {
+                replies += message
+            }
+        }
+        prompt?.let { turns += it to replies }
+        // Paired in order: a prompt sent twice pairs with its own copy, not the first.
+        val replacements = HashMap<Int, RecordTurn>()
+        var from = 0
+        for (turn in wanting) {
+            val wanted = normalizePrompt(turn.prompt!!)
+            val at = (from until turns.size).firstOrNull { normalizePrompt(turns[it].first) == wanted } ?: continue
+            from = at + 1
+            val text = turns[at].second.filter { it.text.isNotBlank() }
+            if (text.isEmpty()) continue
+            replacements[turn.stepIndex] = turn.withTranscriptText(text.mapIndexed { i, m -> AssistantMessage("rec-text-${turn.stepIndex}-$i", m.text) })
+        }
+        if (replacements.isEmpty()) return
+        var filled: RecordWindow? = null
+        e.publish(mutate = {
+            // Only onto the window the turns were read from: a re-read since has its own turns, and reads again.
+            if (recordWindow === window) { recordWindow = window.withTurns(replacements); filled = recordWindow }
+        })
+        filled?.let { persistRecord(e, it, window, session.current, cacheTokens()) }
     }
 
     /** What a cut-short pass was working on goes back on the queue for the next one. Under the entry's monitor. */
