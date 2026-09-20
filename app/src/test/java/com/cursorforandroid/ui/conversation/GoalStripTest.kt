@@ -147,7 +147,9 @@ class GoalStripTest {
         val composer = compose.onNodeWithText("Follow up…").fetchSemanticsNode().boundsInRoot
         assertThat(strip.bottom).isAtMost(queue.top)
         assertThat(queue.bottom).isAtMost(composer.top)
-        assertThat(strip.left).isEqualTo(queue.left)
-        assertThat(strip.right).isEqualTo(queue.right)
+        // The strip's surface and the queue's row share their edges: both are docked cards, inset alike (DockedCardsTest).
+        val row = compose.onNodeWithTag("account-queue-row").fetchSemanticsNode().boundsInRoot
+        assertThat(strip.left).isEqualTo(row.left)
+        assertThat(strip.right).isEqualTo(row.right)
     }
 }

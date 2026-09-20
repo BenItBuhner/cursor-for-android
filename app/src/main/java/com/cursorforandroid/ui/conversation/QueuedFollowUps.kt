@@ -50,6 +50,7 @@ import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
+import com.cursorforandroid.ui.components.dockedCard
 import com.cursorforandroid.ui.components.icon
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -59,7 +60,8 @@ import kotlinx.coroutines.delay
 
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
- * is one line in the composer's own surface — the message verbatim, trailing off where the line ends, with the
+ * is one line in the composer's own surface ([dockedCard]: stood in from the box's sides so its corners are concentric
+ * with the box's, however many are stacked) — the message verbatim, trailing off where the line ends, with the
  * images it carries as small tiles before it — and three small glyphs on the right: remove, edit, send now. Nothing
  * else: a queue should read as a list of what is about to be said, not as a stack of forms. A message that could not
  * be sent shows a warning where its tiles would be and the reason under the message, in red; send-now then retries
@@ -104,15 +106,17 @@ private fun QueuedFollowUpRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
-            .heightIn(min = RowHeight)
-            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
+            // The card's own surface, stood in from the composer's sides so its corners are concentric with the box's.
+            // The description sits on the surface, so the row's node is the card as drawn.
+            .dockedCard()
             .semantics {
                 contentDescription = when (val note = item.warning) {
                     null -> "Queued follow-up $position of $count"
                     else -> "Queued follow-up $position of $count, not sent: $note"
                 }
-            },
+            }
+            .heightIn(min = RowHeight)
+            .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (item.warning != null) {
@@ -192,13 +196,16 @@ private fun HeldNote(item: QueuedFollowUp) {
             delay(1_000L)
         }
     }
-    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))
+    // The time is the tail of the line and the part that moves, so it is never what an ellipsis takes: the separator
+    // and the time's own space are non-breaking, and a card too narrow for the whole line (a phone, the card stood in
+    // from the composer's sides) breaks before the last word and carries the time down with it.
+    val waited = TimeFormat.duration((now - since).coerceAtLeast(0L))?.replace(' ', '\u00A0')
     Text(
         // What is waited for: the agent's turn, or — the server having asked every caller to slow down — the wait it named.
-        listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString(" \u00B7 "),
+        listOfNotNull(item.holdReason ?: QueuedFollowUp.WAITING_FOR_AGENT, waited).joinToString("\u00A0\u00B7\u00A0"),
         style = type.small.copy(fontFeatureSettings = "tnum"),
         color = colors.textQuaternary,
-        maxLines = 1,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.testTag("queued-held"),
     )
@@ -272,11 +279,11 @@ private fun AccountQueueRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .cursorSurface(colors.elevated, colors.strokeSubtle, CursorTheme.shapes.xl)
+            .dockedCard()
+            .testTag("account-queue-row")
             .heightIn(min = RowHeight)
             .padding(start = CursorDimens.composerPadding + CursorDimens.composerTextInset, end = CursorDimens.composerPadding - 6.dp)
-            .semantics { contentDescription = "Queued on your account, $position of $count" }
-            .testTag("account-queue-row"),
+            .semantics { contentDescription = "Queued on your account, $position of $count" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(CursorIcons.Cloud, null, tint = colors.iconQuaternary, modifier = Modifier.size(12.dp))
