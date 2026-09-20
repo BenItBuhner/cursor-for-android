@@ -8,6 +8,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.roborazzi)
+    alias(libs.plugins.test.retry)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -342,6 +343,12 @@ tasks.withType<Test>().configureEach {
 //                           than, as a hash of the name had it, mostly in one. A nested class travels with its outer
 //                           class; a class whose file is not named after it goes by the hash. Combine with `--tests`
 //                           or `-Papp.skipScreenshotTests` as usual: both filters apply.
+//   -Papp.testRetries=N     run a failed test up to N more times before it counts as failed (default 0: no retries).
+//                           CI passes 1. The fault, benchmark and Compose layout tests assert on wall-clock behaviour
+//                           and a shared runner occasionally starves one of them for a few seconds; a test that fails
+//                           and then passes is reported in the JUnit XML as a `flakyFailure`, and ci.yml turns every
+//                           one of those into a warning on the run, so a flake is seen, not hidden. When more than
+//                           four tests fail there are no retries: that is a breakage, not noise.
 // ---------------------------------------------------------------------------------------------------------------------
 val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
     .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
@@ -378,12 +385,19 @@ fun testShardSlices(count: Int): Map<String, Int> = layout.projectDirectory.dir(
     .withIndex()
     .associate { (position, classPath) -> classPath to position % count + 1 }
 
+val testRetries: Int = providers.gradleProperty("app.testRetries").map(String::toInt).getOrElse(0)
+
 tasks.withType<Test>().configureEach {
     maxParallelForks = testForks
     // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and a
     // throughput collector's long stop-the-world pauses are one more way to starve them.
     maxHeapSize = "2g"
     testShard?.let { (index, count) -> include(TestShardFilter(index, count, testShardSlices(count))) }
+    retry {
+        maxRetries.set(testRetries)
+        maxFailures.set(4)
+        failOnPassedAfterRetry.set(false)
+    }
 }
 
 // `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything

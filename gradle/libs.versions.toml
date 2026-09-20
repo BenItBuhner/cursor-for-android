@@ -36,6 +36,8 @@ robolectric = "4.16.1"
 robolectricAndroidAllSdk35 = "15-robolectric-13954326-i7"
 robolectricAndroidAllSdk30 = "11-robolectric-6757853-i7"
 roborazzi = "1.73.0"
+# Gradle's own test-retry plugin: CI reruns a failed test once (see "Unit-test parallelism" in app/build.gradle.kts).
+testRetry = "1.6.6"
 androidxTestExt = "1.2.1"
 androidxTestCore = "1.6.1"
 
@@ -100,3 +102,4 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
+test-retry = { id = "org.gradle.test-retry", version.ref = "testRetry" }
