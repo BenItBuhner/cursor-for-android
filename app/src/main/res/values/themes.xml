@@ -14,4 +14,19 @@
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.Cursor</item>
     </style>
+
+    <!--
+      The quick composer over the launcher: a translucent window with nothing painted behind the content, so the
+      home screen shows through the sheet's scrim (CursorTheme leaves the window unpainted for it). Not a floating
+      dialog: the sheet lays itself out at the bottom, over the keyboard, and takes the whole window for its scrim.
+    -->
+    <style name="Theme.Cursor.QuickComposer" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Translucent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

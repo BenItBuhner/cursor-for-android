@@ -4,6 +4,7 @@ import com.cursorforandroid.data.api.userMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -53,25 +54,49 @@ class ChatLauncher(
      * the caller is free to go, and its cancellation does not reach the request.
      */
     suspend fun launch(request: LaunchRequest, modelDisplayName: String?, nonce: String) {
-        val agentId = requireNotNull(request.agentId) { "A launch needs the client-minted agent id the chat is shown under." }
         val staged = CompletableDeferred<Unit>()
-        inFlight += agentId
-        scope.launch {
-            conversations.launch(request, modelDisplayName, onStaged = { staged.complete(Unit) })
-                .onSuccess {
-                    inFlight -= agentId
-                    _accepted.emit(agentId)
-                }
-                .onFailure { t ->
-                    inFlight -= agentId
-                    _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage(), (t as? MachineStartRefusedException)?.asked))
-                }
-        }.invokeOnCompletion {
-            inFlight -= agentId
+        start(request, modelDisplayName, nonce, onStaged = { staged.complete(Unit) }).invokeOnCompletion {
             // Refused before the chat was shown (the same chat is already being started), or the scope is gone: either
             // way the caller is not left waiting.
             staged.complete(Unit)
         }
         staged.await()
+    }
+
+    /**
+     * [launch], waited out: returns once the server has answered — the chat created, or the launch refused, stopped or
+     * failed — rather than once the chat is on screen. For a composer with no screen of the app behind it to hand the
+     * chat to (the quick composer over the launcher), which opens the app on the chat only once there is one, and
+     * otherwise stays up with the reason. The failure still goes out on [failures] like any other, so the composer
+     * takes the draft back the same way; the caller is told the outcome as well. Cancelling the caller does not reach
+     * the request, which completes in this launcher's scope regardless.
+     */
+    suspend fun launchAndAwait(request: LaunchRequest, modelDisplayName: String?, nonce: String): Result<Unit> {
+        val outcome = CompletableDeferred<Result<Unit>>()
+        val job = start(request, modelDisplayName, nonce, onStaged = {}, onDone = { outcome.complete(it) })
+        job.invokeOnCompletion { cause ->
+            // The scope went away before the request could say: not a success, and not the server's word either.
+            if (!outcome.isCompleted) outcome.complete(Result.failure(cause ?: IllegalStateException("The launch did not complete.")))
+        }
+        return outcome.await()
+    }
+
+    /**
+     * Runs the request in this launcher's scope, [isLaunching] until it answers; an acceptance is put on [accepted] and
+     * a failure on [failures] before [onDone] hears of it.
+     */
+    private fun start(request: LaunchRequest, modelDisplayName: String?, nonce: String, onStaged: () -> Unit, onDone: (Result<Unit>) -> Unit = {}): Job {
+        val agentId = requireNotNull(request.agentId) { "A launch needs the client-minted agent id the chat is shown under." }
+        inFlight += agentId
+        return scope.launch {
+            val result = conversations.launch(request, modelDisplayName, onStaged = onStaged)
+            inFlight -= agentId
+            result
+                .onSuccess { _accepted.emit(agentId) }
+                .onFailure { t ->
+                    _failures.emit(FailedLaunch(agentId, request, nonce, if (t is LaunchCancelledException) null else t.userMessage(), (t as? MachineStartRefusedException)?.asked))
+                }
+            onDone(result.map { })
+        }.also { job -> job.invokeOnCompletion { inFlight -= agentId } }
     }
 }
