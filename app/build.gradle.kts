@@ -335,10 +335,13 @@ tasks.withType<Test>().configureEach {
 //                           four). Each fork holds a Robolectric SDK in a 2 GB heap. Half, because a hosted runner's
 //                           four "cores" are two hyper-threaded ones: three forks there starved the fault and
 //                           benchmark tests, which assert on wall-clock behaviour, into timeouts on one run in three.
-//   -Papp.testShard=I/N     run only the I-th of N deterministic slices of the test classes (I from 1). A class's slice
-//                           is a hash of its name, so the slices are stable across runs and machines and together
-//                           cover every class exactly once; a nested class travels with its outer class. Combine
-//                           with `--tests` or `-Papp.skipScreenshotTests` as usual: both filters apply.
+//   -Papp.testShard=I/N     run only the I-th of N deterministic slices of the test classes (I from 1). The test
+//                           source files are sorted by path and dealt out in turn, so the slices are stable across
+//                           runs and machines, together cover every class exactly once, and the slow classes - which
+//                           sit next to each other (data/faults, the benchmarks) - land in different slices rather
+//                           than, as a hash of the name had it, mostly in one. A nested class travels with its outer
+//                           class; a class whose file is not named after it goes by the hash. Combine with `--tests`
+//                           or `-Papp.skipScreenshotTests` as usual: both filters apply.
 // ---------------------------------------------------------------------------------------------------------------------
 val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
     .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
@@ -350,10 +353,12 @@ val testShard: Pair<Int, Int>? = providers.gradleProperty("app.testShard").orNul
 }
 
 /**
- * Keeps the class files of slice [index] of [count]. A standalone class rather than a lambda: the configuration cache
- * has to serialize the filter with the task, and a lambda in this script would drag the script object along.
+ * Keeps the class files of slice [index] of [count]. [slices] maps a class (relative path without extension, e.g.
+ * `com/x/FooTest`) to its slice; a class not in it goes by a hash of that path. A standalone class rather than a
+ * lambda: the configuration cache has to serialize the filter with the task, and a lambda in this script would drag
+ * the script object along.
  */
-class TestShardFilter(private val index: Int, private val count: Int) : Spec<FileTreeElement>, java.io.Serializable {
+class TestShardFilter(private val index: Int, private val count: Int, private val slices: Map<String, Int>) : Spec<FileTreeElement>, java.io.Serializable {
     // Directories have to pass or nothing under them is visited; only class files are assigned to a slice.
     override fun isSatisfiedBy(element: FileTreeElement): Boolean =
         element.isDirectory || !element.name.endsWith(".class") || shardOf(element.relativePath.pathString) == index
@@ -361,16 +366,24 @@ class TestShardFilter(private val index: Int, private val count: Int) : Spec<Fil
     /** Which slice the test class compiled to [classFilePath] (relative, e.g. `com/x/FooTest$Inner.class`) belongs to, from 1. */
     private fun shardOf(classFilePath: String): Int {
         val outerClass = classFilePath.substringBefore('$').removeSuffix(".class")
-        return Math.floorMod(outerClass.hashCode(), count) + 1
+        return slices[outerClass] ?: (Math.floorMod(outerClass.hashCode(), count) + 1)
     }
 }
+
+/** Every test source file as the class path it compiles to, sorted, dealt out over [count] slices in turn. */
+fun testShardSlices(count: Int): Map<String, Int> = layout.projectDirectory.dir("src/test/java").asFileTree
+    .matching { include("**/*.kt", "**/*.java") }
+    .files.map { it.relativeTo(file("src/test/java")).path.replace(File.separatorChar, '/').substringBeforeLast('.') }
+    .sorted()
+    .withIndex()
+    .associate { (position, classPath) -> classPath to position % count + 1 }
 
 tasks.withType<Test>().configureEach {
     maxParallelForks = testForks
     // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and a
     // throughput collector's long stop-the-world pauses are one more way to starve them.
     maxHeapSize = "2g"
-    testShard?.let { (index, count) -> include(TestShardFilter(index, count)) }
+    testShard?.let { (index, count) -> include(TestShardFilter(index, count, testShardSlices(count))) }
 }
 
 // `-Papp.skipScreenshotTests=true` leaves the Roborazzi walkthrough to the dedicated screenshot job in CI; everything
