@@ -112,7 +112,7 @@ class TranscriptDiagnosticsTest {
             TranscriptDiagnostics.Input("0.3.15", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668", agent = null, state = TranscriptDiagnostics.State(items), load = load),
         )
         assertThat(report).contains("load: source=record attached=1 paused=false fetched=true fetchedAt=2026-09-14T03:59:58Z messages=319 prompts=160 runs=160 complete=true olderCursor=false order=OLDEST_FIRST latestById=true window=10 turns=[150,160)")
-        assertThat(report).contains("record: total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
+        assertThat(report).contains("record: read=steps total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
         assertThat(report).contains("status: shown=RUNNING latestRun=CANCELLED streaming=false rowRunning=false accountRunning=true rowNewerThanRecordMs=600000 failed: run=…run158 source=run-record+account-record current=false reason=\"Tool result not found for toolu_01CRGAspS8qhi8Wfr74zYnJA (agent bc-…)\"")
         assertThat(report).doesNotContain("bc-24e35e9f")
         assertThat(report).contains("traces: shown=3 of 5 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")

@@ -1129,6 +1129,7 @@ class ConversationRepository(
                     turnCount = w.state?.turnCount ?: 0,
                     turns = kept.map { CachedRecordTurn(it.stepIndex, it.stepCount, it.prompt, it.projectMode, it.errorMessage) },
                     timings = w.state?.timings?.map { CachedTurnTiming(it.durationMs, it.timestampMs) } ?: emptyList(),
+                    turnIndexed = w.turnIndexed,
                 )
             },
         )
@@ -1326,6 +1327,7 @@ class ConversationRepository(
                     val fallback = e.state.value.recordFallback
                     TranscriptLoadDiagnostics.RecordLine(
                         window?.total ?: 0, window?.firstStep ?: 0, window?.turns?.size ?: 0, window?.state?.turnCount, window?.state != null, e.recordEmpty, e.recordError,
+                        read = if (window?.turnIndexed ?: (record?.readsTurns == true)) "turns" else "steps",
                         fallback = fallback?.let { f ->
                             TranscriptLoadDiagnostics.FallbackLine(
                                 sinceIso = Instant.ofEpochMilli(f.sinceMillis).toString(),
@@ -1467,7 +1469,7 @@ class ConversationRepository(
                 recordWindow?.let { w ->
                     if (w.turns.size > MAX_RESTORED_WINDOW) {
                         val kept = w.turns.takeLast(MAX_RESTORED_WINDOW)
-                        recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn)
+                        recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn, w.turnIndexed)
                     }
                 }
                 val kept = layout().let { it.paired + it.standing }.mapTo(HashSet()) { it.id }
@@ -2039,13 +2041,26 @@ class ConversationRepository(
         // round trip when nothing changed — rather than its newest page again: a reopen, a return to the foreground,
         // cost the steps the chat added since and not the megabytes it already has (see [RecordTranscript.append]).
         // A record shorter than the window knew it (rewound) is read from its end again, like a first open.
+        // The blob-backed record is read a turn's blobs at a time: a cold open paints its newest few turns first and
+        // brings the rest of the window right behind them (see [FIRST_PAINT_TURNS], the second stage below), so the
+        // first frame waits on a handful of round trips rather than the window's every step.
+        val stagedPaint = api.readsTurns && (known == null || !known.canAppend) && wantTurns > FIRST_PAINT_TURNS
+        val firstWant = if (stagedPaint) FIRST_PAINT_TURNS else wantTurns
+        val stateRead = async { net(agentId, "state"); runCatching { api.state(agentId) } }
         val tail = async {
             runCatching {
-                if (known != null && known.canAppend) RecordPager.since(api, agentId, known.total) ?: RecordPager.tail(api, agentId, wantTurns, null)
-                else RecordPager.tail(api, agentId, wantTurns, known?.total)
+                if (api.readsTurns) {
+                    // The blob-backed record: the state read once names the turns; a refusal of it is the record's refusal.
+                    val state = stateRead.await().getOrThrow()
+                    if (known != null && known.canAppend) RecordPager.sinceTurns(api, agentId, known.total, state) ?: RecordPager.tailTurns(api, agentId, wantTurns, state)
+                    else RecordPager.tailTurns(api, agentId, firstWant, state)
+                } else if (known != null && known.canAppend) {
+                    RecordPager.since(api, agentId, known.total) ?: RecordPager.tail(api, agentId, wantTurns, null)
+                } else {
+                    RecordPager.tail(api, agentId, firstWant, known?.total)
+                }
             }
         }
-        val stateRead = async { net(agentId, "state"); runCatching { api.state(agentId) } }
         val runPage = async { net(agentId, "runs"); runCatching { cursorApi.listRuns(agentId, limit = FIRST_RUN_PAGE) } }
         val stored = async { runCatching { attachments.forAgent(agentId) }.getOrDefault(emptyMap()) }
         val raw = tail.await()
@@ -2087,8 +2102,10 @@ class ConversationRepository(
         } else {
             val sink = images?.forAgent(agentId)
             val now = AppClock.now()
-            val delta = known != null && known.canAppend && rawWindow.firstStep == known.total
-            val built = if (delta) RecordTranscript.append(known!!, rawWindow, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
+            // A turn-indexed delta starts at the newest known turn, read again whole (see RecordPager.sinceTurns).
+            val delta = known != null && known.canAppend && rawWindow.turnIndexed == known.turnIndexed &&
+                (rawWindow.firstStep == known.total || (rawWindow.turnIndexed && rawWindow.firstStep == known.total - 1))
+            var built = if (delta) RecordTranscript.append(known!!, rawWindow, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
             else RecordTranscript.window(rawWindow, known, state = null, now, wantTurns = wantTurns, build = turnBuilder(agentId, sink))
             var project = false
             e.publish(
@@ -2110,6 +2127,16 @@ class ConversationRepository(
                 transform = { copy(isLoading = false, error = null, transcriptError = null, transcriptUnavailable = false, isProjectConversation = project, recordFallback = null) },
             )
             persistRecord(e, built, known, backend, tokens)
+            // The second stage of a cold open on the blob-backed record: the rest of the window's turns, behind the ones on screen.
+            if (stagedPaint && built.hasOlder && built.turns.size < wantTurns) {
+                val older = runCatching { RecordPager.before(api, agentId, built.firstStep, wantTurns - built.turns.size) }.getOrElse { t -> if (t is CancellationException) throw t; null }
+                if (older != null && older.steps.isNotEmpty()) {
+                    val widened = RecordTranscript.prepend(built, older, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(agentId, sink))
+                    e.publish(mutate = { if (recordWindow === built) recordWindow = widened; pruneLocal() })
+                    persistRecord(e, widened, built, backend, tokens)
+                    built = widened
+                }
+            }
         }
         // The runs: each turn's status and footer, and the run to follow.
         val runResult = runPage.await()
@@ -2283,6 +2310,8 @@ class ConversationRepository(
             } else {
                 if (delta.steps.isEmpty()) return
                 built = RecordTranscript.append(known, delta, AppClock.now(), wantTurns = wantTurns, build = turnBuilder(e.agentId, sink))
+                // Nothing grew: the newest turn read again as it was.
+                if (built === known) return
             }
         } else {
             val grown = runCatching { RecordPager.grownPast(api, e.agentId, known.total) }.getOrElse { t -> if (t is CancellationException) throw t; false }
@@ -2365,7 +2394,8 @@ class ConversationRepository(
     }
 
     /** Whether this page ends exactly where [window] begins: the page before it. */
-    private fun RecordPager.Raw.isPageBefore(window: RecordWindow): Boolean = steps.isNotEmpty() && firstStep + steps.size == window.firstStep
+    private fun RecordPager.Raw.isPageBefore(window: RecordWindow): Boolean =
+        steps.isNotEmpty() && turnIndexed == window.turnIndexed && firstStep + (if (turnIndexed) steps.mapNotNull { it.turnIndex }.distinct().size else steps.size) == window.firstStep
 
     /**
      * Reads the record's page before [window] ahead of the reader's next scroll up, so the next [loadOlderFromRecord]
@@ -2700,7 +2730,8 @@ class ConversationRepository(
         )
         // The record's window (Extended mode): its turns' items come from their own files, one read per turn. Only
         // while the record is the transcript's source; with the mode off the documented copy below renders.
-        cached.record?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript }?.let { saved ->
+        // A saved window of the other record's kind (step-indexed, from before the blob-backed read) names other turns by its indices: the network reads afresh.
+        cached.record?.takeIf { it.turns.isNotEmpty() && record != null && !session.isDemo && capabilities().accountTranscript && it.turnIndexed == record.readsTurns }?.let { saved ->
             val state = saved.turnCount.takeIf { it > 0 }?.let { count ->
                 RecordState(count, saved.timings.map { TurnTiming(it.durationMs, it.timestampMs) }, pendingToolCalls = 0, isRootProject = false, numPriorInteractionUpdates = 0L, rewindEpoch = 0L)
             }
@@ -2711,8 +2742,8 @@ class ConversationRepository(
             val older = saved.turns.dropLast(newest.size)
             var restored: RecordWindow? = null
             fun publishRestored(turns: List<CachedRecordTurn>, files: Map<String, CachedTrace>, onlyOver: RecordWindow?) {
-                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex)]?.items ?: emptyList(), errorMessage = turn.errorMessage) }
-                val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L)
+                val built = turns.map { turn -> RecordTurn(turn.stepIndex, turn.stepCount, turn.prompt, turn.projectMode, files[RecordTurn.traceKey(turn.stepIndex, saved.turnIndexed)]?.items ?: emptyList(), errorMessage = turn.errorMessage, turnIndexed = saved.turnIndexed) }
+                val window = RecordWindow(saved.total, built.first().stepIndex, built, emptyList(), state, readAtMillis = 0L, turnIndexed = saved.turnIndexed)
                 var project = false
                 e.publish(
                     mutate = {
@@ -2728,10 +2759,10 @@ class ConversationRepository(
                     transform = { copy(isProjectConversation = project) },
                 )
             }
-            val newestFiles = readTraces(agentId, newest.map { RecordTurn.traceKey(it.stepIndex) })
+            val newestFiles = readTraces(agentId, newest.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
             publishRestored(newest, newestFiles, onlyOver = null)
             if (older.isNotEmpty()) {
-                val olderFiles = readTraces(agentId, older.map { RecordTurn.traceKey(it.stepIndex) })
+                val olderFiles = readTraces(agentId, older.map { RecordTurn.traceKey(it.stepIndex, saved.turnIndexed) })
                 publishRestored(older + newest, olderFiles + newestFiles, onlyOver = restored)
             }
             // The turns the record holds without their steps: the traces their runs' logs gave last time, from disk.
@@ -3949,6 +3980,8 @@ class ConversationRepository(
         const val WINDOW_RUNS = 10
         /** The widest window the disk copy reopens on: the runs whose traces are read before the first frame. */
         const val MAX_RESTORED_WINDOW = 30
+        /** How many of the newest turns a cold open of the blob-backed record paints first, the rest of the window behind them (see [loadFromRecord]). */
+        const val FIRST_PAINT_TURNS = 3
         /** A chat opened this recently is not fetched again when the app comes to the foreground. */
         const val REVALIDATE_MIN_INTERVAL_MS = 5_000L
         /**

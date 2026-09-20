@@ -130,19 +130,24 @@ class LongProjectLoadTest {
         val firstPaintMs = (System.nanoTime() - opened) / 1_000_000
         val atPaint = requests()
         report("record: first paint after ${firstPaintMs} ms", conversations.state(agentId).value, presenter)
-        // The handshake, the record's size and its newest page, the state and the run list beside them: five round
-        // trips of the account service, two of them in sequence, at 300–900 ms each and the page's bytes.
-        assertThat(atPaint[FaultServer.Route.Record]).isEqualTo(2)
+        // The handshake, the state (the turn list), then the newest three turns' blobs side by side, the run list
+        // beside them: a handful of round trips of the account service at 300–900 ms each, and those turns' bytes —
+        // never the removed step-indexed read (`FetchBackgroundComposer`), and never the window's every step before
+        // the first frame.
+        assertThat(atPaint[FaultServer.Route.Record]).isNull()
+        assertThat(atPaint[FaultServer.Route.RecordState]).isAtLeast(1)
+        assertThat(atPaint[FaultServer.Route.Blob]).isAtLeast(3)
         assertThat(firstPaintMs).isLessThan(6_000L)
-        assertThat(server.recordBytes[agentId] ?: 0L).isLessThan(120_000L)
+        assertThat(server.recordBytes[agentId] ?: 0L).isLessThan(400_000L)
         rig.awaitUntil(60_000) { !conversations.state(agentId).value.isLoading }
         rig.scrollUpTwice(conversations)
         val before = conversations.state(agentId).value
         report("record: after two scroll-ups", before, presenter)
         val paged = requests()
-        // Three pages of the record in all — the window's thirty turns — and a log asked only for the turns whose
+        // The window's thirty turns, each by its blobs and each read once, and a log asked only for the turns whose
         // record holds no call at all (a remark and nothing else), never for the ones it holds with their calls.
-        assertThat(paged[FaultServer.Route.Record]).isAtMost(5)
+        assertThat(paged[FaultServer.Route.Record]).isNull()
+        assertThat(paged[FaultServer.Route.Blob]).isAtLeast(30)
         val narrationOnly = turns.takeLast(30).count { it.durationMs != null && !it.isUser && it.record.none { step -> step.containsKey("toolCall") } }
         assertThat(TranscriptPerf.sessionOrNull(agentId)!!.snapshot().network["replay"] ?: 0).isAtMost(narrationOnly)
         assertThat(before.traceStatus.pending).isEqualTo(0)
@@ -156,7 +161,7 @@ class LongProjectLoadTest {
         val after = conversations.state(agentId).value
         report("record: reopened after 0.5 s (requests since the reopen)", after, presenter, since = seenBefore)
         assertThat(after.items).isEqualTo(before.items)
-        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
+        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.Blob, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
     }
 
     /**
@@ -166,7 +171,8 @@ class LongProjectLoadTest {
      */
     @Test
     fun `documented path - the record refused, the fallback paints within two round trips and pages on scroll`() = runBlocking<Unit> {
-        server.outage(FaultServer.Route.Record, FaultServer.Fault.Status(429, "resource_exhausted", "Too many requests", retryAfter = "2"))
+        // The record's first read — the conversation state, which names the turns — refused: nothing else of it is asked.
+        server.outage(FaultServer.Route.RecordState, FaultServer.Fault.Status(429, "resource_exhausted", "Too many requests", retryAfter = "2"))
         val rig = rig(extended = true)
         val conversations = rig.conversations
         val presenter = TranscriptPresenter()
@@ -176,7 +182,8 @@ class LongProjectLoadTest {
         val firstPaintMs = (System.nanoTime() - opened) / 1_000_000
         val atPaint = requests()
         report("runs: first paint after ${firstPaintMs} ms", conversations.state(agentId).value, presenter)
-        assertThat(atPaint[FaultServer.Route.Record]).isEqualTo(1)
+        assertThat(atPaint[FaultServer.Route.RecordState]).isEqualTo(1)
+        assertThat(atPaint[FaultServer.Route.Blob]).isNull()
         assertThat(atPaint[FaultServer.Route.ListRuns]).isEqualTo(1)
         assertThat(firstPaintMs).isLessThan(5_000L)
         rig.awaitUntil(90_000) { !conversations.state(agentId).value.isLoading }
@@ -196,7 +203,8 @@ class LongProjectLoadTest {
         assertThat(recordLine.fallback!!.text).startsWith("fallback=runs since=")
         assertThat(recordLine.fallback!!.retryAfterMs).isEqualTo(2_000L)
         // The record was asked once at the open and not again for the window's replays: its logs were the source.
-        assertThat(requests()[FaultServer.Route.Record]).isEqualTo(1)
+        assertThat(requests()[FaultServer.Route.RecordState]).isEqualTo(1)
+        assertThat(requests()[FaultServer.Route.Blob]).isNull()
         // The window's runs and the two pages behind it, and nothing of the hundreds of turns past them.
         assertThat(TranscriptPerf.sessionOrNull(agentId)!!.snapshot().network["replay"] ?: 0).isAtMost(30)
         assertThat(messages(before.items)).isNotEmpty()
@@ -208,7 +216,7 @@ class LongProjectLoadTest {
         val after = conversations.state(agentId).value
         report("runs: reopened after 0.5 s (requests since the reopen)", after, presenter, since = seenBefore)
         assertThat(after.items).isEqualTo(before.items)
-        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
+        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.Blob, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
     }
 
     private fun since(before: Map<FaultServer.Route, Int>): Map<FaultServer.Route, Int> = requests().mapValues { (route, n) -> n - (before[route] ?: 0) }.filterValues { it > 0 }

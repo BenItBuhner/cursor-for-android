@@ -14,6 +14,7 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
+import com.cursorforandroid.fixtures.BlobFixtures
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
@@ -82,6 +83,13 @@ class FaultServer(
     val records: MutableMap<String, List<JsonObject>> = ConcurrentHashMap()
     /** The account's conversation state per chat (`GetLatestAgentConversationState`), as the JSON body to serve; synthesised from [records] when absent. */
     val recordStates: MutableMap<String, String> = ConcurrentHashMap()
+    /**
+     * The blob-backed record per chat (`GetBlobForAgentKV`, the read Cursor's client makes; see `BlobFixtures`):
+     * made from [records] on the first read and remade whenever [records] changes; scripted here for a chat that has
+     * no [records]. Neither: the chat has no turns.
+     */
+    val blobRecords: MutableMap<String, BlobFixtures.Record> = ConcurrentHashMap()
+    private val blobRecordsFrom = ConcurrentHashMap<String, List<JsonObject>>()
     /** Bytes of record body served so far, per chat: what the account's transcript costs a connection. */
     val recordBytes: MutableMap<String, Long> = ConcurrentHashMap()
     /** The prompts `POST /runs` filed, in order, and the runs they started. */
@@ -109,7 +117,7 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, Other }
 
     /** What one request meets instead of, or before, its answer. */
     sealed interface Fault {
@@ -228,6 +236,7 @@ class FaultServer(
             segments.size == 2 && segments[0] == "auth" && segments[1] == "exchange_user_api_key" -> Route.Auth
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "FetchBackgroundComposer" -> Route.Record
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetLatestAgentConversationState" -> Route.RecordState
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetBlobForAgentKV" -> Route.Blob
             else -> Route.Other
         }
     }
@@ -277,12 +286,13 @@ class FaultServer(
             Route.Auth -> json(200, """{"accessToken":"session-token","refreshToken":"refresh-token"}""")
             Route.Record -> record(request)
             Route.RecordState -> recordState(request)
+            Route.Blob -> blob(request)
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         return when (fault) {
             null, Fault.Pass, is Fault.StreamCut -> answer.withWeather()
             // A refusal from the account service is a Connect error body; from the documented API, the API's own.
-            is Fault.Status -> json(fault.code, if (route == Route.Record || route == Route.RecordState) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
+            is Fault.Status -> json(fault.code, if (route == Route.Record || route == Route.RecordState || route == Route.Blob) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
             is Fault.LostReply -> MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
@@ -322,21 +332,47 @@ class FaultServer(
         return json(200, text)
     }
 
-    /** `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record with the runs' timings. */
+    /**
+     * `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record — each
+     * turn its blob id, as the account names them (see [blobRecord]) — with the runs' timings.
+     */
     private fun recordState(request: RecordedRequest): MockResponse {
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         recordStates[agentId]?.let { return json(200, it) }
-        val all = records[agentId] ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
-        val prompts = all.count { it.containsKey("humanMessage") || it.containsKey("userMessage") }
+        val record = blobRecord(agentId) ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
+        val prompts = record.turnCount
         val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
         val timings = (0 until prompts).joinToString(",") { t ->
             val run = chatRuns.getOrNull(t)
             val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
             """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
         }
-        val ids = (0 until prompts).joinToString(",") { "\"turn-$it\"" }
+        val ids = record.turnIds.joinToString(",") { "\"$it\"" }
         return json(200, """{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+    }
+
+    /** The chat's blob-backed record: made from its legacy steps (and made again whenever they change), else as scripted. */
+    private fun blobRecord(agentId: String): BlobFixtures.Record? {
+        val steps = records[agentId] ?: return blobRecords[agentId]
+        synchronized(blobRecordsFrom) {
+            if (blobRecordsFrom[agentId] !== steps) {
+                synthesized[agentId] = BlobFixtures.record(steps)
+                blobRecordsFrom[agentId] = steps
+            }
+            return synthesized[agentId]
+        }
+    }
+    private val synthesized = ConcurrentHashMap<String, BlobFixtures.Record>()
+
+    /** `GetBlobForAgentKV {bcId, blobId}`: the blob's bytes, base64; `not_found` for an id the record does not have. */
+    private fun blob(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val blobId = body["blobId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "blobId is required"))
+        val bytes = blobRecord(agentId)?.blobs?.get(blobId) ?: return json(404, connectError("not_found", "blob not found"))
+        recordBytes.merge(agentId, bytes.size.toLong(), Long::plus)
+        return json(200, """{"blobData":"${java.util.Base64.getEncoder().encodeToString(bytes)}"}""")
     }
 
     /** A Connect error body, as the account service writes one. */

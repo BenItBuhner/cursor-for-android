@@ -103,7 +103,18 @@ data class TranscriptLoadDiagnostics(
      * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
      * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
      */
-    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?, val fallback: FallbackLine? = null)
+    data class RecordLine(
+        val total: Int,
+        val firstStep: Int,
+        val turnsLoaded: Int,
+        val turnCount: Int?,
+        val stateRead: Boolean,
+        val empty: Boolean,
+        val error: String?,
+        val fallback: FallbackLine? = null,
+        /** How the record is read: `turns` (the blob-backed record, `GetLatestAgentConversationState` + `GetBlobForAgentKV`) or `steps` (`FetchBackgroundComposer`). */
+        val read: String = "steps",
+    )
 
     /**
      * The record refused or failed with nothing of it on screen and the documented path stands in (see
@@ -215,7 +226,7 @@ object TranscriptDiagnostics {
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
         load.record?.let { r ->
-            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
+            appendLine("record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
         }
         load.status?.let { st ->
             appendLine(

@@ -70,8 +70,9 @@ class LiveTurnDeliveryTest {
         server.v0[agentId] = V0AgentDto(id = agentId, name = LongProject.AGENT_NAME, status = "RUNNING")
         server.transcripts[agentId] = LongProject.v0Transcript(turns)
         server.records[agentId] = turns.flatMap { it.record }
-        // The account's record is gone, in the server's words: the documented path stands in, as on Bennett's phone.
-        server.outage(Route.Record, Fault.Status(404, "unimplemented", REMOVED))
+        // The account's record refused at its first read (the state, which names the turns), in the server's words:
+        // the documented path stands in, as it did on Bennett's phone when `FetchBackgroundComposer` was removed.
+        server.outage(Route.RecordState, Fault.Status(404, "unimplemented", REMOVED))
         // The live run's stream delivers everything it has and drops; the hub keeps coming back to it.
         holdOpen(live.runId, live.log.size)
     }
@@ -329,6 +330,6 @@ class LiveTurnDeliveryTest {
     private companion object {
         const val TURNS = 8
         const val MESSAGE = "Push the pricing table to the notes and tell the research worker to verify the free tier once more."
-        const val REMOVED = "FetchBackgroundComposer has been removed"
+        const val REMOVED = "GetLatestAgentConversationState has been removed"
     }
 }
