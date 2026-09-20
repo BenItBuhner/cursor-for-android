@@ -34,17 +34,27 @@ class WidgetRefreshTest {
     private val lowBattery = WidgetRefreshBudget(connected = true, batteryLow = true)
 
     private lateinit var realPlacedWidgets: suspend (Context) -> Boolean
+    private lateinit var realRenderer: suspend (Context) -> Unit
+    private val startSettle = WidgetSync.startSettleMs
 
     @Before
     fun setUp() {
+        // The application under test started its own start-up check on creation; the tests below drive their own.
+        WidgetSync.stop()
         AppClock.nowMillis = { now }
         realPlacedWidgets = WidgetSync.placedWidgets
+        realRenderer = WidgetSync.renderer
+        // What start() does is under test here, not how long it waits to do it.
+        WidgetSync.startSettleMs = 0
+        WidgetSync.renderer = {}
     }
 
     @After
     fun tearDown() {
         AppClock.nowMillis = System::currentTimeMillis
         WidgetSync.placedWidgets = realPlacedWidgets
+        WidgetSync.renderer = realRenderer
+        WidgetSync.startSettleMs = startSettle
         WidgetSync.stop()
     }
 
@@ -184,6 +194,32 @@ class WidgetRefreshTest {
         WidgetSync.start(app, graph)
 
         assertThat(awaitFollowing()).isTrue()
+    }
+
+    /**
+     * A follower installed at start-up renders what changes from then on; the widgets, though, show what an earlier
+     * process last drew. A list that is already loaded when the launcher answers is therefore drawn once — and only
+     * then: with nothing loaded yet, the restore that follows is the change that draws it.
+     */
+    @Test
+    fun `start-up draws a list that is already loaded once, and an unloaded one not at all`() = runBlocking {
+        var renders = 0
+        WidgetSync.renderer = { renders++ }
+        WidgetSync.placedWidgets = { true }
+
+        val graph = loadedGraph()
+        WidgetSync.start(app, graph)
+        assertThat(awaitFollowing()).isTrue()
+        assertThat(withTimeoutOrNull(2_000) { while (renders == 0) delay(10); true }).isTrue()
+        assertThat(renders).isEqualTo(1)
+
+        WidgetSync.stop()
+        graph.signOut()
+        assertThat(graph.agents.state.value.hasLoaded).isFalse()
+        WidgetSync.start(app, graph)
+        assertThat(awaitFollowing()).isTrue()
+        delay(300)
+        assertThat(renders).isEqualTo(1)
     }
 
     /** The token says which widget set an answer describes, not that following is over: a new widget still counts. */

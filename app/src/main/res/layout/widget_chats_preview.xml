@@ -2,7 +2,7 @@
 <!--
   Static picture of the widget for the launcher's widget picker (Android 12+ renders this layout; older launchers
   show @drawable/widget_chats_preview, and Android 15+ asks the widget itself for a live preview). Same geometry as
-  the rendered widget: a 40dp header — cube, list title with its picker chevron, "+" — then the sidebar's 36dp rows
+  the rendered widget: a 40dp header — cube, list title with its picker chevron, refresh, "+" — then the sidebar's 36dp rows
   in their 16dp glyph slot / 13sp title proportions, with the demo's showcase chats as sample rows.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -48,6 +48,14 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:layout_weight="1" />
+
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:contentDescription="@string/widget_refresh"
+            android:padding="8dp"
+            android:src="@drawable/widget_refresh"
+            android:tint="@color/widget_icon_secondary" />
 
         <ImageView
             android:layout_width="32dp"
