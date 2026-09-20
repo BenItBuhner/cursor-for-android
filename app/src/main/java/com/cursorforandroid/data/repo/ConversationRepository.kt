@@ -2063,8 +2063,15 @@ class ConversationRepository(
                 val now = AppClock.now()
                 val retryAfter = (failure as? ConnectRpcException)?.retryAfterMillis
                 val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter)
+                // A removal is not a pause: the server has said the read is gone, and asking every half minute
+                // costs a round trip on every open for nothing (see [RECORD_REMOVED_RETRY_MS]).
+                val pause = when {
+                    retryAfter != null -> retryAfter.coerceAtLeast(RECORD_RETRY_MIN_MS)
+                    failure.isRecordRemoved() -> RECORD_REMOVED_RETRY_MS
+                    else -> RECORD_RETRY_MS
+                }
                 e.publish(
-                    mutate = { recordRefusedUntil = now + (retryAfter?.coerceAtLeast(RECORD_RETRY_MIN_MS) ?: RECORD_RETRY_MS) },
+                    mutate = { recordRefusedUntil = now + pause },
                     transform = { copy(recordFallback = fallback) },
                 )
                 return@coroutineScope RecordLoad(served = false, runPage = runPage.await())
@@ -3557,6 +3564,15 @@ class ConversationRepository(
     /** The server's runs of [e]'s chat, oldest first: never a prompt's placeholder. */
     private fun allServerRuns(e: Entry): List<RunDto> = e.runs.sortedBy { parseIsoMillis(it.createdAt) }
 
+    /**
+     * The account said the record read itself is gone — the method removed (`unimplemented`, a `404` for it,
+     * "has been removed" in its own words) — rather than refusing this call for now.
+     */
+    private fun Throwable?.isRecordRemoved(): Boolean {
+        val connect = this as? ConnectRpcException ?: return false
+        return connect.httpCode == 404 || connect.code == "unimplemented" || connect.message?.contains("has been removed", ignoreCase = true) == true
+    }
+
     private fun isNewer(run: RunDto, than: RunDto?): Boolean = than == null || parseIsoMillis(run.createdAt) > parseIsoMillis(than.createdAt)
 
     /**
@@ -3939,6 +3955,12 @@ class ConversationRepository(
         const val RECORD_RETRY_MS = 30_000L
         /** The least a pause the server named holds the record off for: a `Retry-After: 0` is still a refusal. */
         const val RECORD_RETRY_MIN_MS = 2_000L
+        /**
+         * How long the record is left alone once the server has said the read is gone — "FetchBackgroundComposer has
+         * been removed", `unimplemented`, a `404` for the method: not a pause, a removal, which the next open or the
+         * hour asks about again (Bennett's 2026-09-20 export: the same refusal every thirty seconds, four in six minutes).
+         */
+        const val RECORD_REMOVED_RETRY_MS = 60 * 60_000L
         /** How many times, a moment apart, the transcript is asked for a message the account delivered before it is given up (see [adoptDelivered]). */
         const val ADOPT_ATTEMPTS = 4
         const val ADOPT_RETRY_MS = 2_500L
