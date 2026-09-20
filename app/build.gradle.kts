@@ -331,16 +331,17 @@ tasks.withType<Test>().configureEach {
 // side by side finish in a fraction of that, and CI splits the classes over several runners on top. Both are plain
 // Gradle properties so a developer can run the whole suite the ordinary way and CI can shape it:
 //
-//   -Papp.testForks=N       test JVMs run side by side (default: one fewer than the machine's cores, at most four -
-//                           each fork holds a Robolectric SDK in a 2 GB heap, and a hosted runner has four cores and
-//                           16 GB).
+//   -Papp.testForks=N       test JVMs run side by side (default: half the machine's cores, at least one and at most
+//                           four). Each fork holds a Robolectric SDK in a 2 GB heap. Half, because a hosted runner's
+//                           four "cores" are two hyper-threaded ones: three forks there starved the fault and
+//                           benchmark tests, which assert on wall-clock behaviour, into timeouts on one run in three.
 //   -Papp.testShard=I/N     run only the I-th of N deterministic slices of the test classes (I from 1). A class's slice
 //                           is a hash of its name, so the slices are stable across runs and machines and together
 //                           cover every class exactly once; a nested class travels with its outer class. Combine
 //                           with `--tests` or `-Papp.skipScreenshotTests` as usual: both filters apply.
 // ---------------------------------------------------------------------------------------------------------------------
 val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
-    .getOrElse((Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4))
+    .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
 val testShard: Pair<Int, Int>? = providers.gradleProperty("app.testShard").orNull?.let { spec ->
     val match = Regex("""^(\d+)/(\d+)$""").matchEntire(spec) ?: error("app.testShard must look like I/N, e.g. 1/3; got '$spec'")
     val (index, count) = match.destructured.toList().map(String::toInt)
@@ -366,8 +367,8 @@ class TestShardFilter(private val index: Int, private val count: Int) : Spec<Fil
 
 tasks.withType<Test>().configureEach {
     maxParallelForks = testForks
-    // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and the
-    // long stop-the-world pauses of a throughput collector under three forks on four cores are what fail them.
+    // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and a
+    // throughput collector's long stop-the-world pauses are one more way to starve them.
     maxHeapSize = "2g"
     testShard?.let { (index, count) -> include(TestShardFilter(index, count)) }
 }
