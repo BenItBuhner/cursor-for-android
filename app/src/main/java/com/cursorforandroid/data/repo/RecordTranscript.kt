@@ -101,9 +101,18 @@ class RecordWindow(
     /** The account's word on the whole chat, when read (see [RecordState]): the turn count and every turn's timing. */
     val state: RecordState? = null,
     val readAtMillis: Long = 0L,
+    /**
+     * The newest turn's steps as they were read, prompt included: what a read of the steps appended since — the
+     * record's delta — is joined onto to rebuild that turn and cut the turns after it (see [RecordTranscript.append]).
+     * Null for a window restored from disk, whose turns' steps are not kept: its next read is a tail read.
+     */
+    val newestTurn: HeadlessTranscript.Turn? = null,
 ) {
     /** Turns before the window: the record has steps before the loaded ones. */
     val hasOlder: Boolean get() = firstStep > 0
+
+    /** Whether the record can be read on from [total] alone: the newest turn's steps are in hand to join the delta onto. */
+    val canAppend: Boolean get() = newestTurn != null && turns.isNotEmpty()
 
     /** How many turns the chat has, counting the ones before the window: the state's count when known, else at least the loaded ones. */
     val turnCount: Int get() = maxOf(state?.turnCount ?: 0, turns.size)
@@ -114,7 +123,7 @@ class RecordWindow(
     /** The timing of the [i]th loaded turn, when the state has one for it. */
     fun timing(i: Int): TurnTiming? = state?.timings?.getOrNull(turnIndex(i))
 
-    fun withState(state: RecordState): RecordWindow = RecordWindow(total, firstStep, turns, leading, state, readAtMillis)
+    fun withState(state: RecordState): RecordWindow = RecordWindow(total, firstStep, turns, leading, state, readAtMillis, newestTurn)
 }
 
 /**
@@ -183,6 +192,28 @@ object RecordPager {
         return page.totalResponses > knownTotal || page.steps.isNotEmpty()
     }
 
+    /**
+     * The steps appended since the record had [knownTotal] of them — its delta — read from the known end on, a page
+     * at a time until the end: nothing of what was read before is read again. One small round trip when nothing
+     * changed (an empty page carrying the size). Null when the record is shorter than it was — rewound, or another
+     * chat's — and only a tail read can say what it holds now.
+     */
+    suspend fun since(api: ConversationRecordApi, agentId: String, knownTotal: Int, pageSize: Int = PAGE_SIZE): Raw? {
+        val steps = ArrayList<HeadlessStep>()
+        var next = knownTotal.coerceAtLeast(0)
+        var total: Int
+        var pages = 0
+        do {
+            val page = api.counted(agentId, startIndex = next, limit = pageSize)
+            total = page.totalResponses
+            if (total < knownTotal) return null
+            steps.addAll(page.steps)
+            next += page.steps.size
+            pages++
+        } while (page.steps.isNotEmpty() && next < total && pages < MAX_PAGES)
+        return Raw(steps, knownTotal, maxOf(total, knownTotal))
+    }
+
     /** The steps before [firstStep], back until [wantTurns] + 1 more prompts are in hand or the record's start is reached. */
     suspend fun before(api: ConversationRecordApi, agentId: String, firstStep: Int, wantTurns: Int, pageSize: Int = PAGE_SIZE): Raw {
         var steps = ArrayList<HeadlessStep>()
@@ -248,7 +279,41 @@ object RecordTranscript {
             val shape = if (i >= kept.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
             RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn))
         }
-        return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now)
+        return RecordWindow(raw.total, firstStep, turns, leading, state ?: previous?.state, now, newestTurn = kept.lastOrNull()?.first)
+    }
+
+    /**
+     * [window] with the record's [delta] — the steps appended since the window's [RecordWindow.total] — joined on:
+     * the window's newest turn rebuilt from its own steps and the delta's (a turn under way grows; a finished one is
+     * unchanged and keeps its items), and every turn the delta starts cut after it. Nothing else is touched: a
+     * reopen, a growth read while the chat runs, costs the record's delta and not its newest page again. The window
+     * stays the newest [wantTurns] turns, as a tail read leaves it: a turn the delta pushes past them goes (the page
+     * before the window has it for the reader's scroll up). [window] itself when the delta is empty; requires
+     * [RecordWindow.canAppend].
+     */
+    fun append(window: RecordWindow, delta: RecordPager.Raw, now: Long, wantTurns: Int = Int.MAX_VALUE, build: (HeadlessTranscript.Turn, String) -> List<TimelineItem>): RecordWindow {
+        val newest = requireNotNull(window.newestTurn) { "a window restored from disk has no steps to append to" }
+        require(delta.firstStep == window.total) { "the delta starts at ${delta.firstStep}, the window ends at ${window.total}" }
+        if (delta.steps.isEmpty()) return if (delta.total == window.total) window else RecordWindow(delta.total, window.firstStep, window.turns, window.leading, window.state, now, newest)
+        val last = window.turns.last()
+        // The newest turn's steps, its prompt first, then everything appended: cut at the prompts into the turn as it
+        // is now and the turns that follow it.
+        val promptStep = newest.prompt?.let { HeadlessStep(userMessage = it, projectMode = newest.projectMode, shape = newest.promptShape) }
+        val joined = listOfNotNull(promptStep) + newest.steps + delta.steps
+        val cut = cut(joined, last.stepIndex)
+        val rebuilt = cut.mapIndexed { i, cutTurn ->
+            val turn = cutTurn.first
+            val stepIndex = cutTurn.second
+            val count = turn.steps.size + (if (turn.prompt != null) 1 else 0)
+            // The turn as it stood: its items stand when nothing was appended to it (the delta went to later turns).
+            val items = if (i == 0 && count == last.stepCount && turn.prompt == last.prompt) last.items else build(turn, RecordTurn.traceKey(stepIndex))
+            val shape = if (i >= cut.size - SHAPE_TURNS) HeadlessTranscript.shape(turn, stepIndex) else null
+            RecordTurn(stepIndex, count, turn.prompt, turn.projectMode, items, shape, errorMessage = HeadlessTranscript.errorMessage(turn))
+        }
+        val turns = window.turns.dropLast(1) + rebuilt
+        if (turns.size <= wantTurns) return RecordWindow(delta.total, window.firstStep, turns, window.leading, window.state, now, newestTurn = cut.last().first)
+        val kept = turns.takeLast(wantTurns)
+        return RecordWindow(delta.total, kept.first().stepIndex, kept, emptyList(), window.state, now, newestTurn = cut.last().first)
     }
 
     /** How many of the record's newest turns keep their shapes for the transcript diagnostics. */
@@ -274,7 +339,7 @@ object RecordTranscript {
             val stepIndex = cutTurn.second
             RecordTurn(stepIndex, turn.steps.size + (if (turn.prompt != null) 1 else 0), turn.prompt, turn.projectMode, build(turn, RecordTurn.traceKey(stepIndex)), errorMessage = HeadlessTranscript.errorMessage(turn))
         }
-        return RecordWindow(window.total, firstStep, olderTurns + window.turns, leading, window.state, now)
+        return RecordWindow(window.total, firstStep, olderTurns + window.turns, leading, window.state, now, window.newestTurn)
     }
 
     /** Each turn of [steps] with the record index of its first step. */

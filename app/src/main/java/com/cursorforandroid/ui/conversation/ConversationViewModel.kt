@@ -173,12 +173,24 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
      * unpresented, as the screen would only ever have shown the latest anyway. The state it was presented from
      * travels with it, so what the screen reads of the chat (loading, running, older turns) agrees with its rows.
      */
-    private val presenter = TranscriptPresenter()
+    private val presenter = graph.presenters.forAgent(agentId)
 
     val presented: StateFlow<PresentedTranscript> = combine(conversation, agent.map { it?.looksLikeProject == true }.distinctUntilChanged()) { c, project -> c to project }
         .conflate()
         .map { (c, project) -> withContext(presenting) { presentNow(c, project) } }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, PresentedTranscript(conversation.value, TranscriptPresenter.Presented.EMPTY))
+        .stateIn(viewModelScope, SharingStarted.Eagerly, initialPresentation())
+
+    /**
+     * What the first frame draws: a chat whose presenter is warm — a screen showed it before and its rows are kept
+     * (see [TranscriptPresenters]) — is presented here and now, from those rows, which for an unchanged transcript is
+     * a walk over its turns and no cutting; a chat opened for the first time waits for the presentation off the main
+     * thread, as it did before, with nothing to show meanwhile anyway.
+     */
+    private fun initialPresentation(): PresentedTranscript {
+        val state = conversation.value
+        if (!presenter.isWarm || state.items.isEmpty()) return PresentedTranscript(state, TranscriptPresenter.Presented.EMPTY)
+        return presentNow(state, graph.agents.agent(agentId)?.looksLikeProject == true)
+    }
 
     private fun presentNow(state: ConversationState, listSaysProject: Boolean): PresentedTranscript {
         val presented = presenter.present(state.items, coordinatorMode = listSaysProject || state.isProjectConversation, runActive = state.runStatus?.isActive == true || state.isStreaming)

@@ -2,9 +2,13 @@ package com.cursorforandroid.data.faults
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.SseRunStreamer
+import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.ConversationCache
@@ -19,6 +23,7 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.util.AppClock
@@ -57,6 +62,11 @@ class FaultRig(
     retryBaseMs: Long = 300L,
     /** Reconnects a stream makes on its own before handing the failure to the hub (production: 4, at 1 + 2 + 4 + 8 s). */
     streamAttempts: Int = 2,
+    /**
+     * Extended mode: the account's record of a chat (`FetchBackgroundComposer`, served by the same [FaultServer] under
+     * its Connect routes) is the transcript's source, as on Bennett's phone; off, the documented endpoints alone.
+     */
+    extended: Boolean = false,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -88,7 +98,21 @@ class FaultRig(
     val hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 500, releaseGraceMs = 200, reconnectBaseMs = 200, reconnectMaxMs = 800, scope = scope)
     val conversationCache = ConversationCache(disk.child("conversations"))
     val traces = TraceCache(JsonDiskCache(File(root, "traces").apply { mkdirs() }, nowProvider = { now }, dispatcher = Dispatchers.Unconfined))
-    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope)
+    /**
+     * The account service's client, as the app builds it (`CursorApiFactory.loginClient`: no retry interceptor, no
+     * one-shot writes — its RPCs are reads and idempotent writes over one host), on this rig's timeouts and DNS.
+     */
+    val accountClient: OkHttpClient = CursorApiFactory.loginClient().newBuilder()
+        .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
+        .readTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
+        .writeTimeout(readTimeoutMs, TimeUnit.MILLISECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).let { it + it } })
+        .build()
+    /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
+    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(ConnectJsonClient(accountClient, baseUrl), SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })) else null
+    val capabilities: Capabilities = Capabilities.of(extended)
+    val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities })
     val followUpStore = FollowUpStore(context)
     val followUps = FollowUpRepository(
         conversations, agents, hub,
@@ -130,6 +154,8 @@ class FaultRig(
         scope.cancel()
         client.dispatcher.executorService.shutdownNow()
         client.connectionPool.evictAll()
+        accountClient.dispatcher.executorService.shutdownNow()
+        accountClient.connectionPool.evictAll()
         AppClock.nowMillis = System::currentTimeMillis
     }
 }

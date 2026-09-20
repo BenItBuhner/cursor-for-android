@@ -118,6 +118,7 @@ import com.cursorforandroid.domain.TranscriptDiagnostics
 import com.cursorforandroid.domain.WorkerMembership
 import com.cursorforandroid.domain.WorkerSpawnKind
 import com.cursorforandroid.domain.WorkspaceTree
+import com.cursorforandroid.domain.TranscriptPresenters
 import com.cursorforandroid.share.ShareInbox
 import com.cursorforandroid.data.update.GitHubReleasesClient
 import com.cursorforandroid.data.update.UpdateCache
@@ -590,6 +591,9 @@ class AppGraph(
         )
     }
     val followUps: FollowUpRepository get() = lazyFollowUps.value
+
+    /** The presented rows of the chats a reader flips between, kept across their screens (see [TranscriptPresenters]). */
+    val presenters = TranscriptPresenters()
 
     /**
      * A chat's controls on the account (Extended mode): the question it is waiting on, the account's queue in place

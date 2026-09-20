@@ -16,6 +16,14 @@ import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -53,6 +61,11 @@ class FaultServer(
 
     /** The round trip every answer takes, headers included; set to `0..0` for a test that is about something else. */
     @Volatile var rttMillis: LongRange = rttMillis
+    /**
+     * The connection's bandwidth for every body served, bytes per second; 0 leaves the body unthrottled. A phone on
+     * a cell connection reads a few hundred kilobytes a second, and the account's record of a long chat is megabytes.
+     */
+    @Volatile var bytesPerSecond: Long = 0L
     /** The server's clock, for the runs it files: the app's own by default, so a send marker and a run stamp compare as they do in production. */
     @Volatile var clock: () -> Long = { com.cursorforandroid.util.AppClock.now() }
 
@@ -62,6 +75,15 @@ class FaultServer(
     val transcripts: MutableMap<String, List<V0ConversationMessageDto>> = ConcurrentHashMap()
     /** Each run's retained log, as `event` to `data` pairs; ids are `<runId>#<n>`. Absent: the log has expired (`410`). */
     val logs: MutableMap<String, List<Pair<String, String>>> = ConcurrentHashMap()
+    /**
+     * The account's own record of each chat (`FetchBackgroundComposer`, Extended mode): its responses in order, as
+     * JSON objects, paged by `startIndex` / `limit` with `totalResponses`. Absent: the record has nothing for the chat.
+     */
+    val records: MutableMap<String, List<JsonObject>> = ConcurrentHashMap()
+    /** The account's conversation state per chat (`GetLatestAgentConversationState`), as the JSON body to serve; synthesised from [records] when absent. */
+    val recordStates: MutableMap<String, String> = ConcurrentHashMap()
+    /** Bytes of record body served so far, per chat: what the account's transcript costs a connection. */
+    val recordBytes: MutableMap<String, Long> = ConcurrentHashMap()
     /** The prompts `POST /runs` filed, in order, and the runs they started. */
     val sent = CopyOnWriteArrayList<Pair<String, String>>()
     val cancelled = CopyOnWriteArrayList<String>()
@@ -87,7 +109,7 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Other }
 
     /** What one request meets instead of, or before, its answer. */
     sealed interface Fault {
@@ -202,6 +224,10 @@ class FaultServer(
             segments.size == 6 && v1Agents && segments[3] == "runs" && segments[5] == "cancel" -> Route.CancelRun
             segments.size == 6 && v1Agents && segments[3] == "runs" && segments[5] == "stream" -> Route.Stream
             segments.size == 4 && segments[0] == "v0" && segments[1] == "agents" && segments[3] == "conversation" -> Route.Conversation
+            // The account service: the session handshake and the two record RPCs (Extended mode), on the same host.
+            segments.size == 2 && segments[0] == "auth" && segments[1] == "exchange_user_api_key" -> Route.Auth
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "FetchBackgroundComposer" -> Route.Record
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetLatestAgentConversationState" -> Route.RecordState
             else -> Route.Other
         }
     }
@@ -248,11 +274,15 @@ class FaultServer(
             Route.Conversation -> transcripts[segments[2]]?.let { json(200, encode(V0ConversationResponseDto.serializer(), V0ConversationResponseDto(segments[2], it))) }
                 ?: if (segments[2] in agents) json(200, encode(V0ConversationResponseDto.serializer(), V0ConversationResponseDto(segments[2]))) else notFound()
             Route.Stream -> stream(segments[4], request.getHeader("Last-Event-ID"), (fault as? Fault.StreamCut)?.events)
+            Route.Auth -> json(200, """{"accessToken":"session-token","refreshToken":"refresh-token"}""")
+            Route.Record -> record(request)
+            Route.RecordState -> recordState(request)
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         return when (fault) {
             null, Fault.Pass, is Fault.StreamCut -> answer.withWeather()
-            is Fault.Status -> json(fault.code, error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
+            // A refusal from the account service is a Connect error body; from the documented API, the API's own.
+            is Fault.Status -> json(fault.code, if (route == Route.Record || route == Route.RecordState) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
             is Fault.LostReply -> MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
@@ -279,6 +309,39 @@ class FaultServer(
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
 
+    /** `FetchBackgroundComposer {bcId, startIndex, limit}`: the record's responses from `startIndex`, `limit` of them, with the record's size. */
+    private fun record(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val start = body["startIndex"]?.jsonPrimitive?.intOrNull ?: 0
+        val limit = body["limit"]?.jsonPrimitive?.intOrNull ?: 200
+        val all = records[agentId] ?: return json(200, """{"responses":[],"totalResponses":0}""")
+        val page = all.drop(start).take(limit)
+        val text = buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", all.size) }.toString()
+        recordBytes.merge(agentId, text.length.toLong(), Long::plus)
+        return json(200, text)
+    }
+
+    /** `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record with the runs' timings. */
+    private fun recordState(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        recordStates[agentId]?.let { return json(200, it) }
+        val all = records[agentId] ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
+        val prompts = all.count { it.containsKey("humanMessage") || it.containsKey("userMessage") }
+        val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
+        val timings = (0 until prompts).joinToString(",") { t ->
+            val run = chatRuns.getOrNull(t)
+            val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
+            """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
+        }
+        val ids = (0 until prompts).joinToString(",") { "\"turn-$it\"" }
+        return json(200, """{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+    }
+
+    /** A Connect error body, as the account service writes one. */
+    private fun connectError(code: String, message: String): String = """{"code":"$code","message":${quote(message)}}"""
+
     private fun stream(runId: String, lastEventId: String?, cutAfter: Int?): MockResponse {
         val log = logs[runId] ?: return json(410, error("stream_expired", "This run's live stream has expired."))
         val skip = lastEventId?.substringAfterLast('#')?.toIntOrNull() ?: 0
@@ -299,6 +362,9 @@ class FaultServer(
     private fun MockResponse.withWeather(): MockResponse {
         val rtt = rttMillis.let { if (it.first >= it.last) it.first else synchronized(random) { random.nextLong(it.first, it.last + 1) } }
         if (rtt > 0) setHeadersDelay(rtt, TimeUnit.MILLISECONDS)
+        // The body at the connection's bandwidth: in slices of a tenth of a second, so a small answer is not held a whole second.
+        val bandwidth = bytesPerSecond
+        if (bandwidth > 0) throttleBody((bandwidth / 10).coerceAtLeast(1024), 100, TimeUnit.MILLISECONDS)
         return this
     }
 
@@ -319,4 +385,9 @@ class FaultServer(
     private fun quote(text: String): String = CursorJson.encodeToString(String.serializer(), text)
 
     override fun close() = server.shutdown()
+
+    companion object {
+        /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */
+        const val RECORD_SERVICE = "aiserver.v1.BackgroundComposerService"
+    }
 }
