@@ -1146,7 +1146,12 @@ class ConversationRepository(
     private fun runsUnchanged(page: ListRunsResponseDto, held: Map<String, RunDto>, noLocal: Boolean): Boolean {
         // A prompt sent from here still standing in for the transcript's copy is a turn the transcript has to be read for.
         if (page.items.isEmpty() || !noLocal) return false
-        return page.items.all { fresh -> held[fresh.id]?.let { it.status == fresh.status && it.updatedAt == fresh.updatedAt && it.result == fresh.result } == true }
+        return page.items.all { fresh ->
+            val known = held[fresh.id] ?: return@all false
+            // A run under way is written to as it works; its record moving is not a turn starting or ending, and
+            // read as one it had the whole transcript fetched again on every load that landed during a turn.
+            known.status == fresh.status && known.result == fresh.result && (fresh.statusEnum().isActive || known.updatedAt == fresh.updatedAt)
+        }
     }
 
     private val entries = LinkedHashMap<String, Entry>()
