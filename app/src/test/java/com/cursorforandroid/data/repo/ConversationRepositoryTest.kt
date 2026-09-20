@@ -33,6 +33,7 @@ import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -1305,13 +1307,25 @@ class ConversationRepositoryTest {
         val conversations = repository()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
+        // Every state the screen would have seen from here, not the one a poll happens to catch: the run's end must
+        // read as one step — the stream over and the turn over in the same frame — with nothing active after it.
+        // The hub used to publish the finished snapshot before it patched the row idle; the collector, on its own
+        // thread, read the row still running and kept the chat at RUNNING for the six seconds its next-run looks
+        // took (a loaded CI runner: 35156980926). The hub now patches the row first, so no frame can show that.
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
 
         // The record starts answering with a status this build has never heard of, and the stream is gone for good.
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
         streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { !conversations.state("bc-1").value.isStreaming }
-        assertThat(conversations.state("bc-1").value.runStatus?.isActive).isNotEqualTo(true)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+        // The row agrees, and the list remembers how the run ended.
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.endedStatus("bc-1", "run-1")).isEqualTo(RunStatus.UNKNOWN)
 
         // A reopen reads the same record and still shows the turn as over, with a footer closing it.
         now += 60_000
@@ -1320,6 +1334,48 @@ class ConversationRepositoryTest {
         val reopened = conversations.state("bc-1").value
         assertThat(reopened.isStreaming).isFalse()
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+        recorder.cancel()
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
+    /**
+     * The common way a turn ends on the phone: on its own stream, with the chat open. The hub's finish reaches the
+     * list before the snapshot reaches the chat (see `LiveRunHub.finish`), so the frame that ends the stream ends
+     * the turn too — never a frame that reads "Working…" over the reply and the footer — and nothing the chat's
+     * next-run looks read afterwards (the agent's record, a poll behind) puts it back.
+     */
+    @Test
+    fun `a run finishing on its stream ends the chat in the frame that ends the stream, and nothing puts it back`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
+        now += 30_000
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames[ended].second).isEqualTo(RunStatus.FINISHED)
+        assertThat(agents.agent("bc-1")!!.let { it.isRunning to it.runStatus }).isEqualTo(false to RunStatus.FINISHED)
+
+        // The next-run looks that follow a finish read the agent's record, whose run still reads RUNNING on a server
+        // a poll behind its own stream: the list's memory of the finish outranks it, in the row and in the chat.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "RUNNING")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.loadDetail("bc-1").getOrThrow().runStatus).isEqualTo(RunStatus.FINISHED)
+        conversations.revalidate("bc-1")
+        delay(300)
+        recorder.cancel()
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.FINISHED)
     }
 
     @Test

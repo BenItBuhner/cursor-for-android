@@ -30,6 +30,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -49,6 +50,7 @@ import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -521,33 +523,116 @@ class AgentRepositoryTest {
         assertThat(repo.state.value.agents.single().summary).isEqualTo("Build failed")
     }
 
+    /**
+     * The run this device last saw end outranks every later word that calls it active — not only the run records
+     * read here (`known`), but anything that reaches the list: a patch from elsewhere, a legacy `/v0` status filling
+     * in a status this build could not read, a refresh's page. Applied at publication, so the row can never be seen
+     * running on a turn that is over. A newer run the server names is followed as it is.
+     */
+    @Test
+    fun `a row cannot be put back to running for the run the list saw end, whoever says so`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.isRunning).isTrue()
+
+        // The hub saw the run end in a status this build cannot read; the row is settled as the hub does it.
+        repo.noteRunEnded("bc-1", "run-1", RunStatus.UNKNOWN)
+        repo.patch("bc-1") { it.copy(runStatus = RunStatus.UNKNOWN) }
+        assertThat(repo.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(repo.endedStatus("bc-1", "run-1")).isEqualTo(RunStatus.UNKNOWN)
+        assertThat(repo.endedStatus("bc-1", "run-2")).isNull()
+
+        // A patch that calls the run active again lands as the run ended.
+        repo.patch("bc-1") { it.copy(runStatus = RunStatus.RUNNING) }
+        assertThat(repo.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.UNKNOWN)
+        // So does a refresh whose legacy list, a poll behind, still calls the agent running — the one source that
+        // fills in a status this build could not read — and whose run record still says so.
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.UNKNOWN)
+        assertThat(repo.agent("bc-1")!!.isRunning).isFalse()
+        // And a run record read by id.
+        assertThat(repo.loadDetail("bc-1").getOrThrow().isRunning).isFalse()
+
+        // A newer run is the server's word on a new turn, taken as it comes.
+        api.runs["run-2"] = api.runs.getValue("run-1").copy(id = "run-2", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        repo.refresh()
+        assertThat(repo.agent("bc-1")!!.let { it.isRunning && it.latestRunId == "run-2" }).isTrue()
+    }
+
+    /**
+     * A disk whose work can be held: every task handed to it after [hold] waits in [held] until [release]. What a
+     * write in flight across a sign-out looks like — the list and the cache's generation sampled, the file not yet
+     * written — pinned rather than left to the scheduler.
+     */
+    private class HeldDisk {
+        private val executor = Executors.newSingleThreadExecutor()
+        private val held = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+        @Volatile var hold = false
+        val heldCount: Int get() = held.size
+        val dispatcher = java.util.concurrent.Executor { task -> if (hold) held.add(task) else executor.execute(task) }.asCoroutineDispatcher()
+        fun release() { hold = false; while (true) executor.execute(held.poll() ?: break) }
+        fun shutdown() = executor.shutdownNow()
+    }
+
+    /**
+     * The fetch's own publications, its bookkeeping and its write to the disk are all guarded, but by two different
+     * things: the repository's generation guards what is in memory, and the cache's generation guards the file — a
+     * write samples the list and the cache's generation under the publish lock and writes outside it, so a reset
+     * that lands in between cannot be seen by the write itself. The sign-out (see `AppGraph`) invalidates the caches
+     * before it resets the list and wipes them after, which is what makes the file safe; this test does the same,
+     * with the write held in flight across the reset so the order is the test's and not the scheduler's. Run with
+     * the reset alone it flaked on CI (35523594515): the held write landed after the reset, and the disk had the
+     * previous account's list for the next one to restore.
+     */
     @Test
     fun `a fetch that outlives a reset publishes nothing into the list that replaced it`() = runBlocking<Unit> {
-        api.addIdleAgent("bc-1", "Previous account", "run-1")
-        api.v0Gate = CompletableDeferred()
-        val repo = repository()
-        val refresh = scope.launch { repo.refresh() }
-        awaitUntil { repo.state.value.agents.size == 1 }
+        val disk = HeldDisk()
+        val diskCache = JsonDiskCache(folder.newFolder("held-agents"), dispatcher = disk.dispatcher)
+        val cache = AgentListCache(diskCache)
+        try {
+            api.addIdleAgent("bc-1", "Previous account", "run-1")
+            api.v0Gate = CompletableDeferred()
+            // The write follows the first page by half a second here, so the hold below is armed before it starts.
+            val repo = AgentRepository(session, prefs, AttachmentStore(ApplicationProvider.getApplicationContext()), cache, scope, persistDelayMs = 500)
+            val refresh = scope.launch { repo.refresh() }
+            awaitUntil { repo.state.value.agents.size == 1 }
+            // The first page is on its way to the disk: the write has sampled the list and waits for the disk.
+            disk.hold = true
+            awaitUntil { disk.heldCount > 0 }
 
-        repo.reset()
-        assertThat(repo.state.value).isEqualTo(AgentListState())
+            // The sign-out's order: the caches invalidated, then the list reset.
+            diskCache.invalidate()
+            repo.reset()
+            assertThat(repo.state.value).isEqualTo(AgentListState())
 
-        // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
-        // run-status pass and the bookkeeping that says a fetch completed. None of it belongs to this session.
-        api.v0Gate!!.complete(Unit)
-        refresh.join()
-        assertThat(repo.state.value).isEqualTo(AgentListState())
-        assertThat(repo.lastRefreshedAt).isEqualTo(0L)
-        // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
-        assertThat(repo.refreshCompleted.value).isEqualTo(0L)
-        // Nor may the old list have reached the disk for the next account to restore.
-        assertThat(cache.read()).isNull()
+            // Everything the fetch had left to do runs from here: its remaining pages, the legacy enrichment, the
+            // run-status pass and the bookkeeping that says a fetch completed — and the write it had in flight. None
+            // of it belongs to this session.
+            api.v0Gate!!.complete(Unit)
+            disk.release()
+            refresh.join()
+            assertThat(repo.state.value).isEqualTo(AgentListState())
+            assertThat(repo.lastRefreshedAt).isEqualTo(0L)
+            // The cue the account's pins are synced on: the previous account's fetch must not be the one that gives it.
+            assertThat(repo.refreshCompleted.value).isEqualTo(0L)
+            // Nor may the old list have reached the disk for the next account to restore: the held write met a wipe
+            // under way and was refused. (Without the invalidate above it lands here, the reset notwithstanding —
+            // the flake — and only the wipe below would take it off the disk.)
+            assertThat(cache.read()).isNull()
+            diskCache.clear()
+            assertThat(cache.read()).isNull()
 
-        // The next refresh belongs to the new session and lands normally.
-        repo.refresh()
-        assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
-        assertThat(repo.state.value.isRefreshing).isFalse()
-        assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+            // The next refresh belongs to the new session and lands normally, on disk too.
+            repo.refresh()
+            assertThat(repo.state.value.agents.map { it.name }).containsExactly("Previous account")
+            assertThat(repo.state.value.isRefreshing).isFalse()
+            assertThat(repo.refreshCompleted.value).isEqualTo(1L)
+            awaitUntil { cache.read()?.value?.map { it.name } == listOf("Previous account") }
+        } finally {
+            disk.shutdown()
+        }
     }
 
     @Test

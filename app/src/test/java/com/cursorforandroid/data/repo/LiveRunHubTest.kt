@@ -227,6 +227,57 @@ class LiveRunHubTest {
         subscription.cancel()
     }
 
+    /**
+     * The order of a finish: the list hears it — the run remembered as ended, the row idle with the finish's stamp —
+     * before the terminal snapshot goes out. The subscriber here is unconfined, so the hub's own thread runs it the
+     * moment the snapshot is published, inside `finish`: what it reads of the row then is what any subscriber can
+     * read at the earliest. Published first, as it used to be, the row still said running about the run that had
+     * just ended, and a chat's collector that read it then kept the chat at RUNNING (the conversation's own test of
+     * a status this build cannot read flaked on exactly that). Both ways a run ends here — its stream's own `result`,
+     * and a record read when the stream is gone for good — keep the order.
+     */
+    @Test
+    fun `by the time anyone sees the finished snapshot, the row is idle and the list remembers the run ended`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.addRunningAgent("bc-2", "Other", "run-2")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isTrue()
+        assertThat(agents.agent("bc-2")!!.isRunning).isTrue()
+        val seen = CopyOnWriteArrayList<String>()
+        val unconfined = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        fun subscribe(agentId: String, runId: String) = unconfined.launch {
+            hub.snapshots(agentId, runId).collect { snapshot ->
+                if (snapshot.finished) {
+                    val row = agents.agent(agentId)!!
+                    seen += "$agentId row=${row.runStatus} running=${row.isRunning} touched=${row.updatedAtMillis == snapshot.finishedAtMillis} ended=${agents.endedStatus(agentId, runId)}"
+                }
+            }
+        }
+        val first = subscribe("bc-1", "run-1")
+        val second = subscribe("bc-2", "run-2")
+        awaitUntil { streamer.connections.contains("run-1") && streamer.connections.contains("run-2") }
+
+        // On its own stream's result.
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Done.", 5_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        // Off the record, the stream gone for good.
+        api.runs["run-2"] = api.runs.getValue("run-2").copy(status = "CANCELLED", updatedAt = "2026-04-13T18:45:00.000Z")
+        streamer.emit("run-2", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-2", RunStreamEvent.Done)
+        awaitUntil { seen.size == 2 }
+        first.cancel()
+        second.cancel()
+        unconfined.cancel()
+
+        assertThat(seen).containsExactly(
+            "bc-1 row=FINISHED running=false touched=true ended=FINISHED",
+            "bc-2 row=CANCELLED running=false touched=true ended=CANCELLED",
+        )
+        // And the finish is reported once both are in place, the same snapshot.
+        assertThat(current().finished).isTrue()
+    }
+
     @Test
     fun `a record whose status this build cannot read settles the run instead of polling forever`() = runBlocking {
         api.addRunningAgent("bc-1", "Agent", "run-1")

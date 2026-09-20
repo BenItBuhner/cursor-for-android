@@ -461,20 +461,31 @@ class ConversationRepository(
          */
         @Volatile var cancelledRunId: String? = null
 
-        /** The status a run record gives the chat: an active status for the run this device cancelled stays cancelled. */
+        /**
+         * The status a run record gives the chat: an active status for a run this device saw end reads as it ended —
+         * the run it cancelled as cancelled, and the run the hub followed to its finish as the hub saw it finish
+         * (`AgentRepository.endedStatus`, the list's memory of each chat's last ended run). A record that predates
+         * the end — the run page a load read before the Stop, the record a next-run look reads a poll behind the
+         * stream — is not the run's word on itself.
+         */
         fun statusOf(run: RunDto): RunStatus {
             val status = run.statusEnum()
-            return if (status.isActive && run.id == cancelledRunId) RunStatus.CANCELLED else status
+            if (!status.isActive) return status
+            if (run.id == cancelledRunId) return RunStatus.CANCELLED
+            return agents.endedStatus(agentId, run.id) ?: status
         }
 
         /**
-         * [run]'s record as this device knows it: the run it cancelled reads cancelled, whatever a record written
-         * before the cancel says. What the agent's row is patched from (see `Agent.withLatestRun`): a load whose run
-         * page was read before the Stop, landing after it, put the row back to running for the very run this device
-         * had stopped — after the run's own end had already settled it, so nothing settled it again until the
-         * follow-up queue's busy recheck, twenty seconds on.
+         * [run]'s record as this device knows it (see [statusOf]): the run it cancelled reads cancelled, the run it
+         * saw finish reads finished, whatever a record written before the end says. What the agent's row is patched
+         * from (see `Agent.withLatestRun`): a load whose run page was read before the Stop, landing after it, put the
+         * row back to running for the very run this device had stopped — after the run's own end had already settled
+         * it, so nothing settled it again until the follow-up queue's busy recheck, twenty seconds on.
          */
-        fun known(run: RunDto): RunDto = if (statusOf(run) == run.statusEnum()) run else run.copy(status = RunStatus.CANCELLED.name)
+        fun known(run: RunDto): RunDto {
+            val status = statusOf(run)
+            return if (status == run.statusEnum()) run else run.copy(status = status.name)
+        }
 
         /**
          * The chat's status as the screen shows it, the freshest word first. A run being streamed is running,
@@ -2030,8 +2041,9 @@ class ConversationRepository(
             else runs = runs.map { if (it.id == run.id) run else it }
             follow = streamJob?.isActive != true || state.value.activeRunId != run.id
         }, transform = { copy(activeRunId = run.id, runStatus = RunStatus.RUNNING) })
-        // The row learns the new run from it (see [Agent.withLatestRun]); its record's latest run id first, so the patch takes.
-        agents.patch(agentId) { it.copy(latestRunId = run.id).withLatestRun(run) }
+        // The row learns the new run from it, adopted as its latest (see [Agent.withLatestRun]) — through the list's
+        // own reading of the record, like every run record that reaches a row (see `AgentRepository.recordRun`).
+        agents.recordRun(agentId, run, adopt = true)
         if (follow) startStreaming(e, agentId, run)
         return true
     }
