@@ -70,8 +70,12 @@ class LiveFinishFaultsTest {
         rig.awaitUntil { state.isStreaming }
     }
 
-    /** The frame that ended the stream — the first non-streaming frame after the first streaming one — once the footer is on screen; asserts the invariants over every frame after it. */
-    private suspend fun assertEndedInOneFrame(status: RunStatus = RunStatus.FINISHED) {
+    /**
+     * The frame that ended the stream — the first non-streaming frame after the first streaming one — once the footer
+     * is on screen; asserts the invariants over every frame after it. [viaHub] false for an end the load read off the
+     * run page while the hub was still between attempts: the list's memory of ended runs is the hub's and the cancel's to write.
+     */
+    private suspend fun assertEndedInOneFrame(status: RunStatus = RunStatus.FINISHED, viaHub: Boolean = true) {
         rig.awaitUntil { state.items.lastOrNull() is RunFooter && !state.isStreaming }
         // Long enough for a next-run look and its record read to have landed and been folded in, had they been wrong.
         rig.watch(2_000) {
@@ -84,7 +88,7 @@ class LiveFinishFaultsTest {
             assertThat(frames[ended].status).isEqualTo(status)
         }
         assertThat(rig.agents.agent("bc-1")!!.runStatus).isEqualTo(status)
-        assertThat(rig.agents.endedStatus("bc-1", "run-1")).isEqualTo(status)
+        if (viaHub) assertThat(rig.agents.endedStatus("bc-1", "run-1")).isEqualTo(status)
     }
 
     @Test
@@ -110,6 +114,29 @@ class LiveFinishFaultsTest {
         // Nothing twice: the resumed connection carried what the cut one had not.
         assertThat(state.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
         assertThat(state.items.filterIsInstance<AssistantMessage>()).hasSize(1)
+    }
+
+    /**
+     * The turn ends while the connection is down. The stream is cut by a network switch after the first tool call,
+     * the resumed connection stays silent past the read timeout, and while the client is between attempts the run
+     * ends on the server; the app is brought back to the foreground, and the load finds the run over. The load used
+     * to keep the stream's word for the status and then stop following, which turned the stream off and left
+     * RUNNING standing over the reply and the footer until the next load (see `ConversationRepository.Entry.stopFollowing`).
+     */
+    @Test
+    fun `a turn ending while the connection is down ends the chat in the frame the load stops the stream`() = runBlocking<Unit> {
+        server.retain("run-1", "Shipped.")
+        server.script(Route.Stream, Fault.StreamCut(events = 3), Fault.Silence(), path = "run-1")
+        openAndRecord()
+        rig.awaitUntil { state.items.any { it is ActivityGroup } }
+        rig.awaitUntil { server.requests(Route.Stream).count { it.path.contains("run-1") } >= 2 }
+        assertThat(state.runStatus).isEqualTo(RunStatus.RUNNING)
+
+        server.finish("bc-1", "run-1", "Shipped.")
+        rig.now += 60_000
+        rig.conversations.revalidate("bc-1")
+        assertEndedInOneFrame(viaHub = false)
+        assertThat(state.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
     }
 
     @Test

@@ -1347,6 +1347,52 @@ class ConversationRepositoryTest {
         assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
     }
 
+    /**
+     * The other way a load can meet a run that ended: the stream is still being followed — the connection dropped
+     * and the hub is between attempts, or the connection is open and silent — and the run page says the run is over.
+     * The load keeps the stream's word for the status ("a stream already open on the latest run keeps its word"),
+     * then stops following because the server says the run is over, and stopping only turned the stream off: the
+     * frame read `isStreaming=false, runStatus=RUNNING`, and with the collector gone nothing corrected it until the
+     * next load (a foreground return five seconds on at the soonest, or a reopen) — the Stop button and "Working…"
+     * over the reply and footer. On the phone: a network switch mid-turn, the turn ending while the connection is
+     * down, the app brought back. The frame that stops following now settles the status with it.
+     */
+    @Test
+    fun `a load that finds the followed run over by the server's account ends the turn in the frame that stops the stream`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        // The first connection drops after the first half; the hub reads the record (still running) and comes back
+        // with a resumed connection that has nothing more to say.
+        streamer.dropNextConnection("run-1", afterEvents = 3)
+        streamFirstHalf("run-1")
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && it.isStreaming && it.items.any { item -> item is ActivityGroup } } }
+        awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.RUNNING)
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        // The run ends on the server while the resumed connection stays silent; the app comes back to the foreground.
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        now += 60_000
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && !it.isStreaming } }
+        awaitUntil { frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames: $frames").that(frames[ended].second).isEqualTo(RunStatus.FINISHED)
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(settled.items.lastOrNull()).isInstanceOf(RunFooter::class.java)
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        // And it stays so: the released stream's late word, if any, cannot bring the turn back.
+        delay(300)
+        recorder.cancel()
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
     /** A settings store whose writes wait for [gate] when one is set: holds a caller inside `prefs.markRead`. */
     private class HeldWrites(context: android.content.Context) : DataStore<Preferences> {
         private val delegate = PreferenceDataStoreFactory.create(

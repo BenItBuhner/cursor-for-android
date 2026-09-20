@@ -62,6 +62,15 @@ class MessageAttachmentsTest {
     private fun countOf(description: String) = compose.onAllNodesWithContentDescription(description).fetchSemanticsNodes().size
 
     /**
+     * Waits for [count] nodes described as [description] — the images once their files have been decoded, on
+     * `Dispatchers.IO`, through Robolectric's native graphics. The wait ends the moment they land; the ceiling is a
+     * failure threshold, set where the viewer waits below set theirs: with the whole suite in one JVM the IO pool and
+     * the runner are shared, and the ten seconds this used to allow was seen spent on a loaded release gate
+     * (the v0.3.47 gate, 3/3 in isolation).
+     */
+    private fun awaitDecoded(count: Int, description: String = "Attached image") = compose.waitUntil(DECODE_CEILING_MS) { countOf(description) == count }
+
+    /**
      * Up to two attachments lay out as before; more than two go into the one scrolling row the composer uses, images
      * and file cards together, rather than stacking into a block as tall as the bubble.
      */
@@ -71,14 +80,14 @@ class MessageAttachmentsTest {
         val card = MessageAttachment.file(har.path, "network-trace.har", "application/json", har.length())
         var item by mutableStateOf(UserMessage("m3", "Compare these against the trace", attachments = listOf(shot("a.jpg", 720, 1600), shot("b.jpg", 1600, 900), card)))
         compose.setContent { CursorTheme(mode = ThemeMode.Dark) { TimelineItemView(item) } }
-        compose.waitUntil(10_000) { countOf("Attached image") == 2 }
+        awaitDecoded(2)
         // The bubble's press-and-hold merges what is under it, so the row is looked for in the unmerged tree.
         compose.onAllNodesWithTag("attachment-row", useUnmergedTree = true).assertCountEquals(1)
         compose.onNodeWithTag("attachment-file-card").assertIsDisplayed()
         compose.onNodeWithText("network-trace.har").assertIsDisplayed()
 
         item = UserMessage("m4", "Just these two", attachments = listOf(shot("c.jpg", 720, 1600), card))
-        compose.waitUntil(10_000) { countOf("Attached image") == 1 }
+        awaitDecoded(1)
         compose.onAllNodesWithTag("attachment-row", useUnmergedTree = true).assertCountEquals(0)
         compose.onNodeWithTag("attachment-file-card").assertIsDisplayed()
     }
@@ -86,7 +95,7 @@ class MessageAttachmentsTest {
     @Test
     fun `a prompt with images shows every one of them above its text`() {
         show(UserMessage("m1", "Fix the layout in these screenshots", attachments = listOf(shot("a.jpg", 720, 1600), shot("b.jpg", 1600, 900))))
-        compose.waitUntil(10_000) { countOf("Attached image") == 2 }
+        awaitDecoded(2)
         compose.onNodeWithText("Fix the layout in these screenshots").assertIsDisplayed()
         compose.onAllNodesWithContentDescription("Attached image")[0].assertIsDisplayed()
         compose.onAllNodesWithContentDescription("Attached image")[1].assertIsDisplayed()
@@ -104,7 +113,7 @@ class MessageAttachmentsTest {
     @Test
     fun `an image that is gone from the device shows a placeholder instead of nothing`() {
         show(UserMessage("m1", "See the attached image.", attachments = listOf(MessageAttachment(File(folder.root, "gone.jpg").path, 100, 100))))
-        compose.waitUntil(10_000) { countOf("Attached image unavailable") == 1 }
+        awaitDecoded(1, "Attached image unavailable")
         compose.onNodeWithText("See the attached image.").assertIsDisplayed()
     }
 
@@ -123,7 +132,7 @@ class MessageAttachmentsTest {
                 }
             }
         }
-        compose.waitUntil(10_000) { countOf("Attached image") == 1 }
+        awaitDecoded(1)
         compose.onNodeWithContentDescription("Attached image").performClick()
         compose.waitUntil(30_000) { compose.waitForIdle(); viewer.phase == MediaViewerState.Phase.Open && countOf("Close") == 1 }
         assertThat(viewer.current?.src).isEqualTo("file://${message.attachments.single().path}")
@@ -137,7 +146,7 @@ class MessageAttachmentsTest {
     @Test
     fun `a thumbnail with no viewer to open does nothing`() {
         show(UserMessage("m1", "Look", attachments = listOf(shot("a.jpg", 400, 400))))
-        compose.waitUntil(10_000) { countOf("Attached image") == 1 }
+        awaitDecoded(1)
         compose.onNodeWithContentDescription("Attached image").performClick()
         compose.waitForIdle()
         assertThat(countOf("Close")).isEqualTo(0)
@@ -169,5 +178,10 @@ class MessageAttachmentsTest {
         assertThat(AttachmentImages.get("${shot.path}@128")).isNotNull()
         AttachmentImages.clear()
         assertThat(AttachmentImages.get("${shot.path}@128")).isNull()
+    }
+
+    private companion object {
+        /** How long a decode may take before the test gives up on it (see [awaitDecoded]). */
+        const val DECODE_CEILING_MS = 30_000L
     }
 }
