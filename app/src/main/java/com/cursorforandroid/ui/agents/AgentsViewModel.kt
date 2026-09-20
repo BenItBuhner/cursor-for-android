@@ -385,7 +385,7 @@ class AgentsViewModel(
      * that was refused or never went out leaves the chat, its transcript and its trace where they are, and says so.
      */
     fun delete(agentId: String) = viewModelScope.launch {
-        if (report(graph.agents.delete(agentId))) graph.conversations.forget(agentId)
+        if (report(graph.agents.delete(agentId))) { graph.conversations.forget(agentId); graph.presenters.forget(agentId) }
     }
 
     /** Silences notifications for the chat until [untilMillis]; `Long.MAX_VALUE` until they unsnooze. */

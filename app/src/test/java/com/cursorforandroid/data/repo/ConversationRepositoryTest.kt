@@ -418,26 +418,35 @@ class ConversationRepositoryTest {
         api.agents["bc-1"] = api.agents.getValue("bc-1").copy(status = "IDLE")
         api.transcripts["bc-1"] = transcript("user_message" to "Ship it", "assistant_message" to "Shipped.")
 
-        // Reopened, the reply and the footer come from the transcript. The run's log is asked for again — the story
-        // followed so far was no replacement for it — but it cannot be read to its end yet.
+        // Reopened moments later, the chat stands as it was left and nothing is read again but the run it was
+        // following: its stream is opened once more, and the transcript is not fetched (see REOPEN_FRESH_MS).
+        val fetches = api.conversationCalls
         conversations.attach("bc-1")
-        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
-        val reopened = conversations.state("bc-1").value
-        assertThat(reopened.items.map { it::class.simpleName }).containsExactly("UserMessage", "AssistantMessage", "RunFooter").inOrder()
-        assertThat(reopened.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
-        assertThat(reopened.isStreaming).isFalse()
-        assertThat(reopened.runStatus).isEqualTo(RunStatus.FINISHED)
         awaitUntil { streamer.connections.count { it == "run-1" } == 2 }
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && it.items.any { item -> item is ActivityGroup } } }
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+        assertThat(conversations.state("bc-1").value.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup").inOrder()
 
-        // Once the retained log reads to its end, the complete trace takes the reply's place. Reading it is not
-        // news about the agent: the row keeps the timestamp the server gave it.
+        // The stream replays the retained log to its end: the reply and the footer come from it, the run reads finished.
         streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
         streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        awaitUntil { !conversations.state("bc-1").value.isStreaming && conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
         val traced = conversations.state("bc-1").value
         assertThat(traced.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(traced.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        assertThat(traced.runStatus).isEqualTo(RunStatus.FINISHED)
+        assertThat(api.conversationCalls).isEqualTo(fetches)
+
+        // Left again and reopened after the fresh window, the chat is read again: the transcript's copy of the
+        // reply stands with the trace, once, and the row keeps the timestamp the server gave it.
+        conversations.detach("bc-1")
+        now += 60_000
+        conversations.attach("bc-1")
+        awaitUntil { api.conversationCalls > fetches && !conversations.state("bc-1").value.isLoading }
+        val reread = conversations.state("bc-1").value
+        assertThat(reread.items.map { it::class.simpleName }).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
+        assertThat(reread.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         delay(100)
         assertThat(agents.agent("bc-1")!!.updatedAtMillis).isEqualTo(parseIsoMillis(api.agents.getValue("bc-1").updatedAt))
     }
@@ -1396,17 +1405,18 @@ class ConversationRepositoryTest {
             assertThat(occupied.await(5, TimeUnit.SECONDS)).isTrue()
 
             now += 60_000
-            val fetches = api.conversationCalls
+            val fetches = api.listRunsCalls
             // Both return while the entry is unreachable, and neither has done anything yet.
             withTimeout(1_000) { launch(Dispatchers.Default) { conversations.resume("bc-1") }.join() }
             withTimeout(1_000) { launch(Dispatchers.Default) { conversations.revalidate("bc-1") }.join() }
             assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
-            assertThat(api.conversationCalls).isEqualTo(fetches)
+            assertThat(api.listRunsCalls).isEqualTo(fetches)
 
-            // Released: the run is followed again and the history is fetched, as the resume asked.
+            // Released: the run is followed again and the history is fetched, as the resume asked — the run list; the
+            // transcript only when the list says a turn started or ended since, which none did (see runsUnchanged).
             busy.countDown()
             awaitUntil { conversations.state("bc-1").value.isStreaming }
-            awaitUntil { api.conversationCalls > fetches }
+            awaitUntil { api.listRunsCalls > fetches }
         } finally {
             entryThread.shutdownNow()
         }

@@ -11,6 +11,7 @@ import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.UserMessage
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -27,9 +28,10 @@ import okhttp3.mockwebserver.MockWebServer
 object RecordFixtures {
 
     /** The steps of the fixture's record, every response parsed by the app's own reader. */
-    fun steps(name: String): List<HeadlessStep> {
-        val fixture = CoordinatorFixtures.json(name)
-        val responses = fixture.getValue("responses").jsonArray
+    fun steps(name: String): List<HeadlessStep> = steps(CoordinatorFixtures.json(name).getValue("responses").jsonArray)
+
+    /** The steps of [responses] — a record built by a test — parsed by the app's own reader, served on the wire. */
+    fun steps(responses: JsonArray): List<HeadlessStep> {
         val server = MockWebServer()
         try {
             server.enqueue(MockResponse().setBody("""{"accessToken":"s","refreshToken":"rt"}"""))

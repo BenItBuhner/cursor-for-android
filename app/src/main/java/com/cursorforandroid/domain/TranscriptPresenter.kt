@@ -79,6 +79,10 @@ class TranscriptPresenter {
     }
 
     private var segments: List<Segment> = emptyList()
+
+    /** True once this presenter has presented something: a screen reopening on it has rows to draw on its first frame. */
+    val isWarm: Boolean get() = segments.isNotEmpty()
+
     /** The last tail passes' answers, so an unchanged tail keeps its row instances. */
     private var liveInput: TranscriptRow.Stretch? = null
     private var liveOutput: TranscriptRow.Stretch? = null
