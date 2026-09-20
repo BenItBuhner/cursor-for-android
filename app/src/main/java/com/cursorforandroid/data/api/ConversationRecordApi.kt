@@ -142,6 +142,12 @@ interface ConversationRecordApi {
 class HeadlessConversationApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
+    /**
+     * Read the record by turns from its blobs (see [turns]) — the read Cursor's client makes, and the only one the
+     * server still answers since `FetchBackgroundComposer` was removed (September 2026). False reads the
+     * step-indexed record ([fetch]) for the tests that keep that wire's captured shapes readable.
+     */
+    override val readsTurns: Boolean = true,
 ) : ConversationRecordApi {
 
     override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage {
@@ -190,8 +196,6 @@ class HeadlessConversationApi(
             prefetched = prefetched,
         )
     }
-
-    override val readsTurns: Boolean get() = true
 
     /**
      * The turns [from] until [from] + [limit], each from its blobs: the turn's structure, the user's message and

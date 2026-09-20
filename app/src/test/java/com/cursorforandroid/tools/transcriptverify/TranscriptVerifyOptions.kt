@@ -97,7 +97,7 @@ data class TranscriptVerifyOptions(
             |                                                                      precedence read.
             |  4. The app's ConversationRepository opens the chat exactly as a screen would (attach), then pages older turns as a
             |     reader scrolling to the top would:
-            |       Extended: POST …/FetchBackgroundComposer (200 steps a page), POST …/GetLatestAgentConversationState,
+            |       Extended: POST …/GetLatestAgentConversationState (the turn list), POST …/GetBlobForAgentKV (a turn's blobs),
             |                 GET /v1/agents/{id}/runs (paged until the record's window is covered), and for a turn whose record
             |                 holds no body (or, in a coordinator's chat, no message to the user) GET /v1/agents/{id}/runs/{runId}/stream
             |                 for the run's retained log.
@@ -105,7 +105,7 @@ data class TranscriptVerifyOptions(
             |       A run still going is followed on its stream (GET …/stream) for --follow-seconds, with GET /v1/agents/{id}/runs/{runId}
             |       when the stream drops, as the app does.
             |  5. The items the repository publishes go through TranscriptPresenter (the same presenter the screen uses) into rows.
-            |  6. Independently of the repository: the record is read again from its end (FetchBackgroundComposer) and the run list
+            |  6. Independently of the repository: the record is read again from its end (the newest turns' blobs) and the run list
             |     paged whole (GET /v1/agents/{id}/runs) so every turn's shape can be dumped and the by-position pairing checked
             |     against the turns' timestamps.
             |  7. With --send: SendGate is read as the composer reads it; if idle, POST /v1/agents/{id}/runs with the text, and the run

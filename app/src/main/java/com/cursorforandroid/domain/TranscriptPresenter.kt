@@ -99,9 +99,10 @@ class TranscriptPresenter {
     fun present(items: List<TimelineItem>, coordinatorMode: Boolean, runActive: Boolean): Presented {
         val startedAt = System.nanoTime()
         val interruptedAll = TranscriptRows.interruptedFooters(items)
-        // The other fact that crosses a turn: a message a later turn's log carries again is the earlier turn's, and
-        // is drawn there alone (see CoordinatorTranscript.repeatedMessages). Read over the whole, told per segment.
-        val repeatsAll = CoordinatorTranscript.repeatedMessages(items).keys
+        // The other fact that crosses a turn: a message — or the whole activity — a later turn's log carries again is
+        // the earlier turn's, and is drawn there alone (see CoordinatorTranscript.repeatedMessages, replayedActivity).
+        // Read over the whole, told per segment.
+        val repeatsAll = CoordinatorTranscript.leftOut(items)
         val previous = segments
         // Whether the chat is a coordinator's by its content, before anything is cut: the mode shapes every segment.
         val mode = coordinatorMode || contentSaysCoordinator(items, previous)
@@ -191,12 +192,15 @@ class TranscriptPresenter {
         return found ?: emptySet()
     }
 
-    /** The keys of [all] (see [CoordinatorTranscript.repeatedMessages]) that name a message call of `items[from, to)`. */
+    /** The keys of [all] (see [CoordinatorTranscript.leftOut]) that name a call or an item of `items[from, to)`. */
     private fun repeatsWithin(items: List<TimelineItem>, from: Int, to: Int, all: Set<String>): Set<String> {
         if (all.isEmpty()) return emptySet()
         var found: MutableSet<String>? = null
         for (i in from until to) {
-            val item = items[i] as? ActivityGroup ?: continue
+            val item = items[i]
+            val whole = CoordinatorTranscript.itemKey(item)
+            if (whole in all) (found ?: HashSet<String>().also { found = it }) += whole
+            if (item !is ActivityGroup) continue
             for (step in item.steps) {
                 if (step !is ToolCall) continue
                 val key = CoordinatorTranscript.messageKey(item, step)

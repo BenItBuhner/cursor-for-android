@@ -31,6 +31,7 @@ import com.cursorforandroid.domain.ToolCall
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.TranscriptPresenter
 import com.cursorforandroid.domain.TranscriptRow
+import com.cursorforandroid.fixtures.BlobFixtures
 import com.cursorforandroid.fixtures.SevenRunCoordinator
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
@@ -124,8 +125,15 @@ class CoordinatorDuplicateMessagesTest {
                     }
                     path.endsWith("/GetLatestAgentConversationState") -> {
                         val timings = runs.joinToString(",") { r -> """{"durationMs":"${r.durationMs ?: 0}","timestampMs":"${firstAt + r.index * 60_000L + (r.durationMs ?: 0)}"}""" }
-                        val ids = runs.joinToString(",") { "\"turn-${it.index}\"" }
+                        // The turns by their blob ids, as the account names them: the blob-backed read (see BlobFixtures).
+                        val ids = blobs().turnIds.joinToString(",") { "\"$it\"" }
                         MockResponse().setBody("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+                    }
+                    path.endsWith("/GetBlobForAgentKV") -> {
+                        val body = kotlinx.serialization.json.Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                        val id = body["blobId"]?.jsonPrimitive?.content ?: ""
+                        val bytes = blobs().blobs[id] ?: return MockResponse().setResponseCode(404).setBody("""{"code":"not_found","message":"blob not found"}""")
+                        MockResponse().setBody("""{"blobData":"${java.util.Base64.getEncoder().encodeToString(bytes)}"}""")
                     }
                     else -> MockResponse().setResponseCode(404)
                 }
@@ -142,6 +150,15 @@ class CoordinatorDuplicateMessagesTest {
         scope.cancel()
         server.shutdown()
         AppClock.nowMillis = System::currentTimeMillis
+    }
+
+    /** The served steps as the blob-backed record, made again whenever the steps change (a re-fetch of the running turn serves more). */
+    private var blobsFrom: List<JsonObject>? = null
+    private var blobRecord: BlobFixtures.Record? = null
+    private fun blobs(): BlobFixtures.Record = synchronized(this) {
+        val steps = served
+        if (blobsFrom !== steps) { blobRecord = BlobFixtures.record(steps); blobsFrom = steps }
+        blobRecord!!
     }
 
     private fun hub() = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
@@ -403,7 +420,7 @@ class CoordinatorDuplicateMessagesTest {
         val first = repository()
         first.attach(agentId)
         awaitLoaded(first)
-        awaitUntil { traces.runIds(agentId).count { it.startsWith(TraceCache.RECORD_KEY_PREFIX) } >= 7 && cache.read(agentId) != null }
+        awaitUntil { traces.runIds(agentId).count { it.startsWith(TraceCache.RECORD_TURN_KEY_PREFIX) } >= 7 && cache.read(agentId) != null }
         first.detach(agentId)
         // The next process: the disk answers before the network, and the network answers the same.
         val again = repository()

@@ -1,8 +1,14 @@
 package com.cursorforandroid.fixtures
 
 import com.cursorforandroid.data.api.CursorJson
+import com.cursorforandroid.data.api.HeadlessConversationApi
+import com.cursorforandroid.data.api.HeadlessStep
+import com.cursorforandroid.data.api.HeadlessToolCall
 import com.cursorforandroid.data.api.proto.AgentSchemas
 import com.cursorforandroid.data.api.proto.ProtoEncoder
+import com.cursorforandroid.data.api.proto.ProtoWire
+import com.cursorforandroid.data.repo.HeadlessTranscript
+import com.cursorforandroid.data.repo.MessageRecovery
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -40,68 +46,64 @@ object BlobFixtures {
     }
 
     /**
-     * The blob-backed record of the legacy [steps]. [unknownStepFields] adds fields no schema knows to every step
-     * blob, the way a server ahead of this build would; [omitPrompt] leaves the [omitPromptOfTurn]th turn's
-     * user-message blob out, the way a prompt whose text lives in a blob of its own reads.
+     * The blob-backed record of the legacy [steps], read through the app's own reader of that wire
+     * (`HeadlessConversationApi.parseStep`): a turn's calls come together by id — the name and arguments from
+     * whichever step carried them, a streamed call's pieces joined until they read as JSON, the result paired on —
+     * into one `ConversationStep` each, as the account stores them whole. A turn's `error` step has no blob to go
+     * in (the blob-backed record keeps a turn's failure on the agent's state, not in the turn), and is left out.
+     * [unknownStepFields] adds fields no schema knows to every step blob, the way a server ahead of this build
+     * would; [omitPromptOfTurn] leaves that turn's user-message blob out.
      */
     fun record(steps: List<JsonObject>, unknownStepFields: Boolean = false, omitPromptOfTurn: Int = -1): Record {
         val blobs = LinkedHashMap<String, ByteArray>()
         val turnIds = ArrayList<String>()
-        turns(steps).forEachIndexed { t, turn ->
-            val prompt = turn.firstOrNull { it.containsKey("humanMessage") || it.containsKey("userMessage") }
+        val parsed = steps.mapIndexed { i, json -> HeadlessConversationApi.parseStep(json, i) }
+        HeadlessTranscript.split(parsed).forEachIndexed { t, turn ->
             var promptId: String? = null
-            if (prompt != null && t != omitPromptOfTurn) {
-                val human = (prompt["humanMessage"] ?: prompt["userMessage"]) as JsonObject
-                val text = human["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                val mode = human["agentMode"]?.jsonPrimitive?.contentOrNull
+            if (turn.prompt != null && t != omitPromptOfTurn) {
                 val message = buildJsonObject {
-                    put("text", text)
+                    put("text", turn.prompt)
                     put("messageId", "msg-$t")
-                    if (mode == "AGENT_MODE_PROJECT") put("mode", AgentSchemas.AGENT_MODE_PROJECT)
-                    if (human["turnSteer"]?.jsonPrimitive?.contentOrNull == "true") put("turnSteer", true)
+                    if (turn.projectMode) put("mode", AgentSchemas.AGENT_MODE_PROJECT)
+                    if (turn.steer) put("turnSteer", true)
                 }
                 val bytes = ProtoEncoder.encode(message, AgentSchemas.USER_MESSAGE)
                 promptId = id(bytes)
                 blobs[promptId] = bytes
             }
-            // Tool calls and their results pair by id into one step, at the call's place.
-            val calls = LinkedHashMap<String, Pair<JsonObject, JsonElement?>>()
+            // The turn's calls by id, at the place of their first step; text and thoughts at theirs.
+            val calls = LinkedHashMap<String, Call>()
             val order = ArrayList<Any>()
-            for (step in turn) {
+            for (step in turn.steps) {
                 when {
-                    step.containsKey("toolCall") -> {
-                        val call = step["toolCall"]!!.jsonObject
-                        val id = call["toolCallId"]?.jsonPrimitive?.contentOrNull ?: continue
-                        if (id !in calls) { calls[id] = call to null; order += id }
+                    step.toolCall != null -> {
+                        val call = calls.getOrPut(step.toolCall.callId) { order += step.toolCall.callId; Call() }
+                        call.take(step.toolCall)
                     }
-                    step.containsKey("finalToolResult") -> {
-                        val result = step["finalToolResult"]!!.jsonObject
-                        val id = result["toolCallId"]?.jsonPrimitive?.contentOrNull ?: continue
-                        calls[id]?.let { calls[id] = it.first to result["result"] }
-                    }
-                    step.containsKey("text") && step["isMessageDone"]?.jsonPrimitive?.contentOrNull != "true" && step["text"]!!.jsonPrimitive.content.isNotEmpty() -> order += step
-                    step.containsKey("thinking") -> order += step
+                    step.toolResult != null -> calls.getOrPut(step.toolResult.callId) { order += step.toolResult.callId; Call() }.result = step.toolResult.result
+                    !step.text.isNullOrEmpty() -> order += step
+                    step.thinking != null -> order += step
                 }
             }
+            calls.values.forEach { it.settle() }
+            // A nameless call whose pieces were a streamed message's (see HeadlessTranscript.recover): not a call of its own.
+            val named = order.filter { it !is String || calls.getValue(it).name.isNotBlank() || calls.getValue(it).args != null }
             val stepIds = ArrayList<String>()
-            order.forEachIndexed { i, entry ->
+            named.forEach { entry ->
                 val step: JsonObject = when (entry) {
-                    is String -> {
-                        val (call, result) = calls.getValue(entry)
-                        toolCallStep(entry, call, result)
-                    }
-                    is JsonObject -> if (entry.containsKey("thinking")) buildJsonObject { put("thinkingMessage", buildJsonObject { put("text", entry["thinking"]!!.jsonObject["text"]?.jsonPrimitive?.content ?: "") }) }
-                    else buildJsonObject { put("assistantMessage", buildJsonObject { put("text", entry["text"]!!.jsonPrimitive.content) }) }
+                    is String -> toolCallStep(entry, calls.getValue(entry))
+                    is HeadlessStep -> if (entry.thinking != null) buildJsonObject { put("thinkingMessage", buildJsonObject { put("text", entry.thinking) }) }
+                    else buildJsonObject { put("assistantMessage", buildJsonObject { put("text", entry.text!!) }) }
                     else -> error("unreachable")
                 }
-                val unknown = if (unknownStepFields) listOf(Triple(99, com.cursorforandroid.data.api.proto.ProtoWire.Kind.STRING, JsonPrimitive("a field this build does not know") as JsonElement)) else emptyList()
+                val unknown = if (unknownStepFields) listOf(Triple(99, ProtoWire.Kind.STRING, JsonPrimitive("a field this build does not know") as JsonElement)) else emptyList()
                 val bytes = ProtoEncoder.encode(step, AgentSchemas.CONVERSATION_STEP, unknown)
                 // Named by content, as the account names its blobs: the same step is the same blob, a step that changed a new one.
                 val stepId = id(bytes)
                 blobs[stepId] = bytes
                 stepIds += stepId
             }
-            val messageIndices = order.withIndex().filter { (_, e) -> e is String && variantOf(calls.getValue(e).first) == "send_message" }.map { it.index }
+            val messageIndices = named.withIndex().filter { (_, e) -> e is String && variantOf(calls.getValue(e).name) == "send_message" }.map { it.index }
             val structure = buildJsonObject {
                 put("agentConversationTurn", buildJsonObject {
                     promptId?.let { put("userMessage", it) }
@@ -118,15 +120,39 @@ object BlobFixtures {
         return Record(turnIds, blobs)
     }
 
-    /** `agent.v1.ConversationStep { tool_call: ToolCall { <variant>ToolCall { args, result }, tool_call_id } }` from a legacy call and its result. */
-    private fun toolCallStep(id: String, call: JsonObject, result: JsonElement?): JsonObject {
-        val variant = variantOf(call)
-        val args = call["rawArgs"]?.jsonPrimitive?.contentOrNull?.let { runCatching { CursorJson.parseToJsonElement(it) }.getOrNull() as? JsonObject } ?: JsonObject(emptyMap())
+    /** One call as the legacy steps told it: name, arguments (whole, or joined from a streamed call's pieces), result. */
+    private class Call {
+        var name = ""
+        var args: JsonObject? = null
+        val pieces = StringBuilder()
+        var result: JsonElement? = null
+
+        fun take(call: HeadlessToolCall) {
+            if (call.name.isNotBlank()) name = call.name
+            (call.args as? JsonObject)?.let { args = it }
+            call.rawArgs?.let { piece ->
+                if (piece.startsWith(pieces)) pieces.setLength(0)
+                pieces.append(piece)
+            }
+        }
+
+        /** The pieces as the arguments once whole; read leniently when they never parse (the account stores the message whole). */
+        fun settle() {
+            if (args != null || pieces.isEmpty()) return
+            args = runCatching { CursorJson.parseToJsonElement(pieces.toString()) }.getOrNull() as? JsonObject
+                ?: MessageRecovery.recover(pieces.toString())?.let { read -> buildJsonObject { put("text", buildJsonObject { put("content", read.text) }) } }
+        }
+    }
+
+    /** `agent.v1.ConversationStep { tool_call: ToolCall { <variant>ToolCall { args, result }, tool_call_id } }` from a legacy call. */
+    private fun toolCallStep(id: String, call: Call): JsonObject {
+        val variant = variantOf(call.name)
+        val args = call.args ?: JsonObject(emptyMap())
         return buildJsonObject {
             put("toolCall", buildJsonObject {
                 put(AgentSchemas.variantKey(variant), buildJsonObject {
                     put("args", renamed(args, variant))
-                    if (result is JsonObject) put("result", renamed(result, variant))
+                    (call.result as? JsonObject)?.let { put("result", renamed(it, variant)) }
                 })
                 put("toolCallId", id)
             })
@@ -134,7 +160,7 @@ object BlobFixtures {
     }
 
     /** The `agent.v1.ToolCall` variant a legacy call's name maps to. */
-    fun variantOf(call: JsonObject): String = when (call["name"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
+    fun variantOf(name: String): String = when (name.lowercase()) {
         "sendmessage", "send_message" -> "send_message"
         "send_to_user", "sendtouser" -> "send_to_user"
         "send_to_agent", "sendtoagent" -> "send_to_agent"

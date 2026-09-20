@@ -1248,7 +1248,7 @@ class ConversationRepository(
             val window = e.recordWindow
             val coordinator = e.projectMode || CoordinatorTranscript.hasCoordinatorContent(e.state.value.items)
             // The message calls the rows leave out as copies of an earlier message (see CoordinatorTranscript.repeatedMessages).
-            val presenterRepeats = if (coordinator) CoordinatorTranscript.repeatedMessages(e.state.value.items).keys else emptySet()
+            val presenterRepeats = if (coordinator) CoordinatorTranscript.leftOut(e.state.value.items) else emptySet()
             /** The ids of the message calls of [items] keyed in [keys], as the shape dump names ids. */
             fun repeatIds(items: List<TimelineItem>, keys: Set<String>): List<String> = CoordinatorTranscript.messageCallIds(items, keys).map { ProjectDiagnostics.tail(it) }
             /** `rendered=yes|recovered|missing|none via=… [repeat=…]`: what is drawn of [shown], from where, and which calls were copies. */
