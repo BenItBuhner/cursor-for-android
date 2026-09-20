@@ -900,17 +900,7 @@ class ConversationRepository(
         /** The newest run there is, counting prompts sent from here that the server's list has not caught up with (never a placeholder: there is nothing to stream for it yet). */
         fun latestRun(): RunDto? = (runs + local.filter { it.filed }.map { it.run }).maxByOrNull { parseIsoMillis(it.createdAt) }
 
-        /**
-         * True when [page] — the run list's newest page as just read — says nothing this entry does not know: every
-         * run on it is held with the same status, end and result, and no prompt sent from here awaits its run. Then
-         * no turn started or ended since the transcript was last read, and the copy in hand is the transcript.
-         */
-        fun runsUnchanged(page: ListRunsResponseDto): Boolean {
-            // A prompt sent from here still standing in for the transcript's copy is a turn the transcript has to be read for.
-            if (page.items.isEmpty() || local.isNotEmpty()) return false
-            val held = runs.associateBy { it.id }
-            return page.items.all { fresh -> held[fresh.id]?.let { it.status == fresh.status && it.updatedAt == fresh.updatedAt && it.result == fresh.result } == true }
-        }
+
 
         /**
          * What the disk keeps: the server's inputs as reported, and the prompts sent from here — those the server has
@@ -944,6 +934,18 @@ class ConversationRepository(
         fun newestRunAt(): Long = (runs + local.map { it.run }).maxOfOrNull { parseIsoMillis(it.createdAt) } ?: 0L
 
         fun runById(runId: String): RunDto? = runs.firstOrNull { it.id == runId } ?: local.firstOrNull { it.run.id == runId }?.run
+    }
+
+    /**
+     * True when [page] — the run list's newest page as just read — says nothing the entry did not know before the
+     * read ([held], its runs by id then): every run on it is held with the same status, end and result, and no
+     * prompt sent from here awaits its run ([noLocal]). Then no turn started or ended since the transcript was last
+     * read, and the copy in hand is the transcript (see [load]).
+     */
+    private fun runsUnchanged(page: ListRunsResponseDto, held: Map<String, RunDto>, noLocal: Boolean): Boolean {
+        // A prompt sent from here still standing in for the transcript's copy is a turn the transcript has to be read for.
+        if (page.items.isEmpty() || !noLocal) return false
+        return page.items.all { fresh -> held[fresh.id]?.let { it.status == fresh.status && it.updatedAt == fresh.updatedAt && it.result == fresh.result } == true }
     }
 
     private val entries = LinkedHashMap<String, Entry>()
@@ -1587,12 +1589,14 @@ class ConversationRepository(
                 // The `/v0` transcript is the whole chat in one answer, megabytes for a long one. A chat read before
                 // is asked for it again only when the newest runs say something changed — a run started or ended
                 // since — every turn of the transcript being a run: with nothing new in the run list there is
-                // nothing new in the transcript, and the copy in hand stands (see [Entry.runsUnchanged]).
-                val warm = !force && synchronized(e) { e.fetched && e.messages.isNotEmpty() && e.recordWindow == null }
+                // nothing new in the transcript, and the copy in hand stands (see [runsUnchanged]).
+                // Compared with the runs as held before this load: the run page landing first is merged into the
+                // entry meanwhile (see [publishRunsFirst]), and compared with itself it would always read unchanged.
+                val held = synchronized(e) { if (!force && e.fetched && e.messages.isNotEmpty() && e.recordWindow == null) e.runs.associateBy { it.id } to e.local.isEmpty() else null }
                 val conversation = async {
-                    if (warm) {
+                    if (held != null) {
                         val page = runPage.await().getOrNull()
-                        if (page != null && synchronized(e) { e.runsUnchanged(page) }) return@async Result.success(V0ConversationResponseDto(agentId, synchronized(e) { e.messages }))
+                        if (page != null && runsUnchanged(page, held.first, noLocal = held.second)) return@async Result.success(V0ConversationResponseDto(agentId, synchronized(e) { e.messages }))
                     }
                     net(agentId, "transcript")
                     runCatching { api.conversationV0(agentId) }

@@ -1413,7 +1413,7 @@ class ConversationRepositoryTest {
             assertThat(api.listRunsCalls).isEqualTo(fetches)
 
             // Released: the run is followed again and the history is fetched, as the resume asked — the run list; the
-            // transcript only when the list says a turn started or ended since, which none did (see Entry.runsUnchanged).
+            // transcript only when the list says a turn started or ended since, which none did (see runsUnchanged).
             busy.countDown()
             awaitUntil { conversations.state("bc-1").value.isStreaming }
             awaitUntil { api.listRunsCalls > fetches }
