@@ -6,6 +6,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
 import com.cursorforandroid.notifications.LiveNotificationCoordinator
 import com.cursorforandroid.notifications.LiveNotifications
+import com.cursorforandroid.shortcuts.LauncherShortcuts
 import com.cursorforandroid.update.UpdateCoordinator
 import com.cursorforandroid.widget.WidgetSync
 import kotlinx.coroutines.delay
@@ -42,6 +43,8 @@ object DeferredStartup {
             // The widget picker's live preview is composed here, once the screen is up; the widgets themselves are
             // followed from the application (see CursorApp), whichever way the process was started.
             WidgetSync.publishPreviews(activity)
+            // The launcher's long-press menu names the pinned chats and Projects; kept in step for as long as the process lives.
+            LauncherShortcuts.start(activity, graph)
         }
     }
 }

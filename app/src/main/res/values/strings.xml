@@ -85,4 +85,24 @@
     <string name="widget_preview_meta_2">visual-engine · 30m</string>
     <string name="widget_preview_meta_3">codex-poly-bot · 34m</string>
     <string name="widget_preview_meta_4">market-replay · 52m</string>
+
+    <!-- Shortcut widgets: the round new-chat button and the compose bar, and their shared configuration screen. -->
+    <string name="shortcut_widget_label">New chat</string>
+    <string name="shortcut_widget_description">A button that opens the composer right on the home screen.</string>
+    <string name="compose_bar_widget_label">Compose</string>
+    <string name="compose_bar_widget_description">The composer\'s line on the home screen; tap it to start a chat.</string>
+    <string name="composer_placeholder">Ask Cursor to build, fix bugs, explore</string>
+    <string name="shortcut_widget_configure_title">Shortcut</string>
+    <string name="shortcut_widget_configure_subtitle">Choose its look and what it opens</string>
+    <string name="shortcut_widget_configure_look">Look</string>
+    <string name="shortcut_widget_configure_opens">Opens</string>
+    <string name="shortcut_widget_new_chat_detail">The composer, over the home screen</string>
+    <string name="shortcut_widget_search_detail">Cursor, with the sidebar\'s search open</string>
+    <string name="shortcut_widget_configure_note">Stretch the widget to two cells or more for the compose bar. Long-press the widget to change these later.</string>
+
+    <!-- Launcher shortcuts (long-press the app icon). -->
+    <string name="shortcut_new_chat_short">New chat</string>
+    <string name="shortcut_new_chat_long">Start a new chat</string>
+    <string name="shortcut_search_short">Search</string>
+    <string name="shortcut_search_long">Search chats</string>
 </resources>

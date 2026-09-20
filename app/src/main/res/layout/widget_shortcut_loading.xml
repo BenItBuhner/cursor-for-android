@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the launcher shows between placing the shortcut widget and its first render, and the picker's picture of it
+  on Android 12+: the default look — a white disc with the dark "+" — centred in its cell.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_disc"
+        android:backgroundTint="#FFFFFFFF">
+
+        <ImageView
+            android:layout_width="26dp"
+            android:layout_height="26dp"
+            android:layout_gravity="center"
+            android:contentDescription="@string/widget_new_chat"
+            android:src="@drawable/widget_plus"
+            android:tint="#FF141414" />
+    </FrameLayout>
+</FrameLayout>
