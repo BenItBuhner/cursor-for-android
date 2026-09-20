@@ -212,6 +212,13 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
     }
+    lint {
+        // `assembleRelease` would otherwise run lintVitalRelease - a second analysis of the same sources for the
+        // fatal-only subset of what `lintDebug` already reports in full. There is no release-only source set to check
+        // (src/main, src/debug and src/test are all there is), so the vital pass proves nothing lintDebug does not, and
+        // CI runs lintDebug on every change. It cost ten minutes of the build job and of every release cut.
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {

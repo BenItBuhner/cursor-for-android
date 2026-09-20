@@ -19,10 +19,12 @@ defaults:
     shell: bash # -eo pipefail, so a failing command inside a pipeline fails the step
 
 jobs:
+  # Every job below checks out and compiles on its own runner; they run side by side, so the wall time of a run is
+  # the slowest job, not the sum. The one status to require is `ci`, at the end.
   build:
-    name: Build & lint
+    name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -39,12 +41,13 @@ jobs:
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
 
-      # assembleRelease exercises R8 / resource shrinking on every change. The signing secrets are never passed to this
-      # job, so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build now fails outright.
+      # assembleRelease exercises R8 / resource shrinking on every change (lint's release-build pass is off, see
+      # `lint {}` in app/build.gradle.kts; the `lint` job covers it). The signing secrets are never passed to this job,
+      # so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build now fails outright.
       # The APK it produces is for verification only - it pins no certificate and cannot be published.
-      - name: Lint and build debug + release APKs
+      - name: Build debug + release APKs
         run: >
-          ./gradlew :app:lintDebug :app:assembleDebug :app:assembleRelease
+          ./gradlew :app:assembleDebug :app:assembleRelease
           -Papp.allowUnsignedRelease=true
           -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
@@ -65,11 +68,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Android lint over src/main and src/test (lintDebug: every check, not only the fatal ones). On its own runner: in
+  # one job with the build it shared a 3 GB daemon with R8 and a second lint pass, and the three took ten minutes
+  # between them where this alone takes under two.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Lint
+        run: ./gradlew :app:lintDebug
+
       - name: Upload lint report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: lint-report-${{ steps.stamp.outputs.short_sha }}
+          name: lint-report
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
@@ -152,7 +170,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [build, unit-tests, screenshots]
+    needs: [build, lint, unit-tests, screenshots]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
