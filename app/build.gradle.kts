@@ -366,8 +366,9 @@ class TestShardFilter(private val index: Int, private val count: Int) : Spec<Fil
 
 tasks.withType<Test>().configureEach {
     maxParallelForks = testForks
+    // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and the
+    // long stop-the-world pauses of a throughput collector under three forks on four cores are what fail them.
     maxHeapSize = "2g"
-    jvmArgs("-XX:+UseParallelGC")
     testShard?.let { (index, count) -> include(TestShardFilter(index, count)) }
 }
 

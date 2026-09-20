@@ -41,29 +41,62 @@ jobs:
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
           echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
 
-      # assembleRelease exercises R8 / resource shrinking on every change (lint's release-build pass is off, see
-      # `lint {}` in app/build.gradle.kts; the `lint` job covers it). The signing secrets are never passed to this job,
-      # so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build now fails outright.
-      # The APK it produces is for verification only - it pins no certificate and cannot be published.
-      - name: Build debug + release APKs
-        run: >
-          ./gradlew :app:assembleDebug :app:assembleRelease
-          -Papp.allowUnsignedRelease=true
-          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
-      - name: Collect APKs
+      - name: Collect APK
         run: |
           version="$(./gradlew -q :app:printAppVersion -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" | sed -n 's/^versionName=//p')"
           echo "Built version ${version}"
           mkdir -p dist
           cp app/build/outputs/apk/debug/app-debug.apk "dist/cursor-for-android-${version}-debug.apk"
-          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${version}-release-debugkey.apk"
           ls -l dist
 
-      - name: Upload APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: apks-${{ steps.stamp.outputs.short_sha }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # assembleRelease exercises R8 / resource shrinking on every change (lint's release-build pass is off, see `lint {}`
+  # in app/build.gradle.kts; the `lint` job covers it). Its own runner: R8 alone takes two and a half minutes there,
+  # and beside the debug build the two Kotlin compiles slowed each other down. The signing secrets are never passed to
+  # this job, so -Papp.allowUnsignedRelease=true opts in to the debug key; without it a release build fails outright.
+  # The APK it produces is for verification only - it pins no certificate and cannot be published.
+  release-build:
+    name: Release build (R8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-toolchain
+
+      - name: Stamp dev version
+        id: stamp
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          short_sha="${HEAD_SHA::7}"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK with R8
+        run: ./gradlew :app:assembleRelease -Papp.allowUnsignedRelease=true -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+
+      - name: Collect APK
+        run: |
+          version="$(./gradlew -q :app:printAppVersion -Papp.allowUnsignedRelease=true -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" | sed -n 's/^versionName=//p')"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/cursor-for-android-${version}-release-debugkey.apk"
+          ls -l dist
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk-release-debugkey-${{ steps.stamp.outputs.short_sha }}
           path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
@@ -170,7 +203,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [build, lint, unit-tests, screenshots]
+    needs: [build, release-build, lint, unit-tests, screenshots]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
