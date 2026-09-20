@@ -509,12 +509,23 @@ class AgentRepository(
     }
 
     /**
-     * Folds a run record a caller read into the row, when it is the row's latest run (see [Agent.withLatestRun]) — as
-     * this device knows the run (see [known]), under the lock a cancel or a finish patches under, so a record read
-     * before either does not undo it. The one way a run record read outside this repository reaches a row.
+     * How [runId] ended, when it is the run of [agentId] this device last saw end — stopped here, or finished on the
+     * stream the hub followed — and null for any other run: what a chat reads its own run records against, so a
+     * record that predates the end (a run page, a detail, the record the chat's next-run look reads) never calls
+     * that run active in the chat either (see `ConversationRepository.Entry.statusOf`).
      */
-    fun recordRun(agentId: String, run: RunDto, startedIn: Int = token()) {
-        synchronized(publishLock) { patch(agentId, startedIn) { it.withLatestRun(known(agentId, run)) } }
+    fun endedStatus(agentId: String, runId: String?): RunStatus? = runId?.let { id -> endedRuns[agentId]?.takeIf { it.runId == id }?.status }
+
+    /**
+     * Folds a run record a caller read into the row, when it is the row's latest run (see [Agent.withLatestRun]) —
+     * or, with [adopt], as the row's latest run from here on — as this device knows the run (see [known]), under
+     * the lock a cancel or a finish patches under, so a record read before either does not undo it. The one way a
+     * run record read outside this repository reaches a row.
+     */
+    fun recordRun(agentId: String, run: RunDto, adopt: Boolean = false, startedIn: Int = token()) {
+        synchronized(publishLock) {
+            patch(agentId, startedIn) { row -> (if (adopt) row.copy(latestRunId = run.id) else row).withLatestRun(known(agentId, run)) }
+        }
     }
 
     /**
@@ -695,10 +706,23 @@ class AgentRepository(
         if (agents.isEmpty()) return this
         var changed = false
         val next = agents.map { agent ->
-            val placed = agent.placed()
+            val placed = agent.placed().settled()
             if (placed == agent) agent else placed.also { changed = true }
         }
         return if (changed) copy(agents = next) else this
+    }
+
+    /**
+     * The row as this device knows its latest run: a row still calling active a run this device saw end reads as
+     * that run ended (see [endedRuns]). Applied to every row on every publication, so no source that reaches the
+     * list — a run record read before the end (`known` covers the ones read here), a legacy `/v0` status filling in
+     * a status this build could not read, a patch from a chat's own look for its next run — can put the row back to
+     * running for a turn that is over. A row that has moved on to another run is left alone.
+     */
+    private fun Agent.settled(): Agent {
+        if (!isRunning) return this
+        val ended = endedRuns[id]?.takeIf { it.runId == latestRunId } ?: return this
+        return copy(runStatus = ended.status)
     }
 
     private fun Agent.placed(): Agent {

@@ -1,5 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
@@ -32,7 +36,9 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,6 +47,8 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -53,6 +61,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -580,7 +589,9 @@ class ConversationRepositoryTest {
         api.conversationGate = CompletableDeferred()
         val next = repository()
         next.attach("bc-1")
-        awaitUntil { next.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The disk copy renders in two steps — the transcript and its runs, then the traces from their own files —
+        // so the wait is for the trace it asserts, not for the footer the first step already shows.
+        awaitUntil { next.state("bc-1").value.let { s -> s.items.lastOrNull() is RunFooter && s.items.any { it is ActivityGroup } } }
         val fromDisk = next.state("bc-1").value
         assertThat(fromDisk.types()).containsExactly("UserMessage", "ActivityGroup", "AssistantMessage", "RunFooter").inOrder()
         assertThat(fromDisk.items.filterIsInstance<ActivityGroup>().single().calls.map { it.callId }).containsExactly("run-1-c1", "run-1-c2").inOrder()
@@ -1305,13 +1316,25 @@ class ConversationRepositoryTest {
         val conversations = repository()
         conversations.attach("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
+        // Every state the screen would have seen from here, not the one a poll happens to catch: the run's end must
+        // read as one step — the stream over and the turn over in the same frame — with nothing active after it.
+        // The hub used to publish the finished snapshot before it patched the row idle; the collector, on its own
+        // thread, read the row still running and kept the chat at RUNNING for the six seconds its next-run looks
+        // took (a loaded CI runner: 35156980926). The hub now patches the row first, so no frame can show that.
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
 
         // The record starts answering with a status this build has never heard of, and the stream is gone for good.
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
         streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { !conversations.state("bc-1").value.isStreaming }
-        assertThat(conversations.state("bc-1").value.runStatus?.isActive).isNotEqualTo(true)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+        // The row agrees, and the list remembers how the run ended.
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.endedStatus("bc-1", "run-1")).isEqualTo(RunStatus.UNKNOWN)
 
         // A reopen reads the same record and still shows the turn as over, with a footer closing it.
         now += 60_000
@@ -1320,6 +1343,120 @@ class ConversationRepositoryTest {
         val reopened = conversations.state("bc-1").value
         assertThat(reopened.isStreaming).isFalse()
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
+        recorder.cancel()
+        assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
+    /** A settings store whose writes wait for [gate] when one is set: holds a caller inside `prefs.markRead`. */
+    private class HeldWrites(context: android.content.Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("held_writes") },
+        )
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+        val waiting = AtomicInteger()
+        override val data: Flow<Preferences> get() = delegate.data
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+            gate?.let { waiting.incrementAndGet(); it.await() }
+            return delegate.updateData(transform)
+        }
+    }
+
+    /**
+     * A load landing while the finish is still being filed — the read marker's write, the write to disk — found the
+     * follower's job alive and the run's story so far in hand, and took the two for "streaming": `chatStatus`
+     * answered RUNNING over the footer, and the load's own publication kept it, until the next-run looks gave up
+     * six seconds later. On the phone: a foreground return, or a reopen, in the moment a turn ends. Pinned by
+     * holding the finish's read-marker write, which is where the screen's collector sits right after the frame that
+     * ended the stream, while a revalidation lands with its run page ahead of its transcript (the page-first render
+     * is what asks `chatStatus`). A run this device saw end is not being followed live, whatever the job's state.
+     */
+    @Test
+    fun `a load landing while the finish is still being filed does not call the chat running again`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val settings = HeldWrites(context)
+        val heldPrefs = PreferencesStore(context, settings)
+        val conversations = ConversationRepository(
+            session, agents, heldPrefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        )
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && !it.isLoading } }
+        awaitUntil { heldPrefs.localAgentState.first().readMarkers.containsKey("bc-1") }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        // The run ends off its record (a status this build cannot read; the stream gone for good). The finish's
+        // read-marker write is held: the screen's collector is still inside the finish when the load below lands.
+        settings.gate = CompletableDeferred()
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } && settings.waiting.get() > 0 }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+
+        // A revalidation now, its run page landing ahead of its transcript.
+        api.conversationGate = CompletableDeferred()
+        now += 60_000
+        val pages = api.listRunsCalls
+        conversations.revalidate("bc-1")
+        awaitUntil { api.listRunsCalls > pages }
+        awaitUntil { api.conversationCalls >= 2 }
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        settings.gate!!.complete(Unit)
+        settings.gate = null
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        recorder.cancel()
+
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.isStreaming).isFalse()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.UNKNOWN)
+    }
+
+    /**
+     * The common way a turn ends on the phone: on its own stream, with the chat open. The hub's finish reaches the
+     * list before the snapshot reaches the chat (see `LiveRunHub.finish`), so the frame that ends the stream ends
+     * the turn too — never a frame that reads "Working…" over the reply and the footer — and nothing the chat's
+     * next-run looks read afterwards (the agent's record, a poll behind) puts it back.
+     */
+    @Test
+    fun `a run finishing on its stream ends the chat in the frame that ends the stream, and nothing puts it back`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.isStreaming }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Shipped."))
+        now += 30_000
+        streamer.emit("run-1", RunStreamEvent.Result("run-1", RunStatus.FINISHED, "Shipped.", 30_000, null))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter && frames.any { (streaming, _) -> !streaming } }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames[ended].second).isEqualTo(RunStatus.FINISHED)
+        assertThat(agents.agent("bc-1")!!.let { it.isRunning to it.runStatus }).isEqualTo(false to RunStatus.FINISHED)
+
+        // The next-run looks that follow a finish read the agent's record, whose run still reads RUNNING on a server
+        // a poll behind its own stream: the list's memory of the finish outranks it, in the row and in the chat.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "RUNNING")
+        agents.refresh()
+        assertThat(agents.agent("bc-1")!!.isRunning).isFalse()
+        assertThat(agents.loadDetail("bc-1").getOrThrow().runStatus).isEqualTo(RunStatus.FINISHED)
+        conversations.revalidate("bc-1")
+        delay(300)
+        recorder.cancel()
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        assertThat(conversations.state("bc-1").value.runStatus).isEqualTo(RunStatus.FINISHED)
     }
 
     @Test

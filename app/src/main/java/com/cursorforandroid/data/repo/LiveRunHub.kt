@@ -432,13 +432,22 @@ class LiveRunHub(
     }
 
     /**
-     * Publishes the terminal snapshot first, then patches the agent row with the same timestamp, so a subscriber
-     * that reacts to `finished` before the row changes still knows the `updatedAt` the list is about to show. The
-     * finish is reported last, once both are in place. The moment of the finish is [finishedAtMillis] when the caller
-     * read it off the run record, else now — right for a result that just arrived on a stream being followed live,
-     * and the only choice when a stream's `result` carries no timestamp. The stamp is what the row shows until the
-     * next list refresh reconciles it with the server's `updatedAt` (see `reconcileUpdatedAt`), so a finish read off
-     * an old record puts the row where the server has it, not at the top of the list.
+     * The run is over: the agent list hears it first — the run remembered as ended, the row patched idle with the
+     * finish's timestamp — and the terminal snapshot is published after, so nobody who reacts to `finished` can find
+     * the row still saying running about the run that just ended. It used to be the other way round, snapshot
+     * first: the conversation's collector, woken by the snapshot on its own thread, read the row before this thread
+     * had patched it, took "the row runs on" for the account's word that a next turn was under way (see
+     * `ConversationRepository.Entry.rowSaysRunning`), and kept the chat at RUNNING — the Stop button, "Working…",
+     * "sends when the turn ends" — for the six seconds its next-run looks took to give up, with the reply and the
+     * footer already on screen. On a phone, where the collector's thread and this one are scheduled apart, that was
+     * a common way for a turn to end; on a loaded CI runner it flaked `a run whose status this build cannot read…`.
+     * The finish is reported last, once both are in place.
+     *
+     * The moment of the finish is [finishedAtMillis] when the caller read it off the run record, else now — right
+     * for a result that just arrived on a stream being followed live, and the only choice when a stream's `result`
+     * carries no timestamp. The stamp is what the row shows until the next list refresh reconciles it with the
+     * server's `updatedAt` (see `reconcileUpdatedAt`), so a finish read off an old record puts the row where the
+     * server has it, not at the top of the list.
      *
      * A replay changes nothing about the agent: the row already reflects this run, or a later one. Nor does a result
      * that arrives once the row has moved on to a newer run (a record read after a follow-up was sent, a stream read
@@ -452,6 +461,22 @@ class LiveRunHub(
             if (!owns(entry, self)) return
             val finishedAt = finishedAtMillis ?: nowProvider()
             entry.catchUp = 0
+            if (!historical) {
+                // Remembered before the row is patched, and both before the snapshot goes out: a record of this run
+                // read before its end — a chat's load, a refresh's verification, a `/v0` status — can never put the
+                // row back to running for it (see `AgentRepository.noteRunEnded`).
+                agents.noteRunEnded(entry.agentId, entry.runId, result.status)
+                agents.patch(entry.agentId) { a ->
+                    if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
+                    a.copy(
+                        runStatus = result.status,
+                        lifecycle = AgentLifecycle.IDLE,
+                        durationMs = result.durationMs ?: a.durationMs,
+                        branches = result.git.toBranches().ifEmpty { a.branches },
+                        summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
+                    ).touched(finishedAt)
+                }
+            }
             entry.state.update {
                 it.copy(
                     items = entry.live.snapshot(),
@@ -466,19 +491,6 @@ class LiveRunHub(
                 )
             }
             if (historical) return
-            // Remembered before the row is patched: a record of this run read before its end — a chat's load, a
-            // refresh's verification — must not put the row back to running for it once it lands.
-            agents.noteRunEnded(entry.agentId, entry.runId, result.status)
-            agents.patch(entry.agentId) { a ->
-                if (a.latestRunId != null && a.latestRunId != entry.runId) return@patch a.copy(branches = a.branches.ifEmpty { result.git.toBranches() })
-                a.copy(
-                    runStatus = result.status,
-                    lifecycle = AgentLifecycle.IDLE,
-                    durationMs = result.durationMs ?: a.durationMs,
-                    branches = result.git.toBranches().ifEmpty { a.branches },
-                    summary = result.text?.takeIf { it.isNotBlank() } ?: a.summary,
-                ).touched(finishedAt)
-            }
             _finishes.tryEmit(entry.state.value)
         }
     }

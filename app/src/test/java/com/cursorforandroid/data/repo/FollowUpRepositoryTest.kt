@@ -553,10 +553,12 @@ class FollowUpRepositoryTest {
         assertThat(row.runStatus).isEqualTo(RunStatus.CANCELLED)
 
         mcpGate!!.complete(Unit)
-        awaitUntil { sent() == listOf("Now") }
+        // First attempt, at once, no busy recheck: the queue's settle of the row comes only after idleSettleMs
+        // (twenty seconds here), so a send inside a few seconds never had one. Not counted in agent reads: the
+        // load's own tail makes one more when its row check happens to land after the refresh above moved the row
+        // to run-2 — the look for a next run any chat makes on a row that says running — and that look is not a settle.
+        awaitUntil(5_000) { sent() == listOf("Now") }
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
-        // First attempt, no busy recheck: the record was read once, by the load, never by a settle of the row.
-        assertThat(api.getAgentCalls).isEqualTo(1)
         assertThat(followUps.sendDiagnostics("bc-1")!!.attempts.map { it.outcome }).containsExactly("accepted")
         assertThat(agents.agent("bc-1")!!.let { it.isRunning && it.latestRunId == "run-followup-1" }).isTrue()
     }
