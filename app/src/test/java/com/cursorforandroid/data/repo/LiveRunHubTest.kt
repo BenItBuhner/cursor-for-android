@@ -377,6 +377,51 @@ class LiveRunHubTest {
     }
 
     /**
+     * A resume position rejected mid-run starts a rebuild from the first event; the rebuild's connection dies before
+     * it delivers anything, and by the time the record is read again the run is over. The run's end used to go out
+     * on the rebuild's accumulator — empty — and the finished snapshot, which stands in for the run until its replay
+     * lands, took every tool call and every word the screen had shown of the turn off it (Bennett, 2026-09-20: "it
+     * is removing all assistant verbatim and tool-calls pertaining to it"). The end goes under the story shown.
+     */
+    @Test
+    fun `a run settled off its record while a rebuild is behind the story ends on the story, not on the fragment`() = runBlocking {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        streamer.emit("run-1", RunStreamEvent.Status("run-1", RunStatus.RUNNING))
+        streamer.emit("run-1", RunStreamEvent.Thinking("Looking."))
+        streamer.emit("run-1", tool("c1", "read_file", "running", "README.md"))
+        streamer.emit("run-1", tool("c1", "read_file", "completed", "README.md"))
+        streamer.emit("run-1", RunStreamEvent.Assistant("Hi"))
+        // The first connection delivers the story and has its position rejected; the rebuild's connection delivers nothing.
+        streamer.dropNextConnection("run-1", RunStreamEvent.Error.INVALID_LAST_EVENT_ID, "Unknown event id", afterEvents = 5)
+        streamer.dropNextConnection("run-1", "stream_unavailable", "Run stream is no longer available", afterEvents = 0)
+        // Each read of the record is held until the test lets it go: the first finds the run going, the second over.
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        val sizes = CopyOnWriteArrayList<Int>()
+        val subscription = scope.launch { hub.snapshots("bc-1", "run-1").collect { s -> sizes += s.items.sumOf { if (it is ActivityGroup) it.steps.size else 1 } } }
+        awaitUntil { api.getRunCalls == 1 }
+        val gate = api.getRunGate!!
+        api.getRunGate = kotlinx.coroutines.CompletableDeferred()
+        gate.complete(Unit)
+        awaitUntil { api.getRunCalls == 2 }
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Done.", durationMs = 4_000)
+        api.getRunGate!!.complete(Unit)
+        awaitUntil { snapshot()?.finished == true }
+
+        val ended = current()
+        assertThat(ended.streamed).isFalse()
+        // The story the screen had — the thought, the read, the reply — with the record's end under it.
+        val work = ended.items.filterIsInstance<ActivityGroup>().single()
+        assertThat(work.thoughts.map { it.text }).containsExactly("Looking.")
+        assertThat(work.calls.map { it.callId }).containsExactly("c1")
+        assertThat(ended.items.filterIsInstance<AssistantMessage>().map { it.markdown }).containsExactly("Hi", "Done.").inOrder()
+        assertThat(ended.items.last()).isInstanceOf(RunFooter::class.java)
+        assertThat((ended.items.last() as RunFooter).durationMs).isEqualTo(4_000L)
+        // And no snapshot on the way said less than the one before it.
+        assertThat(sizes.zipWithNext().all { (a, b) -> b >= a }).isTrue()
+        subscription.cancel()
+    }
+
+    /**
      * A reset is not a cancel: cancellation is cooperative, so a pass suspended inside a record read resumes and
      * carries on. What it must not do is finish the run into the list the next account starts from.
      */

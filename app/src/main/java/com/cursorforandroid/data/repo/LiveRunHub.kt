@@ -114,6 +114,13 @@ class LiveRunHub(
         var catchUp = 0
         /** When [catchUp] was armed; a replay that never reaches it must not hold the trace still for ever. */
         var catchUpArmedAt = 0L
+        /**
+         * The accumulator a rebuild replaced (see [restartAccumulator]), kept while the rebuild is behind it: a run
+         * settled off its record before the rebuild has caught up ends on the story this one holds, not on the
+         * fragment the rebuild has — which, published as the run's end, took the turn's streamed calls and text off
+         * the screen (the finished snapshot stands in for the run until its replay lands, if its log is still there).
+         */
+        var fallback: TimelineBuilder.LiveRun? = null
     }
 
     /** What one connection to the stream came to. */
@@ -353,7 +360,7 @@ class LiveRunHub(
         if (recordIsStale(entry, run)) return Record.Running
         if (!owns(entry, self)) return Record.Over
         val result = RunStreamEvent.Result(run.id, status, run.result, run.durationMs, run.git, fromRecord = true)
-        entry.live.apply(result)
+        settledAccumulator(entry).apply(result)
         // The record says when the run ended; that, not the moment this connection happened to read it, is the finish.
         finish(entry, self, result, historical = false, streamed = false, finishedAtMillis = parseIsoMillis(run.updatedAt).takeIf { it > 0 })
         return Record.Over
@@ -398,7 +405,7 @@ class LiveRunHub(
     private fun settleUnrecognised(entry: Entry, self: Job?) {
         if (!owns(entry, self)) return
         val result = RunStreamEvent.Result(entry.runId, RunStatus.UNKNOWN, text = null, durationMs = null, git = null, fromRecord = true)
-        entry.live.apply(result)
+        settledAccumulator(entry).apply(result)
         finish(entry, self, result, historical = false, streamed = false)
     }
 
@@ -409,7 +416,23 @@ class LiveRunHub(
     private fun restartAccumulator(entry: Entry, timed: Boolean) {
         entry.catchUp = entry.live.applied
         entry.catchUpArmedAt = nowProvider()
+        // The story so far outlives the rebuild that replaces it, until the rebuild has caught up with it (see [Entry.fallback]).
+        val fuller = entry.fallback?.takeIf { it.applied > entry.live.applied } ?: entry.live.takeIf { it.applied > 0 }
+        entry.fallback = fuller
         entry.live = TimelineBuilder.LiveRun(entry.runId, timed = timed, nowProvider = nowProvider, startedAtMillis = entry.state.value.startedAtMillis, images = images?.forAgent(entry.agentId))
+    }
+
+    /**
+     * The accumulator a finish read off the run record ends the run on: the rebuild under way when it has caught up
+     * with the story published before it, else that story (see [Entry.fallback]). A rebuild half done is a fragment
+     * of what the screen has already shown of the turn; the run's end goes under the whole of it.
+     */
+    private fun settledAccumulator(entry: Entry): TimelineBuilder.LiveRun {
+        val fallback = entry.fallback ?: return entry.live
+        if (entry.live.applied >= fallback.applied) return entry.live
+        entry.live = fallback
+        entry.fallback = null
+        return fallback
     }
 
     /**
@@ -428,6 +451,8 @@ class LiveRunHub(
         // "Reconnecting…" on — for the rest of the run, although the stream is perfectly healthy.
         if (entry.live.applied < entry.catchUp && nowProvider() - entry.catchUpArmedAt < catchUpTimeoutMs) return
         entry.catchUp = 0
+        // Caught up with the story it replaced: the rebuild is the story from here on.
+        if (entry.fallback?.let { entry.live.applied >= it.applied } == true) entry.fallback = null
         entry.state.update { it.copy(items = entry.live.snapshot(), status = entry.live.status, eventCount = it.eventCount + 1, reconnecting = false) }
     }
 
@@ -461,6 +486,8 @@ class LiveRunHub(
             if (!owns(entry, self)) return
             val finishedAt = finishedAtMillis ?: nowProvider()
             entry.catchUp = 0
+            // A run that ended on its own stream told its whole story; a story kept from before a rebuild is not needed.
+            if (streamed) entry.fallback = null
             if (!historical) {
                 // Remembered before the row is patched, and both before the snapshot goes out: a record of this run
                 // read before its end — a chat's load, a refresh's verification, a `/v0` status — can never put the

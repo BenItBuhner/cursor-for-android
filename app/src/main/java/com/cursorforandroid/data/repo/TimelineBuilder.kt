@@ -54,6 +54,9 @@ object TimelineBuilder {
             val trace = run?.let { traces[it.id] }
             if (trace != null) {
                 items += trace
+                // A whole trace ends on its own footer. The story a stream told before it broke does not: the run
+                // that ended meanwhile (by its record) gets the record's footer under it, like a run without a trace.
+                if (run != null && !run.statusEnum().isActive && trace.none { it is RunFooter }) items += footer(run)
                 return
             }
             items += replies

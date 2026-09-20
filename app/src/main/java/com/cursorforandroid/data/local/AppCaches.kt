@@ -164,6 +164,8 @@ data class CachedLocalPrompt(
     val message: V0ConversationMessageDto,
     val run: RunDto,
     val reply: V0ConversationMessageDto? = null,
+    /** The prompt was steered into [run] under way: shown after this many of the run's rows (see `ConversationRepository.LocalPrompt.steeredAfter`). */
+    val steeredAfter: Int? = null,
 )
 
 /**

@@ -33,6 +33,7 @@ import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.attachmentOnlyText
 import com.cursorforandroid.domain.SlashCatalog
@@ -294,6 +295,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
         }
         viewModelScope.launch {
+            // Every read of the account's queue tells the transcript which of the messages queued from here the
+            // account still holds — the rest it has delivered, and they are filed where they landed.
+            controls.collect { c -> if (c.queueLoad == QueueLoad.Loaded) graph.conversations.noteAccountQueue(agentId, c.queue.map { it.text }) }
+        }
+        viewModelScope.launch {
             // A file whose upload has completed takes its reference onto the draft, so the copy on disk sends what is
             // already up after a restart rather than uploading it again.
             graph.attachmentUploads.states.collect { states -> adoptUploadRefs(states) }
@@ -553,13 +559,20 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
     }
 
-    /** A follow-up sent mid-turn in Extended mode: into the account's queue, behind the turn under way. */
+    /**
+     * A follow-up sent mid-turn in Extended mode: into the account's queue, behind the turn under way. The card above
+     * the composer (see [controls]) is what shows it until the account delivers it; the transcript then shows it
+     * under the run the account started on it — or, should the account have been free after all and started the
+     * run at once, from the moment the account names that run (see `ConversationRepository.expectDelivery`).
+     */
     private fun queueOnAccount(text: String, images: List<PendingAttachment>, attached: List<PendingFile>, options: FollowUpModelState) {
         viewModelScope.launch {
             sending.value = true
             draft.value = ""
             attachments.value = emptyList()
-            runCatching {
+            val message = text.ifEmpty { attachmentOnlyText(images.size, attached.size) }
+            val staged = graph.conversations.stageFollowUp(agentId, message, images.map { it.image }, attached.map { it.file }, show = false)
+            graph.conversations.sendStagedVia(agentId, staged, options.override?.model?.id, options.override?.params.orEmpty(), options.override?.label) {
                 val uploaded = uploadFiles(attached)
                 graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
             }.onSuccess {

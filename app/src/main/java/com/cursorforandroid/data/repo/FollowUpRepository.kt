@@ -797,7 +797,13 @@ class FollowUpRepository(
                                     runId?.let { e.acceptedId(it) }
                                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                                     e.scheduleSave()
-                                    if (runId == null) conversations.reload(e.agentId)
+                                    if (runId == null) {
+                                        // The account holds it now: the transcript files it under the run the account
+                                        // starts on it (see ConversationRepository.expectDelivery), and is read again
+                                        // for the turn the account is on.
+                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image })
+                                        conversations.reload(e.agentId)
+                                    }
                                     return
                                 },
                                 onFailure = { handoff ->

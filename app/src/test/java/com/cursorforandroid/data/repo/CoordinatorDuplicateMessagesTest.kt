@@ -371,6 +371,29 @@ class CoordinatorDuplicateMessagesTest {
     }
 
     /**
+     * The record path, the running run saying the same words as an earlier message — a status given again — in a
+     * call of its own. The record's copy of the live turn lags the stream and holds no message call yet, so the rule
+     * for a silent turn's log (a copy of an earlier message ahead of the run's own events, told by its text) used to
+     * take the live call for a copy and leave it out. The live turn's own words are never a copy of anything: the
+     * identity rule alone applies to it, and a new call with new ids is drawn.
+     */
+    @Test
+    fun `the running run's own message is drawn even when it says what an earlier message said`() = runBlocking<Unit> {
+        seed()
+        val live = runs.last()
+        val conversations = repository()
+        conversations.attach(agentId)
+        awaitLoaded(conversations)
+        val again = SseToolCallDto("turn-6:step:7:tool", "sendMessage", ToolCall.STATUS_COMPLETED, buildJsonObject { put("text", buildJsonObject { put("content", SevenRunCoordinator.M6) }) }, buildJsonObject { put("success", buildJsonObject { put("messageId", "msg_07Again") }) })
+        streamer.emit(live.id, RunStreamEvent.ToolCall(again))
+        awaitUntil { conversations.state(agentId).value.messageCalls().any { it.callId == "turn-6:step:7:tool" } }
+        delay(300)
+        val state = conversations.state(agentId).value
+        assertThat(present(state).messages()).containsExactly(SevenRunCoordinator.M1, SevenRunCoordinator.M2, SevenRunCoordinator.M6, SevenRunCoordinator.M6).inOrder()
+        assertThat(conversations.loadDiagnostics(agentId)!!.runs.last().message).startsWith("record=none rendered=yes via=live")
+    }
+
+    /**
      * A restart: the record's turns are read back from disk before the network answers, and the message is drawn
      * once from the copies as it was from the record.
      */
