@@ -99,12 +99,9 @@ jobs:
 
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
       - name: Run JVM unit tests (shard ${{ matrix.shard }} of 3)
-        env:
-          # Temporary diagnostics for the 30 s stalls before compileKotlin / test: one hypothesis per shard.
-          DIAG: ${{ matrix.shard == 1 && '--info' || matrix.shard == 2 && '-Dorg.gradle.internal.http.connectionTimeout=5000 -Dorg.gradle.internal.http.socketTimeout=5000' || '-Pkotlin.compiler.execution.strategy=in-process' }}
         run: >
           ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}/3
-          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}" $DIAG
+          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
       - name: Upload test report
         if: failure()
