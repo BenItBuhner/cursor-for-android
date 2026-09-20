@@ -4,13 +4,21 @@ name: Release
 # publishes them as a GitHub Release with auto-generated notes. The version comes from the tag alone:
 #   versionName = tag without the leading "v", versionCode derived in app/build.gradle.kts.
 #
+# The tag's tree has to be one CI already proved: the `gate` job finds the green ci.yml run on the tagged commit (or
+# on a pull-request head with the identical tree), waits for one that is still running, and only when there is none
+# does the release job run lint and the unit tests itself. Releases are cut several times a day; the tests are not
+# run twice on the same code.
+#
 # Signing uses these repository secrets (create them with scripts/release-keystore.sh):
 #   RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
 # All four are required to publish: a runner without them would sign with a throwaway debug key, which no later
-# release can reproduce, so anyone who installed it could never be updated in place again. The build bakes its
-# keystore's certificate into BuildConfig.RELEASE_CERT_SHA256 - the only signer the shipped updater will accept a later
-# APK from - and this workflow refuses to publish an APK signed with anything else. Optionally also pin the expected
-# signer with the RELEASE_CERT_SHA256 repository variable (or secret) to catch a swapped keystore secret.
+# release can reproduce, so anyone who installed it could never be updated in place again. Without them the gate
+# stops the run at once with a notice - the release is then cut by scripts/release-cut.sh, which signs with the key it
+# is given, verifies the same way and publishes the same release; when it already has, this workflow (started by the
+# tag that publishing created) finds the finished release and stands down. The build bakes its keystore's certificate
+# into BuildConfig.RELEASE_CERT_SHA256 - the only signer the shipped updater will accept a later APK from - and this
+# workflow refuses to publish an APK signed with anything else. Optionally also pin the expected signer with the
+# RELEASE_CERT_SHA256 repository variable (or secret) to catch a swapped keystore secret.
 #
 # Crash reports (opt-in in the app; crash/CrashReporting.kt) are optional here too. With the SENTRY_DSN secret set,
 # the build bakes that project in and the app's Settings offer the toggle; without it the build carries no crash
@@ -39,6 +47,7 @@ on:
 
 permissions:
   contents: write # create the release and upload its assets
+  actions: read # read ci.yml's runs for the evidence that the tree is proved
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
@@ -56,10 +65,20 @@ env:
   RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
 jobs:
-  release:
-    name: Release ${{ inputs.tag || github.ref_name }}
+  # Everything that can be known without a checkout, in seconds: is the tag well-formed, is the release already
+  # published, can this run sign at all, and which CI run proved the tree.
+  gate:
+    name: Gate ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      sha: ${{ steps.commit.outputs.sha }}
+      ci_proof: ${{ steps.ci.outputs.proof }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Validate tag
         id: tag
@@ -73,45 +92,156 @@ jobs:
           [[ "$version" == *-* ]] && prerelease=true
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
-          echo "Building ${version} (pre-release: ${prerelease})"
+          echo "Releasing ${version} (pre-release: ${prerelease})"
 
+      - name: Resolve the tagged commit
+        id: commit
+        run: |
+          object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object')"
+          sha="$(jq -r '.sha' <<< "$object")"
+          if [[ "$(jq -r '.type' <<< "$object")" == "tag" ]]; then
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object.sha')"
+          fi
+          tree="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.commit.tree.sha')"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          echo "$TAG is commit ${sha} (tree ${tree})"
+
+      # A finished release with its APK means scripts/release-cut.sh has already done this; the tag that started this
+      # run is the one publishing created.
+      - name: Is the release already published?
+        id: published
+        run: |
+          if assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets --jq 'select(.isDraft == false) | .assets[].name' 2>/dev/null)" \
+             && grep -q '\.apk$' <<< "$assets"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG is already published with its APK; nothing to do."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Every secret is required, not just the keystore: a partially configured signing config would fall back to the
+      # debug key just as silently. Without them this run cannot produce a publishable APK, so it stops here (a dry
+      # run goes on, debug-signed).
+      - name: Can this run sign?
+        id: secrets
+        env:
+          HAS_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          missing=()
+          [[ "$HAS_KEYSTORE" == "true" ]] || missing+=(RELEASE_KEYSTORE_BASE64)
+          for name in RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "::warning::${missing[*]} not set; this dry run's artifacts will be signed with the debug key and cannot be published."
+            else
+              echo "::notice::${missing[*]} not set, so this run cannot publish $TAG. Releases are cut with scripts/release-cut.sh (which signs with the key it is given) until the secrets exist; run scripts/release-keystore.sh --set-secrets to let this workflow publish."
+            fi
+          fi
+
+      - name: Decide
+        id: decide
+        env:
+          PUBLISHED: ${{ steps.published.outputs.published }}
+          CONFIGURED: ${{ steps.secrets.outputs.configured }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$PUBLISHED" == "true" || ( "$CONFIGURED" != "true" && "$DRY_RUN" != "true" ) ]]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing for this run to build."
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The evidence: a successful ci.yml run on this commit, or on another commit with the identical tree (a pull
+      # request's head after an up-to-date merge). A run still going on this commit is waited for. `proof` is the
+      # run's URL, or `none`, in which case the release job runs lint and the unit tests itself.
+      - name: Find the CI run that proved this tree
+        id: ci
+        if: steps.decide.outputs.proceed == 'true'
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+          TREE: ${{ steps.commit.outputs.tree }}
+        run: |
+          runs() { gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?$1" --jq '.workflow_runs[] | [.id, .status, (.conclusion // ""), .head_sha, .html_url] | @tsv'; }
+          proof=""
+          pending=""
+          while IFS=$'\t' read -r id status conclusion head url; do
+            [[ -n "$id" ]] || continue
+            if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then proof="$url"; break; fi
+            [[ "$status" == "completed" ]] || pending="$id"
+          done < <(runs "head_sha=$SHA&per_page=20")
+          if [[ -z "$proof" ]]; then
+            while IFS=$'\t' read -r id status conclusion head url; do
+              [[ -n "$head" && "$head" != "$SHA" ]] || continue
+              tree="$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq '.commit.tree.sha' 2>/dev/null || true)"
+              if [[ "$tree" == "$TREE" ]]; then proof="$url"; echo "Commit ${head:0:7} has the identical tree."; break; fi
+            done < <(runs "status=success&per_page=60")
+          fi
+          if [[ -z "$proof" && -n "$pending" ]]; then
+            echo "CI run $pending is still running on $SHA; waiting for it."
+            deadline=$(( $(date +%s) + 25 * 60 ))
+            while :; do
+              IFS=$'\t' read -r status conclusion url < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$pending" --jq '[.status, (.conclusion // ""), .html_url] | @tsv')
+              if [[ "$status" == "completed" ]]; then
+                if [[ "$conclusion" == "success" ]]; then proof="$url"; else echo "::error::CI run $url ended with '$conclusion'; $TAG is not released."; exit 1; fi
+                break
+              fi
+              (( $(date +%s) < deadline )) || { echo "::error::CI run $url is still '$status' after 25 minutes."; exit 1; }
+              sleep 20
+            done
+          fi
+          if [[ -n "$proof" ]]; then
+            echo "proof=${proof}" >> "$GITHUB_OUTPUT"
+            echo "Proved by $proof"
+          else
+            echo "proof=none" >> "$GITHUB_OUTPUT"
+            echo "::warning::No CI run has proved this tree; the release job runs lint and the unit tests itself."
+          fi
+
+  release:
+    name: Release ${{ inputs.tag || github.ref_name }}
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
       - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
       - uses: ./.github/actions/android-toolchain
 
-      # The tag's version is passed here too, so AppVersionTest's parity check covers the version being released.
-      - name: Lint and unit tests
+      # Only when no CI run proved this tree. The tag's version is passed here too, so AppVersionTest's parity check
+      # covers the version being released.
+      - name: Lint and unit tests (no CI run has proved this tree)
+        if: needs.gate.outputs.ci_proof == 'none'
         run: >
           ./gradlew :app:lintDebug :app:testDebugUnitTest -Papp.skipScreenshotTests=true
-          -Papp.versionName="${{ steps.tag.outputs.version }}"
+          -Papp.versionName="${{ needs.gate.outputs.version }}"
 
-      # Every secret is required, not just the keystore: a partially configured signing config would fall back to the
-      # debug key just as silently. Missing any of them stops the run here unless this is a dry run.
+      # The gate has already established that every secret is present unless this is a dry run.
       - name: Prepare signing
         id: signing
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          missing=()
-          for name in RELEASE_KEYSTORE_BASE64 RELEASE_KEYSTORE_PASSWORD RELEASE_KEY_ALIAS RELEASE_KEY_PASSWORD; do
-            [[ -n "${!name:-}" ]] || missing+=("$name")
-          done
-          if [[ ${#missing[@]} -eq 0 ]]; then
+          if [[ -n "$RELEASE_KEYSTORE_BASE64" && -n "$RELEASE_KEYSTORE_PASSWORD" && -n "$RELEASE_KEY_ALIAS" && -n "$RELEASE_KEY_PASSWORD" ]]; then
             keystore="$RUNNER_TEMP/release.jks"
             printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
             [[ -s "$keystore" ]] || { echo "::error::RELEASE_KEYSTORE_BASE64 did not decode into a keystore."; exit 1; }
             echo "RELEASE_KEYSTORE_FILE=${keystore}" >> "$GITHUB_ENV"
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "Signing with the release keystore."
-          elif [[ "$DRY_RUN" == "true" ]]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::${missing[*]} not set; this dry run's artifacts will be signed with the debug key and cannot be published."
           else
-            echo "::error::${missing[*]} not set. A published release has to carry the production key, or it can never be an in-place update for anyone who installs it. Run scripts/release-keystore.sh --set-secrets, then re-run this workflow for the tag; tick 'dry run' to build debug-signed artifacts instead."
-            exit 1
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Dry run without the signing secrets: debug key."
           fi
 
       # Optional, and absent by default: without SENTRY_DSN the app is built with no crash reporting and its Settings
@@ -147,7 +277,7 @@ jobs:
             echo "::warning::${missing[*]} not set; the R8 mapping will not be uploaded to Sentry, so this build's crash reports will arrive obfuscated. It is still attached to the release."
           fi
 
-      # An unsigned release build fails by default (app/build.gradle.kts). Only the dry run, which the step above lets
+      # An unsigned release build fails by default (app/build.gradle.kts). Only the dry run, which the gate lets
       # through without secrets and which never publishes, opts in to the debug key.
       - name: Build release APK and AAB
         env:
@@ -157,12 +287,12 @@ jobs:
         run: |
           crash=()
           [[ -z "$SENTRY_DSN" ]] || crash=(-Papp.sentryDsn="$SENTRY_DSN" -Papp.sentryProguardUuid="$MAPPING_UUID")
-          ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ steps.tag.outputs.version }}" $UNSIGNED "${crash[@]}"
+          ./gradlew :app:assembleRelease :app:bundleRelease -Papp.versionName="${{ needs.gate.outputs.version }}" $UNSIGNED "${crash[@]}"
 
       - name: Package artifacts
         id: package
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
           UNSIGNED: ${{ steps.signing.outputs.configured != 'true' && '-Papp.allowUnsignedRelease=true' || '' }}
         run: |
           ./gradlew -q :app:printAppVersion -Papp.versionName="$VERSION" $UNSIGNED > "$RUNNER_TEMP/version.txt"
@@ -197,7 +327,7 @@ jobs:
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT || secrets.SENTRY_PROJECT }}
           SENTRY_CLI_VERSION: "3.7.0"
           MAPPING_UUID: ${{ steps.crash.outputs.uuid }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           curl -sL https://sentry.io/get-cli/ | INSTALL_DIR="$RUNNER_TEMP/bin" sh
@@ -208,12 +338,13 @@ jobs:
 
       - name: Write release notes header
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.gate.outputs.version }}
           VERSION_CODE: ${{ steps.package.outputs.version_code }}
           CERT_SHA256: ${{ steps.package.outputs.cert_sha256 }}
           SIGNED: ${{ steps.signing.outputs.configured }}
           CRASH_REPORTS: ${{ steps.crash.outputs.configured }}
           MAPPING_UUID: ${{ steps.crash.outputs.uuid }}
+          CI_PROOF: ${{ needs.gate.outputs.ci_proof }}
         run: |
           commit="$(git rev-parse HEAD)" # not GITHUB_SHA: on workflow_dispatch that is the selected branch head
           {
@@ -232,6 +363,11 @@ jobs:
             else
               echo "| Crash reports | None - this build was made without a project to report to. |"
             fi
+            if [[ "$CI_PROOF" == "none" ]]; then
+              echo "| CI | lint and the unit tests ran in this release run |"
+            else
+              echo "| CI | ${CI_PROOF} |"
+            fi
             echo
             echo "**Install:** download \`cursor-for-android-${VERSION}.apk\`, then \`adb install -r cursor-for-android-${VERSION}.apk\` (or open it on the device). \`SHA256SUMS.txt\` holds the checksums of the APK and AAB; \`*-mapping.txt\` is the R8 mapping for de-obfuscating stack traces."
             echo
@@ -241,7 +377,7 @@ jobs:
       - name: Upload artifacts to this run
         uses: actions/upload-artifact@v7
         with:
-          name: cursor-for-android-${{ steps.tag.outputs.version }}
+          name: cursor-for-android-${{ needs.gate.outputs.version }}
           path: dist/
           if-no-files-found: error
           retention-days: 90
@@ -295,5 +431,5 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
-          prerelease: ${{ steps.tag.outputs.prerelease == 'true' }}
-          make_latest: ${{ steps.tag.outputs.prerelease == 'false' }}
+          prerelease: ${{ needs.gate.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.gate.outputs.prerelease == 'false' }}
