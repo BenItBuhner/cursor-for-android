@@ -660,7 +660,7 @@ class ConversationRepository(
             val perf = TranscriptPerf.session(agentId)
             val pending = trailing.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
             fun echo(prompt: LocalPrompt): List<TimelineItem> =
-                TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending)
+                TimelineBuilder.fromHistory(listOfNotNull(prompt.message, prompt.reply), listOf(prompt.run), shownTraces(), promptImages, pending, partial = keptStories().keys)
             fun startOf(i: Int): Long? {
                 val run = paired.getOrNull(offset + i)
                 return run?.let { parseIsoMillis(it.createdAt).takeIf { ms -> ms > 0 } } ?: window.turnStartedAt(i)
@@ -765,7 +765,8 @@ class ConversationRepository(
                 // The story the stream told before the follow ended, until the whole trace lands (see [Entry.partial]):
                 // with its footer when the stream's end gave one, else the run's below.
                 inputs.partial != null -> {
-                    items += CoordinatorTranscript.withoutRepeats(inputs.partial, inputs.repeats)
+                    // With the record's own words for the turn, when the stream never delivered them.
+                    items += TimelineBuilder.withReplies(CoordinatorTranscript.withoutRepeats(inputs.partial, inputs.repeats), turn.items.filterIsInstance<AssistantMessage>())
                     if (inputs.partial.any { it is RunFooter }) return items
                 }
                 // The record's own body — with the reply the transcript gave when the record lacked it and the log
@@ -1019,13 +1020,14 @@ class ConversationRepository(
         private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout): List<TimelineItem> {
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
-            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset).toMutableList()
+            val stories = keptStories().keys
+            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset, partial = stories).toMutableList()
             // A prompt steered into a run the transcript pairs with its own prompt: after the story the run had told by then.
             layout.paired.forEach { run -> local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
             layout.standing.forEach { run ->
                 // The prompt that started the run, sent from here, ahead of it; the ones steered into it among its rows.
                 val prompt = local.firstOrNull { it.run.id == run.id && it.steeredAfter == null }
-                val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending).toMutableList()
+                val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending, partial = stories).toMutableList()
                 local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(turn, run, steered, shown) }
                 items += turn
             }

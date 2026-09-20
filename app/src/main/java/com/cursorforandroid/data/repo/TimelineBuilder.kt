@@ -43,6 +43,12 @@ object TimelineBuilder {
         pending: Set<String> = emptySet(),
         /** The prompt, by position among [messages]' prompts, the first of [runs] belongs to: the prompts before it have no run in hand. */
         firstRunAt: Int = 0,
+        /**
+         * Runs whose entry in [traces] is the story their stream told before the follow ended, not the whole trace
+         * (see `ConversationRepository.Entry.partial`): the transcript's replies for the run join it — the words the
+         * stream never delivered — and the run's footer closes it when the run is over.
+         */
+        partial: Set<String> = emptySet(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         /** The run of the [index]th prompt, when it is in hand. */
@@ -53,10 +59,10 @@ object TimelineBuilder {
         fun closeRun(run: RunDto?, replies: List<TimelineItem>) {
             val trace = run?.let { traces[it.id] }
             if (trace != null) {
-                items += trace
+                items += if (run.id in partial) withReplies(trace, replies) else trace
                 // A whole trace ends on its own footer. The story a stream told before it broke does not: the run
                 // that ended meanwhile (by its record) gets the record's footer under it, like a run without a trace.
-                if (run != null && !run.statusEnum().isActive && trace.none { it is RunFooter }) items += footer(run)
+                if (!run.statusEnum().isActive && items.none { it is RunFooter && it.runId == run.id }) items += footer(run)
                 return
             }
             items += replies
@@ -94,6 +100,27 @@ object TimelineBuilder {
         ordered.drop((userIndex + 1 - firstRunAt).coerceAtLeast(0)).forEach { run -> closeRun(run, resultReply(run)) }
         return items.withUniqueIds()
     }
+
+    /**
+     * A run's story so far with the transcript's [replies] for the run: the words the stream never delivered join
+     * the calls and thoughts it did. A reply the story already holds is not said twice, and a reply the story holds
+     * cut off — the stream's copy a prefix of the transcript's whole — gives way to the whole. Footers and notices
+     * among [replies] follow as they are.
+     */
+    fun withReplies(story: List<TimelineItem>, replies: List<TimelineItem>): List<TimelineItem> {
+        if (replies.isEmpty()) return story
+        val told = story.filterIsInstance<AssistantMessage>().map { normalizeText(it.markdown) }.filter { it.isNotEmpty() }
+        val texts = replies.filterIsInstance<AssistantMessage>().map { normalizeText(it.markdown) }.filter { it.isNotEmpty() }
+        if (told.isEmpty() || texts.isEmpty()) return story + replies
+        // A story message the transcript completes (the stream's copy cut off ahead of the transcript's whole) gives
+        // way to the whole; a reply the story already has, whole or ahead of it, is not said again. The story's own
+        // instances stand wherever the words agree, so nothing on screen is redrawn for the same words.
+        val kept = story.filterNot { item -> item is AssistantMessage && normalizeText(item.markdown).let { mine -> mine.isNotEmpty() && texts.any { it != mine && it.startsWith(mine) } } }
+        val added = replies.filterNot { item -> item is AssistantMessage && normalizeText(item.markdown).let { theirs -> theirs.isNotEmpty() && told.any { it.startsWith(theirs) } } }
+        return kept + added
+    }
+
+    private fun normalizeText(text: String) = text.trim().replace(WHITESPACE, " ")
 
     /**
      * Ids double as `LazyColumn` keys and `rememberSaveable` keys, both of which abort on a repeat, and the ones
