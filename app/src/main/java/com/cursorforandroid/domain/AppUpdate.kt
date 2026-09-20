@@ -25,6 +25,12 @@ data class AppVersion(
 
     val isPreRelease: Boolean get() = preRelease != null
 
+    /**
+     * A build of the release that comes next rather than of a release: `0.3.49-dev` (a local build) or
+     * `0.3.49-dev.42+gabc1234` (CI's stamp). No tag of this name will ever exist.
+     */
+    val isDevBuild: Boolean get() = build != null || preRelease?.substringBefore('.')?.equals("dev", ignoreCase = true) == true
+
     val versionCode: Int get() = major * 1_000_000 + minor * 10_000 + patch * 100 + stage(preRelease)
 
     override fun compareTo(other: AppVersion): Int = versionCode.compareTo(other.versionCode)

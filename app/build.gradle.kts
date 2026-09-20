@@ -13,9 +13,17 @@ plugins {
 // ---------------------------------------------------------------------------------------------------------------------
 // Versioning
 //
-// `app.versionName` lives in gradle.properties and is overridden with `-Papp.versionName=X.Y.Z` by the release
-// workflow, which derives it from the `vX.Y.Z` git tag. versionCode is computed from that name so a tag is the only
-// input a release needs:
+// The version comes from git; nothing in the repository is edited to cut a release:
+//
+//   * `-Papp.versionName=X.Y.Z` names it outright. release.yml and scripts/release-cut.sh pass the `vX.Y.Z` tag's
+//     version this way, so a release never depends on what the checkout can see.
+//   * A checkout at a release tag `vX.Y.Z` builds X.Y.Z.
+//   * Anything else is a dev build of the release that comes next: the highest `v*` tag's PATCH + 1 - or the tag's own
+//     version while that tag is a pre-release such as v0.4.0-rc.1 - with `-dev` appended, e.g. `0.3.49-dev` after
+//     v0.3.48. CI replaces the `-dev` with its stamp (below). A checkout without git or without any release tag builds
+//     0.0.0-dev and says so; fetch the tags (`git fetch --tags`) to get the real version.
+//
+// versionCode is computed from the resolved name, so the tag is the only input a release needs:
 //
 //     MAJOR * 1_000_000 + MINOR * 10_000 + PATCH * 100 + STAGE
 //     STAGE: alpha.N -> N (0..24), beta.N -> 25 + N, rc.N -> 50 + N, stable (no pre-release) -> 99
@@ -23,17 +31,51 @@ plugins {
 // e.g. 0.2.0-alpha.1 -> 20001, 0.2.0-beta.1 -> 20026, 0.2.0-rc.1 -> 20051, 0.2.0 -> 20099. Build metadata after `+`
 // is ignored. `-Papp.versionCode=N` overrides the derived value.
 //
-// `-Papp.versionNameSuffix=...` is appended to the versionName (CI uses it to stamp dev builds with the run number
-// and commit) and the code is derived from the result, not from the base: a `0.2.0-dev.148+gabc1234` build has to
-// report 20024, or the updater would refuse the stable 0.2.0 (20099) it leads up to as "not newer".
+// `-Papp.versionNameSuffix=...` replaces the `-dev` (CI uses it to stamp dev builds with the run number and commit,
+// `-dev.148+gabc1234`) and the code is derived from the result, not from the base: a `0.2.0-dev.148+gabc1234` build
+// has to report 20024, or the updater would refuse the stable 0.2.0 (20099) it leads up to as "not newer". `dev`
+// counts as an alpha-class stage, so every dev build sorts below every release of the version it leads up to.
 //
 // The in-app updater (domain/AppUpdate.kt, AppVersion.versionCode) reproduces this scheme to compare a release tag
 // with the installed BuildConfig.VERSION_CODE; AppVersionTest pins both to the same examples, and asserts that this
 // script's own output for the build under test agrees with it. Change them together.
 // ---------------------------------------------------------------------------------------------------------------------
+val releaseTagVersion = Regex("""^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$""")
+
+/** stdout of `git args...` in the repository root, or null when git is missing, fails or prints nothing. */
+fun git(vararg args: String): String? = runCatching {
+    providers.exec {
+        commandLine("git", *args)
+        workingDir = rootDir
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+/** The highest release version among [tags] (`vX.Y.Z[-pre]` lines; anything else is ignored), without the `v`. */
+fun highestReleaseVersion(tags: String?): String? = tags.orEmpty().lines().map(String::trim)
+    .filter(releaseTagVersion::matches)
+    .map { it.removePrefix("v") }
+    .maxByOrNull { runCatching { versionCodeFor(it) }.getOrDefault(-1) }
+
+/** The version this checkout builds by default, and whether it is a dev build leading up to that version. */
+fun versionFromGit(): Pair<String, Boolean> {
+    highestReleaseVersion(git("tag", "--points-at", "HEAD", "--list", "v[0-9]*"))?.let { return it to false }
+    val latest = highestReleaseVersion(git("tag", "--list", "v[0-9]*"))
+    if (latest == null) {
+        logger.warn("No release tag (vX.Y.Z) is visible to this checkout, so this is a 0.0.0-dev build. Fetch the tags (git fetch --tags) for the real version, or pass -Papp.versionName.")
+        return "0.0.0" to true
+    }
+    val (major, minor, patch, preRelease) = releaseTagVersion.matchEntire("v$latest")!!.destructured
+    return (if (preRelease.isEmpty()) "$major.$minor.${patch.toInt() + 1}" else "$major.$minor.$patch") to true
+}
+
 val appVersionNameSuffix: String? = providers.gradleProperty("app.versionNameSuffix").orNull?.takeIf { it.isNotBlank() }
-val appVersionName: String = providers.gradleProperty("app.versionName").get()
-val appResolvedVersionName: String = appVersionName + (appVersionNameSuffix ?: "")
+val appExplicitVersionName: String? = providers.gradleProperty("app.versionName").orNull?.takeIf { it.isNotBlank() }
+val appGitVersion: Pair<String, Boolean>? = if (appExplicitVersionName == null) versionFromGit() else null
+val appVersionName: String = appExplicitVersionName ?: appGitVersion!!.first
+val appIsDevBuild: Boolean = appGitVersion?.second ?: false
+val appEffectiveVersionNameSuffix: String? = appVersionNameSuffix ?: "-dev".takeIf { appIsDevBuild }
+val appResolvedVersionName: String = appVersionName + (appEffectiveVersionNameSuffix ?: "")
 val appVersionCode: Int = providers.gradleProperty("app.versionCode").map(String::toInt).getOrElse(versionCodeFor(appResolvedVersionName))
 // The GitHub repository whose releases the app updates itself from (`owner/name`); a fork points this at its own.
 val appGitHubRepo: String = providers.gradleProperty("app.githubRepo").get().also {
@@ -152,7 +194,7 @@ android {
         targetSdk = 35
         versionCode = appVersionCode
         versionName = appVersionName
-        versionNameSuffix = appVersionNameSuffix
+        versionNameSuffix = appEffectiveVersionNameSuffix
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "GITHUB_REPO", "\"$appGitHubRepo\"")
         buildConfigField("String", "SENTRY_DSN", "\"$appSentryDsn\"")

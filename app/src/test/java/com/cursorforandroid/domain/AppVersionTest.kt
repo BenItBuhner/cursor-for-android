@@ -46,6 +46,21 @@ class AppVersionTest {
         assertThat(stable.isPreRelease).isFalse()
     }
 
+    /** What the build script names a checkout that is not at a release tag, with and without CI's stamp on it. */
+    @Test
+    fun `dev builds are the ones with no release to look up, and sort below every release of their version`() {
+        val local = AppVersion.parse("0.3.49-dev")!!
+        val ci = AppVersion.parse("0.3.49-dev.42+gabc1234")!!
+        assertThat(local.isDevBuild).isTrue()
+        assertThat(ci.isDevBuild).isTrue()
+        assertThat(local.versionCode).isEqualTo(34900) // `dev` alone is stage 0
+        assertThat(local).isLessThan(ci)
+        assertThat(ci).isLessThan(AppVersion.parse("0.3.49-rc.1")!!)
+        assertThat(ci).isLessThan(AppVersion.parse("0.3.49")!!)
+        assertThat(AppVersion.parse("0.3.48")!!).isLessThan(local)
+        listOf("0.3.49", "0.3.49-rc.1", "0.3.49-beta.2", "0.3.49-alpha.1").forEach { assertThat(AppVersion.parse(it)!!.isDevBuild).isFalse() }
+    }
+
     @Test
     fun `stage iterations are capped so a runaway counter cannot cross into the next stage`() {
         assertThat(AppVersion.stage("alpha.99")).isEqualTo(24)

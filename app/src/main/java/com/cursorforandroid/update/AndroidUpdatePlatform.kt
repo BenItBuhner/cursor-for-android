@@ -21,14 +21,17 @@ import com.cursorforandroid.domain.AppRelease
 import java.io.File
 import java.security.MessageDigest
 
-/** The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller`, connectivity and the process lifecycle. */
-open class AndroidUpdatePlatform(context: Context) : UpdatePlatform {
+/**
+ * The real device behind [UpdatePlatform]: `PackageManager`, `PackageInstaller`, connectivity and the process lifecycle.
+ * [installedVersionName] is the build's own; the screenshot tests hand in a fixed one (through `AppGraph.appVersion`)
+ * so what the version decides on screen - the pre-release default, the row - never moves with a release.
+ */
+open class AndroidUpdatePlatform(context: Context, override val installedVersionName: String = BuildConfig.VERSION_NAME) : UpdatePlatform {
 
     private val context = context.applicationContext
     private val packageManager: PackageManager get() = context.packageManager
 
     override val installedVersionCode: Int = BuildConfig.VERSION_CODE
-    override val installedVersionName: String = BuildConfig.VERSION_NAME
     override val applicationId: String = BuildConfig.APPLICATION_ID
     override val sdkInt: Int = Build.VERSION.SDK_INT
     override val releaseCertSha256: String? = BuildConfig.RELEASE_CERT_SHA256.takeIf { it.isNotBlank() }?.lowercase()

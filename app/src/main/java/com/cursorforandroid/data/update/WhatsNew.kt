@@ -86,8 +86,8 @@ class WhatsNewRepository(
         // A recent "nothing there" stands; a clock that went backwards does not keep it standing forever.
         if (cached != null && at - cached.fetchedAtMs in 0 until NO_NOTES_RETRY_MS) return@withLock
         lastAttemptMs?.let { if (at - it in 0 until FAILED_RETRY_MS) return@withLock }
-        // A `0.3.38-dev.42+gabc1234` build has no release to look for; the tag it would ask about never exists.
-        if (AppVersion.parse(installedVersionName)?.build != null) return@withLock
+        // A `0.3.38-dev` or `0.3.38-dev.42+gabc1234` build has no release to look for; the tag it would ask about never exists.
+        if (AppVersion.parse(installedVersionName)?.isDevBuild == true) return@withLock
         lastAttemptMs = at
         val dto = try {
             client.releaseByTag(tagName)
