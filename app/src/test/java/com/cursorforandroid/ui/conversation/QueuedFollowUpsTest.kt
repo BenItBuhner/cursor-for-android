@@ -96,7 +96,8 @@ class QueuedFollowUpsTest {
             // One steady line — no ring, no "sending" — even though this frame has an attempt out.
             compose.onNodeWithTag("queued-held").assertExists()
             compose.onNodeWithText(QueuedFollowUp.WAITING_FOR_AGENT, substring = true).assertExists()
-            compose.onNodeWithText("1m 23s", substring = true).assertExists()
+            // The time's space is non-breaking: a narrow card breaks the line before the time, never inside it.
+            compose.onNodeWithText("1m\u00A023s", substring = true).assertExists()
             compose.onAllNodesWithContentDescription("Sending").assertCountEquals(0)
             // Not yet the server's words: two refusals so far.
             compose.onAllNodesWithTag("queued-held-reason").assertCountEquals(0)

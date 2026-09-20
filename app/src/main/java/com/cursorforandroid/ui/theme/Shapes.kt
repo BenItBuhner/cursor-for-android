@@ -80,7 +80,8 @@ object CursorDimens {
     val composerPadding = 12.dp
     /**
      * Air around the follow-up composer where it docks at the bottom of a chat: this much between the box and each
-     * side of the window (and the queue and goal strips above it share the same edges)…
+     * side of the window (the cards stacked above it — queue, goal, load notices — stand a further
+     * `composerRadius - their radius` in, so their corners are concentric with the box's; see `Modifier.dockedCard`)…
      */
     val composerGutter = 12.dp
     /**

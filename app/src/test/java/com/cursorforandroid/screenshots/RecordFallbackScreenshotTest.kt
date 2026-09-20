@@ -5,10 +5,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -21,12 +24,15 @@ import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.data.repo.TimelineBuilder
 import com.cursorforandroid.domain.TranscriptPresenter
 import com.cursorforandroid.fixtures.LongProject
+import com.cursorforandroid.ui.components.ComposerBox
+import com.cursorforandroid.ui.components.ComposerMenuActions
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
 import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_DETAIL
 import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_TITLE
 import com.cursorforandroid.ui.conversation.RecordFallbackRow
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.conversation.TranscriptRowView
+import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
@@ -45,9 +51,10 @@ import java.io.File
 
 /**
  * The account's record refused and the documented endpoints standing in, said as such (see
- * `ConversationState.recordFallback`): the newest runs of the 240-turn Project bare, the row under them naming the
- * refusal in the server's words and what is on screen because of it, with Retry and the diagnostics beside it —
- * what Bennett's 2026-09-20 frame showed without a word. Written to `screenshots/` and compared pixel for pixel in CI.
+ * `ConversationState.recordFallback`): the newest runs of the 240-turn Project bare, and over the composer a card
+ * naming the refusal in the server's words and what is on screen because of it, with Retry and the diagnostics as
+ * buttons inside it — what Bennett's 2026-09-20 frame showed without a word, then as bare lines over the box.
+ * Written to `screenshots/` and compared pixel for pixel in CI.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -88,12 +95,32 @@ class RecordFallbackScreenshotTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null, LocalTranscriptControls provides TranscriptControls(onOpenAgent = {}, agentById = { null }, coordinatorMode = true)) {
-                    Column(
-                        Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        rows.forEach { TranscriptRowView(it) }
-                        RecordFallbackRow(fallback, onRetry = { retried++ }, onShareDiagnostics = {})
+                    Column(Modifier.fillMaxSize().background(CursorTheme.colors.canvas)) {
+                        Column(
+                            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            rows.forEach { TranscriptRowView(it) }
+                        }
+                        // The dock as the chat lays it out: the record's card first, over the box, in the gutter.
+                        Column(
+                            Modifier.fillMaxWidth().padding(horizontal = CursorDimens.composerGutter).padding(bottom = CursorDimens.composerBottomGap),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            RecordFallbackRow(fallback, onRetry = { retried++ }, onShareDiagnostics = {}, modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp))
+                            ComposerBox(
+                                value = "",
+                                onValueChange = {},
+                                placeholder = "Follow up (queues on your account)…",
+                                onSend = {},
+                                isRunning = true,
+                                onStop = {},
+                                plusMenu = ComposerMenuActions(onPickMedia = {}),
+                                modelLabel = "Claude Fable 5.1",
+                                onModel = {},
+                                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth),
+                            )
+                        }
                     }
                 }
             }
