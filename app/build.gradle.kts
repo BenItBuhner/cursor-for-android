@@ -254,6 +254,13 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
     }
+    lint {
+        // `assembleRelease` would otherwise run lintVitalRelease - a second analysis of the same sources for the
+        // fatal-only subset of what `lintDebug` already reports in full. There is no release-only source set to check
+        // (src/main, src/debug and src/test are all there is), so the vital pass proves nothing lintDebug does not, and
+        // CI runs lintDebug on every change. It cost ten minutes of the build job and of every release cut.
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {
@@ -401,8 +408,9 @@ class TestShardFilter(private val index: Int, private val count: Int) : Spec<Fil
 
 tasks.withType<Test>().configureEach {
     maxParallelForks = testForks
+    // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and the
+    // long stop-the-world pauses of a throughput collector under three forks on four cores are what fail them.
     maxHeapSize = "2g"
-    jvmArgs("-XX:+UseParallelGC")
     testShard?.let { (index, count) -> include(TestShardFilter(index, count)) }
 }
 
