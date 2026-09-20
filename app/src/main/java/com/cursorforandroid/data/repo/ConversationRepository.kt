@@ -1615,10 +1615,21 @@ class ConversationRepository(
     /** True while a stream is open on [runId] for this entry. */
     private fun Entry.isFollowing(runId: String): Boolean = synchronized(this) { streamJob?.isActive == true && state.value.activeRunId == runId }
 
-    /** Stops following the active run. Its story so far goes with the job (see [Entry.live]). */
-    private fun Entry.stopFollowing() {
+    /**
+     * Stops following the active run. Its story so far goes with the job (see [Entry.live]). With [over] — the run
+     * the follow is ended for, over by the server's account — the chat's status is settled from that record in the
+     * same frame: the load that found the run over had kept the stream's word for the status ("a stream open on the
+     * latest run keeps its word"), and stopping the stream alone left `isStreaming` false over a `RUNNING` status
+     * that nothing corrected until the next load — the Stop button and "Working…" over the reply and the footer, for
+     * a turn that ended while the connection was down. Without [over] the status is not this call's to say: a
+     * screen leaving, or a reload about to read it afresh.
+     */
+    private fun Entry.stopFollowing(over: RunDto? = null) {
         streamJob?.cancel()
-        publish(mutate = { streamJob = null; live = null }, transform = { copy(isStreaming = false, isReconnecting = false) })
+        publish(
+            mutate = { streamJob = null; live = null },
+            transform = { copy(isStreaming = false, isReconnecting = false, runStatus = if (over != null) this@stopFollowing.chatStatus(over, streaming = false) else runStatus) },
+        )
     }
 
     /**
@@ -1776,8 +1787,9 @@ class ConversationRepository(
                         // The run being followed is over by the server's account: what its stream told before the
                         // connection dropped, or the outcome read from the run record, must not stand in for it any
                         // longer — the transcript has the reply now, and the replay below brings the whole trace.
+                        // The status goes with it, in the same frame (see [Entry.stopFollowing]).
                         val followed = synchronized(e) { e.live?.runId }
-                        if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
+                        if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing(over = latest)
                         // No run to stream while the account calls the chat running: kept followed (see [keepFollowing]).
                         if (accountSaysRunning(e)) keepFollowing(e, endedRunId = null)
                     }
@@ -1942,7 +1954,7 @@ class ConversationRepository(
                 if (!e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
             } else {
                 val followed = synchronized(e) { e.live?.runId }
-                if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing()
+                if (followed != null && merged.any { it.id == followed && !it.statusEnum().isActive }) e.stopFollowing(over = latest)
                 // No run to stream, and the account calls the chat running: the record is the source (see [keepFollowing]).
                 if (accountSaysRunning(e)) keepFollowing(e, endedRunId = null)
             }
