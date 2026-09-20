@@ -185,6 +185,18 @@ class LongProjectLoadTest {
         report("runs: after two scroll-ups", before, presenter)
         println("   messages shown: ${messages(before.items).size}; diagnostics source=${conversations.loadDiagnostics(agentId)?.source} record=${conversations.loadDiagnostics(agentId)?.record}")
         assertThat(conversations.loadDiagnostics(agentId)!!.source).isEqualTo("runs")
+        // Never silently: the refusal stands on the screen in the server's words, with the pause it named, and the
+        // diagnostics carry the path, the reason and the timings.
+        val fallback = before.recordFallback!!
+        assertThat(fallback.reason).contains("Too many requests")
+        assertThat(fallback.retryAfterMillis).isEqualTo(2_000L)
+        assertThat(fallback.readMillis).isLessThan(3_000L)
+        val recordLine = conversations.loadDiagnostics(agentId)!!.record!!
+        assertThat(recordLine.error).contains("Too many requests")
+        assertThat(recordLine.fallback!!.text).startsWith("fallback=runs since=")
+        assertThat(recordLine.fallback!!.retryAfterMs).isEqualTo(2_000L)
+        // The record was asked once at the open and not again for the window's replays: its logs were the source.
+        assertThat(requests()[FaultServer.Route.Record]).isEqualTo(1)
         // The window's runs and the two pages behind it, and nothing of the hundreds of turns past them.
         assertThat(TranscriptPerf.sessionOrNull(agentId)!!.snapshot().network["replay"] ?: 0).isAtMost(30)
         assertThat(messages(before.items)).isNotEmpty()
