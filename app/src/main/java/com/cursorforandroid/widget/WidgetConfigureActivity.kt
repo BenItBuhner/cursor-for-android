@@ -51,7 +51,7 @@ import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
-import com.cursorforandroid.ui.theme.ThemeMode
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -75,22 +75,28 @@ class WidgetConfigureActivity : ComponentActivity() {
         val glanceId = GlanceAppWidgetManager(this).getGlanceIdBy(appWidgetId)
 
         setContent {
-            val themeMode by graph.prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
-            val oledBlack by graph.prefs.oledBlack.collectAsStateWithLifecycle(initialValue = false)
-            // Null until the widget's stored choice has been read: a fresh widget starts on the default.
+            // Nothing is drawn until the theme and the widget's stored choice are both known: a first frame in the
+            // default theme that flips to the chosen one, or a check mark that pops in a frame late, is the jump
+            // this screen used to open with. The window behind it already wears the app's night mode.
+            val appearance by remember { combine(graph.prefs.themeMode, graph.prefs.oledBlack, ::Pair) }.collectAsStateWithLifecycle(initialValue = null)
             var selected by remember { mutableStateOf<WidgetMode?>(null) }
             LaunchedEffect(Unit) {
                 selected = WidgetMode.parse(getAppWidgetState(this@WidgetConfigureActivity, PreferencesGlanceStateDefinition, glanceId)[ChatsWidget.MODE_KEY])
             }
+            val (themeMode, oledBlack) = appearance ?: return@setContent
+            val chosen = selected ?: return@setContent
             CursorTheme(mode = themeMode, oledBlack = oledBlack) {
                 WidgetConfigureScreen(
-                    selected = selected,
+                    selected = chosen,
                     onPick = { mode ->
                         selected = mode
                         lifecycleScope.launch {
+                            // The choice is a millisecond's write; the render it calls for is a WorkManager round
+                            // trip the tap must not wait on. It runs in the process's scope, so finishing here
+                            // cannot cancel it half-way.
                             updateAppWidgetState(this@WidgetConfigureActivity, glanceId) { it[ChatsWidget.MODE_KEY] = mode.name }
-                            ChatsWidget().update(this@WidgetConfigureActivity, glanceId)
                             setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
+                            WidgetSync.render(this@WidgetConfigureActivity, glanceId)
                             finish()
                         }
                     },

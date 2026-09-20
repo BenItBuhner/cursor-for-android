@@ -69,6 +69,9 @@ object WidgetData {
     /** How long a first render waits for a first page when nothing is on disk (a fresh install, or the demo). */
     private const val FIRST_PAGE_WAIT_MS = 4_000L
 
+    /** How long a refresh pass of its own ([refresh]) is given before the widgets are rendered with what there is. */
+    const val FORCED_REFRESH_TIMEOUT_MS = 20_000L
+
     /** Refreshes are joined here so they outlive the render that asked for them. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -107,6 +110,25 @@ object WidgetData {
             // "Loading…" until the battery is charged.
             withTimeoutOrNull(FIRST_PAGE_WAIT_MS) { graph.agents.refresh(silent = true, depth = RefreshDepth.Quick) }
         }
+    }
+
+    /**
+     * A refresh pass of its own, for [WidgetRefreshWork]: the list readied as [prepare] readies it, then the newest
+     * page — whatever the list's age when [forced] (the header button: a person asking, whose low battery is theirs
+     * to spend), only when it is stale otherwise (the timer's pass, which keeps to the budget a tick keeps to). Waits
+     * for the page, up to [FORCED_REFRESH_TIMEOUT_MS], so the caller can render what it brought; true when one landed.
+     */
+    suspend fun refresh(graph: AppGraph, budget: WidgetRefreshBudget, forced: Boolean): Boolean {
+        graph.session.restoreIfNeeded()
+        if (graph.session.state.value !is SessionState.SignedIn) return false
+        graph.agents.restoreFromCache()
+        graph.pullRequests.restoreFromCache()
+        if (!budget.connected || (!forced && !budget.allowsRefresh)) return false
+        val before = graph.agents.refreshCompleted.value
+        withTimeoutOrNull(FORCED_REFRESH_TIMEOUT_MS) {
+            if (forced) graph.agents.refresh(silent = true, depth = RefreshDepth.Quick) else graph.agents.refreshIfStale(STALE_AFTER_MS, RefreshDepth.Quick)
+        }
+        return graph.agents.refreshCompleted.value != before
     }
 
     /**

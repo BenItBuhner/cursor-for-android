@@ -49,6 +49,7 @@
     <string name="widget_sign_in">Sign in to see your chats</string>
     <string name="widget_open_app">Open Cursor to load your chats</string>
     <string name="widget_new_chat">New chat</string>
+    <string name="widget_refresh">Refresh</string>
     <string name="widget_choose_list">Choose what the widget lists</string>
     <string name="widget_configure_title">Widget</string>
     <string name="widget_configure_subtitle">Choose what it shows</string>

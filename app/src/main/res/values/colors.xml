@@ -19,6 +19,9 @@
     <color name="widget_text_tertiary">#99141414</color>
     <color name="widget_text_quaternary">#5C141414</color>
     <color name="widget_icon_secondary">#A8141414</color>
+    <!-- The same icon tone pinned to one theme, for a widget set to Cursor Dark or Cursor Light regardless of the system mode. -->
+    <color name="widget_icon_secondary_dark">#A8F0F0F0</color>
+    <color name="widget_icon_secondary_light">#A8141414</color>
     <color name="widget_icon_tertiary">#85141414</color>
     <color name="widget_icon_quaternary">#47141414</color>
     <color name="widget_unread_dot">#2778C1</color>

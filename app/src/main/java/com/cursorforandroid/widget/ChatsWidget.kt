@@ -6,13 +6,17 @@ import android.content.Intent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.net.toUri
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.GlanceId
+import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
+import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.provideContent
+import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.currentState
 import androidx.glance.state.GlanceStateDefinition
 import androidx.glance.state.PreferencesGlanceStateDefinition
@@ -21,6 +25,7 @@ import com.cursorforandroid.appGraph
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.domain.WidgetMode
 import com.cursorforandroid.ui.theme.ThemeMode
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.flow.first
 
 /**
@@ -28,6 +33,11 @@ import kotlinx.coroutines.flow.first
  * kept in the widget's own preferences under [MODE_KEY]; the rows come from the same repository, filters and pins
  * the app renders, restored from disk first so a fresh process shows the last known list at once, and re-rendered
  * by [WidgetSync] whenever any of that changes while the app is alive.
+ *
+ * A render's own composition follows the repository too ([collectAsState] below), but only for as long as Glance
+ * keeps the session — 45 s after the first frame, 5 s once the device is idle — so a page that lands after that, a
+ * run that finishes an hour later, reaches the widget through [WidgetSync] or not at all. That is why following is
+ * installed from the application (see `CursorApp`) and not only from the app's screens.
  */
 class ChatsWidget : GlanceAppWidget() {
 
@@ -46,10 +56,11 @@ class ChatsWidget : GlanceAppWidget() {
         val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
         provideContent {
             val mode = WidgetMode.parse(currentState(MODE_KEY))
+            val refreshing = WidgetRefresh.isRefreshing(currentState(REFRESHING_SINCE_KEY), AppClock.now())
             // Keeps following the repository for as long as the render session lives (a refresh landing behind a
             // cache-first render, a run finishing); after that, WidgetSync starts a new one.
             val snapshot by snapshots.collectAsState(initial)
-            ChatsWidgetContent(snapshot, mode, appWidgetId)
+            ChatsWidgetContent(snapshot, mode, appWidgetId, refreshing)
         }
     }
 
@@ -64,14 +75,54 @@ class ChatsWidget : GlanceAppWidget() {
     companion object {
         /** The [WidgetMode] name of one widget instance. */
         val MODE_KEY = stringPreferencesKey("mode")
+
+        /**
+         * When this instance's refresh button was last tapped and the page it asked for has not landed yet; absent
+         * (or older than [WidgetRefresh.FLAG_TTL_MS]) otherwise. Read by the render to show the spinner in the
+         * button's place.
+         */
+        val REFRESHING_SINCE_KEY = longPreferencesKey("refreshing_since")
+    }
+}
+
+/**
+ * The refresh button's state, kept as a timestamp rather than a flag so that a refresh the process did not live to
+ * finish — killed mid-fetch, or a worker that never ran — cannot leave a spinner turning for ever: a render treats
+ * the flag as spent once it is [FLAG_TTL_MS] old.
+ */
+internal object WidgetRefresh {
+    /** Longer than the fetch the worker gives up on ([WidgetData.FORCED_REFRESH_TIMEOUT_MS]) plus a render behind it. */
+    const val FLAG_TTL_MS = 30_000L
+
+    fun isRefreshing(since: Long?, nowMillis: Long): Boolean = since != null && nowMillis - since in 0 until FLAG_TTL_MS
+}
+
+/**
+ * The header's refresh button. Two things, in this order: the widget is told it is refreshing and re-rendered, so
+ * the spinner replaces the button at once; then the fetch is handed to [WidgetRefreshWork], which clears the flag and
+ * renders every widget again when the page has landed. Nothing of the network runs here: an action callback is a
+ * broadcast receiver's handful of seconds, and a fetch that outlived it would be cut off mid-page.
+ */
+class RefreshWidgetAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        updateAppWidgetState(context, glanceId) { it[ChatsWidget.REFRESHING_SINCE_KEY] = AppClock.now() }
+        ChatsWidget().update(context, glanceId)
+        WidgetRefreshWork.enqueueNow(context)
     }
 }
 
 class ChatsWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = ChatsWidget()
 
-    /** The last widget was removed: there is nothing left for [WidgetSync] to keep in step. */
+    /** The first widget was placed: from here the list is revalidated on a timer while the app is not around. */
+    override fun onEnabled(context: Context) {
+        super.onEnabled(context)
+        WidgetRefreshWork.schedulePeriodic(context)
+    }
+
+    /** The last widget was removed: there is nothing left for [WidgetSync] or the periodic refresh to keep in step. */
     override fun onDisabled(context: Context) {
+        WidgetRefreshWork.cancelPeriodic(context)
         WidgetSync.stop()
         super.onDisabled(context)
     }
