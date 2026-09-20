@@ -152,6 +152,8 @@ class PreferencesStore(
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
         /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
         val collapsedSidebarSections = stringSetPreferencesKey("sidebar_collapsed_sections")
+        /** The transcript notices closed over each chat's composer: `agentId -> identities` (see `LoadNotice.identity`). */
+        val dismissedNotices = stringPreferencesKey("dismissed_notices")
     }
 
     /** What [clearSession] removes: everything here belongs to the account rather than to the device. */
@@ -166,6 +168,7 @@ class PreferencesStore(
         Keys.readMarkers,
         Keys.launchedHere,
         Keys.modeChoicePending,
+        Keys.dismissedNotices,
     )
 
     /**
@@ -342,6 +345,33 @@ class PreferencesStore(
         val current = p[Keys.collapsedSidebarSections] ?: emptySet()
         val next = if (collapsed) current + sectionKey else current - sectionKey
         if (next.isEmpty()) p.remove(Keys.collapsedSidebarSections) else p[Keys.collapsedSidebarSections] = next
+    }
+
+    /**
+     * The notices about a transcript's load the reader has closed, by chat (`agentId -> identities`, see
+     * `LoadNotice.identity`): what the dock over that chat's composer leaves out until the notice's words change or
+     * its condition clears and comes back (see `NoticeDismissals`). The account's, like its pins and read markers —
+     * a closed notice is about the account's chat — so a sign-out takes them with it.
+     */
+    val dismissedNotices: Flow<Map<String, Set<String>>> = accountData.map { p ->
+        p[Keys.dismissedNotices]?.let(::decodeDismissedNotices)?.mapValues { it.value.toSet() } ?: emptyMap()
+    }
+
+    /**
+     * Records [identity] as closed over [agentId] — or, with [dismissed] false, forgets it — in one transaction
+     * against what is stored, so closing two notices in quick succession keeps both. Bounded: a chat keeps its newest
+     * [MAX_DISMISSED_NOTICES_PER_CHAT], and only the [MAX_DISMISSED_NOTICE_CHATS] chats most recently written keep
+     * any, so a notice whose words change on every read cannot grow the file.
+     */
+    suspend fun setNoticeDismissed(agentId: String, identity: String, dismissed: Boolean) = edit { p ->
+        val current = p[Keys.dismissedNotices]?.let(::decodeDismissedNotices) ?: emptyMap()
+        val forChat = current[agentId] ?: emptyList()
+        val nextForChat = if (dismissed) (forChat.filterNot { it == identity } + identity).takeLast(MAX_DISMISSED_NOTICES_PER_CHAT) else forChat.filterNot { it == identity }
+        // The chat written last goes last, so the oldest chats are the ones the cap drops.
+        val next = LinkedHashMap(current - agentId)
+        if (nextForChat.isNotEmpty()) next[agentId] = nextForChat
+        val bounded = if (next.size > MAX_DISMISSED_NOTICE_CHATS) next.entries.toList().takeLast(MAX_DISMISSED_NOTICE_CHATS).associate { it.key to it.value } else next
+        if (bounded.isEmpty()) p.remove(Keys.dismissedNotices) else p[Keys.dismissedNotices] = encodeDismissedNotices(bounded)
     }
 
     /** Project / synced skill names the user typed into the "+" menu, most recent first, so they stay one tap away. */
@@ -660,8 +690,17 @@ class PreferencesStore(
     private fun encodeStringMap(map: Map<String, String>): String =
         CursorJson.encodeToString(MapSerializer(String.serializer(), String.serializer()), map)
 
+    /** Decoded into a map that keeps the file's order, which is the order the chats were last written in. */
+    private fun decodeDismissedNotices(raw: String): Map<String, List<String>> =
+        runCatching { CursorJson.decodeFromString(MapSerializer(String.serializer(), ListSerializer(String.serializer())), raw) }.getOrDefault(emptyMap())
+
+    private fun encodeDismissedNotices(map: Map<String, List<String>>): String =
+        CursorJson.encodeToString(MapSerializer(String.serializer(), ListSerializer(String.serializer())), map)
+
     private companion object {
         const val MAX_RECENT_SKILLS = 8
+        const val MAX_DISMISSED_NOTICES_PER_CHAT = 8
+        const val MAX_DISMISSED_NOTICE_CHATS = 200
         const val TAG = "PreferencesStore"
 
         fun storedDevice(typeName: String?, name: String?): DeviceTarget {

@@ -259,6 +259,40 @@ class PreferencesStoreTest {
         assertThat(defaults.autoCreatePr).isTrue()
     }
 
+    /**
+     * A notice closed over a chat's composer is remembered by chat and by its identity, forgotten on request, and
+     * bounded: eight per chat, the oldest dropped, and two hundred chats, the ones least recently written dropped.
+     * The account's: a sign-out takes them.
+     */
+    @Test
+    fun `closed notices persist per chat, are forgotten on request, stay bounded and go with the account`() = runBlocking<Unit> {
+        val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())
+        assertThat(prefs.dismissedNotices.first()).isEmpty()
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = true)
+        prefs.setNoticeDismissed("bc-1", "bbbb", dismissed = true)
+        prefs.setNoticeDismissed("bc-2", "aaaa", dismissed = true)
+        assertThat(prefs.dismissedNotices.first()).containsExactly("bc-1", setOf("aaaa", "bbbb"), "bc-2", setOf("aaaa"))
+        // Closing the same notice twice is one entry; forgetting it leaves the chat's other one.
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = true)
+        prefs.setNoticeDismissed("bc-1", "aaaa", dismissed = false)
+        assertThat(prefs.dismissedNotices.first()["bc-1"]).containsExactly("bbbb")
+        // A chat with nothing closed any more leaves the record.
+        prefs.setNoticeDismissed("bc-2", "aaaa", dismissed = false)
+        assertThat(prefs.dismissedNotices.first().keys).containsExactly("bc-1")
+        // A notice whose words change on every read cannot grow the file: the newest eight stay.
+        (1..10).forEach { prefs.setNoticeDismissed("bc-1", "n$it", dismissed = true) }
+        assertThat(prefs.dismissedNotices.first()["bc-1"]).containsExactly("n3", "n4", "n5", "n6", "n7", "n8", "n9", "n10")
+        // Nor can the chats: the two hundred most recently written keep theirs.
+        (1..205).forEach { prefs.setNoticeDismissed("chat-$it", "x", dismissed = true) }
+        val chats = prefs.dismissedNotices.first().keys
+        assertThat(chats).hasSize(200)
+        assertThat(chats).doesNotContain("bc-1")
+        assertThat(chats).containsAtLeast("chat-6", "chat-205")
+        assertThat(chats).doesNotContain("chat-5")
+        prefs.clearSession()
+        assertThat(prefs.dismissedNotices.first()).isEmpty()
+    }
+
     @Test
     fun `pinned models persist most-recently-pinned first`() = runBlocking {
         val prefs = PreferencesStore(ApplicationProvider.getApplicationContext())

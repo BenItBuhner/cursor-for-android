@@ -34,6 +34,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -61,7 +62,6 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
-import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
@@ -151,6 +151,7 @@ fun ConversationScreen(
     val picker by viewModel.modelPicker.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
     val goal by viewModel.goal.collectAsStateWithLifecycle()
+    val hiddenNotices by viewModel.hiddenNotices.collectAsStateWithLifecycle()
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
     val accountControls by viewModel.controls.collectAsStateWithLifecycle()
@@ -518,28 +519,23 @@ fun ConversationScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // A fetch that did not go through, said rather than swallowed, in the server's own words: the load's
-            // failure, or — with the runs answering and the transcript not — the transcript's, with the way to ask
-            // again and the load's diagnostics a tap away (the same redacted block Settings exports). First in the
-            // stack, at the seam between the transcript it is about and the strips under it: the queue keeps its
-            // place on the box it came from, as the desktop stacks its trays.
-            (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
-                LoadErrorRow(
-                    message = err,
-                    onRetry = viewModel::reload,
-                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
-                )
-            }
-            // Extended mode's record refused or failed and the documented endpoints stand in: said here, in the
-            // server's words, with what that means for what is on screen — never a quiet fallback that looks like the
-            // chat itself (Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why).
-            conversation.recordFallback?.takeIf { conversation.error == null }?.let { fallback ->
-                RecordFallbackRow(
-                    fallback = fallback,
-                    onRetry = viewModel::reload,
-                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
-                )
+            // failure, or — with the runs answering and the transcript not — the transcript's, and Extended mode's
+            // record refused with the documented endpoints standing in (never a quiet fallback that looks like the
+            // chat itself; Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why) —
+            // each with the way to ask again and the load's diagnostics a tap away (the same redacted block Settings
+            // exports), and an X that puts it away (see LoadNotices, NoticeDismissals). First in the stack, at the
+            // seam between the transcript they are about and the strips under them: the queue keeps its place on the
+            // box it came from, as the desktop stacks its trays.
+            for (notice in LoadNotices.shown(conversation, hiddenNotices)) {
+                key(notice.identity) {
+                    LoadNoticeRow(
+                        notice = notice,
+                        onRetry = viewModel::reload,
+                        onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                        onDismiss = { viewModel.dismissNotice(notice) },
+                        modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                    )
+                }
             }
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
             // trays in above the composer. Each strip keeps the same width and the same gap to the next.
@@ -679,11 +675,8 @@ private const val OlderTurnsPrefetchRows = 6
  * (not [docked]: there is no box edge for it to line up with there).
  */
 @Composable
-internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, docked: Boolean = true) {
-    LoadNoticeCard(title = message, modifier = modifier.testTag("load-error"), tone = NoticeTone.Error, docked = docked) {
-        NoticeAction("Retry", onRetry, Modifier.testTag("load-retry"))
-        NoticeAction("Share diagnostics", onShareDiagnostics, Modifier.testTag("share-diagnostics"))
-    }
+internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, docked: Boolean = true, onDismiss: (() -> Unit)? = null) {
+    LoadNoticeRow(LoadNotice(LoadNotice.Kind.LoadError, message), onRetry, onShareDiagnostics, modifier, onDismiss = onDismiss, docked = docked)
 }
 
 /**
@@ -693,18 +686,11 @@ internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnosti
  * still has, not the activity of the older turns, which the record alone holds — and the two ways out: Retry,
  * which asks the record again, and the diagnostics. In
  * the same card as a failed load ([LoadNoticeCard]), quieter: a degradation, not a failure, so the glyph is not red.
+ * The words are [LoadNotices.recordFallback]'s.
  */
 @Composable
-internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
-    LoadNoticeCard(
-        title = "$RECORD_FALLBACK_TITLE: ${fallback.reason}",
-        detail = RECORD_FALLBACK_DETAIL,
-        tone = NoticeTone.Neutral,
-        modifier = modifier.testTag("record-fallback"),
-    ) {
-        NoticeAction("Retry", onRetry, Modifier.testTag("record-fallback-retry"))
-        NoticeAction("Share diagnostics", onShareDiagnostics, Modifier.testTag("record-fallback-diagnostics"))
-    }
+internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, onDismiss: (() -> Unit)? = null) {
+    LoadNoticeRow(LoadNotices.recordFallback(fallback), onRetry, onShareDiagnostics, modifier, onDismiss = onDismiss)
 }
 
 /**
