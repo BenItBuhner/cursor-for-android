@@ -39,6 +39,8 @@ class WidgetSyncTest {
 
     @Before
     fun setUp() {
+        // The application under test started its own start-up check on creation; what this class drives is follow().
+        WidgetSync.stop()
         realPlacedWidgets = WidgetSync.placedWidgets
         realRenderer = WidgetSync.renderer
         WidgetSync.placedWidgets = { true }

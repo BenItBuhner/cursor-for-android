@@ -8,6 +8,7 @@ import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.updateAll
 import com.cursorforandroid.AppGraph
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -45,10 +46,23 @@ object WidgetSync {
     /** A render that failed (a launcher that would not answer, WorkManager mid-initialisation) is tried once more after this. */
     internal const val RETRY_MS = 1_000L
 
+    /**
+     * How long after the process starts the launcher is asked about placed widgets. Asking is cheap but not free —
+     * Glance's registry is a DataStore, read and back-filled on first use — and the first seconds of a process
+     * belong to whatever started it: the first frame of the app, the foreground service's `startForeground`
+     * promise, a job's deadline. Nothing a widget shows changes in those seconds that the follower, once up, does
+     * not see: the list restored from disk and every fetch after it are changes it renders. Same wait as
+     * `DeferredStartup`.
+     */
+    internal var startSettleMs = 2_000L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** The collection of [WidgetData.snapshots], held so that it can be dropped when the last widget goes. */
     private var followJob: Job? = null
+
+    /** The start-up check while it waits and asks, so that the last widget's removal can call it off too. */
+    private var startJob: Job? = null
 
     /**
      * Bumped by [stop]. The start-up check asks the launcher, which suspends, so its answer can describe a widget
@@ -72,18 +86,29 @@ object WidgetSync {
      */
     fun start(context: Context, graph: AppGraph) {
         val app = context.applicationContext
-        scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            delay(startSettleMs)
             val seen = generationNow()
             if (!placedWidgets(app)) return@launch
             // The generation rejects a removal the receiver has already reported, and a second look covers one
             // whose broadcast has not arrived yet; the install re-reads the generation under its own lock.
             if (generationNow() == seen && placedWidgets(app)) {
-                followIfCurrent(app, graph, seen)
+                val installed = followIfCurrent(app, graph, seen)
+                // The follower renders what changes from here on. The widgets, though, show what an earlier process
+                // last drew, and this one may already hold something newer — a list restored and patched in the
+                // seconds before the launcher answered — so a list that is loaded by now is drawn once. (A follower
+                // a render installed before this had that render for it.)
+                if (installed && graph.agents.state.value.hasLoaded) renderAll(app)
                 // An app updated in place gets no onEnabled for the widgets it already had; the timer is KEEP, so
                 // this is free when it stands already.
                 runCatching { WidgetRefreshWork.schedulePeriodic(app) }
             }
         }
+        synchronized(this) {
+            startJob?.cancel()
+            startJob = job
+        }
+        job.start()
     }
 
     /** From a screen, once it has settled: hand the widget picker a live preview. Android 15 lets the app render it; the system rate-limits repeats. */
@@ -108,13 +133,16 @@ object WidgetSync {
         synchronized(this) { followLocked(app, graph) }
     }
 
-    /** [follow], unless the widget set has changed since [seen] — the start-up check's answer is that old. */
-    private fun followIfCurrent(app: Context, graph: AppGraph, seen: Int) {
-        synchronized(this) { if (generation == seen) followLocked(app, graph) }
-    }
+    /**
+     * [follow], unless the widget set has changed since [seen] — the start-up check's answer is that old. True when
+     * this call installed the follower (false when one was there already, or the answer was stale).
+     */
+    private fun followIfCurrent(app: Context, graph: AppGraph, seen: Int): Boolean =
+        synchronized(this) { generation == seen && followLocked(app, graph) }
 
-    private fun followLocked(app: Context, graph: AppGraph) {
-        if (followJob?.isActive == true) return
+    /** Installs the follower; false when one is running already. */
+    private fun followLocked(app: Context, graph: AppGraph): Boolean {
+        if (followJob?.isActive == true) return false
         followJob = scope.launch {
             val snapshots = WidgetData.snapshots(graph)
             // The first value is the state as it stands, which the widgets show already (from this render, or
@@ -132,6 +160,7 @@ object WidgetSync {
                 withContext(NonCancellable) { renderAll(app) }
             }
         }
+        return true
     }
 
     /**
@@ -142,6 +171,8 @@ object WidgetSync {
     fun stop() {
         synchronized(this) {
             generation++
+            startJob?.cancel()
+            startJob = null
             followJob?.cancel()
             followJob = null
         }
