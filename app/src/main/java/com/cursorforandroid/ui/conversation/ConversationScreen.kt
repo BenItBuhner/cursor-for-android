@@ -61,6 +61,7 @@ import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
+import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.share.ShareTarget
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.StorePath
@@ -444,12 +445,14 @@ fun ConversationScreen(
                         item("empty") {
                             val failure = conversation.error ?: conversation.transcriptError?.let { "Couldn't load the transcript: $it" }
                             if (failure != null) {
-                                // Nothing loaded at all: the failure is the screen, with the same two ways out.
+                                // Nothing loaded at all: the failure is the screen, with the same two ways out, at
+                                // the transcript's own margins rather than the dock's.
                                 LoadErrorRow(
                                     message = failure,
                                     onRetry = viewModel::reload,
                                     onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
                                     modifier = paneWidth.padding(top = 32.dp),
+                                    docked = false,
                                 )
                             } else {
                                 Text(
@@ -495,29 +498,6 @@ fun ConversationScreen(
             }
         }
 
-        // A fetch that did not go through, said under the transcript rather than swallowed, in the server's own words:
-        // the load's failure, or — with the runs answering and the transcript not — the transcript's, with the way to
-        // ask again and the load's diagnostics a tap away (the same redacted block Settings exports).
-        (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
-            LoadErrorRow(
-                message = err,
-                onRetry = viewModel::reload,
-                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-        // Extended mode's record refused or failed and the documented endpoints stand in: said here, in the server's
-        // words, with what that means for what is on screen — never a quiet fallback that looks like the chat itself
-        // (Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why).
-        conversation.recordFallback?.takeIf { conversation.error == null }?.let { fallback ->
-            RecordFallbackRow(
-                fallback = fallback,
-                onRetry = viewModel::reload,
-                onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
-                modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).fillMaxWidth().align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-
         val archived = agent?.isArchived == true
         // Extended mode keeps the queue on the account, where the desktop and the web keep theirs; otherwise on this device.
         val accountQueue = capabilities.accountQueue && !isDemo
@@ -525,11 +505,37 @@ fun ConversationScreen(
         // The composer and the strips over it dock at the bottom (composerDockPadding): the gutter at each side, and
         // under the box a gap a shade wider than the gutter, above the keyboard's edge while there is one and above
         // the navigation bar — or the window's edge — otherwise. The transcript above takes whatever height is left
-        // and keeps its newest turn on the composer through the change, being a bottom-anchored list.
+        // and keeps its newest turn on the composer through the change, being a bottom-anchored list. Every card in
+        // the stack is a dockedCard: stood in from the box's sides so its corners are concentric with the box's, the
+        // same gap between each, whether one is stacked or five.
         Column(
             Modifier.fillMaxWidth().composerDockPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // A fetch that did not go through, said rather than swallowed, in the server's own words: the load's
+            // failure, or — with the runs answering and the transcript not — the transcript's, with the way to ask
+            // again and the load's diagnostics a tap away (the same redacted block Settings exports). First in the
+            // stack, at the seam between the transcript it is about and the strips under it: the queue keeps its
+            // place on the box it came from, as the desktop stacks its trays.
+            (conversation.error ?: conversation.transcriptError?.let { "Couldn't refresh the transcript: $it" })?.takeIf { items.isNotEmpty() }?.let { err ->
+                LoadErrorRow(
+                    message = err,
+                    onRetry = viewModel::reload,
+                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                )
+            }
+            // Extended mode's record refused or failed and the documented endpoints stand in: said here, in the
+            // server's words, with what that means for what is on screen — never a quiet fallback that looks like the
+            // chat itself (Bennett's 2026-09-20 frame: a Project shown as run activity alone, nothing saying why).
+            conversation.recordFallback?.takeIf { conversation.error == null }?.let { fallback ->
+                RecordFallbackRow(
+                    fallback = fallback,
+                    onRetry = viewModel::reload,
+                    onShareDiagnostics = { scope.launch { panelActions.shareText(viewModel.loadDiagnosticsReport()) } },
+                    modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
+                )
+            }
             // The chat's goal, when it has one, stands over whatever is queued: the order the desktop stacks its
             // trays in above the composer. Each strip keeps the same width and the same gap to the next.
             goal?.let { current ->
@@ -661,34 +667,17 @@ private const val BottomTolerancePx = 48
 private const val OlderTurnsPrefetchRows = 6
 
 /**
- * A load that did not go through, under the transcript: the server's words, Retry, and "Share diagnostics" — the
- * redacted load block (window bounds, runs and their order, each turn's trace state, the live follow, the last
- * errors) handed to the share sheet, so a chat that would not load can be reported from where it failed.
+ * A load that did not go through: the server's words, Retry, and "Share diagnostics" — the redacted load block
+ * (window bounds, runs and their order, each turn's trace state, the live follow, the last errors) handed to the
+ * share sheet, so a chat that would not load can be reported from where it failed. A card over the composer
+ * ([LoadNoticeCard]) under a transcript that did load; the whole screen, in the transcript's place, when nothing did
+ * (not [docked]: there is no box edge for it to line up with there).
  */
 @Composable
-internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Column(modifier.testTag("load-error")) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(CursorIcons.Warning, null, tint = colors.red, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(message, style = type.small, color = colors.red, maxLines = 3, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Retry",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("load-retry"),
-            )
-            Text(
-                "Share diagnostics",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("share-diagnostics"),
-            )
-        }
+internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier, docked: Boolean = true) {
+    LoadNoticeCard(title = message, modifier = modifier.testTag("load-error"), tone = NoticeTone.Error, docked = docked) {
+        NoticeAction("Retry", onRetry, Modifier.testTag("load-retry"))
+        NoticeAction("Share diagnostics", onShareDiagnostics, Modifier.testTag("share-diagnostics"))
     }
 }
 
@@ -696,33 +685,19 @@ internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnosti
  * The account's record refused or failed and the documented endpoints stand in for it (see
  * [ConversationState.recordFallback]): what the server said, what is on screen because of it — the runs' activity
  * and the transcript's text, not the account's copy of the turns nor, in a Project, the coordinator's messages the
- * record alone carries whole — and the two ways out: Retry, which asks the record again, and the diagnostics.
+ * record alone carries whole — and the two ways out: Retry, which asks the record again, and the diagnostics. In
+ * the same card as a failed load ([LoadNoticeCard]), quieter: a degradation, not a failure, so the glyph is not red.
  */
 @Composable
 internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, onShareDiagnostics: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
-    Column(modifier.testTag("record-fallback")) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(CursorIcons.Warning, null, tint = colors.textTertiary, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("$RECORD_FALLBACK_TITLE: ${fallback.reason}", style = type.small, color = colors.textSecondary, maxLines = 3, modifier = Modifier.weight(1f))
-        }
-        Text(RECORD_FALLBACK_DETAIL, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(start = 20.dp, top = 2.dp))
-        Row(Modifier.padding(start = 20.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                "Retry",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("record-fallback-retry"),
-            )
-            Text(
-                "Share diagnostics",
-                style = type.small,
-                color = colors.textSecondary,
-                modifier = Modifier.pressable(onShareDiagnostics, CursorTheme.shapes.base).padding(horizontal = 8.dp, vertical = 2.dp).testTag("record-fallback-diagnostics"),
-            )
-        }
+    LoadNoticeCard(
+        title = "$RECORD_FALLBACK_TITLE: ${fallback.reason}",
+        detail = RECORD_FALLBACK_DETAIL,
+        tone = NoticeTone.Neutral,
+        modifier = modifier.testTag("record-fallback"),
+    ) {
+        NoticeAction("Retry", onRetry, Modifier.testTag("record-fallback-retry"))
+        NoticeAction("Share diagnostics", onShareDiagnostics, Modifier.testTag("record-fallback-diagnostics"))
     }
 }
 
