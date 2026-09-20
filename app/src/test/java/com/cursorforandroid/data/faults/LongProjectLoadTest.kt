@@ -14,9 +14,7 @@ import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.LongProject
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -84,16 +82,21 @@ class LongProjectLoadTest {
         presenter.present(state.items, coordinatorMode = true, runActive = state.runStatus?.isActive == true || state.isStreaming).rows
 
     /**
-     * The screen's own behaviour at the top of a short transcript: `ConversationScreen` asks for older turns whenever
-     * the last visible row is within six rows of the end, so a transcript of a handful of rows keeps asking as long
-     * as the chat has older turns and none is being paged. Runs until [untilMs] have passed or the chat has no older turns.
+     * The reader scrolls up twice: two pages of older turns, as `ConversationScreen` asks for them on a scroll toward
+     * the top (until 0.3.47 it asked whenever the end of a short transcript was in view, and a Project's transcript
+     * folded into a few rows paged itself in whole). Then everything the pages asked for is waited out.
      */
-    private fun FaultRig.screenAtTop(conversations: ConversationRepository, presenter: TranscriptPresenter, untilMs: Long): Job = scope.launch {
-        val deadline = System.nanoTime() + untilMs * 1_000_000
-        while (System.nanoTime() < deadline) {
-            val state = conversations.state(agentId).value
-            if (state.hasOlder && !state.isLoadingOlder && state.items.isNotEmpty() && present(state, presenter).size <= OLDER_TURNS_PREFETCH_ROWS) conversations.loadOlder(agentId)
-            delay(50)
+    private suspend fun FaultRig.scrollUpTwice(conversations: ConversationRepository) {
+        repeat(2) {
+            val before = conversations.state(agentId).value.items.size
+            conversations.loadOlder(agentId)
+            awaitUntil(30_000) { conversations.state(agentId).value.let { it.items.size > before && !it.isLoadingOlder } }
+        }
+        awaitUntil(60_000) {
+            val quiet = conversations.state(agentId).value.traceStatus.pending == 0 && conversations.loadDiagnostics(agentId)!!.let { it.traceQueue == 0 && it.traceInFlight == 0 && !it.traceWorkerRunning }
+            if (!quiet) return@awaitUntil false
+            delay(1_500)
+            conversations.loadDiagnostics(agentId)!!.let { it.traceQueue == 0 && it.traceInFlight == 0 && !it.traceWorkerRunning }
         }
     }
 
@@ -110,8 +113,14 @@ class LongProjectLoadTest {
 
     private fun messages(items: List<TimelineItem>): List<String> = present(ConversationState(agentId, items = items)).filterIsInstance<TranscriptRow.Message>().map { (it.call.payload as ToolPayload.CoordinatorMessage).message }
 
+    /**
+     * The record path: the newest ten turns on screen within two round trips of the account service and one page
+     * of its record — a hundred steps, not two hundred — and no log replayed for a turn whose calls the record
+     * holds; two scroll-ups later, two more pages and the few replays the record's narration-only turns ask for;
+     * a reopen a moment later from memory, the live stream alone fetched.
+     */
     @Test
-    fun `record path - the newest turns, the auto-paging at the top, and a reopen a moment later`() = runBlocking<Unit> {
+    fun `record path - the newest turns within two round trips, older on scroll, a reopen from memory`() = runBlocking<Unit> {
         val rig = rig(extended = true)
         val conversations = rig.conversations
         val presenter = TranscriptPresenter()
@@ -119,30 +128,44 @@ class LongProjectLoadTest {
         conversations.attach(agentId)
         rig.awaitUntil(60_000) { conversations.state(agentId).value.items.isNotEmpty() }
         val firstPaintMs = (System.nanoTime() - opened) / 1_000_000
+        val atPaint = requests()
         report("record: first paint after ${firstPaintMs} ms", conversations.state(agentId).value, presenter)
+        // The handshake, the record's size and its newest page, the state and the run list beside them: five round
+        // trips of the account service, two of them in sequence, at 300–900 ms each and the page's bytes.
+        assertThat(atPaint[FaultServer.Route.Record]).isEqualTo(2)
+        assertThat(firstPaintMs).isLessThan(6_000L)
+        assertThat(server.recordBytes[agentId] ?: 0L).isLessThan(120_000L)
         rig.awaitUntil(60_000) { !conversations.state(agentId).value.isLoading }
-        report("record: load settled", conversations.state(agentId).value, presenter)
-        // The reader at the top of a short transcript, for a while.
-        val top = rig.screenAtTop(conversations, presenter, untilMs = 20_000)
-        top.join()
-        rig.awaitUntil(30_000) { !conversations.state(agentId).value.isLoadingOlder }
+        rig.scrollUpTwice(conversations)
         val before = conversations.state(agentId).value
-        report("record: after 20 s at the top", before, presenter)
-        // Leave, and come back within a second.
+        report("record: after two scroll-ups", before, presenter)
+        val paged = requests()
+        // Three pages of the record in all — the window's thirty turns — and a log asked only for the turns whose
+        // record holds no call at all (a remark and nothing else), never for the ones it holds with their calls.
+        assertThat(paged[FaultServer.Route.Record]).isAtMost(5)
+        val narrationOnly = turns.takeLast(30).count { it.durationMs != null && !it.isUser && it.record.none { step -> step.containsKey("toolCall") } }
+        assertThat(TranscriptPerf.sessionOrNull(agentId)!!.snapshot().network["replay"] ?: 0).isAtMost(narrationOnly)
+        assertThat(before.traceStatus.pending).isEqualTo(0)
+        assertThat(messages(before.items)).isNotEmpty()
+        // Leave, and come back within a second: the transcript as it was, from memory; only the live stream fetched.
         val seenBefore = requests()
         conversations.detach(agentId)
         delay(500)
         conversations.attach(agentId)
-        rig.awaitUntil(30_000) { !conversations.state(agentId).value.isLoading }
         delay(3_000)
         val after = conversations.state(agentId).value
         report("record: reopened after 0.5 s (requests since the reopen)", after, presenter, since = seenBefore)
-        println("   identical=${after.items == before.items} itemsBefore=${before.items.size} itemsAfter=${after.items.size}")
-        assertThat(after.items).isNotEmpty()
+        assertThat(after.items).isEqualTo(before.items)
+        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
     }
 
+    /**
+     * The documented path, the account service refusing the record: the refusal is heard at once (no pause waited
+     * out for a second try), the run list read beside it is the fallback's, and the newest runs are on screen within
+     * two round trips; the fallback's window is ten runs and their logs, older on scroll; a reopen from memory.
+     */
     @Test
-    fun `documented path - the record refused, the app falls back and pages`() = runBlocking<Unit> {
+    fun `documented path - the record refused, the fallback paints within two round trips and pages on scroll`() = runBlocking<Unit> {
         server.outage(FaultServer.Route.Record, FaultServer.Fault.Status(429, "resource_exhausted", "Too many requests", retryAfter = "2"))
         val rig = rig(extended = true)
         val conversations = rig.conversations
@@ -151,29 +174,30 @@ class LongProjectLoadTest {
         conversations.attach(agentId)
         rig.awaitUntil(90_000) { conversations.state(agentId).value.items.isNotEmpty() }
         val firstPaintMs = (System.nanoTime() - opened) / 1_000_000
+        val atPaint = requests()
         report("runs: first paint after ${firstPaintMs} ms", conversations.state(agentId).value, presenter)
+        assertThat(atPaint[FaultServer.Route.Record]).isEqualTo(1)
+        assertThat(atPaint[FaultServer.Route.ListRuns]).isEqualTo(1)
+        assertThat(firstPaintMs).isLessThan(5_000L)
         rig.awaitUntil(90_000) { !conversations.state(agentId).value.isLoading }
-        report("runs: load settled", conversations.state(agentId).value, presenter)
-        val top = rig.screenAtTop(conversations, presenter, untilMs = 20_000)
-        top.join()
-        rig.awaitUntil(30_000) { !conversations.state(agentId).value.isLoadingOlder }
+        rig.scrollUpTwice(conversations)
         val before = conversations.state(agentId).value
-        report("runs: after 20 s at the top", before, presenter)
+        report("runs: after two scroll-ups", before, presenter)
         println("   messages shown: ${messages(before.items).size}; diagnostics source=${conversations.loadDiagnostics(agentId)?.source} record=${conversations.loadDiagnostics(agentId)?.record}")
+        assertThat(conversations.loadDiagnostics(agentId)!!.source).isEqualTo("runs")
+        // The window's runs and the two pages behind it, and nothing of the hundreds of turns past them.
+        assertThat(TranscriptPerf.sessionOrNull(agentId)!!.snapshot().network["replay"] ?: 0).isAtMost(30)
+        assertThat(messages(before.items)).isNotEmpty()
         val seenBefore = requests()
         conversations.detach(agentId)
         delay(500)
         conversations.attach(agentId)
-        rig.awaitUntil(60_000) { !conversations.state(agentId).value.isLoading }
         delay(3_000)
         val after = conversations.state(agentId).value
         report("runs: reopened after 0.5 s (requests since the reopen)", after, presenter, since = seenBefore)
-        println("   identical=${after.items == before.items} itemsBefore=${before.items.size} itemsAfter=${after.items.size}")
-        assertThat(after.items).isNotEmpty()
+        assertThat(after.items).isEqualTo(before.items)
+        assertThat(since(seenBefore).keys).containsNoneOf(FaultServer.Route.Record, FaultServer.Route.RecordState, FaultServer.Route.ListRuns, FaultServer.Route.Conversation)
     }
 
-    private companion object {
-        /** `ConversationScreen.OlderTurnsPrefetchRows`. */
-        const val OLDER_TURNS_PREFETCH_ROWS = 6
-    }
+    private fun since(before: Map<FaultServer.Route, Int>): Map<FaultServer.Route, Int> = requests().mapValues { (route, n) -> n - (before[route] ?: 0) }.filterValues { it > 0 }
 }

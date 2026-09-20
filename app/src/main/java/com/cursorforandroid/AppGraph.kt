@@ -252,8 +252,17 @@ class AppGraph(
     private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
     private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
-    /** The account's own transcript of a chat, for the turns whose documented log has expired (`FetchBackgroundComposer`). */
-    private val lazyHeadlessTranscript = lazy { HeadlessConversationApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /**
+     * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
+     * call timeout: a page of a coordinator's record is hundreds of kilobytes to megabytes of payloads, and the
+     * account client's forty-five seconds — right for its small RPCs — cut such a page off on a slow connection,
+     * which read as the record refusing and left the chat to the documented endpoints. The throttle is shared, so
+     * the pause a refusal asks for holds here too.
+     */
+    private val lazyHeadlessTranscript = lazy {
+        val client = lazyAccountClient.value.newBuilder().callTimeout(RECORD_CALL_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES).build()
+        HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value)
+    }
 
     /**
      * GitHub's REST API, anonymous: what stands in for the account service while Extended mode is off, for the
@@ -932,3 +941,6 @@ class AppGraph(
 
     suspend fun signOut() = session.signOut()
 }
+
+/** How long one read of the account's record may take, headers to the last byte: the pages are large and the connection may be slow. */
+private const val RECORD_CALL_TIMEOUT_MINUTES = 5L

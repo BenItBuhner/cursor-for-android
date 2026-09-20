@@ -9,6 +9,7 @@ import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.domain.ActivityGroup
 import com.cursorforandroid.domain.AssistantMessage
 import com.cursorforandroid.domain.CoordinatorTranscript
+import com.cursorforandroid.domain.SystemNotifications
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.TranscriptPerf
 import com.cursorforandroid.domain.TurnShape
@@ -78,6 +79,24 @@ class RecordTurn(
      */
     val hasMessageCall: Boolean by lazy { CoordinatorTranscript.hasMessageCall(items) }
 
+    /** The record holds tool calls for the turn: it recorded what the agent did, a message among them when the coordinator sent one. */
+    val hasCalls: Boolean by lazy { items.any { it is ActivityGroup && it.calls.isNotEmpty() } }
+
+    /** The turn is the user's own prompt, not one Cursor injected (a worker's report, a subscribed pull request's change). */
+    val isUserTurn: Boolean get() = prompt != null && !SystemNotifications.isInjected(prompt)
+
+    /**
+     * In a coordinator's chat, whether the run's log is worth asking for the coordinator's word this turn's record
+     * does not give whole: a message read leniently out of pieces (the log has it as sent); no message call at all
+     * in the user's own turn (the record has carried narration and no call, #202); an injected turn the record
+     * holds without any call — the calls may have been dropped with the message. An injected turn whose calls the
+     * record does hold, with no message among them, sent none: the coordinator filed a worker's report and routed
+     * the next step, and the log would only say the same — or carry the last message sent again, ahead of its own
+     * events (#228). Not asked: a Project's silent turns are most of its turns, and asking every one replayed a log
+     * per turn to find the message that was not there (Bennett, 2026-09-20: "Loading the activity of 240 turns").
+     */
+    val wantsLogForMessage: Boolean get() = hasRecoveredMessage || (!hasUserMessage && (isUserTurn || !hasCalls))
+
     companion object {
         const val TRACE_KEY_PREFIX = TraceCache.RECORD_KEY_PREFIX
 
@@ -141,14 +160,14 @@ object RecordPager {
      * record's start), out of [knownTotal] steps when a previous read left that behind (saving the probe), else
      * after one small probe for the size. Null when the record is empty.
      */
-    suspend fun tail(api: ConversationRecordApi, agentId: String, wantTurns: Int, knownTotal: Int? = null, pageSize: Int = PAGE_SIZE): Raw? {
+    suspend fun tail(api: ConversationRecordApi, agentId: String, wantTurns: Int, knownTotal: Int? = null, pageSize: Int = PAGE_SIZE, firstPageSize: Int = FIRST_PAGE_SIZE): Raw? {
         var total: Int = knownTotal ?: 0
         var steps = ArrayList<HeadlessStep>()
         var end: Int
         if (total > 0) {
             // Read the newest page against the known size; the answer says whether the record grew.
-            val from = (total - pageSize).coerceAtLeast(0)
-            val page = api.counted(agentId, startIndex = from, limit = pageSize)
+            val from = (total - firstPageSize).coerceAtLeast(0)
+            val page = api.counted(agentId, startIndex = from, limit = firstPageSize)
             total = page.totalResponses
             if (total <= 0) return null
             steps.addAll(page.steps)
@@ -173,7 +192,11 @@ object RecordPager {
         }
         var pages = 0
         while (end > 0 && pages < MAX_PAGES && prompts(steps) <= wantTurns) {
-            val from = (end - pageSize).coerceAtLeast(0)
+            // The first page is the smaller: the newest turns of a coordinator's record carry payloads of tens of
+            // thousands of characters a step, and the first paint should not wait on megabytes of them; the pages
+            // behind it, read only when the newest did not hold the window's turns, are the usual size.
+            val size = if (pages == 0 && steps.isEmpty()) firstPageSize else pageSize
+            val from = (end - size).coerceAtLeast(0)
             val page = api.counted(agentId, startIndex = from, limit = end - from)
             if (page.steps.isEmpty() && from > 0) break
             steps = ArrayList<HeadlessStep>(page.steps.size + steps.size).apply { addAll(page.steps); addAll(steps) }
@@ -242,6 +265,8 @@ object RecordPager {
 
     /** Steps per request: a turn is rarely more than a page or two. */
     const val PAGE_SIZE = 200
+    /** Steps in the first page of a tail read: about the newest window's worth of a coordinator's turns (see [tail]). */
+    const val FIRST_PAGE_SIZE = 100
     /** Pages read for one window at most. */
     const val MAX_PAGES = 12
 }
