@@ -188,7 +188,8 @@ class TranscriptDiagnosticsTest {
         val report = TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = send),
         )
-        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle accountAgeMs=-2000")
+        // The account's word carries its instant and whether the gate let it speak, so a fresher `status:` line is read against it.
+        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle@1970-01-01T00:16:42Z accountAgeMs=-2000 accountUsed=true")
         // The launch that started the chat from here: which request, what it named as the place to run, what came of it.
         assertThat(report).contains("  launch: at=2026-09-17T09:59:00Z via=account target=no-repo(personal environment) files=1 images=1 outcome=refused by the account http=400 code=invalid_argument \"At least one model details is required\"")
         assertThat(report).contains("  queue: 1 […q-1 chars=42 busyRefusals=3 heldFor=83s]")

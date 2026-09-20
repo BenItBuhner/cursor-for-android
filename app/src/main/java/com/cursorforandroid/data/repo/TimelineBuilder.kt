@@ -24,6 +24,10 @@ import com.cursorforandroid.util.AppClock
 
 object TimelineBuilder {
 
+    /** What the row says for a turn whose log the server has let go (about a day after the run) with no record to read it from. */
+    const val EXPIRED_TITLE = "Activity for this turn expired on the server"
+    const val EXPIRED_DETAIL = "Cursor keeps a run's log for about a day; the reply is the transcript's."
+
     /**
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
      * ("Worked 3m 5s") is placed right before the next user message, and after the final assistant
@@ -49,11 +53,20 @@ object TimelineBuilder {
          * stream never delivered — and the run's footer closes it when the run is over.
          */
         partial: Set<String> = emptySet(),
+        /**
+         * Runs whose log the server no longer has and whose activity no other source gave (see
+         * `ConversationRepository.Entry.expiredRuns`): a row says so under the turn's reply, where the activity
+         * would have been — never nothing, and never another turn's activity in its place.
+         */
+        expired: Set<String> = emptySet(),
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         /** The run of the [index]th prompt, when it is in hand. */
         fun runAt(index: Int): RunDto? = ordered.getOrNull(index - firstRunAt)
         val items = mutableListOf<TimelineItem>()
+
+        /** The named row for a turn whose activity is gone from the server and from every other source (see [expired]). */
+        fun expiredNotice(run: RunDto) = NoticeCard("expired-${run.id}", EXPIRED_TITLE, EXPIRED_DETAIL, NoticeTone.Neutral)
 
         /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
         fun closeRun(run: RunDto?, replies: List<TimelineItem>) {
@@ -66,6 +79,7 @@ object TimelineBuilder {
                 return
             }
             items += replies
+            if (run != null && run.id in expired) items += expiredNotice(run)
             // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
             // a footer says so, where none would leave the turn looking unfinished forever.
             if (run != null && !run.statusEnum().isActive) items += footer(run)

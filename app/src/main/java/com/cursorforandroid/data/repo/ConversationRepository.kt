@@ -1021,13 +1021,15 @@ class ConversationRepository(
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
             val stories = keptStories().keys
-            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset, partial = stories).toMutableList()
+            // A run whose log the server let go, with nothing else to read its activity from: its row says so.
+            val gone = expiredTurns()
+            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset, partial = stories, expired = gone).toMutableList()
             // A prompt steered into a run the transcript pairs with its own prompt: after the story the run had told by then.
             layout.paired.forEach { run -> local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
             layout.standing.forEach { run ->
                 // The prompt that started the run, sent from here, ahead of it; the ones steered into it among its rows.
                 val prompt = local.firstOrNull { it.run.id == run.id && it.steeredAfter == null }
-                val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending, partial = stories).toMutableList()
+                val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending, partial = stories, expired = gone).toMutableList()
                 local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(turn, run, steered, shown) }
                 items += turn
             }
@@ -1061,6 +1063,19 @@ class ConversationRepository(
         private fun buildPrefix(liveRunId: String, layout: Layout): Prefix {
             val items = build(traces + keptStories() + (liveRunId to emptyList()), layout)
             return Prefix(this, liveRunId, items).also { builtPrefix = it }
+        }
+
+        /**
+         * The runs whose log is gone from the server — found expired by a replay, or older than the oldest log the
+         * server still had ([expiredBefore]) — with no trace, no kept story, and no record turn standing in for them
+         * (the record path draws such a turn's notice of its own, see [turnBodyNotice]).
+         */
+        private fun expiredTurns(): Set<String> {
+            if (recordWindow != null) return emptySet()
+            if (expiredRuns.isEmpty() && expiredBefore == Long.MIN_VALUE) return emptySet()
+            return runs.asSequence()
+                .filter { it.id !in traces && it.id !in partial && !it.statusEnum().isActive && (it.id in expiredRuns || parseIsoMillis(it.createdAt) < expiredBefore) }
+                .mapTo(HashSet()) { it.id }
         }
 
         /** The stories of runs no longer followed that have no complete trace yet (see [partial]). */
@@ -1348,9 +1363,11 @@ class ConversationRepository(
                         latestRun = latest?.let { e.statusOf(it).name } ?: "-",
                         streaming = streaming,
                         rowRunning = row?.isRunning == true,
-                        accountRunning = agents.runningScan.value.accountIds?.contains(agentId) == true,
+                        // The account's word on this chat, the same one the send gate reads (RunningScan.accountWord): running or not, and when it said so.
+                        accountRunning = agents.runningScan.value.accountWord[agentId]?.running == true,
                         rowNewerThanRecordMs = if (row != null && latest != null) row.updatedAtMillis - parseIsoMillis(latest.updatedAt) else null,
                         failure = e.failureLine(latest, window),
+                        accountAtIso = agents.runningScan.value.accountWord[agentId]?.atMillis?.takeIf { it > 0 }?.let { java.time.Instant.ofEpochMilli(it).toString() },
                     )
                 },
                 traceQueue = e.traceQueue.size,

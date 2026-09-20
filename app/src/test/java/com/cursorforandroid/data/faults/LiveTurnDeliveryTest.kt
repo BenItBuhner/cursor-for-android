@@ -7,9 +7,10 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
-import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.ActivityGroup
+import com.cursorforandroid.data.repo.TimelineBuilder
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.RunFooter
 import com.cursorforandroid.domain.TimelineItem
 import com.cursorforandroid.domain.ToolCall
@@ -159,6 +160,52 @@ class LiveTurnDeliveryTest {
             most = maxOf(most, count)
         }
         assertWithMessage("$runId's items were never on screen").that(most).isAtLeast(1)
+    }
+
+    // -- the record gone and a log expired: named rows, and no retry storm -------------------------------------------
+
+    /**
+     * With the record's read gone from the server (the wording is the server's) and a finished turn's log expired
+     * (`410 stream_expired`, about a day after the run), that turn has no source for its activity: a named row says
+     * so under its reply, where the activity would have been — never nothing, never another turn's activity. And a
+     * removal is not a pause to wait out: the record is asked once, and not again on the loads that follow.
+     */
+    @Test
+    fun `a turn whose log expired with the record gone shows a named row, and the removed record is not asked again`() = runBlocking<Unit> {
+        // The newest finished turn the reader started: its log is gone.
+        val gone = turns.dropLast(1).last { it.isUser }
+        server.logs.remove(gone.runId)
+        val rig = rig()
+        rig.open(record = false)
+        rig.awaitUntil(30_000) { state.items.any { it.id == "expired-${gone.runId}" } }
+        val notice = state.items.first { it.id == "expired-${gone.runId}" } as NoticeCard
+        assertThat(notice.title).isEqualTo(TimelineBuilder.EXPIRED_TITLE)
+        // Under its own prompt, before its footer: the row stands where the activity would have been.
+        val items = state.items
+        val at = items.indexOf(notice)
+        val footer = items.indexOfFirst { it is RunFooter && it.runId == gone.runId }
+        assertThat(footer).isGreaterThan(at)
+        assertThat(items.subList(at, footer).none { it is RunFooter }).isTrue()
+        assertThat(items.subList(0, at).last { it is UserMessage }.let { (it as UserMessage).text }).isEqualTo(gone.prompt)
+        // The turns whose logs the server still has draw their activity, not the row.
+        assertThat(state.items.filterIsInstance<NoticeCard>().map { it.id }).containsExactly("expired-${gone.runId}")
+        explain("expired turn named")
+        // The record: asked once, refused with the removal, and not asked again by the loads a live turn brings.
+        val recordReads = server.seen.count { it.route == Route.RecordState }
+        assertThat(recordReads).isEqualTo(1)
+        rig.conversations.reload(agentId)
+        rig.awaitUntil(30_000) { !state.isLoading }
+        rig.conversations.pause(agentId)
+        rig.conversations.resume(agentId)
+        rig.awaitUntil(30_000) { !state.isLoading && state.isStreaming }
+        assertThat(server.seen.count { it.route == Route.RecordState }).isEqualTo(recordReads)
+        // The diagnostics carry the server's words, the read they refused, and the hour's pause the removal earned.
+        val record = rig.conversations.loadDiagnostics(agentId)!!.record!!
+        assertThat(record.error).isEqualTo(REMOVED)
+        assertThat(record.read).isEqualTo("turns")
+        val refusedUntil = java.time.Instant.parse(record.fallback!!.refusedUntilIso!!).toEpochMilli()
+        val since = java.time.Instant.parse(record.fallback!!.sinceIso).toEpochMilli()
+        assertThat(refusedUntil - since).isEqualTo(60 * 60_000L)
     }
 
     // -- (a) the prompt delivered from the account's queue ------------------------------------------------------------

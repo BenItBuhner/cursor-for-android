@@ -76,6 +76,8 @@ data class TranscriptLoadDiagnostics(
         val accountRunning: Boolean,
         val rowNewerThanRecordMs: Long?,
         val failure: FailureLine? = null,
+        /** When the account last named this composer's status (the reading [accountRunning] is), so the `send:` line's older reading is read against it. */
+        val accountAtIso: String? = null,
     )
 
     /**
@@ -230,7 +232,7 @@ object TranscriptDiagnostics {
         }
         load.status?.let { st ->
             appendLine(
-                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
+                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning}${st.accountAtIso?.let { "@$it" } ?: ""} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
                     (st.failure?.let { f -> " failed: ${f.copy(reason = f.reason?.let(::redact)).text}" } ?: ""),
             )
         }

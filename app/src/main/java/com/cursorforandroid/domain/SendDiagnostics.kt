@@ -45,8 +45,14 @@ data class SendDiagnostics(
             append(" row=").append(if (!i.rowLoaded) "none" else if (i.rowRunning) "running" else "idle")
             append(" chat=").append(i.chatRunStatus?.name ?: "-")
             append(" streaming=").append(i.chatStreaming).append(" reconnecting=").append(i.chatReconnecting)
+            // The account's word as the decision read it — the same word the `status:` line reads, at the decision's
+            // instant — with when the account said it and whether the gate let it speak: a word older than the row's
+            // activity by more than the slack is discarded (see SendGate.ACCOUNT_SLACK_MS), and says nothing against a
+            // fresher `status:` line (Bennett's export, 2026-09-20: account=idle three minutes before accountRunning=true).
             append(" account=").append(if (!i.accountScanned) "unread" else if (i.accountRunning) "running" else "idle")
+            if (i.accountAtMillis > 0) append("@").append(java.time.Instant.ofEpochMilli(i.accountAtMillis).toString())
             append(" accountAgeMs=").append(if (i.accountAtMillis > 0 && i.rowUpdatedAtMillis > 0) i.rowUpdatedAtMillis - i.accountAtMillis else "-")
+            if (i.accountScanned) append(" accountUsed=").append(d.source == SendGate.Source.Account || (i.accountAtMillis + SendGate.ACCOUNT_SLACK_MS >= i.rowUpdatedAtMillis && d.source != SendGate.Source.Stream))
         }
         appendLine()
         launch?.let { l ->

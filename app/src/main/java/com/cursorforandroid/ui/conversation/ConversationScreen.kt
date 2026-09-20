@@ -683,9 +683,10 @@ internal fun LoadErrorRow(message: String, onRetry: () -> Unit, onShareDiagnosti
 
 /**
  * The account's record refused or failed and the documented endpoints stand in for it (see
- * [ConversationState.recordFallback]): what the server said, what is on screen because of it — the runs' activity
- * and the transcript's text, not the account's copy of the turns nor, in a Project, the coordinator's messages the
- * record alone carries whole — and the two ways out: Retry, which asks the record again, and the diagnostics. In
+ * [ConversationState.recordFallback]): what the server said, what is on screen because of it — the transcript's
+ * prompts and replies (a coordinator's messages among them) and the activity of the runs whose logs the server
+ * still has, not the activity of the older turns, which the record alone holds — and the two ways out: Retry,
+ * which asks the record again, and the diagnostics. In
  * the same card as a failed load ([LoadNoticeCard]), quieter: a degradation, not a failure, so the glyph is not red.
  */
 @Composable
@@ -701,9 +702,15 @@ internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, on
     }
 }
 
-/** What the row says when the account's record could not be read and the documented endpoints stand in. */
+/**
+ * What the row says when the account's record could not be read and the documented endpoints stand in. Precisely
+ * what the fallback lacks and nothing more: the prompts, the replies and a coordinator's messages are on screen
+ * from the documented transcript and the runs' logs (Bennett's frame of 2026-09-20 showed both under this row), so
+ * what is missing is the activity — the tool calls and thoughts — of turns whose log the server has let go (about
+ * a day after the run), which only the account's record still holds.
+ */
 internal const val RECORD_FALLBACK_TITLE = "Account transcript unavailable"
-internal const val RECORD_FALLBACK_DETAIL = "Showing run activity only. The account's copy of the turns — and a Project's messages — aren't loaded."
+internal const val RECORD_FALLBACK_DETAIL = "Showing the transcript and the runs' logs. Turns older than about a day have no activity to show until the account's copy can be read again."
 
 /**
  * Where the activity of the turns shown stands when not every turn has it (see [TraceStatus]): "Loading the activity
