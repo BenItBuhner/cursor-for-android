@@ -1251,20 +1251,22 @@ class ConversationRepositoryTest {
         streamer.emit("run-1", RunStreamEvent.Assistant("Working"))
         awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
 
-        // The screen stopped: nothing publishes into it, and the fragment the stream had gone with the follow.
+        // The screen stopped: nothing publishes into it — the story the stream had told stands as it was (the frame
+        // the reader comes back to is not blank), and what the run says meanwhile waits for the resume.
         conversations.pause("bc-1")
         awaitUntil { !conversations.state("bc-1").value.isStreaming }
-        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Working")
         streamer.emit("run-1", RunStreamEvent.Assistant(" on it."))
         delay(100)
-        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>()).isEmpty()
+        assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Working")
 
-        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch.
+        // Back on screen well inside the revalidate window: the run is followed again without waiting for a fetch,
+        // and what it said meanwhile joins the story kept — once, in the same message.
         val fetches = api.conversationCalls
         conversations.resume("bc-1")
         awaitUntil { conversations.state("bc-1").value.isStreaming }
         assertThat(api.conversationCalls).isEqualTo(fetches)
-        awaitUntil { conversations.state("bc-1").value.items.any { it is AssistantMessage } }
+        awaitUntil { conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().any { it.markdown == "Working on it." } }
         assertThat(conversations.state("bc-1").value.items.filterIsInstance<AssistantMessage>().single().markdown)
             .isEqualTo("Working on it.")
     }
