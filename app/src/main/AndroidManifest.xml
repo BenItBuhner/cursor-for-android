@@ -125,18 +125,6 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_compose_bar_info" />
         </receiver>
-        <!-- Picks a shortcut widget's look and target; its own task, like the Chats widget's configuration. -->
-        <activity
-            android:name=".widget.ShortcutWidgetConfigureActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:label="@string/shortcut_widget_configure_title"
-            android:taskAffinity=""
-            android:theme="@style/Theme.Cursor">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
-            </intent-filter>
-        </activity>
 
         <!--
           CursorApp supplies WorkManager's configuration (see its workManagerConfiguration), which the default

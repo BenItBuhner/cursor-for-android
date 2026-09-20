@@ -1,9 +1,49 @@
 package com.cursorforandroid.domain
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+/**
+ * Everything one shortcut widget instance is set to — the button or the compose bar, which are one widget in two
+ * shapes: how the button is drawn ([style]), what a tap opens ([target]), and the look every widget of this app
+ * shares ([appearance]: theme and how much of the wallpaper shows through, the section the Chats widget's settings
+ * carry too). Kept as JSON in the widget's own Glance state, per instance, lenient on the way back like
+ * [ChatsWidgetSettings]: a field or a name this build does not know costs that field its default and nothing else.
+ */
+@Serializable
+data class ShortcutWidgetSettings(
+    val style: ShortcutStyle = ShortcutStyle.Default,
+    /** The target's stored shape (see [ShortcutTarget.kindOf]); [target] is what it stands for. */
+    @SerialName("target_kind") val targetKind: String = ShortcutTarget.kindOf(ShortcutTarget.Default),
+    @SerialName("target_id") val targetId: String? = null,
+    @SerialName("target_name") val targetName: String? = null,
+    val appearance: WidgetAppearance = WidgetAppearance(),
+) {
+    val target: ShortcutTarget get() = ShortcutTarget.parse(targetKind, targetId, targetName)
+
+    fun withTarget(target: ShortcutTarget): ShortcutWidgetSettings = copy(
+        targetKind = ShortcutTarget.kindOf(target),
+        targetId = target.agentId,
+        targetName = (target as? ShortcutTarget.Chat)?.name ?: (target as? ShortcutTarget.Project)?.name,
+    )
+
+    fun encode(json: Json = WidgetSettingsJson): String = json.encodeToString(serializer(), this)
+
+    companion object {
+        val Default = ShortcutWidgetSettings()
+
+        /** The settings a stored record stands for; the defaults for a record no build of this app wrote. */
+        fun decode(raw: String?, json: Json = WidgetSettingsJson): ShortcutWidgetSettings =
+            raw?.let { runCatching { json.decodeFromString(serializer(), it) }.getOrNull() } ?: Default
+    }
+}
+
 /**
  * How the shortcut widget's button is drawn on the home screen. The widget sits on the wallpaper, not on one of
  * the app's surfaces, so each look says what it paints under the glyph rather than borrowing a theme token whole.
  */
+@Serializable
 enum class ShortcutStyle(
     /** Picker row in the configuration screen. */
     val label: String,

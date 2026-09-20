@@ -6,7 +6,7 @@
   offered in that shape). Its look and target are configured like the button's.
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:configure="com.cursorforandroid.widget.ShortcutWidgetConfigureActivity"
+    android:configure="com.cursorforandroid.widget.WidgetConfigureActivity"
     android:description="@string/compose_bar_widget_description"
     android:initialLayout="@layout/widget_compose_bar_loading"
     android:minWidth="180dp"

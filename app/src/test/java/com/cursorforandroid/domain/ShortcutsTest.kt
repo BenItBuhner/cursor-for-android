@@ -48,6 +48,18 @@ class ShortcutsTest {
     }
 
     @Test
+    fun `a widget's settings survive the round trip through JSON, and a record this build cannot read is the default`() {
+        val settings = ShortcutWidgetSettings(ShortcutStyle.Glass, appearance = WidgetAppearance(theme = WidgetTheme.Oled, opacity = 70)).withTarget(ShortcutTarget.Project("bc-2", "Android"))
+        val decoded = ShortcutWidgetSettings.decode(settings.encode())
+        assertThat(decoded).isEqualTo(settings)
+        assertThat(decoded.target).isEqualTo(ShortcutTarget.Project("bc-2", "Android"))
+        assertThat(ShortcutWidgetSettings.decode(null)).isEqualTo(ShortcutWidgetSettings.Default)
+        assertThat(ShortcutWidgetSettings.decode("not json")).isEqualTo(ShortcutWidgetSettings.Default)
+        // A style a later build added costs that field its default, nothing else.
+        assertThat(ShortcutWidgetSettings.decode("""{"style":"Neon","target_kind":"search"}""")).isEqualTo(ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Search))
+    }
+
+    @Test
     fun `a style parses by name and falls back to white`() {
         assertThat(ShortcutStyle.parse("Glass")).isEqualTo(ShortcutStyle.Glass)
         assertThat(ShortcutStyle.parse("neon")).isEqualTo(ShortcutStyle.White)

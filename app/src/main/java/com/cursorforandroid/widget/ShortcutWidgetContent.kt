@@ -37,6 +37,9 @@ import androidx.glance.unit.ColorProvider
 import com.cursorforandroid.R
 import com.cursorforandroid.domain.ShortcutStyle
 import com.cursorforandroid.domain.ShortcutTarget
+import com.cursorforandroid.domain.ShortcutWidgetSettings
+import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetTheme
 import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDarkColors
 import com.cursorforandroid.ui.theme.CursorLightColors
@@ -53,17 +56,20 @@ const val COMPOSER_PLACEHOLDER = "Ask Cursor to build, fix bugs, explore"
  * configured target: the quick composer over the launcher, the sidebar's search, a chat, a Project.
  */
 @Composable
-fun ShortcutWidgetContent(config: ShortcutConfig, variant: ShortcutVariant, theme: ThemeMode, oledBlack: Boolean) {
+fun ShortcutWidgetContent(settings: ShortcutWidgetSettings, variant: ShortcutVariant, appMode: ThemeMode, appOledBlack: Boolean) {
     val context = LocalContext.current
-    val look = remember(config.style, theme, oledBlack) { ShortcutLook.of(config.style, theme, oledBlack) }
+    val target = settings.target
+    val look = remember(settings.style, settings.appearance, appMode, appOledBlack) { ShortcutLook.of(settings.style, settings.appearance, appMode, appOledBlack) }
     // A bar is a line of text, and text needs a surface under it on a wallpaper: the icon-only look's bar is glass.
-    val barLook = remember(look, theme, oledBlack) { if (look.fill == null) ShortcutLook.of(ShortcutStyle.Glass, theme, oledBlack) else look }
-    val open = actionStartActivity(ShortcutIntents.forTarget(context, config.target))
+    val barLook = remember(look, settings.appearance, appMode, appOledBlack) {
+        if (look.fill == null) ShortcutLook.of(ShortcutStyle.Glass, settings.appearance, appMode, appOledBlack) else look
+    }
+    val open = actionStartActivity(ShortcutIntents.forTarget(context, target))
     Box(GlanceModifier.fillMaxSize().appWidgetBackground(), contentAlignment = Alignment.Center) {
         when (variant) {
-            ShortcutVariant.Button -> ShortcutButton(config.target, look, GlanceModifier.clickable(open))
-            ShortcutVariant.Bar -> ComposeBar(config.target, barLook, GlanceModifier.fillMaxWidth().clickable(open))
-            ShortcutVariant.TallBar -> ComposerBoxBar(config.target, barLook, GlanceModifier.fillMaxSize().clickable(open))
+            ShortcutVariant.Button -> ShortcutButton(target, look, GlanceModifier.clickable(open))
+            ShortcutVariant.Bar -> ComposeBar(target, barLook, GlanceModifier.fillMaxWidth().clickable(open))
+            ShortcutVariant.TallBar -> ComposerBoxBar(target, barLook, GlanceModifier.fillMaxSize().clickable(open))
         }
     }
 }
@@ -222,6 +228,10 @@ private val ShortcutTarget.glyph: Int
  * glass is a wash of the foreground the system theme would use — dark by day, white at night — with the wallpaper
  * through it; icon only paints nothing behind the glyph and lets the glyph itself follow day and night.
  *
+ * The [WidgetAppearance] every widget of this app shares applies here too: its theme decides which colours the
+ * app-tinted look takes (the app's own, or a pinned one), and its opacity is how much of the wallpaper shows through
+ * the white and app-tinted discs and the glass wash (icon only has nothing to see through).
+ *
  * Fills and text carry the app's translucent tokens as they are. Glyph tints do not: a RemoteViews image tint is
  * `setColorFilter`, SRC_ATOP over the drawable's white strokes, so a 28 % tint would come out nearly white. Each
  * glyph colour is therefore composited to an opaque colour over the surface it sits on ([over]), which is what
@@ -247,23 +257,39 @@ class ShortcutLook private constructor(
         private val Dark = Color(0xFF141414)
         private val Light = Color(0xFFF0F0F0)
 
-        fun of(style: ShortcutStyle, theme: ThemeMode, oledBlack: Boolean): ShortcutLook = when (style) {
-            ShortcutStyle.White -> onSurface(surface = Color.White, ring = Dark.copy(alpha = 0.08f), base = Dark)
-            ShortcutStyle.Tinted -> tinted(theme, oledBlack)
-            ShortcutStyle.Glass -> glass(fill = dayNight(Dark.copy(alpha = 0.12f), Light.copy(alpha = 0.20f)), ring = dayNight(Dark.copy(alpha = 0.16f), Light.copy(alpha = 0.28f)))
-            // The bar has no surface of its own here, so its discs and text take the glass tones over the wallpaper.
-            ShortcutStyle.IconOnly -> glass(fill = null, ring = null)
+        /**
+         * The look for [style] under [appearance]; [appMode] and [appOledBlack] are the app's own theme, which the
+         * app-tinted look follows while the appearance says [WidgetTheme.App] (the other themes pin one).
+         */
+        fun of(style: ShortcutStyle, appearance: WidgetAppearance, appMode: ThemeMode, appOledBlack: Boolean): ShortcutLook {
+            val opacity = appearance.opacityFraction
+            return when (style) {
+                ShortcutStyle.White -> onSurface(surface = Color.White, ring = Dark.copy(alpha = 0.08f), base = Dark, opacity = opacity)
+                ShortcutStyle.Tinted -> when (appearance.theme) {
+                    WidgetTheme.App -> tinted(appMode, appOledBlack, opacity)
+                    WidgetTheme.System -> tinted(ThemeMode.System, oledBlack = false, opacity)
+                    WidgetTheme.Light -> tinted(ThemeMode.Light, oledBlack = false, opacity)
+                    WidgetTheme.Dark -> tinted(ThemeMode.Dark, oledBlack = false, opacity)
+                    WidgetTheme.Oled -> tinted(ThemeMode.Dark, oledBlack = true, opacity)
+                }
+                ShortcutStyle.Glass -> glass(
+                    fill = dayNight(Dark.copy(alpha = 0.12f * opacity), Light.copy(alpha = 0.20f * opacity)),
+                    ring = dayNight(Dark.copy(alpha = 0.16f * opacity), Light.copy(alpha = 0.28f * opacity)),
+                )
+                // The bar has no surface of its own here, so its discs and text take the glass tones over the wallpaper.
+                ShortcutStyle.IconOnly -> glass(fill = null, ring = null)
+            }
         }
 
         /**
          * A fixed [surface] with everything on it derived from [base] at the app's alphas (text 60 %, icon 66 / 28 %,
-         * fills 8 / 6 %); the glyphs composited over the discs they sit in.
+         * fills 8 / 6 %); the glyphs composited over the discs they sit in. The surface itself is drawn at [opacity].
          */
-        private fun onSurface(surface: Color, ring: Color, base: Color): ShortcutLook {
+        private fun onSurface(surface: Color, ring: Color, base: Color, opacity: Float): ShortcutLook {
             val disc = base.copy(alpha = 0.08f).over(surface)
             val sendDisc = base.copy(alpha = 0.06f).over(surface)
             return ShortcutLook(
-                fill = ColorProvider(surface),
+                fill = ColorProvider(surface.copy(alpha = opacity)),
                 ring = ColorProvider(ring),
                 glyph = ColorProvider(base),
                 text = ColorProvider(base.copy(alpha = 0.60f)),
@@ -289,8 +315,8 @@ class ShortcutLook private constructor(
             sendGlyph = dayNight(Color(0xFF7A7A7A), Color(0xFFA8A8A8)),
         )
 
-        /** The composer's own surface (`--cursor-editor`) and tones for the app's theme; "Match system" is a day / night pair. */
-        private fun tinted(theme: ThemeMode, oledBlack: Boolean): ShortcutLook {
+        /** The composer's own surface (`--cursor-editor`, at [opacity]) and tones for [theme]; "Match system" is a day / night pair. */
+        private fun tinted(theme: ThemeMode, oledBlack: Boolean, opacity: Float): ShortcutLook {
             val dark = if (oledBlack) CursorOledColors else CursorDarkColors
             fun token(pick: (CursorColors) -> Color): ColorProvider = when (theme) {
                 ThemeMode.Dark -> ColorProvider(pick(dark))
@@ -298,7 +324,7 @@ class ShortcutLook private constructor(
                 ThemeMode.System -> ColorProvider(day = pick(CursorLightColors), night = pick(dark))
             }
             return ShortcutLook(
-                fill = token { it.elevated },
+                fill = token { it.elevated.copy(alpha = opacity) },
                 ring = token { it.strokeSubtle },
                 glyph = token { it.iconPrimary },
                 text = token { it.textTertiary },

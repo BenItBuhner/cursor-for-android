@@ -7,7 +7,7 @@
   beyond the platform's floor.
 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:configure="com.cursorforandroid.widget.ShortcutWidgetConfigureActivity"
+    android:configure="com.cursorforandroid.widget.WidgetConfigureActivity"
     android:description="@string/shortcut_widget_description"
     android:initialLayout="@layout/widget_shortcut_loading"
     android:minWidth="40dp"

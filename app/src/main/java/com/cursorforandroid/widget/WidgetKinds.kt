@@ -46,6 +46,8 @@ object WidgetKinds {
 
     init {
         register(ChatsWidgetKind)
+        register(ShortcutButtonWidgetKind)
+        register(ComposeBarWidgetKind)
     }
 
     fun register(kind: WidgetKind) {

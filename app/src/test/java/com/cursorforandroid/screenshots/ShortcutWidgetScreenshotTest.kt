@@ -27,7 +27,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.domain.AccountModel
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.LocalAgentState
-import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.ModelOption
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.Repository
@@ -40,10 +39,13 @@ import com.cursorforandroid.ui.quick.QuickComposerSheet
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
-import com.cursorforandroid.widget.ShortcutChoices
-import com.cursorforandroid.widget.ShortcutConfig
+import com.cursorforandroid.domain.ShortcutWidgetSettings
+import com.cursorforandroid.domain.WidgetAppearance
+import com.cursorforandroid.domain.WidgetTheme
+import com.cursorforandroid.widget.ShortcutTargets
+import com.cursorforandroid.widget.WidgetConfigureScreen
 import com.cursorforandroid.widget.ShortcutVariant
-import com.cursorforandroid.widget.ShortcutWidgetConfigureScreen
+import com.cursorforandroid.widget.ShortcutWidgetOptions
 import com.cursorforandroid.widget.ShortcutWidgetContent
 import com.cursorforandroid.widget.WidgetData
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -94,20 +96,20 @@ class ShortcutWidgetScreenshotTest {
     /** The button in its four looks, each on a 1x1 cell over a wallpaper-like ground. */
     @Test
     fun buttons() {
-        captureWidget("101_shortcut_widget_white", ShortcutConfig(ShortcutStyle.White), ShortcutVariant.Button, CELL)
-        captureWidget("102_shortcut_widget_tinted", ShortcutConfig(ShortcutStyle.Tinted), ShortcutVariant.Button, CELL)
-        captureWidget("103_shortcut_widget_glass", ShortcutConfig(ShortcutStyle.Glass), ShortcutVariant.Button, CELL)
-        captureWidget("104_shortcut_widget_icon_only", ShortcutConfig(ShortcutStyle.IconOnly), ShortcutVariant.Button, CELL)
+        captureWidget("104_shortcut_widget_white", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Button, CELL)
+        captureWidget("105_shortcut_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Button, CELL)
+        captureWidget("106_shortcut_widget_glass", ShortcutWidgetSettings(ShortcutStyle.Glass), ShortcutVariant.Button, CELL)
+        captureWidget("107_shortcut_widget_icon_only", ShortcutWidgetSettings(ShortcutStyle.IconOnly), ShortcutVariant.Button, CELL)
         // Pointed at a Project, the button wears the cube.
-        captureWidget("105_shortcut_widget_project", ShortcutConfig(ShortcutStyle.White, ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
+        captureWidget("108_shortcut_widget_project", ShortcutWidgetSettings(ShortcutStyle.White).withTarget(ShortcutTarget.Project("bc-1", "Cursor for Android")), ShortcutVariant.Button, CELL)
     }
 
     /** The compose bar across four cells, and the composer box it becomes two rows tall. */
     @Test
     fun bars() {
-        captureWidget("106_compose_bar_widget", ShortcutConfig(ShortcutStyle.White), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
-        captureWidget("107_compose_bar_widget_tinted", ShortcutConfig(ShortcutStyle.Tinted), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
-        captureWidget("108_compose_bar_widget_tall", ShortcutConfig(ShortcutStyle.Tinted), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp))
+        captureWidget("109_compose_bar_widget", ShortcutWidgetSettings(ShortcutStyle.White), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
+        captureWidget("110_compose_bar_widget_tinted", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.Bar, DpSize(320.dp, 72.dp))
+        captureWidget("111_compose_bar_widget_tall", ShortcutWidgetSettings(ShortcutStyle.Tinted), ShortcutVariant.TallBar, DpSize(320.dp, 140.dp))
     }
 
     /** The quick composer over the launcher: as it opens, with a draft and an image, and with a refusal under it. */
@@ -127,28 +129,37 @@ class ShortcutWidgetScreenshotTest {
         // One composition, moved between scenes: the rule allows a single setContent per test.
         val scene = mutableStateOf(base to false)
         showSheet(scene)
-        capture("109_quick_composer")
+        capture("112_quick_composer")
         scene.value = drafted to true
-        capture("110_quick_composer_drafted")
+        capture("113_quick_composer_drafted")
         scene.value = drafted.copy(error = "Cannot start Cloud Agent: the repository is not connected to Cursor's GitHub app.") to true
-        capture("111_quick_composer_refused")
+        capture("114_quick_composer_refused")
     }
 
-    /** The screen the launcher opens when a shortcut widget is placed. */
+    /**
+     * The shared widget settings screen ([WidgetConfigureScreen], the Chats widget's chrome) with this kind's body:
+     * the live preview, what a tap opens, the button's look, and the appearance section every widget carries.
+     */
     @OptIn(ExperimentalMaterial3Api::class)
     @Test
     fun configure() {
         val sample = WidgetData.sample(ThemeMode.Dark, FIXED_NOW)
-        val sections = AgentListOrganizer.organize(sample.agents, ListPreferences(), LocalAgentState(pinnedIds = setOf("bc-preview-1", "bc-preview-3")), nowMillis = FIXED_NOW)
-        val choices = ShortcutChoices(pinned = sections.firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty())
+        val pinned = sample.copy(local = LocalAgentState(pinnedIds = setOf("bc-preview-1", "bc-preview-3")))
+        val targets = ShortcutTargets(pinned = AgentListOrganizer.organize(pinned.agents, pinned.prefs, pinned.local, nowMillis = FIXED_NOW).firstOrNull { it.key == AgentListOrganizer.PINNED_KEY }?.rows.orEmpty())
+        val settings = ShortcutWidgetSettings(ShortcutStyle.White, appearance = WidgetAppearance(theme = WidgetTheme.App, opacity = 100))
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 CompositionLocalProvider(LocalRippleConfiguration provides null) {
-                    ShortcutWidgetConfigureScreen(config = ShortcutConfig(ShortcutStyle.White, ShortcutTarget.NewChat), choices = choices, onStyle = {}, onTarget = {}, onDone = {}, onClose = {})
+                    WidgetConfigureScreen(title = "New chat button", subtitle = "What it opens and how it looks", onDone = {}, onClose = {}) {
+                        ShortcutWidgetOptions(settings = settings, variant = ShortcutVariant.Button, targets = targets, appMode = ThemeMode.Dark, appOledBlack = false, onChange = {})
+                    }
                 }
             }
         }
-        capture("112_shortcut_widget_configure")
+        compose.waitForIdle()
+        // The stage composes the widget to RemoteViews a moment after the first frame.
+        compose.mainClock.advanceTimeBy(500)
+        capture("115_shortcut_widget_configure")
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
@@ -182,9 +193,9 @@ class ShortcutWidgetScreenshotTest {
     }
 
     @OptIn(ExperimentalGlanceRemoteViewsApi::class)
-    private fun captureWidget(name: String, config: ShortcutConfig, variant: ShortcutVariant, size: DpSize) {
+    private fun captureWidget(name: String, settings: ShortcutWidgetSettings, variant: ShortcutVariant, size: DpSize) {
         val remoteViews = runBlocking {
-            GlanceRemoteViews().compose(context, size) { ShortcutWidgetContent(config, variant, ThemeMode.Dark, oledBlack = false) }.remoteViews
+            GlanceRemoteViews().compose(context, size) { ShortcutWidgetContent(settings, variant, appMode = ThemeMode.Dark, appOledBlack = false) }.remoteViews
         }
         lateinit var host: AppWidgetHostView
         compose.activityRule.scenario.onActivity { activity ->
