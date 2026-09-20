@@ -488,6 +488,19 @@ class ConversationRepository(
         }
 
         /**
+         * Following a run still under way: the follower alive with the run's story so far in hand, the stream
+         * shown as open, and the run not one this device saw end. Neither of the first two says so on its own: the
+         * follower's job outlives the finished snapshot by the finish's own bookkeeping (the read marker, the write
+         * to disk), and the story stands in for the trace after a finish read off the record — a load landing in
+         * that window (a foreground return as the turn ends) read the two as "streaming" and called the chat
+         * RUNNING over its footer, until the next-run looks gave up.
+         */
+        fun isFollowingLive(): Boolean {
+            val current = live ?: return false
+            return streamJob?.isActive == true && state.value.isStreaming && agents.endedStatus(agentId, current.runId) == null
+        }
+
+        /**
          * The chat's status as the screen shows it, the freshest word first. A run being streamed is running,
          * whatever any record says of it. Next the agent's row: when the account calls the chat running and its
          * word is at least as new as the latest run record's, the chat is running — a record that says cancelled
@@ -495,7 +508,7 @@ class ConversationRepository(
          * a new run is on its way into the list. Only then the latest run's own status. A terminal state is never
          * shown while anything fresher calls the chat active.
          */
-        fun chatStatus(latest: RunDto?, streaming: Boolean = streamJob?.isActive == true && live != null): RunStatus? {
+        fun chatStatus(latest: RunDto?, streaming: Boolean = isFollowingLive()): RunStatus? {
             if (streaming) return state.value.runStatus?.takeIf { it.isActive } ?: RunStatus.RUNNING
             val recorded = latest?.let { statusOf(it) }
             if (recorded?.isActive == true) return recorded

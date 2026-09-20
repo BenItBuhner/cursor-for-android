@@ -1,5 +1,9 @@
 package com.cursorforandroid.data.repo
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
@@ -32,6 +36,7 @@ import com.cursorforandroid.domain.ToolKind
 import com.cursorforandroid.domain.ToolPayload
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
@@ -42,6 +47,8 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -1336,6 +1343,78 @@ class ConversationRepositoryTest {
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)
         recorder.cancel()
         assertThat(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+    }
+
+    /** A settings store whose writes wait for [gate] when one is set: holds a caller inside `prefs.markRead`. */
+    private class HeldWrites(context: android.content.Context) : DataStore<Preferences> {
+        private val delegate = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+            produceFile = { context.preferencesDataStoreFile("held_writes") },
+        )
+        @Volatile var gate: CompletableDeferred<Unit>? = null
+        val waiting = AtomicInteger()
+        override val data: Flow<Preferences> get() = delegate.data
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
+            gate?.let { waiting.incrementAndGet(); it.await() }
+            return delegate.updateData(transform)
+        }
+    }
+
+    /**
+     * A load landing while the finish is still being filed — the read marker's write, the write to disk — found the
+     * follower's job alive and the run's story so far in hand, and took the two for "streaming": `chatStatus`
+     * answered RUNNING over the footer, and the load's own publication kept it, until the next-run looks gave up
+     * six seconds later. On the phone: a foreground return, or a reopen, in the moment a turn ends. Pinned by
+     * holding the finish's read-marker write, which is where the screen's collector sits right after the frame that
+     * ended the stream, while a revalidation lands with its run page ahead of its transcript (the page-first render
+     * is what asks `chatStatus`). A run this device saw end is not being followed live, whatever the job's state.
+     */
+    @Test
+    fun `a load landing while the finish is still being filed does not call the chat running again`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val settings = HeldWrites(context)
+        val heldPrefs = PreferencesStore(context, settings)
+        val conversations = ConversationRepository(
+            session, agents, heldPrefs, hub, attachments, cache, traces,
+            isForeground = { true }, prefetchLimit = 0, prefetchSpacingMs = 0, scope = scope,
+        )
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { it.isStreaming && !it.isLoading } }
+        awaitUntil { heldPrefs.localAgentState.first().readMarkers.containsKey("bc-1") }
+        val frames = CopyOnWriteArrayList<Pair<Boolean, RunStatus?>>()
+        val recorder = scope.launch { conversations.state("bc-1").collect { frames += it.isStreaming to it.runStatus } }
+
+        // The run ends off its record (a status this build cannot read; the stream gone for good). The finish's
+        // read-marker write is held: the screen's collector is still inside the finish when the load below lands.
+        settings.gate = CompletableDeferred()
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "HIBERNATING")
+        streamer.emit("run-1", RunStreamEvent.Error(RunStreamEvent.Error.STREAM_EXPIRED, "This run's live stream has expired."))
+        streamer.emit("run-1", RunStreamEvent.Done)
+        awaitUntil { frames.any { (streaming, _) -> !streaming } && settings.waiting.get() > 0 }
+        val ended = frames.indexOfFirst { (streaming, _) -> !streaming }
+        assertThat(frames[ended].second).isEqualTo(RunStatus.UNKNOWN)
+
+        // A revalidation now, its run page landing ahead of its transcript.
+        api.conversationGate = CompletableDeferred()
+        now += 60_000
+        val pages = api.listRunsCalls
+        conversations.revalidate("bc-1")
+        awaitUntil { api.listRunsCalls > pages }
+        awaitUntil { api.conversationCalls >= 2 }
+        api.conversationGate!!.complete(Unit)
+        awaitUntil { !conversations.state("bc-1").value.isLoading }
+        settings.gate!!.complete(Unit)
+        settings.gate = null
+        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        recorder.cancel()
+
+        assertWithMessage("frames from the stream's end: ${frames.drop(ended)}").that(frames.drop(ended).none { (_, status) -> status?.isActive == true }).isTrue()
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.isStreaming).isFalse()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.UNKNOWN)
     }
 
     /**

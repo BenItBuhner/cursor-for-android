@@ -25,12 +25,12 @@ import com.cursorforandroid.domain.EnvType
 import com.cursorforandroid.domain.ProjectAppearance
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldDispatcher
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -50,7 +50,6 @@ import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 
 /**
  * The agent list against a paging, gate-able backend: what is on screen before each network answer arrives, what
@@ -562,21 +561,6 @@ class AgentRepositoryTest {
     }
 
     /**
-     * A disk whose work can be held: every task handed to it after [hold] waits in [held] until [release]. What a
-     * write in flight across a sign-out looks like — the list and the cache's generation sampled, the file not yet
-     * written — pinned rather than left to the scheduler.
-     */
-    private class HeldDisk {
-        private val executor = Executors.newSingleThreadExecutor()
-        private val held = java.util.concurrent.LinkedBlockingQueue<Runnable>()
-        @Volatile var hold = false
-        val heldCount: Int get() = held.size
-        val dispatcher = java.util.concurrent.Executor { task -> if (hold) held.add(task) else executor.execute(task) }.asCoroutineDispatcher()
-        fun release() { hold = false; while (true) executor.execute(held.poll() ?: break) }
-        fun shutdown() = executor.shutdownNow()
-    }
-
-    /**
      * The fetch's own publications, its bookkeeping and its write to the disk are all guarded, but by two different
      * things: the repository's generation guards what is in memory, and the cache's generation guards the file — a
      * write samples the list and the cache's generation under the publish lock and writes outside it, so a reset
@@ -588,7 +572,7 @@ class AgentRepositoryTest {
      */
     @Test
     fun `a fetch that outlives a reset publishes nothing into the list that replaced it`() = runBlocking<Unit> {
-        val disk = HeldDisk()
+        val disk = HeldDispatcher()
         val diskCache = JsonDiskCache(folder.newFolder("held-agents"), dispatcher = disk.dispatcher)
         val cache = AgentListCache(diskCache)
         try {
@@ -631,7 +615,7 @@ class AgentRepositoryTest {
             assertThat(repo.refreshCompleted.value).isEqualTo(1L)
             awaitUntil { cache.read()?.value?.map { it.name } == listOf("Previous account") }
         } finally {
-            disk.shutdown()
+            disk.close()
         }
     }
 
