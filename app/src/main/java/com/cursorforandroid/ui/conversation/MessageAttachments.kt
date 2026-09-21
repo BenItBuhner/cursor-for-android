@@ -66,8 +66,7 @@ import com.cursorforandroid.ui.media.rememberThumbnailSlot
 import com.cursorforandroid.ui.media.thumbnailSlot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.cursorforandroid.util.ioThenMain
 import java.io.File
 
 /**
@@ -303,7 +302,9 @@ private fun rememberAttachmentImage(path: String, targetEdgePx: Int, cache: Bool
     val key = "$path@$targetEdgePx"
     return produceState<LoadedImage>(initialValue = AttachmentImages.get(key)?.let { LoadedImage.Ready(it) } ?: LoadedImage.Loading, key) {
         if (value is LoadedImage.Loading) {
-            val decoded = withContext(Dispatchers.IO) { decodeSampled(path, targetEdgePx) }
+            // Back on the main thread once decoded: the write below is a snapshot state's, and this effect must not
+            // resume on the decoder's thread (see ioThenMain).
+            val decoded = ioThenMain { decodeSampled(path, targetEdgePx) }
             value = if (decoded == null) LoadedImage.Missing else LoadedImage.Ready(decoded.also { if (cache) AttachmentImages.put(key, it) })
         }
     }.value

@@ -76,7 +76,9 @@ class ComposerPasteTest {
         val listener = receiver()
 
         compose.runOnUiThread { listener.onReceive(clipboardPaste(uri)) }
-        compose.waitUntil(10_000) { errors.isNotEmpty() }
+        // The refusal is delivered on the main thread through the looper, as it is on a phone (the read itself is
+        // off it, below): the wait gives the looper its turn between checks, which a plain check of the list did not.
+        compose.waitUntil(10_000) { compose.waitForIdle(); errors.isNotEmpty() }
 
         assertThat(errors).containsExactly("Images must be 15 MB or smaller.")
         assertThat(added).isEmpty()

@@ -40,9 +40,8 @@ import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptFileKind
 import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -145,7 +144,8 @@ fun rememberMediaPicker(
     val deliver: (List<Uri>) -> Unit = { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importMedia(context, uris, extended, counts) }
+                // The import off the main thread, the callbacks below back on it (see ioThenMain).
+                val imported = ioThenMain { importMedia(context, uris, extended, counts) }
                 if (imported.images.isNotEmpty()) onPickedImages(imported.images)
                 if (imported.files.isNotEmpty()) onPickedFiles(imported.files)
                 imported.error?.let(onError)
@@ -185,7 +185,7 @@ fun rememberFilePicker(
     val launcher = rememberLauncherForActivityResult(contract) { uris ->
         if (uris.isNotEmpty()) {
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importFiles(context, uris, counts) }
+                val imported = ioThenMain { importFiles(context, uris, counts) }
                 if (imported.files.isNotEmpty()) onPickedFiles(imported.files)
                 imported.error?.let(onError)
             }
