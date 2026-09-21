@@ -47,11 +47,14 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.ui.components.CursorIcons
+import com.cursorforandroid.ui.components.SlashCommandVisualTransformation
 import com.cursorforandroid.ui.components.SpinnerRing
 import com.cursorforandroid.ui.components.TouchTarget
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.dockedCard
+import com.cursorforandroid.ui.components.highlightSlashCommands
 import com.cursorforandroid.ui.components.icon
+import com.cursorforandroid.ui.components.slashCommandTint
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.AppClock
@@ -61,11 +64,12 @@ import kotlinx.coroutines.delay
 /**
  * The follow-ups waiting for the agent's turn to end, stacked above the composer in the order they will go out. Each
  * is one line in the composer's own surface ([dockedCard]: stood in from the box's sides so its corners are concentric
- * with the box's, however many are stacked) — the message verbatim, trailing off where the line ends, with the
- * images it carries as small tiles before it — and three small glyphs on the right: remove, edit, send now. Nothing
- * else: a queue should read as a list of what is about to be said, not as a stack of forms. A message that could not
- * be sent shows a warning where its tiles would be and the reason under the message, in red; send-now then retries
- * it. One on its way out shows a ring instead of the glyphs.
+ * with the box's, however many are stacked) — the message verbatim, trailing off where the line ends, its
+ * `/commands` painted as the composer painted them ([slashCommandTint]), with the images it carries as small tiles
+ * before it — and three small glyphs on the right: remove, edit, send now. Nothing else: a queue should read as a
+ * list of what is about to be said, not as a stack of forms. A message that could not be sent shows a warning where
+ * its tiles would be and the reason under the message, in red; send-now then retries it. One on its way out shows a
+ * ring instead of the glyphs.
  */
 @Composable
 fun QueuedFollowUps(
@@ -149,10 +153,12 @@ private fun QueuedFollowUpRow(
         // the server took (see QueuedFollowUp.isHeld). The ring is for a first send only.
         val sending = item.isSending && !item.isHeld
         Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+            // The commands dim with the rest of the line while it goes out.
+            val textColor = if (sending) colors.textTertiary else colors.textPrimary
             Text(
-                item.previewText,
+                highlightSlashCommands(item.previewText, slashCommandTint().faded(textColor.alpha)),
                 style = type.input,
-                color = if (sending) colors.textTertiary else colors.textPrimary,
+                color = textColor,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -294,6 +300,8 @@ private fun AccountQueueRow(
                 onValueChange = { text = it },
                 textStyle = type.input.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.textPrimary),
+                // The commands painted as they are reworded, the way the composer paints them.
+                visualTransformation = SlashCommandVisualTransformation(slashCommandTint()),
                 modifier = Modifier.weight(1f).padding(vertical = 8.dp).testTag("account-queue-edit"),
             )
             Spacer(Modifier.width(8.dp))
@@ -303,10 +311,11 @@ private fun AccountQueueRow(
             }
         } else {
             Column(Modifier.weight(1f).padding(vertical = 4.dp)) {
+                val textColor = if (inFlight) colors.textTertiary else colors.textPrimary
                 Text(
-                    item.previewText,
+                    highlightSlashCommands(item.previewText, slashCommandTint().faded(textColor.alpha)),
                     style = type.input,
-                    color = if (inFlight) colors.textTertiary else colors.textPrimary,
+                    color = textColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,

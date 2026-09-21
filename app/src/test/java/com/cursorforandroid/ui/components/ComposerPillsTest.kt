@@ -38,10 +38,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import kotlin.math.abs
 
 /**
- * The composer's Plan and Multitask pills and its orange `/command` highlight: what the owner holds and sends stays
- * the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation changes.
+ * The composer's Plan and Multitask pills and its `/command` highlight in the Plan pill's tint: what the owner holds
+ * and sends stays the prompt it always was (`/multitask …` in front, plan mode as a flag), and only the presentation
+ * changes.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -327,35 +329,52 @@ class ComposerPillsTest {
     }
 
     @Test
-    fun `slash commands are painted in the Cursor orange and the rest of the text is not`() {
+    fun `slash commands are painted in the Plan pill's tint and the rest of the text is not`() {
         show()
 
         field.performTextInput("ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isEqualTo(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
 
         field.performTextClearance()
         field.performTextInput("/goal ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+        // The pill's tint and no other: the brand orange the commands once wore is gone from the field.
+        assertThat(pixelsOfTintInField(Color(0xFFF54E00))).isEqualTo(0)
     }
 
     @Test
-    fun `the highlight is drawn in the light theme too`() {
+    fun `the highlight is drawn in the light theme too, in the light pill's tint`() {
         show(mode = ThemeMode.Light)
 
         field.performTextInput("/review ship it")
         compose.waitForIdle()
-        assertThat(orangePixelsInField()).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberLight)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isEqualTo(0)
     }
 
+    @Test
+    fun `a command in the field and the Plan pill wear the same tint`() {
+        planMode = true
+        show()
+
+        field.performTextInput("/review ship it")
+        compose.waitForIdle()
+        // The pill's label is drawn in its tint; the field's command in the same one — the two are one thing.
+        assertThat(pixelsOfTint(compose.onNode(hasText("Plan")).fetchSemanticsNode().boundsInWindow, PillAmberDark)).isGreaterThan(0)
+        assertThat(pixelsOfTintInField(PillAmberDark)).isGreaterThan(0)
+    }
+
+    /** Pixels inside the field whose colour is [tint], the glyphs of a command being drawn in it (see [pixelsOfTint]). */
+    private fun pixelsOfTintInField(tint: Color): Int = pixelsOfTint(field.fetchSemanticsNode().boundsInWindow, tint)
+
     /**
-     * Pixels of the brand orange (#F54E00) inside the field, anti-aliased against either canvas: far more red than
-     * blue, and red well ahead of green — which no shade of the near-white or near-black text, of the placeholder,
-     * or of either background is. The window is rasterised the way Roborazzi does it, by drawing the decor view.
+     * Pixels of [tint] inside [bounds]: the ones fully covered by a glyph drawn in it, which come out as the colour
+     * itself — anti-aliased edges are blends and are not counted, so the count is only ever of the colour asked
+     * for. The window is rasterised the way Roborazzi does it, by drawing the decor view.
      */
-    private fun orangePixelsInField(): Int {
-        val bounds = field.fetchSemanticsNode().boundsInWindow
+    private fun pixelsOfTint(bounds: Rect, tint: Color): Int {
         val window = compose.runOnIdle {
             val view = compose.activity.window.decorView
             Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888).also { view.draw(Canvas(it)) }
@@ -364,9 +383,12 @@ class ComposerPillsTest {
         for (y in bounds.top.toInt() until bounds.bottom.toInt()) {
             for (x in bounds.left.toInt() until bounds.right.toInt()) {
                 val c = Color(window.getPixel(x, y))
-                if (c.red - c.blue > 0.45f && c.red - c.green > 0.25f) count++
+                if (abs(c.red - tint.red) < Tolerance && abs(c.green - tint.green) < Tolerance && abs(c.blue - tint.blue) < Tolerance) count++
             }
         }
         return count
     }
 }
+
+/** How far a channel may be from the tint's and still be the tint: a rounding step of 8-bit colour, not a blend. */
+private const val Tolerance = 2.5f / 255f

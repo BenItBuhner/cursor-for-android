@@ -34,7 +34,7 @@ import com.cursorforandroid.ui.theme.CursorTheme
  * Everything here is presentation. The owner of the composer keeps holding the prompt the way it has always been
  * sent — `/multitask fix the flaky test` — and the field shows `fix the flaky test` beside a Multitask pill; every
  * keystroke hands the owner the text with the token back in front ([compose]). Only these become pills: `/goal`, a
- * skill or a machine command stay in the text, painted as commands.
+ * skill or a machine command stay in the text, painted as commands in the Plan pill's tint ([slashCommandTint]).
  */
 object ModePills {
     /** A pill: the slash command it stands for, and the word on it. */
@@ -163,9 +163,10 @@ internal val PillVioletDark = Color(0xFFA296EC)
 internal val PillVioletLight = Color(0xFF6A5ACD)
 
 /**
- * Plan mode's amber: Cursor Dark Anysphere's own `charts.yellow` (#F1B467), a far lighter and yellower hue than the
- * brand orange the `/commands` are painted in, so the two never read as one thing. The light theme takes the light
- * theme's counterpart (#A46700) deepened to #8F5C00, the lightest step at which the label clears 4.5:1 on its wash.
+ * Plan mode's amber: Cursor Dark Anysphere's own `charts.yellow` (#F1B467). The `/commands` in the reader's text are
+ * painted in this same tint ([slashCommandTint]) — in the composer and wherever the message is shown after it — so a
+ * command and the pill a command can become read as one thing. The light theme takes the light theme's counterpart
+ * (#A46700) deepened to #8F5C00, the lightest step at which the label clears 4.5:1 on its wash.
  */
 internal val PillAmberDark = Color(0xFFF1B467)
 internal val PillAmberLight = Color(0xFF8F5C00)

@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -65,6 +66,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.isSpecified
 import com.cursorforandroid.domain.MediaMarkup
+import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.domain.StorePath
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.JetBrainsMono
@@ -149,6 +151,9 @@ object InlineMarkdown {
         codeBackground: Color,
         linkColor: Color,
         boldColor: Color,
+        commandColor: Color,
+        /** The `/command` tokens of the text being rendered, by the index of their slash in it; empty without a [command] colour. */
+        val commands: Map<Int, IntRange>,
         val onLinkClick: ((String) -> Unit)?,
     ) {
         val code = SpanStyle(fontFamily = JetBrainsMono, color = codeColor, background = codeBackground, fontSize = base.fontSize * 0.9f)
@@ -160,6 +165,7 @@ object InlineMarkdown {
         val subscript = SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = base.fontSize * 0.75f)
         val superscript = SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = base.fontSize * 0.75f)
         val link = TextLinkStyles(style = SpanStyle(color = linkColor, textDecoration = TextDecoration.None))
+        val command = if (commandColor.isSpecified) SpanStyle(color = commandColor) else null
     }
 
     /**
@@ -167,6 +173,12 @@ object InlineMarkdown {
      * (`<br>`, `<b>`, `<code>`, `<sub>`…) to an AnnotatedString. Nested markup is parsed (a bold wrap around a
      * `[label](url)` is still a link); inline code stays literal. Links use Cursor's textLink blue, matching the
      * desktop chat renderer.
+     *
+     * With a [commandColor] — the reader's own words, not an agent's — the `/command` tokens of [text] are painted
+     * in it, the rest left as it is: the tokens are the composer's own ([SlashCommands.tokenRanges] of the very same
+     * text), found before any markup is read and painted where the markup leaves them standing, so a `/goal` the
+     * field showed as a command is one in the bubble, and a slash the field did not paint — one right after a star,
+     * a bracket or a tag rather than whitespace — stays as it was. Only a code span keeps its own colour: code is code.
      *
      * [onLinkClick] receives the target of a tapped link. Without one the annotation falls back to Compose's
      * `LocalUriHandler`, which throws when nothing on the device handles the address.
@@ -179,29 +191,37 @@ object InlineMarkdown {
         linkColor: Color,
         boldColor: Color,
         onLinkClick: ((String) -> Unit)? = null,
+        commandColor: Color = Color.Unspecified,
     ): AnnotatedString {
-        val palette = Palette(base, codeColor, codeBackground, linkColor, boldColor, onLinkClick)
-        return buildAnnotatedString { appendInline(text, palette, insideLink = false) }
+        val commands = if (commandColor.isSpecified) SlashCommands.tokenRanges(text).associateBy { it.first } else emptyMap()
+        val palette = Palette(base, codeColor, codeBackground, linkColor, boldColor, commandColor, commands, onLinkClick)
+        return buildAnnotatedString { appendInline(text, palette, insideLink = false, offset = 0) }
     }
 
-    private fun AnnotatedString.Builder.appendInline(text: String, p: Palette, insideLink: Boolean) {
+    /**
+     * Appends [text] with its inline markup rendered. [offset] is where [text] begins in the string [render] was
+     * given: the markup is read recursively on the pieces it encloses, and the command tokens ([Palette.commands])
+     * are indexed in the whole.
+     */
+    private fun AnnotatedString.Builder.appendInline(text: String, p: Palette, insideLink: Boolean, offset: Int) {
         var i = 0
         val n = text.length
         // Where a search for an emphasis closer last ran off the end, per delimiter and run length: a later opener
         // of the same kind cannot find one either, so a paragraph of unclosed `*item` is read once, not once per star.
         val noCloserFrom = IntArray(8) { Int.MAX_VALUE }
-        fun recurse(inner: String) = appendInline(inner, p, insideLink)
-        fun emitLink(url: String, label: String) {
+        /** Renders [inner], the piece of [text] that starts at [at], inside the style the caller has pushed. */
+        fun recurse(inner: String, at: Int) = appendInline(inner, p, insideLink, offset + at)
+        fun emitLink(url: String, label: String, labelAt: Int) {
             // Labels keep bold/code/italic, but not nested links — a bare-URL label would recurse forever. An address
             // nothing on the device can open is not made into a link at all (see [linkTarget]).
             val target = linkTarget(url)
             if (target == null) {
-                appendInline(label, p, insideLink = true)
+                appendInline(label, p, insideLink = true, offset + labelAt)
                 return
             }
             val listener = p.onLinkClick?.let { click -> LinkInteractionListener { click(target) } }
             withLink(LinkAnnotation.Url(url = target, styles = p.link, linkInteractionListener = listener)) {
-                appendInline(label, p, insideLink = true)
+                appendInline(label, p, insideLink = true, offset + labelAt)
             }
         }
         fun emitCode(code: String) {
@@ -240,7 +260,7 @@ object InlineMarkdown {
                 text.startsWith("~~", i) -> {
                     val end = if (i + 2 < n && !text[i + 2].isWhitespace()) text.indexOf("~~", i + 2) else -1
                     if (end > i + 2) {
-                        withStyle(p.strike) { recurse(text.substring(i + 2, end)) }
+                        withStyle(p.strike) { recurse(text.substring(i + 2, end), i + 2) }
                         i = end + 2
                     } else {
                         append("~~")
@@ -265,9 +285,9 @@ object InlineMarkdown {
                             }
                             val inner = text.substring(i + len, close)
                             when (len) {
-                                3 -> withStyle(p.bold) { withStyle(p.italic) { recurse(inner) } }
-                                2 -> withStyle(p.bold) { recurse(inner) }
-                                else -> withStyle(p.italic) { recurse(inner) }
+                                3 -> withStyle(p.bold) { withStyle(p.italic) { recurse(inner, i + len) } }
+                                2 -> withStyle(p.bold) { recurse(inner, i + len) }
+                                else -> withStyle(p.italic) { recurse(inner, i + len) }
                             }
                             i = close + len
                             closed = true
@@ -282,7 +302,8 @@ object InlineMarkdown {
                 c == '[' && !insideLink -> {
                     val link = parseMarkdownLink(text, i)
                     if (link != null) {
-                        emitLink(link.url, link.label)
+                        // The label opens one past the `[`.
+                        emitLink(link.url, link.label, i + 1)
                         i = link.end
                     } else {
                         append(c)
@@ -293,7 +314,7 @@ object InlineMarkdown {
                     // An image the block parser did not lift out (inside a table cell, say): its alt text stands in.
                     val image = parseMarkdownLink(text, i + 1)
                     if (image != null) {
-                        recurse(image.label)
+                        recurse(image.label, i + 2)
                         i = image.end
                     } else {
                         append(c)
@@ -301,6 +322,15 @@ object InlineMarkdown {
                     }
                 }
                 c == '<' -> i = appendHtml(text, i, p, insideLink, ::emitLink, ::emitCode, ::recurse)
+                // A `/command` the composer painted: found on the whole text before any markup was read, so the
+                // slash is one the reader's field showed as a command and not one a delimiter left standing first.
+                c == '/' && p.command != null && p.commands.containsKey(offset + i) -> {
+                    // A token is `/[a-z0-9-]+` closed by whitespace or the end, and the markup's pieces are cut at
+                    // delimiters, never inside a token: the whole of it is in this piece.
+                    val end = p.commands.getValue(offset + i).last + 1 - offset
+                    withStyle(p.command) { append(text, i, end) }
+                    i = end
+                }
                 c == '&' -> {
                     val m = entity.matchAt(text, i)
                     val decoded = m?.let { decodeEntity(it.groupValues[1]) }
@@ -316,7 +346,7 @@ object InlineMarkdown {
                     val raw = bareUrl.matchAt(text, i)?.value
                     if (raw != null) {
                         val url = trimTrailingUrlPunctuation(raw)
-                        emitLink(url, url)
+                        emitLink(url, url, i)
                         i += url.length
                     } else {
                         append(c)
@@ -327,7 +357,7 @@ object InlineMarkdown {
                 !insideLink && c == '/' && text.startsWith(StorePath.ROOT, i) -> {
                     val path = StorePath.findBare(text, i)
                     if (path != null) {
-                        emitLink(path, path)
+                        emitLink(path, path, i)
                         i += path.length
                     } else {
                         append(c)
@@ -342,15 +372,18 @@ object InlineMarkdown {
         }
     }
 
-    /** Handles the `<` at [i]: a line break, anchor, autolink or a known inline tag. Returns the index to continue from. */
+    /**
+     * Handles the `<` at [i]: a line break, anchor, autolink or a known inline tag. Returns the index to continue
+     * from. [emitLink] and [recurse] take the text they are handed and where in [text] it starts.
+     */
     private fun AnnotatedString.Builder.appendHtml(
         text: String,
         i: Int,
         p: Palette,
         insideLink: Boolean,
-        emitLink: (String, String) -> Unit,
+        emitLink: (url: String, label: String, labelAt: Int) -> Unit,
         emitCode: (String) -> Unit,
-        recurse: (String) -> Unit,
+        recurse: (inner: String, at: Int) -> Unit,
     ): Int {
         lineBreakTag.matchAt(text, i)?.let {
             append('\n')
@@ -358,11 +391,11 @@ object InlineMarkdown {
         }
         if (!insideLink) {
             htmlAnchor.matchAt(text, i)?.let {
-                emitLink(it.groupValues[1].trim(), it.groupValues[2])
+                emitLink(it.groupValues[1].trim(), it.groupValues[2], it.groups[2]!!.range.first)
                 return it.range.last + 1
             }
             autolink.matchAt(text, i)?.let {
-                emitLink(it.groupValues[1], it.groupValues[1])
+                emitLink(it.groupValues[1], it.groupValues[1], it.groups[1]!!.range.first)
                 return it.range.last + 1
             }
         }
@@ -382,15 +415,15 @@ object InlineMarkdown {
         if (close < 0) return tagEnd
         val inner = text.substring(tagEnd, close)
         when (kind) {
-            Tag.Bold -> withStyle(p.bold) { recurse(inner) }
-            Tag.Italic -> withStyle(p.italic) { recurse(inner) }
+            Tag.Bold -> withStyle(p.bold) { recurse(inner, tagEnd) }
+            Tag.Italic -> withStyle(p.italic) { recurse(inner, tagEnd) }
             Tag.Code -> emitCode(decodeEntities(inner))
-            Tag.Strike -> withStyle(p.strike) { recurse(inner) }
-            Tag.Underline -> withStyle(p.underline) { recurse(inner) }
-            Tag.Subscript -> withStyle(p.subscript) { recurse(inner) }
-            Tag.Superscript -> withStyle(p.superscript) { recurse(inner) }
-            Tag.Mark -> withStyle(p.mark) { recurse(inner) }
-            Tag.Transparent -> recurse(inner)
+            Tag.Strike -> withStyle(p.strike) { recurse(inner, tagEnd) }
+            Tag.Underline -> withStyle(p.underline) { recurse(inner, tagEnd) }
+            Tag.Subscript -> withStyle(p.subscript) { recurse(inner, tagEnd) }
+            Tag.Superscript -> withStyle(p.superscript) { recurse(inner, tagEnd) }
+            Tag.Mark -> withStyle(p.mark) { recurse(inner, tagEnd) }
+            Tag.Transparent -> recurse(inner, tagEnd)
         }
         return close + name.length + 3
     }
@@ -541,6 +574,10 @@ object InlineMarkdown {
  * agent's download endpoint); outside a conversation only absolute URLs and data URIs can be shown.
  *
  * [streaming] trims a half-received media tag from the end of the text so the raw markup never flashes.
+ *
+ * [commandColor] is for the reader's own words: with it, the `/command` tokens the composer painted are painted
+ * again in that colour ([InlineMarkdown.render]) — the transcript's bubbles give it [slashCommandTint]; a reply,
+ * which is nobody's command, leaves it unspecified.
  */
 @Composable
 fun MarkdownText(
@@ -549,6 +586,7 @@ fun MarkdownText(
     style: TextStyle = CursorTheme.typography.message,
     color: Color = CursorTheme.colors.textPrimary,
     streaming: Boolean = false,
+    commandColor: Color = Color.Unspecified,
 ) {
     // A reply still arriving re-reads only its tail (see [IncrementalMarkdown]); a finished message is parsed once
     // for as long as it stands, wherever it is drawn (see [MarkdownCache]) — the presenter has usually parsed the
@@ -557,34 +595,34 @@ fun MarkdownText(
     val blocks = remember(markdown, streaming) {
         if (streaming) parser.parse(MediaMarkup.trimPartialTail(markdown)) else MarkdownCache.parse(markdown)
     }
-    MarkdownBlocks(blocks, style, color, modifier, spacing = 10.dp)
+    MarkdownBlocks(blocks, style, color, modifier, spacing = 10.dp, commandColor = commandColor)
 }
 
 @Composable
-private fun MarkdownBlocks(blocks: List<MdBlock>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp) {
+private fun MarkdownBlocks(blocks: List<MdBlock>, style: TextStyle, color: Color, modifier: Modifier = Modifier, spacing: Dp, commandColor: Color) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(spacing)) {
         // Keyed on position rather than content: streaming only appends, so every block but the last keeps its
         // index, and a code block being written keeps the horizontal scroll the reader put it at.
         blocks.forEachIndexed { index, block ->
-            key(index, block::class) { MarkdownBlock(block, style, color) }
+            key(index, block::class) { MarkdownBlock(block, style, color, commandColor) }
         }
     }
 }
 
 @Composable
-private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color) {
+private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color, commandColor: Color) {
     val colors = CursorTheme.colors
     when (block) {
-        is MdBlock.Paragraph -> InlineText(block.text, style, color)
+        is MdBlock.Paragraph -> InlineText(block.text, style, color, commandColor = commandColor)
         is MdBlock.Heading -> {
             val headingStyle = when (block.level) {
                 1 -> style.copy(fontSize = style.fontSize * 1.25f, fontWeight = FontWeight.SemiBold)
                 2 -> style.copy(fontSize = style.fontSize * 1.12f, fontWeight = FontWeight.SemiBold)
                 else -> style.copy(fontWeight = FontWeight.SemiBold)
             }
-            InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp))
+            InlineText(block.text, headingStyle, color, modifier = Modifier.padding(top = 4.dp), commandColor = commandColor)
         }
-        is MdBlock.Bullets -> ListBlock(block, style, color)
+        is MdBlock.Bullets -> ListBlock(block, style, color, commandColor)
         is MdBlock.Code -> CodeBlock(block.code, block.language)
         is MdBlock.Quote -> {
             // The bar is drawn into the content's start padding, so it spans exactly what is quoted.
@@ -600,12 +638,13 @@ private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color) {
                     }
                     .padding(start = 12.dp),
                 spacing = 8.dp,
+                commandColor = commandColor,
             )
         }
         MdBlock.Rule -> HairlineDivider(Modifier.padding(vertical = 4.dp))
         is MdBlock.Image -> ImageBlock(block.src, block.alt)
         is MdBlock.Video -> VideoBlock(block.src, block.poster)
-        is MdBlock.Table -> TableBlock(block, style, color)
+        is MdBlock.Table -> TableBlock(block, style, color, commandColor = commandColor)
     }
 }
 
@@ -614,7 +653,7 @@ private fun MarkdownBlock(block: MdBlock, style: TextStyle, color: Color) {
  * only when the list counts into two or more digits so "10." is never wrapped onto two lines.
  */
 @Composable
-private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color) {
+private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color, commandColor: Color) {
     val colors = CursorTheme.colors
     val markerWidth = markerColumnWidth(block, style)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -625,7 +664,7 @@ private fun ListBlock(block: MdBlock.Bullets, style: TextStyle, color: Color) {
                     block.ordered -> Text("${block.start + index}.", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                     else -> Text("•", style = style, color = colors.textTertiary, modifier = Modifier.width(markerWidth))
                 }
-                MarkdownBlocks(item.blocks, style, color, Modifier.weight(1f), spacing = 6.dp)
+                MarkdownBlocks(item.blocks, style, color, Modifier.weight(1f), spacing = 6.dp, commandColor = commandColor)
             }
         }
     }
@@ -669,7 +708,7 @@ private fun TaskCheckbox(checked: Boolean, style: TextStyle, modifier: Modifier)
 }
 
 @Composable
-internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: Modifier = Modifier, commandColor: Color = Color.Unspecified) {
     val colors = CursorTheme.colors
     val uriHandler = LocalUriHandler.current
     val media = LocalMarkdownMedia.current
@@ -687,7 +726,7 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
         }
         open
     }
-    val annotated = remember(text, style, color, openLink) {
+    val annotated = remember(text, style, color, openLink, commandColor) {
         InlineMarkdown.render(
             text = text,
             base = style,
@@ -696,6 +735,7 @@ internal fun InlineText(text: String, style: TextStyle, color: Color, modifier: 
             linkColor = colors.link,
             boldColor = colors.textPrimary,
             onLinkClick = openLink,
+            commandColor = commandColor,
         )
     }
     // Press and hold on an inline code span copies it, as the block's button does its code. The text and its layout
