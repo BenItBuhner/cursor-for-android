@@ -61,12 +61,12 @@ class SidebarCollapsePersistenceTest {
      * wall while keeping the main looper and the composition moving.
      */
     private fun awaitOnScreen(condition: () -> Boolean) {
-        repeat(750) {
+        repeat(1500) {
             compose.waitForIdle()
             if (condition()) return
             Thread.sleep(20)
         }
-        throw AssertionError("Condition was still not satisfied after 15s")
+        throw AssertionError("Condition was still not satisfied after 30s")
     }
 
     private fun composed(text: String) = compose.onAllNodes(hasText(text)).fetchSemanticsNodes().isNotEmpty()

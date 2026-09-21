@@ -124,17 +124,21 @@ jobs:
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-  # The ~2000 JVM unit tests, split over three runners: each runs one deterministic third of the test classes
-  # (`-Papp.testShard=I/3`, app/build.gradle.kts) in three test JVMs side by side. The three checks are named
-  # "Unit tests (1/3)" .. "(3/3)"; `ci` below folds them, and every other job, into the one check to require.
+  # The ~2000 JVM unit tests over six runners, one test JVM each: five deterministic slices of the ordinary classes
+  # (`-Papp.testShard=I/5`, app/build.gradle.kts) and one for the benchmarks - the frame-time and throughput claims
+  # (`*BenchmarkTest`, `TranscriptPerf*`) - alone, so what they measure is the code and not a neighbour. One JVM
+  # because the runner's four vCPUs are two cores: with two or three test JVMs side by side the fault, benchmark and
+  # Compose UI tests, which assert on or wait for wall-clock behaviour, timed out on one shard job in five; alone in
+  # their JVM they never have. The checks are named "Unit tests (1/5)" .. "(5/5)" and "Unit tests (benchmarks)"; `ci`
+  # below folds them, and every other job, into the one check to require.
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/3)
+    name: Unit tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5", "benchmarks"]
     steps:
       - uses: actions/checkout@v7
 
@@ -149,19 +153,28 @@ jobs:
         run: echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
-      - name: Run JVM unit tests (shard ${{ matrix.shard }} of 3)
+      - name: Run JVM unit tests (${{ matrix.shard }})
         run: >
-          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}/3
-          -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}
+          -Papp.testForks=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+
+      # The JUnit XML always (a megabyte): the per-class times are what the slices are balanced on. The HTML report
+      # only when something failed.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-tests-results-${{ strategy.job-index }}
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload test report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-report-${{ matrix.shard }}
-          path: |
-            app/build/reports/tests/testDebugUnitTest/
-            app/build/test-results/testDebugUnitTest/
+          name: unit-test-report-${{ strategy.job-index }}
+          path: app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
 
   screenshots:
