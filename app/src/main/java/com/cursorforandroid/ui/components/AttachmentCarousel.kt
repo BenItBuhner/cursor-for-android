@@ -9,12 +9,16 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.media.MediaLoader
+import java.io.File
 
 /**
  * One row for everything attached to a prompt, scrolling sideways once it runs past its width — where a strip of
@@ -52,11 +56,12 @@ fun AttachmentCarousel(
 }
 
 /**
- * The composer's attachments in one [AttachmentCarousel], images and files together in the order attached: a pasted
- * or shared-in image as its thumbnail with its remove badge ([PendingImageThumbnail]), a file of any type as its chip
- * ([FileChip]) — the upload ring filling, the retry and the cross all working wherever the row has been scrolled to.
- * Bottom-aligned, so the thumbnails' badges overhang above the chips rather than push them down. [surface] is the
- * composer's own colour, which the fades are painted in.
+ * The composer's attachments in one [AttachmentCarousel], by what they are rather than how they came in: every
+ * picture and recording — pasted, shared in, picked from the gallery or the Files picker — as its own tile
+ * ([MediaChip], no name, no size, a tap opening it in the app's viewer out of the tile), and a file of any other
+ * kind as its chip ([FileChip]) with name, kind and size — the upload ring, the retry and the remove all working
+ * wherever the row has been scrolled to. Bottom-aligned, so the tiles' badges overhang above the chips rather than
+ * push them down. [surface] is the composer's own colour, which the fades are painted in.
  */
 @Composable
 fun ComposerAttachments(
@@ -69,10 +74,36 @@ fun ComposerAttachments(
     uploads: Map<String, FileUploadState> = emptyMap(),
     onRetryFile: ((PendingFile) -> Unit)? = null,
     state: LazyListState = rememberLazyListState(),
+    /** The chat the composer belongs to, for the viewer; null in the New Chat composer. */
+    agentId: String? = null,
+    /** Reads a restored recording's poster and length off its copy; null leaves such a tile with its play glyph. */
+    media: MediaLoader? = null,
 ) {
+    val context = LocalContext.current
+    val previews = remember(context) { ComposerMediaPreviews(File(context.cacheDir, "composer-media")) }
+    // Everything that is a picture or a recording, whichever way it came in, in the order attached: pasted and
+    // shared-in images first (the strip's), then the picked files that are media. The viewer pages through these.
+    val mediaItems = remember(images, files, uploads) {
+        images.map { ComposerMediaItem.of(it) } + files.filter { it.isMedia }.map { ComposerMediaItem.of(it, uploads[it.id]) }
+    }
+    val open = rememberOpenComposerMedia(mediaItems, previews, agentId)
+    val imageById = remember(images) { images.associateBy { it.id } }
+    val fileById = remember(files) { files.associateBy { it.id } }
     AttachmentCarousel(modifier, state = state, surface = surface, verticalAlignment = Alignment.Bottom) {
-        items(images, key = { "image:${it.id}" }) { image -> PendingImageThumbnail(image, onRemove = { onRemoveImage(image) }) }
-        items(files, key = { "file:${it.id}" }) { file ->
+        items(mediaItems, key = { "media:${it.id}" }) { item ->
+            val file = fileById[item.id]
+            // A recording that came back from disk without its poster gets one read off its copy.
+            val preview = rememberVideoPreview(item, previews, media)
+            val shown = if (preview != null) ComposerMediaItem(item.id, item.bytes, item.mimeType, item.name, preview.first ?: item.thumbnail, item.isVideo, preview.second ?: item.durationMs, item.upload) else item
+            MediaChip(
+                shown,
+                onOpen = { slot -> open(shown, slot) },
+                onRemove = { imageById[item.id]?.let(onRemoveImage) ?: file?.let(onRemoveFile) },
+                onRetry = if (file != null && onRetryFile != null) ({ onRetryFile(file) }) else null,
+                src = previews.src(item.id, item.mimeType),
+            )
+        }
+        items(files.filterNot { it.isMedia }, key = { "file:${it.id}" }) { file ->
             FileChip(file, upload = uploads[file.id], onRemove = { onRemoveFile(file) }, onRetry = onRetryFile?.let { retry -> { retry(file) } })
         }
     }

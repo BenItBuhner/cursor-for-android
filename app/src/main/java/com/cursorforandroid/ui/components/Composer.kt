@@ -69,6 +69,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.cursorforandroid.data.media.MediaLoader
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
@@ -146,6 +147,9 @@ fun ComposerBox(
      * its launch; the chat's composer sends, the uploads finishing on the message's bubble.
      */
     sendHint: String? = null,
+    /** For the attachment row's pictures and recordings opening in the app's viewer: the chat they belong to, and the loader that reads a restored recording's poster. */
+    mediaAgentId: String? = null,
+    media: MediaLoader? = null,
     modelLabel: String? = null,
     onModel: (() -> Unit)? = null,
     /**
@@ -301,6 +305,8 @@ fun ComposerBox(
                 surface = colors.elevated,
                 uploads = fileUploads,
                 onRetryFile = onRetryFile,
+                agentId = mediaAgentId,
+                media = media,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }

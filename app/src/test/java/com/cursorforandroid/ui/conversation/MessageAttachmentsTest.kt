@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -140,6 +141,46 @@ class MessageAttachmentsTest {
         compose.onNodeWithContentDescription("Close").performClick()
         compose.waitUntil(30_000) { compose.waitForIdle(); !viewer.isOpen }
         assertThat(countOf("Close")).isEqualTo(0)
+    }
+
+    /**
+     * A recording the prompt carried is a tile, as the composer showed it — a play glyph, no name and size card — and
+     * a tap opens the viewer on it, playing; a PDF beside it keeps its card. The by-content rule, kept past the send.
+     */
+    @Test
+    fun `a recording is a tile that opens playing, a file of another kind keeps its card`() {
+        val viewer = MediaViewerState(null)
+        val loader = ViewerFixtures.loader()
+        val clip = File(folder.root, "clip.mp4").apply { writeBytes(ByteArray(4_096)) }
+        val spec = File(folder.root, "spec.pdf").apply { writeBytes(ByteArray(2_048)) }
+        val message = UserMessage(
+            "m1", "Look",
+            attachments = listOf(
+                MessageAttachment.file(clip.path, "clip.mp4", "video/mp4", 4_096),
+                MessageAttachment.file(spec.path, "spec.pdf", "application/pdf", 2_048),
+            ),
+        )
+        compose.setContent {
+            CursorTheme(mode = ThemeMode.Dark) {
+                MediaViewerHost(viewer, loader) {
+                    CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext("bc-1", loader, entries = { ConversationMedia.of(listOf(message)) })) {
+                        TimelineItemView(message)
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("attachment-video").assertIsDisplayed()
+        compose.onAllNodesWithText("clip.mp4").assertCountEquals(0)
+        compose.onAllNodesWithText("Video · 4 KB").assertCountEquals(0)
+        compose.onNodeWithTag("attachment-file-card").assertIsDisplayed()
+        compose.onNodeWithText("spec.pdf").assertIsDisplayed()
+        compose.onNodeWithTag("attachment-video").performClick()
+        compose.waitUntil(30_000) { compose.waitForIdle(); viewer.isOpen }
+        assertThat(viewer.current?.src).isEqualTo("file://${clip.path}")
+        assertThat(viewer.current?.kind).isEqualTo(MediaEntry.Kind.Video)
+        assertThat(viewer.session?.autoplay).isTrue()
+        assertThat(viewer.session?.origin).isNotNull()
     }
 
     /** Without a viewer hosted (a preview, a test of the row alone) the thumbnail is inert rather than a crash. */
