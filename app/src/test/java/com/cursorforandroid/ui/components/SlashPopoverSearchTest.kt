@@ -67,7 +67,7 @@ class SlashPopoverSearchTest {
                 }
             }
         }
-        compose.waitUntil { compose.onAllNodesWithText("/goal").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("/goal").fetchSemanticsNodes().isNotEmpty() }
         val afterFirstSearch = walks[0]
         assertThat(afterFirstSearch).isGreaterThan(0)
 

@@ -14,11 +14,13 @@ import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0ConversationMessageDto
 import com.cursorforandroid.data.api.dto.V0ConversationResponseDto
 import com.cursorforandroid.data.api.dto.V0ListAgentsResponseDto
+import com.cursorforandroid.fixtures.BlobFixtures
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -82,6 +84,13 @@ class FaultServer(
     val records: MutableMap<String, List<JsonObject>> = ConcurrentHashMap()
     /** The account's conversation state per chat (`GetLatestAgentConversationState`), as the JSON body to serve; synthesised from [records] when absent. */
     val recordStates: MutableMap<String, String> = ConcurrentHashMap()
+    /**
+     * The blob-backed record per chat (`GetBlobForAgentKV`, the read Cursor's client makes; see `BlobFixtures`):
+     * made from [records] on the first read and remade whenever [records] changes; scripted here for a chat that has
+     * no [records]. Neither: the chat has no turns.
+     */
+    val blobRecords: MutableMap<String, BlobFixtures.Record> = ConcurrentHashMap()
+    private val blobRecordsFrom = ConcurrentHashMap<String, List<JsonObject>>()
     /** Bytes of record body served so far, per chat: what the account's transcript costs a connection. */
     val recordBytes: MutableMap<String, Long> = ConcurrentHashMap()
     /** The prompts `POST /runs` filed, in order, and the runs they started. */
@@ -89,6 +98,27 @@ class FaultServer(
     val cancelled = CopyOnWriteArrayList<String>()
     /** Answers every `POST /runs` with `409 agent_busy` while set, as the server does during a turn. */
     @Volatile var busy = false
+
+    /**
+     * One message in the account's queue for a chat (`AddAsyncFollowupBackgroundComposer` behind a turn under way;
+     * `ListPendingFollowups`): the account's followup id (the client's, as sent), the words, and when the account
+     * consumed it — started the next run on it, or promoted it into the running turn — after which the list still
+     * names it for [queueLagMs] (the account's bookkeeping trails the run it starts, and a poll that began before is
+     * older still). Null while it waits.
+     */
+    data class Pending(val followupId: String, val text: String, val createdAtMs: Long, @Volatile var consumedAtMs: Long? = null) {
+        /** When the account consumed it, by the server's own monotonic clock (the app's clock is frozen in most tests). */
+        @Volatile var consumedAtServerMs: Long? = null
+    }
+
+    /** The account's queue per chat, oldest first. */
+    val pending: MutableMap<String, MutableList<Pending>> = ConcurrentHashMap()
+    /** How long the account's list keeps naming a followup after the run it started (or the steer it became) exists. */
+    @Volatile var queueLagMs: Long = 0L
+    /** Whether the account may start the next run on a queued message on its own the moment the turn ends (see [endTurn]); tests deliver by hand otherwise. */
+    @Volatile var autoDeliver = false
+    /** The followups delivered, in order, and the run each started (a steer's run is the one it was delivered into). */
+    val delivered = CopyOnWriteArrayList<Pair<String, String>>()
     /** The largest page the list endpoints serve whatever `limit` asks, so a small account still pages. */
     @Volatile var pageSize = Int.MAX_VALUE
 
@@ -109,7 +139,7 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, Steer, Other }
 
     /** What one request meets instead of, or before, its answer. */
     sealed interface Fault {
@@ -228,6 +258,11 @@ class FaultServer(
             segments.size == 2 && segments[0] == "auth" && segments[1] == "exchange_user_api_key" -> Route.Auth
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "FetchBackgroundComposer" -> Route.Record
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetLatestAgentConversationState" -> Route.RecordState
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetBlobForAgentKV" -> Route.Blob
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "AddAsyncFollowupBackgroundComposer" -> Route.QueueAdd
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListPendingFollowups" -> Route.QueueList
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "DeletePendingFollowup" -> Route.QueueDelete
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "InjectBackgroundComposerContext" -> Route.Steer
             else -> Route.Other
         }
     }
@@ -277,12 +312,17 @@ class FaultServer(
             Route.Auth -> json(200, """{"accessToken":"session-token","refreshToken":"refresh-token"}""")
             Route.Record -> record(request)
             Route.RecordState -> recordState(request)
+            Route.Blob -> blob(request)
+            Route.QueueAdd -> queueAdd(request, processed)
+            Route.QueueList -> queueList(request)
+            Route.QueueDelete -> queueDelete(request)
+            Route.Steer -> steer(request)
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         return when (fault) {
             null, Fault.Pass, is Fault.StreamCut -> answer.withWeather()
             // A refusal from the account service is a Connect error body; from the documented API, the API's own.
-            is Fault.Status -> json(fault.code, if (route == Route.Record || route == Route.RecordState) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
+            is Fault.Status -> json(fault.code, if (route.isAccount) connectError(fault.errorCode, fault.message) else error(fault.errorCode, fault.message)).apply { fault.retryAfter?.let { setHeader("Retry-After", it) } }.withWeather()
             is Fault.LostReply -> MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST)
             Fault.TruncatedBody -> answer.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY).withWeather()
             is Fault.Silence -> MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)
@@ -309,6 +349,120 @@ class FaultServer(
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
 
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.Steer
+
+    // ---- the account's queue ----------------------------------------------------------------------------------------
+
+    /**
+     * `AddAsyncFollowupBackgroundComposer {bcId, followup, followupId, synchronous, …}`: behind a turn under way the
+     * message joins the account's queue and the answer names no run; on a free agent (or sent `synchronous`) the
+     * account starts the run at once and names it, filing the prompt in the transcript as `POST /runs` does.
+     */
+    private fun queueAdd(request: RecordedRequest, processed: Boolean): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val text = body["followup"]?.jsonPrimitive?.contentOrNull ?: ""
+        val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: "fu-server-${ids.incrementAndGet()}"
+        val synchronous = body["synchronous"]?.jsonPrimitive?.booleanOrNull == true
+        val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
+        if (!processed) return json(500, connectError("internal", "The fault said this request was never processed."))
+        val onATurn = agent.latestRunId?.let { runs[it]?.status }?.let { com.cursorforandroid.domain.RunStatus.parse(it).isActive } == true
+        if (onATurn && !synchronous) {
+            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock())
+            return json(200, "{}")
+        }
+        val run = startRun(agentId, text)
+        return json(200, """{"runId":"${run.id}"}""")
+    }
+
+    /** `ListPendingFollowups {bcId}`: what waits, and what the account consumed within the last [queueLagMs]. */
+    private fun queueList(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val now = nowMillis()
+        val listed = pending[agentId].orEmpty().filter { p -> p.consumedAtServerMs?.let { now < it + queueLagMs } ?: true }
+        val items = listed.joinToString(",") { p ->
+            """{"followupId":"${p.followupId}","text":${CursorJson.encodeToString(String.serializer(), p.text)},"createdAtMs":"${p.createdAtMs}","source":"BACKGROUND_COMPOSER_SOURCE_MOBILE"}"""
+        }
+        return json(200, """{"pendingFollowups":[$items]}""")
+    }
+
+    private fun queueDelete(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val followupId = body["followupId"]?.jsonPrimitive?.contentOrNull ?: ""
+        pending[agentId]?.removeAll { it.followupId == followupId }
+        return json(200, """{"success":true}""")
+    }
+
+    /**
+     * `InjectBackgroundComposerContext`: a steer into the turn under way — with `promoteFollowupId`, a queued
+     * message delivered into the running turn: the account consumes it and files it in the transcript among the
+     * turn's messages. A plain steer's words are filed the same way.
+     */
+    private fun steer(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val agent = agents[agentId] ?: return json(404, connectError("not_found", "no such composer"))
+        val runId = agent.latestRunId?.takeIf { runs[it]?.status?.let { st -> com.cursorforandroid.domain.RunStatus.parse(st).isActive } == true }
+            ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""")
+        val promote = body["promoteFollowupId"]?.jsonPrimitive?.contentOrNull
+        val text = if (promote != null) {
+            val p = pending[agentId]?.firstOrNull { it.followupId == promote } ?: return json(200, """{"outcome":"OUTCOME_REJECTED"}""")
+            p.consumedAtMs = clock()
+            p.consumedAtServerMs = nowMillis()
+            delivered += p.followupId to runId
+            p.text
+        } else {
+            body["injectContextAction"]?.jsonObject?.get("userContext")?.jsonObject?.get("userMessage")?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull ?: ""
+        }
+        transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-steer-${ids.incrementAndGet()}", "user_message", text)
+        return json(200, """{"outcome":"OUTCOME_QUEUED"}""")
+    }
+
+    /** The account starts a run on [text] now: the run record, the agent's latest, the transcript's prompt. */
+    private fun startRun(agentId: String, text: String): RunDto {
+        val agent = agents.getValue(agentId)
+        val sequence = ids.incrementAndGet()
+        val runId = "run-followup-$sequence"
+        val now = Instant.ofEpochMilli(clock() + sequence).toString()
+        val run = RunDto(id = runId, agentId = agentId, status = "RUNNING", createdAt = now, updatedAt = now)
+        runs[runId] = run
+        agents[agentId] = agent.copy(status = "ACTIVE", latestRunId = runId, updatedAt = now)
+        v0[agentId]?.let { v0[agentId] = it.copy(status = "RUNNING") }
+        transcripts[agentId] = transcripts[agentId].orEmpty() + V0ConversationMessageDto("$runId-u", "user_message", text)
+        sent += text to runId
+        return run
+    }
+
+    /**
+     * The account delivers the oldest queued message of [agentId] as the next turn: the run it starts (RUNNING, its
+     * log [log]), the prompt in the transcript, the row's latest run — and the followup consumed, still listed for
+     * [queueLagMs]. Null when nothing waits. The turn under way must be over first (see [endTurn]).
+     */
+    fun deliverNext(agentId: String, log: List<Pair<String, String>> = emptyList()): RunDto? {
+        val next = pending[agentId]?.firstOrNull { it.consumedAtMs == null } ?: return null
+        val run = startRun(agentId, next.text)
+        logs[run.id] = log
+        next.consumedAtMs = clock()
+        next.consumedAtServerMs = nowMillis()
+        delivered += next.followupId to run.id
+        return run
+    }
+
+    /** The run under way of [agentId] ends on the server: its record FINISHED, its log closed with its result; then, with [autoDeliver], the next queued message is delivered. */
+    fun endTurn(agentId: String, durationMs: Long = 40_000L, nextLog: List<Pair<String, String>> = emptyList()): RunDto? {
+        val agent = agents[agentId] ?: return null
+        val runId = agent.latestRunId ?: return null
+        val run = runs[runId] ?: return null
+        val endedAt = Instant.ofEpochMilli(clock()).toString()
+        runs[runId] = run.copy(status = "FINISHED", durationMs = durationMs, updatedAt = endedAt, result = null)
+        logs[runId] = logs[runId].orEmpty() + ("result" to """{"runId":"$runId","status":"FINISHED","text":"","durationMs":$durationMs}""")
+        agents[agentId] = agent.copy(status = "IDLE", updatedAt = endedAt)
+        v0[agentId]?.let { v0[agentId] = it.copy(status = "FINISHED") }
+        return if (autoDeliver) deliverNext(agentId, nextLog) else null
+    }
+
     /** `FetchBackgroundComposer {bcId, startIndex, limit}`: the record's responses from `startIndex`, `limit` of them, with the record's size. */
     private fun record(request: RecordedRequest): MockResponse {
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
@@ -322,21 +476,47 @@ class FaultServer(
         return json(200, text)
     }
 
-    /** `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record with the runs' timings. */
+    /**
+     * `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record — each
+     * turn its blob id, as the account names them (see [blobRecord]) — with the runs' timings.
+     */
     private fun recordState(request: RecordedRequest): MockResponse {
         val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
         recordStates[agentId]?.let { return json(200, it) }
-        val all = records[agentId] ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
-        val prompts = all.count { it.containsKey("humanMessage") || it.containsKey("userMessage") }
+        val record = blobRecord(agentId) ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
+        val prompts = record.turnCount
         val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
         val timings = (0 until prompts).joinToString(",") { t ->
             val run = chatRuns.getOrNull(t)
             val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
             """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
         }
-        val ids = (0 until prompts).joinToString(",") { "\"turn-$it\"" }
+        val ids = record.turnIds.joinToString(",") { "\"$it\"" }
         return json(200, """{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+    }
+
+    /** The chat's blob-backed record: made from its legacy steps (and made again whenever they change), else as scripted. */
+    private fun blobRecord(agentId: String): BlobFixtures.Record? {
+        val steps = records[agentId] ?: return blobRecords[agentId]
+        synchronized(blobRecordsFrom) {
+            if (blobRecordsFrom[agentId] !== steps) {
+                synthesized[agentId] = BlobFixtures.record(steps)
+                blobRecordsFrom[agentId] = steps
+            }
+            return synthesized[agentId]
+        }
+    }
+    private val synthesized = ConcurrentHashMap<String, BlobFixtures.Record>()
+
+    /** `GetBlobForAgentKV {bcId, blobId}`: the blob's bytes, base64; `not_found` for an id the record does not have. */
+    private fun blob(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
+        val blobId = body["blobId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "blobId is required"))
+        val bytes = blobRecord(agentId)?.blobs?.get(blobId) ?: return json(404, connectError("not_found", "blob not found"))
+        recordBytes.merge(agentId, bytes.size.toLong(), Long::plus)
+        return json(200, """{"blobData":"${java.util.Base64.getEncoder().encodeToString(bytes)}"}""")
     }
 
     /** A Connect error body, as the account service writes one. */

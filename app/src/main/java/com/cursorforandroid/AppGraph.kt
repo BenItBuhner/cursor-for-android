@@ -17,6 +17,7 @@ import com.cursorforandroid.data.api.ConnectPromptUploadApi
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.HeadlessPage
+import com.cursorforandroid.data.api.HeadlessTurnPage
 import com.cursorforandroid.data.api.RecordState
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.ConversationRecordApi
@@ -266,6 +267,9 @@ class AppGraph(
      */
     private val lazyHeadlessTranscript = lazy {
         val client = lazyAccountClient.value.newBuilder().callTimeout(RECORD_CALL_TIMEOUT_MINUTES, java.util.concurrent.TimeUnit.MINUTES).build()
+        // The blob-backed record is read a few blobs at a time (see HeadlessConversationApi.BLOB_PARALLELISM); the
+        // dispatcher's five-per-host would queue them behind each other.
+        client.dispatcher.maxRequestsPerHost = maxOf(client.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2)
         HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value)
     }
 
@@ -555,6 +559,8 @@ class AppGraph(
     private val accountTranscript = object : ConversationRecordApi {
         override suspend fun fetch(agentId: String, startIndex: Int, limit: Int): HeadlessPage = lazyHeadlessTranscript.value.fetch(agentId, startIndex, limit)
         override suspend fun state(agentId: String): RecordState = lazyHeadlessTranscript.value.state(agentId)
+        override suspend fun turns(agentId: String, from: Int, limit: Int, state: RecordState?): HeadlessTurnPage? = lazyHeadlessTranscript.value.turns(agentId, from, limit, state)
+        override val readsTurns: Boolean get() = true
     }
     val conversations: ConversationRepository get() = lazyConversations.value
 
@@ -597,7 +603,7 @@ class AppGraph(
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
                 )
-                steering.sendFollowup(agentId, followup).getOrThrow()
+                FollowUpRepository.AccountHandoff(steering.sendFollowup(agentId, followup).getOrThrow(), followup.followupId)
             },
             accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             store = followUpStore,
@@ -622,6 +628,9 @@ class AppGraph(
             runs = steeringAccount,
             goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },
+            // Every queue read goes to the transcript, and a message the transcript files under its run has the queue read again (see QueuePlacement).
+            onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+            placement = { agentId -> conversations.queuePlacement(agentId) },
             capabilities = capabilities,
         )
     }

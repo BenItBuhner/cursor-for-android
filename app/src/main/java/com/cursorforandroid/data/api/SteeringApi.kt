@@ -43,9 +43,14 @@ data class AccountFollowup(
     val mode: AgentMode? = null,
     /** The model the chat switches to from this run on; null keeps the current one. */
     val modelId: String? = null,
-    /** Client-minted, so a retry after a lost reply files nothing twice. */
-    val followupId: String = "fu-${UUID.randomUUID()}",
-)
+    /** Client-minted, so a retry after a lost reply files nothing twice — and so the card's row and the transcript's copy of the message are one (see `QueuePlacement`). */
+    val followupId: String = newId(),
+) {
+    companion object {
+        /** A followup id as this client mints them (`ListPendingFollowups` gives it back as `followupId`). */
+        fun newId(): String = "fu-${UUID.randomUUID()}"
+    }
+}
 
 /**
  * The account's queue for a chat, the one the desktop, the web and the iOS app share: `AddAsyncFollowupBackgroundComposer`

@@ -132,8 +132,10 @@ class TranscriptVerifyHarness {
         assertWithReport(outcome.report, "the ledger names every host and route the run used") {
             val calls = ledger.entries.map { "${it.method} ${it.url.substringBefore('?')}" }
             assertThat(calls.any { it.endsWith("/auth/exchange_user_api_key") }).isTrue()
-            assertThat(calls.any { it.endsWith("/FetchBackgroundComposer") }).isTrue()
+            // The record: the state names the turns, the blobs carry them; the removed step-indexed read is never asked.
+            assertThat(calls.any { it.endsWith("/FetchBackgroundComposer") }).isFalse()
             assertThat(calls.any { it.endsWith("/GetLatestAgentConversationState") }).isTrue()
+            assertThat(calls.any { it.endsWith("/GetBlobForAgentKV") }).isTrue()
             assertThat(calls.any { it.endsWith("/ListBackgroundComposers") }).isTrue()
             assertThat(calls.count { it.startsWith("GET") && it.endsWith("/runs") }).isAtLeast(2)
             assertThat(calls.any { it.startsWith("POST") && it.endsWith("/runs") }).isTrue()

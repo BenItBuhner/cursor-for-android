@@ -205,6 +205,8 @@ data class CachedRecordWindow(
     val turns: List<CachedRecordTurn> = emptyList(),
     /** Each turn's timing as the account gave it, by whole-chat turn index, when it was read. */
     val timings: List<CachedTurnTiming> = emptyList(),
+    /** The window is of the blob-backed record, indexed by turn (see `RecordWindow.turnIndexed`); false for the step-indexed record's. */
+    val turnIndexed: Boolean = false,
 )
 
 @Serializable
@@ -344,7 +346,7 @@ class TraceCache(
      * from the record's steps, and a build that reads more of them — a coordinator's streamed message, from 5 — must
      * not keep showing a turn an earlier build read less of.
      */
-    private fun readableVersions(key: String): Iterable<Int> = if (key.startsWith(RECORD_KEY_PREFIX)) RECORD_READABLE_VERSIONS else READABLE_VERSIONS
+    private fun readableVersions(key: String): Iterable<Int> = if (key.startsWith(RECORD_KEY_PREFIX) || key.startsWith(RECORD_TURN_KEY_PREFIX)) RECORD_READABLE_VERSIONS else READABLE_VERSIONS
 
     /** The runs the agent has a trace for, from the index. */
     suspend fun runIds(agentId: String): Set<String> {
@@ -456,6 +458,8 @@ class TraceCache(
         private val RECORD_READABLE_VERSIONS = 5..VERSION
         /** The key prefix of a record turn's file (see `RecordTurn.traceKey`). */
         const val RECORD_KEY_PREFIX = "record:"
+        /** The key prefix of a turn of the blob-backed record, indexed by turn rather than by step (see `RecordTurn.traceKey`). */
+        const val RECORD_TURN_KEY_PREFIX = "record-turn:"
         private val LEGACY_VERSIONS = listOf(2, 3)
         private const val INDEX_KEY = "_index"
         private const val INDEX_VERSION = 1

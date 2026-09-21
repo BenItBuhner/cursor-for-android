@@ -3,6 +3,7 @@ package com.cursorforandroid.tools.transcriptverify
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.CursorApiFactory
+import com.cursorforandroid.fixtures.BlobFixtures
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.SseRunStreamer
 import com.cursorforandroid.data.auth.SessionTokenProvider
@@ -79,6 +80,9 @@ class ReplayServer : AutoCloseable {
 
     /** How many turns the record has, the live one included. */
     val turnCount: Int get() = turnStarts.size
+
+    /** The same record as the account serves it now: each turn, its prompt and its steps as blobs (see BlobFixtures). */
+    private val blobs: BlobFixtures.Record by lazy { BlobFixtures.record(responses) }
 
     private val liveServed = AtomicBoolean(false)
     /** The runs a `--send` created, by id, and whether their stream has been served (the turn is then over). */
@@ -159,12 +163,20 @@ class ReplayServer : AutoCloseable {
                 json(buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", responses.size) }.toString())
             }
             path.endsWith("/GetLatestAgentConversationState") -> {
-                val ids = turnStarts.indices.joinToString(",") { "\"turn-$it\"" }
+                // The turns by their blob ids, as the account names them (see BlobFixtures): the blob-backed read.
+                val ids = blobs.turnIds.joinToString(",") { "\"$it\"" }
                 val timings = turnStarts.indices.joinToString(",") { t ->
                     val live = t == turnStarts.lastIndex && !liveServed.get()
                     if (live) "{}" else """{"durationMs":"$TURN_MS","timestampMs":"${turnStartedAt(t).toEpochMilli() + TURN_MS}"}"""
                 }
                 json("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true},"numPriorInteractionUpdates":"0"}}""")
+            }
+            path.endsWith("/GetBlobForAgentKV") -> {
+                fetches.incrementAndGet()
+                val body = json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                val blobId = body["blobId"]?.jsonPrimitive?.content ?: ""
+                val bytes = blobs.blobs[blobId] ?: return json("""{"code":"not_found","message":"blob not found"}""", 404)
+                json("""{"blobData":"${java.util.Base64.getEncoder().encodeToString(bytes)}"}""")
             }
             path.endsWith("/ListBackgroundComposers") -> {
                 val status = if (running()) "BACKGROUND_COMPOSER_STATUS_RUNNING" else "BACKGROUND_COMPOSER_STATUS_FINISHED"

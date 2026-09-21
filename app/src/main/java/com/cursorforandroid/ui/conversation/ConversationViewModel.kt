@@ -33,7 +33,6 @@ import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
-import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.attachmentOnlyText
 import com.cursorforandroid.domain.SlashCatalog
@@ -295,11 +294,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
         }
         viewModelScope.launch {
-            // Every read of the account's queue tells the transcript which of the messages queued from here the
-            // account still holds — the rest it has delivered, and they are filed where they landed.
-            controls.collect { c -> if (c.queueLoad == QueueLoad.Loaded) graph.conversations.noteAccountQueue(agentId, c.queue.map { it.text }) }
-        }
-        viewModelScope.launch {
             // A file whose upload has completed takes its reference onto the draft, so the copy on disk sends what is
             // already up after a restart rather than uploading it again.
             graph.attachmentUploads.states.collect { states -> adoptUploadRefs(states) }
@@ -539,6 +533,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             sending.value = true
             draft.value = ""
             attachments.value = emptyList()
+            val followupId = AccountFollowup.newId()
             graph.conversations.sendFollowUpVia(
                 agentId,
                 text.ifEmpty { attachmentOnlyText(images.size, attached.size) },
@@ -547,9 +542,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
                 modelId = options.override?.model?.id,
                 modelParams = options.override?.params.orEmpty(),
                 modelDisplayName = options.override?.label,
+                followupId = followupId,
             ) {
                 val uploaded = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
+                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options, followupId)).getOrThrow()
             }.onSuccess {
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
@@ -572,9 +568,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             attachments.value = emptyList()
             val message = text.ifEmpty { attachmentOnlyText(images.size, attached.size) }
             val staged = graph.conversations.stageFollowUp(agentId, message, images.map { it.image }, attached.map { it.file }, show = false)
-            graph.conversations.sendStagedVia(agentId, staged, options.override?.model?.id, options.override?.params.orEmpty(), options.override?.label) {
+            // The account's id for the follow-up is minted here, so the card's row and the transcript's copy are one message (see QueuePlacement).
+            val followupId = AccountFollowup.newId()
+            graph.conversations.sendStagedVia(agentId, staged, options.override?.model?.id, options.override?.params.orEmpty(), options.override?.label, followupId = followupId) {
                 val uploaded = uploadFiles(attached)
-                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options)).getOrThrow()
+                graph.steering.sendFollowup(agentId, accountFollowup(text, images, attached.size, uploaded, options, followupId)).getOrThrow()
             }.onSuccess {
                 clearFiles(attached)
                 graph.followUps.clearDraft(agentId)
@@ -599,12 +597,13 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.attachmentUploads.forget(sentIds)
     }
 
-    private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, uploaded: List<UploadedFile>, options: FollowUpModelState) = AccountFollowup(
+    private fun accountFollowup(text: String, images: List<PendingAttachment>, fileCount: Int, uploaded: List<UploadedFile>, options: FollowUpModelState, followupId: String) = AccountFollowup(
         text = text.ifEmpty { attachmentOnlyText(images.size, fileCount) },
         images = images.map { it.image },
         files = uploaded,
         mode = options.mode,
         modelId = options.override?.model?.id,
+        followupId = followupId,
     )
 
     /**

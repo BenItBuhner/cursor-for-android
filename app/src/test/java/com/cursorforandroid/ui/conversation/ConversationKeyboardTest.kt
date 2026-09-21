@@ -31,6 +31,7 @@ import com.cursorforandroid.ui.CursorRoot
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import kotlin.math.abs
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -158,6 +159,7 @@ class ConversationKeyboardTest {
         for (ime in listOf(60, 126, 240, 480, 720, 900)) {
             dispatchInsets(NavigationBar, ime)
             val lift = (ime - NavigationBar).coerceAtLeast(0).toFloat()
+            awaitSettled(restingField.bottom - lift, restingTurn)
             assertThat(fieldBounds().bottom).isWithin(0.5f).of(restingField.bottom - lift)
             assertThat(fieldBounds().height).isWithin(0.5f).of(restingField.height)
             assertThat(newestTurnBottom()).isWithin(0.5f).of(restingTurn)
@@ -168,10 +170,20 @@ class ConversationKeyboardTest {
         for (ime in listOf(720, 480, 240, 126, 60, 0)) {
             dispatchInsets(NavigationBar, ime)
             val lift = (ime - NavigationBar).coerceAtLeast(0).toFloat()
+            awaitSettled(restingField.bottom - lift, restingTurn)
             assertThat(fieldBounds().bottom).isWithin(0.5f).of(restingField.bottom - lift)
             assertThat(newestTurnBottom()).isWithin(0.5f).of(restingTurn)
         }
         assertThat(fieldBounds()).isEqualTo(restingField)
+    }
+
+    /**
+     * Waits for the composer's field and the newest turn to reach the places the assertions then read. The insets
+     * land in one frame and the list's layout can follow in the next; `waitForIdle` returns between the two on a slow
+     * machine, and the frame in between is not what the test is about.
+     */
+    private fun awaitSettled(fieldBottom: Float, turnBottom: Float) {
+        compose.waitUntil(10_000) { abs(fieldBounds().bottom - fieldBottom) <= 0.5f && abs(newestTurnBottom() - turnBottom) <= 0.5f }
     }
 
     @Test
