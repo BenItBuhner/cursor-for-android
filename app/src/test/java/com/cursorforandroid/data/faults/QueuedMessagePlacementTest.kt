@@ -9,12 +9,16 @@ import com.cursorforandroid.data.faults.FaultServer.Fault
 import com.cursorforandroid.data.faults.FaultServer.Route
 import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.domain.ConversationControls
+import com.cursorforandroid.domain.PromptFile
+import com.cursorforandroid.domain.PromptImage
 import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.fixtures.LongProject
+import java.io.File
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -332,6 +336,197 @@ class QueuedMessagePlacementTest {
         assertThat(card.single().note).isEqualTo(QueuePlacement.RETURNED_NOTE)
         assertOnePlace(followupId, MESSAGE, fromNanos = sentAt)
     }
+
+    // -- (6) the composer's own message, its attachments with it: bubble, then card, then the run it is filed under ----
+
+    /**
+     * The chat's composer shows the message at the tap, its picture and its file on the bubble, and sends behind it
+     * (`OutgoingMessages`); the account queues it. The attachments go where the message goes, and the message is in
+     * one place at every step: on the bubble while the send is out — the account's list may already name it, the
+     * reply still on its way back, and the card leaves that row out; then the bubble comes down and the card takes
+     * the message in the one frame, its row naming the file and counting the picture; then the run the account
+     * starts on it gets the message with both attachments under it, moved off the staging area.
+     */
+    @Test
+    fun `a message the composer shows ahead of the request keeps its attachments from the bubble to the card to the run it is filed under`() = runBlocking<Unit> {
+        server.queueLagMs = 2_000L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        val sentAt = System.nanoTime()
+        val followupId = AccountFollowup.newId()
+        val picture = PromptImage(png(), "image/png")
+        val spec = PromptFile(ByteArray(2_048) { 0x25 }, "Q3-billing-spec.pdf", "application/pdf")
+        // Shown ahead of the request, as the composer does at the tap: the bubble carries both from its first frame.
+        val staged = rig.conversations.stageFollowUp(agentId, MESSAGE, images = listOf(picture), files = listOf(spec))
+        val bubble = state.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
+        assertThat(bubble.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
+        assertThat(state.queuePlacement.waiting).isEmpty()
+        // The send, the composer's way (the bubble stays up on a failure), on a slow link: the account takes the
+        // message at once, its reply is three seconds coming back. The link is quick again the moment the request has
+        // landed, so the queue read that follows names the message while the bubble still stands.
+        val addsBefore = server.requests(Route.QueueAdd).size
+        server.rttMillis = 3_000L..3_000L
+        val send = async {
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+        }
+        rig.awaitUntilOr(10_000, "the request to land") { server.requests(Route.QueueAdd).size > addsBefore }
+        server.rttMillis = 150L..350L
+        rig.awaitUntilOr(10_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        // The bubble is the message's place: the list names it, the card does not show it.
+        assertThat(send.isActive).isTrue()
+        val inFlight = state
+        assertThat(inFlight.items.any { it is UserMessage && it.text == MESSAGE }).isTrue()
+        assertThat(inFlight.queuePlacement.shownIds).containsExactly(followupId)
+        assertThat(rig.steering.state(agentId).value.placed(inFlight.queuePlacement).queue).isEmpty()
+        send.await()
+        // Queued: in the same frame the bubble is down and the card has the message — with what it carries.
+        val queued = state
+        assertThat(queued.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        assertThat(queued.queuePlacement.shownIds).isEmpty()
+        val row = queued.queuePlacement.waiting.single()
+        assertThat(row.id).isEqualTo(followupId)
+        assertThat(row.files.map { it.name }).containsExactly("Q3-billing-spec.pdf")
+        assertThat(row.files.single().mimeType).isEqualTo("application/pdf")
+        assertThat(row.imageCount).isEqualTo(1)
+        assertThat(rig.steering.state(agentId).value.placed(queued.queuePlacement).queue.map { it.id }).containsExactly(followupId)
+        // From the first frame the bubble stood on: never a frame with the message in neither place, nor in both — the
+        // recorder saw the bubble, or the card, at every step. (A frame recorded between the tap and the bubble's publish
+        // — a queue read's — has the message nowhere yet, rightly.)
+        val sinceSent = frames.filter { it.atNanos >= sentAt }
+        val firstShown = sinceSent.indexOfFirst { it.transcriptShows(MESSAGE) }
+        assertWithMessage("the recorder never saw the bubble").that(firstShown).isAtLeast(0)
+        sinceSent.drop(firstShown).forEachIndexed { i, frame ->
+            val card = frame.cardShows(followupId, MESSAGE)
+            val transcript = frame.transcriptShows(MESSAGE)
+            assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
+            assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
+        }
+        // The turn ends; the account starts the next run on the message — and keeps listing the message for a while
+        // after, its list seconds behind its runs. A read landing then, the run known and the message still listed,
+        // must not take the message for one waiting behind its own run (it would be filed into that run as a steer,
+        // after the run's first rows, and drawn twice while the run is followed).
+        // The transcript is out of reach meanwhile (the filing reads it once the run is known; here that read hangs
+        // to the timeout), so the reads land with the run known and the message unfiled: the case a slow transcript
+        // makes of every delivery.
+        server.queueLagMs = 20_000L
+        server.outage(Route.Conversation, Fault.Silence())
+        server.endTurn(agentId)
+        val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1).last().log)!!
+        server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+        rig.awaitUntilOr(30_000, "the new run to be known") { rig.conversations.loadDiagnostics(agentId)?.runsLoaded == TURNS + 1 }
+        rig.awaitNextQueueRead()
+        rig.awaitNextQueueRead()
+        assertWithMessage("the list should still name the message: its lag is the case").that(rig.steering.state(agentId).value.queue.map { it.id }).contains(followupId)
+        assertThat(state.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        // The transcript answers again, and the list lets the message go: it is filed where the transcript has it.
+        server.clear(Route.Conversation)
+        server.queueLagMs = 0L
+        rig.awaitUntilOr(45_000, "line") { state.items.any { it is UserMessage && it.text == MESSAGE } }
+        rig.awaitUntilOr(20_000, "line") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
+        delay(1_500)
+        assertOnePlace(followupId, MESSAGE, fromNanos = sentAt)
+        // Once, ahead of the run the account started on it — the prompt that started it, not a steer among its rows.
+        val s = state
+        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        val at = s.items.indexOfFirst { it is UserMessage && it.text == MESSAGE }
+        assertThat(s.items.drop(at + 1).firstOrNull { it !is UserMessage }?.id?.startsWith("activity-${next.id}-")).isTrue()
+        // Filed under the run the account started on it, its attachments with it — the copies moved under that run.
+        val filed = s.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
+        assertThat(filed.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
+        val pdf = filed.attachments.single { it.isFile }
+        assertThat(pdf.name).isEqualTo("Q3-billing-spec.pdf")
+        assertThat(pdf.mimeType).isEqualTo("application/pdf")
+        assertThat(pdf.sizeBytes).isEqualTo(2_048L)
+        filed.attachments.forEach { attachment ->
+            assertWithMessage("${attachment.path} should be a file under the run's directory").that(File(attachment.path).isFile).isTrue()
+            assertThat(File(attachment.path).parentFile?.name).isEqualTo(next.id)
+        }
+        assertThat(File(pdf.path).readBytes()).isEqualTo(spec.bytes)
+    }
+
+    // -- (7) Bennett's frames: the chat idle, the account starts the run at once, the poll lands in the round trip ------
+
+    /**
+     * Bennett's frames of 2026-09-20 23:24 and 2026-09-21 09:18: the chat idle, his message (the second with one
+     * image) drawn as the sent bubble under "Starting…" and, at the same instant, on the account-queue card. The
+     * account starts the run on such a message at once and keeps listing it for a moment after; the queue poll
+     * (every 10 s) that lands inside the send's round trip names it, and the next one is a poll away. The card must
+     * leave the row out from the tap through the filing until a read no longer names it: the bubble is the one place.
+     */
+    @Test
+    fun `a message the account starts the run on at once is never on the card beside its bubble, before or after the reply`() = runBlocking<Unit> {
+        // The account's list names a started message for six seconds; the app polls every second.
+        server.queueLagMs = 6_000L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        // The turn ends: the chat is idle, as it was under both of Bennett's frames ("Worked 55s", "Worked 59s").
+        server.endTurn(agentId)
+        rig.awaitUntilOr(30_000, "the turn seen over") { state.runStatus?.isActive == false && !state.isStreaming }
+        val sentAt = System.nanoTime()
+        val followupId = AccountFollowup.newId()
+        val picture = PromptImage(png(), "image/png")
+        val spec = PromptFile(ByteArray(1_024) { 0x25 }, "Q3-billing-spec.pdf", "application/pdf")
+        val staged = rig.conversations.stageFollowUp(agentId, MESSAGE, images = listOf(picture), files = listOf(spec))
+        assertThat(state.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.attachments).hasSize(2)
+        // The send on a slow link: the account takes the message and starts the run at once, its reply three seconds
+        // coming back; quick again once the request has landed, so the poll's read lands inside the round trip.
+        val addsBefore = server.requests(Route.QueueAdd).size
+        server.rttMillis = 3_000L..3_000L
+        val send = async {
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+        }
+        rig.awaitUntilOr(10_000, "the request to land") { server.requests(Route.QueueAdd).size > addsBefore }
+        server.rttMillis = 150L..350L
+        rig.awaitUntilOr(10_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        // Before the reply: the bubble stands, pending; the list names the message; the card does not show it.
+        assertThat(send.isActive).isTrue()
+        val inFlight = state
+        assertThat(inFlight.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.isPending).isTrue()
+        assertThat(inFlight.queuePlacement.shownIds).containsExactly(followupId)
+        assertThat(rig.steering.state(agentId).value.placed(inFlight.queuePlacement).queue).isEmpty()
+        send.await()
+        val run = server.delivered.single { it.first == followupId }.second
+        // After the reply: the bubble is the run's — filed, no longer pending, its attachments moved under the run —
+        // the list still names the message, and the card still does not show it.
+        rig.awaitUntilOr(10_000, "the bubble filed") { state.items.filterIsInstance<UserMessage>().singleOrNull { it.text == MESSAGE }?.isPending == false }
+        val filed = state
+        assertThat(rig.steering.state(agentId).value.queue.map { it.id }).contains(followupId)
+        assertWithMessage("Bennett's frame: the filed bubble under \"Starting…\" and the row on the card at once").that(rig.steering.state(agentId).value.placed(filed.queuePlacement).queue).isEmpty()
+        assertThat(filed.queuePlacement.deliveredIds).containsExactly(followupId)
+        assertThat(filed.queuePlacement.shownIds).isEmpty()
+        val message = filed.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
+        assertThat(message.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
+        message.attachments.forEach { assertThat(File(it.path).parentFile?.name).isEqualTo(run) }
+        // The list lets it go; the card is empty on its own account, the message once in the transcript.
+        rig.awaitUntilOr(20_000, "the list to let it go") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
+        rig.awaitUntilOr(10_000, "the delivery confirmed") { state.queuePlacement.deliveredIds.isEmpty() }
+        delay(1_200)
+        val s = state
+        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        assertThat(rig.steering.state(agentId).value.placed(s.queuePlacement).queue).isEmpty()
+        // From the bubble's first frame on: never on the card and in the transcript at once, never in neither.
+        val sinceSent = frames.filter { it.atNanos >= sentAt }
+        val firstShown = sinceSent.indexOfFirst { it.transcriptShows(MESSAGE) }
+        assertWithMessage("the recorder never saw the bubble").that(firstShown).isAtLeast(0)
+        sinceSent.drop(firstShown).forEachIndexed { i, frame ->
+            val card = frame.cardShows(followupId, MESSAGE)
+            val transcript = frame.transcriptShows(MESSAGE)
+            assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
+            assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
+        }
+    }
+
+    /** A real 4 x 3 PNG, one colour: the platform's decoder reads its size off it, as it would off a paste (a fake decodes to nothing). */
+    private fun png(): ByteArray = byteArrayOf(
+        0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0xB4.toByte(), 0xF4.toByte(), 0xAE.toByte(), 0xC6.toByte(), 0x00, 0x00, 0x00, 0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA.toByte(),
+        0x63, 0x34, 0xA9.toByte(), 0xF8.toByte(), 0xF6.toByte(), 0x9F.toByte(), 0x01, 0x09, 0x30, 0x31, 0xA0.toByte(), 0x01, 0x0C, 0x01, 0x00, 0x7E, 0xDD.toByte(),
+        0x02, 0xA7.toByte(), 0x02, 0xAD.toByte(), 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(), 0x42, 0x60, 0x82.toByte(),
+    )
 
     private companion object {
         const val TURNS = 8
