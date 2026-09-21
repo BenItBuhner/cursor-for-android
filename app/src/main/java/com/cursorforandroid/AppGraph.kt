@@ -598,7 +598,7 @@ class AppGraph(
                     mode = AgentMode.ofPlanMode(item.planMode),
                     modelId = item.modelId,
                 )
-                steering.sendFollowup(agentId, followup).getOrThrow()
+                FollowUpRepository.AccountHandoff(steering.sendFollowup(agentId, followup).getOrThrow(), followup.followupId)
             },
             accountQueueAvailable = { capabilities().accountQueue && !session.isDemo },
             store = followUpStore,
@@ -623,6 +623,9 @@ class AppGraph(
             runs = steeringAccount,
             goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },
+            // Every queue read goes to the transcript, and a message the transcript files under its run has the queue read again (see QueuePlacement).
+            onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+            placement = { agentId -> conversations.queuePlacement(agentId) },
             capabilities = capabilities,
         )
     }

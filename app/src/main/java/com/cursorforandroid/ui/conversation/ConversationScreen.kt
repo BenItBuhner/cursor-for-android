@@ -153,7 +153,12 @@ fun ConversationScreen(
     val goal by viewModel.goal.collectAsStateWithLifecycle()
     val extendedMode by graph.extendedMode.enabled.collectAsStateWithLifecycle(initialValue = false)
     val capabilities by viewModel.capabilities.collectAsStateWithLifecycle()
-    val controls by viewModel.controls.collectAsStateWithLifecycle()
+    val accountControls by viewModel.controls.collectAsStateWithLifecycle()
+    // The account's queue as the card shows it, projected from the very frame the transcript is drawn from: a message
+    // the transcript files under its run leaves the card in the same composition, whatever the last queue read said
+    // (see QueuePlacement); read off two frames, the card and the bubble could both show it, as they did on Bennett's
+    // phone (2026-09-20).
+    val controls = remember(accountControls, conversation.queuePlacement) { accountControls.placed(conversation.queuePlacement) }
     val isDemo = graph.session.isDemo
     // A Project coordinator's cards name its workers by the list's live rows and open their chats (either mode).
     val agentList by graph.agents.state.collectAsStateWithLifecycle()

@@ -83,7 +83,7 @@ class FollowUpRepository(
      * the account's row. Answers with the run the account started, or null when it queued the message. Null (default
      * mode, or the surface off) leaves the message waiting here, tried again with a growing pause (see [dispatch]).
      */
-    private val accountQueue: (suspend (agentId: String, item: QueuedFollowUp) -> String?)? = null,
+    private val accountQueue: (suspend (agentId: String, item: QueuedFollowUp) -> AccountHandoff)? = null,
     /** Whether the account's queue may take a refused message right now (Extended mode on, not the demo). */
     private val accountQueueAvailable: suspend () -> Boolean = { false },
     private val store: FollowUpStore? = null,
@@ -97,6 +97,13 @@ class FollowUpRepository(
     /** The first pause before a cancel or a send that failed for a passing reason is tried again; doubles each time. */
     private val retryBaseMs: Long = RETRY_BASE_MS,
 ) {
+    /**
+     * What the account's queue answered a message handed to it with (see the `accountQueue` hand-off): the run it
+     * started, when the agent was free after all, and the account's id for the follow-up, by which the card above the
+     * composer and the transcript's copy are one message (see `QueuePlacement`).
+     */
+    data class AccountHandoff(val runId: String?, val followupId: String)
+
     private inner class Entry(val agentId: String) {
         val state = MutableStateFlow(FollowUpComposerState(restored = store == null || !persist()))
         var restoreJob: Job? = null
@@ -792,16 +799,17 @@ class FollowUpRepository(
                             val handed = runCatching { accountQueue(e.agentId, item) }
                             if (generation.get() != startedIn) return
                             handed.fold(
-                                onSuccess = { runId ->
+                                onSuccess = { (runId, followupId) ->
                                     e.attempt(item, VIA_ACCOUNT, if (runId == null) "queued-on-account" else "accepted", runId)
                                     runId?.let { e.acceptedId(it) }
                                     e.update { copy(queue = queue.filterNot { it.id == item.id }) }
                                     e.scheduleSave()
                                     if (runId == null) {
-                                        // The account holds it now: the transcript files it under the run the account
-                                        // starts on it (see ConversationRepository.expectDelivery), and is read again
-                                        // for the turn the account is on.
-                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image })
+                                        // The account holds it now, under its followup id: the transcript files it
+                                        // under the run the account starts on it (see ConversationRepository.expectDelivery)
+                                        // — the card above the composer showing it meanwhile — and is read again for
+                                        // the turn the account is on.
+                                        conversations.expectDelivery(e.agentId, item.previewText, item.images.map { it.image }, followupId = followupId)
                                         conversations.reload(e.agentId)
                                     }
                                     return

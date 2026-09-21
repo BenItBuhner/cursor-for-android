@@ -59,6 +59,12 @@ object TimelineBuilder {
          * would have been — never nothing, and never another turn's activity in its place.
          */
         expired: Set<String> = emptySet(),
+        /**
+         * Draw the expired row under a turn that shows its reply too: a Project coordinator's, whose word to the user
+         * went through its message tool — activity, gone with the log — while the transcript's text is its notes.
+         * An ordinary chat's turn with its reply shown says enough; the count line above the transcript has the rest.
+         */
+        expiredRowWithReplies: Boolean = false,
     ): List<TimelineItem> {
         val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
         /** The run of the [index]th prompt, when it is in hand. */
@@ -79,7 +85,7 @@ object TimelineBuilder {
                 return
             }
             items += replies
-            if (run != null && run.id in expired) items += expiredNotice(run)
+            if (run != null && run.id in expired && (replies.isEmpty() || expiredRowWithReplies)) items += expiredNotice(run)
             // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
             // a footer says so, where none would leave the turn looking unfinished forever.
             if (run != null && !run.statusEnum().isActive) items += footer(run)
