@@ -35,6 +35,7 @@ import com.cursorforandroid.ui.components.FileUploadState
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
+import com.cursorforandroid.ui.conversation.OutgoingStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
 import com.cursorforandroid.ui.theme.CursorTheme
@@ -241,6 +242,99 @@ class ComposerFilesScreenshotTest {
         compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 2 }
         compose.waitForIdle()
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "95_transcript_attachment_row.png").path, RoborazziOptions())
+    }
+
+    /**
+     * Send tapped with a file still going up: the composer is empty from that frame — the message is the transcript's,
+     * its bubble carrying the picture, the file and the upload's progress — and a new draft can begin at once.
+     */
+    @Test
+    fun composerClearsOnSend() {
+        val (bubble, reply) = outgoingScene()
+        compose.setContent {
+            Scene {
+                CompositionLocalProvider(
+                    LocalTranscriptControls provides TranscriptControls(
+                        outgoing = mapOf(bubble.id to OutgoingStatus.Uploading(done = 1, total = 2, progress = 0.62f)),
+                        onRetryOutgoing = {},
+                        onEditOutgoing = {},
+                    ),
+                ) {
+                    TimelineItemView(reply)
+                    TimelineItemView(bubble)
+                }
+                ComposerBox(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 1 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "115_composer_clears_on_send.png").path, RoborazziOptions())
+    }
+
+    /**
+     * The send did not get through: the bubble says why and offers Retry and Edit — the message is never back in the
+     * composer unasked, and never lost — while a new draft, its own chips, is being written below.
+     */
+    @Test
+    fun outgoingFailedRetryEdit() {
+        val (bubble, reply) = outgoingScene()
+        compose.setContent {
+            Scene {
+                CompositionLocalProvider(
+                    LocalTranscriptControls provides TranscriptControls(
+                        outgoing = mapOf(bubble.id to OutgoingStatus.Failed("Couldn't upload network-trace.har: Storage is unavailable right now.")),
+                        onRetryOutgoing = {},
+                        onEditOutgoing = {},
+                    ),
+                ) {
+                    TimelineItemView(reply)
+                    TimelineItemView(bubble)
+                }
+                ComposerBox(
+                    value = "Meanwhile, compare the before and after",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    canSend = true,
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                    files = listOf(spec),
+                    onRemoveFile = {},
+                    fileUploads = mapOf("f1" to FileUploadState.DONE),
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 1 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "116_outgoing_failed_retry_edit.png").path, RoborazziOptions())
+    }
+
+    /** A pending prompt with a picture and a file, and the reply before it, as the transcript holds them ahead of the server. */
+    private fun outgoingScene(): Pair<UserMessage, AssistantMessage> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dir = File(context.filesDir, "attachments/bc-demo/local-9").apply { mkdirs() }
+        val still = File(dir, "img-0.png").apply { writeBytes(swatch(720, 1600, AndroidColor.rgb(52, 120, 246))) }
+        val har = File(dir, "f0-network-trace.har").apply { writeBytes(ByteArray(48 * 1024)) }
+        val bubble = UserMessage(
+            "local-9",
+            "Stitch the image into the green screen in the recording and send the trace along.",
+            timestampMillis = 1_736_949_700_000,
+            attachments = listOf(MessageAttachment(still.path, 720, 1600), MessageAttachment.file(har.path, "network-trace.har", "application/json", har.length())),
+            isPending = true,
+        )
+        val reply = AssistantMessage("a0", "Reading the spec first; the HAR shows the `/checkout/confirm` call returning 500 after the coupon step.")
+        return bubble to reply
     }
 
     @Test
