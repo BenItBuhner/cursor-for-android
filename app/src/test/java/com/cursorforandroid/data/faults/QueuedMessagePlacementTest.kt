@@ -446,6 +446,80 @@ class QueuedMessagePlacementTest {
         assertThat(File(pdf.path).readBytes()).isEqualTo(spec.bytes)
     }
 
+    // -- (7) Bennett's frames: the chat idle, the account starts the run at once, the poll lands in the round trip ------
+
+    /**
+     * Bennett's frames of 2026-09-20 23:24 and 2026-09-21 09:18: the chat idle, his message (the second with one
+     * image) drawn as the sent bubble under "Starting…" and, at the same instant, on the account-queue card. The
+     * account starts the run on such a message at once and keeps listing it for a moment after; the queue poll
+     * (every 10 s) that lands inside the send's round trip names it, and the next one is a poll away. The card must
+     * leave the row out from the tap through the filing until a read no longer names it: the bubble is the one place.
+     */
+    @Test
+    fun `a message the account starts the run on at once is never on the card beside its bubble, before or after the reply`() = runBlocking<Unit> {
+        // The account's list names a started message for six seconds; the app polls every second.
+        server.queueLagMs = 6_000L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        // The turn ends: the chat is idle, as it was under both of Bennett's frames ("Worked 55s", "Worked 59s").
+        server.endTurn(agentId)
+        rig.awaitUntilOr(30_000, "the turn seen over") { state.runStatus?.isActive == false && !state.isStreaming }
+        val sentAt = System.nanoTime()
+        val followupId = AccountFollowup.newId()
+        val picture = PromptImage(png(), "image/png")
+        val spec = PromptFile(ByteArray(1_024) { 0x25 }, "Q3-billing-spec.pdf", "application/pdf")
+        val staged = rig.conversations.stageFollowUp(agentId, MESSAGE, images = listOf(picture), files = listOf(spec))
+        assertThat(state.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.attachments).hasSize(2)
+        // The send on a slow link: the account takes the message and starts the run at once, its reply three seconds
+        // coming back; quick again once the request has landed, so the poll's read lands inside the round trip.
+        val addsBefore = server.requests(Route.QueueAdd).size
+        server.rttMillis = 3_000L..3_000L
+        val send = async {
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = MESSAGE, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+        }
+        rig.awaitUntilOr(10_000, "the request to land") { server.requests(Route.QueueAdd).size > addsBefore }
+        server.rttMillis = 150L..350L
+        rig.awaitUntilOr(10_000, "the list to name it") { rig.steering.state(agentId).value.queue.any { it.id == followupId } }
+        // Before the reply: the bubble stands, pending; the list names the message; the card does not show it.
+        assertThat(send.isActive).isTrue()
+        val inFlight = state
+        assertThat(inFlight.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }.isPending).isTrue()
+        assertThat(inFlight.queuePlacement.shownIds).containsExactly(followupId)
+        assertThat(rig.steering.state(agentId).value.placed(inFlight.queuePlacement).queue).isEmpty()
+        send.await()
+        val run = server.delivered.single { it.first == followupId }.second
+        // After the reply: the bubble is the run's — filed, no longer pending, its attachments moved under the run —
+        // the list still names the message, and the card still does not show it.
+        rig.awaitUntilOr(10_000, "the bubble filed") { state.items.filterIsInstance<UserMessage>().singleOrNull { it.text == MESSAGE }?.isPending == false }
+        val filed = state
+        assertThat(rig.steering.state(agentId).value.queue.map { it.id }).contains(followupId)
+        assertWithMessage("Bennett's frame: the filed bubble under \"Starting…\" and the row on the card at once").that(rig.steering.state(agentId).value.placed(filed.queuePlacement).queue).isEmpty()
+        assertThat(filed.queuePlacement.deliveredIds).containsExactly(followupId)
+        assertThat(filed.queuePlacement.shownIds).isEmpty()
+        val message = filed.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
+        assertThat(message.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
+        message.attachments.forEach { assertThat(File(it.path).parentFile?.name).isEqualTo(run) }
+        // The list lets it go; the card is empty on its own account, the message once in the transcript.
+        rig.awaitUntilOr(20_000, "the list to let it go") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
+        rig.awaitUntilOr(10_000, "the delivery confirmed") { state.queuePlacement.deliveredIds.isEmpty() }
+        delay(1_200)
+        val s = state
+        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        assertThat(rig.steering.state(agentId).value.placed(s.queuePlacement).queue).isEmpty()
+        // From the bubble's first frame on: never on the card and in the transcript at once, never in neither.
+        val sinceSent = frames.filter { it.atNanos >= sentAt }
+        val firstShown = sinceSent.indexOfFirst { it.transcriptShows(MESSAGE) }
+        assertWithMessage("the recorder never saw the bubble").that(firstShown).isAtLeast(0)
+        sinceSent.drop(firstShown).forEachIndexed { i, frame ->
+            val card = frame.cardShows(followupId, MESSAGE)
+            val transcript = frame.transcriptShows(MESSAGE)
+            assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
+            assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
+        }
+    }
+
     /** A real 4 x 3 PNG, one colour: the platform's decoder reads its size off it, as it would off a paste (a fake decodes to nothing). */
     private fun png(): ByteArray = byteArrayOf(
         0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03,

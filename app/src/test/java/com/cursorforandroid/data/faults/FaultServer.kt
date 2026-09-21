@@ -372,6 +372,12 @@ class FaultServer(
             return json(200, "{}")
         }
         val run = startRun(agentId, text)
+        // A message the account starts the run on at once still passes through its queue: the list names it for
+        // [queueLagMs] after (Bennett's frames of 2026-09-20 23:24 and 2026-09-21 09:18, the chat idle when he sent).
+        if (!synchronous) {
+            pending.getOrPut(agentId) { CopyOnWriteArrayList() } += Pending(followupId, text, clock(), consumedAtMs = clock()).also { it.consumedAtServerMs = nowMillis() }
+            delivered += followupId to run.id
+        }
         return json(200, """{"runId":"${run.id}"}""")
     }
 

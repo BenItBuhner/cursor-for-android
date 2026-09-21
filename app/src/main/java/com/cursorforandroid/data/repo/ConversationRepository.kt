@@ -3993,7 +3993,7 @@ class ConversationRepository(
         return agents.followUpVia(agentId, modelId, modelParams, modelDisplayName, send)
             .map { run ->
                 if (run != null) {
-                    accepted(e, agentId, staged, run)
+                    accepted(e, agentId, staged, run, viaAccount = true, followupId = followupId)
                 } else {
                     // The account queued the message behind a turn under way: the bubble shown ahead comes down —
                     // the card above the composer is what shows a queued message — and the message waits here for
@@ -4009,13 +4009,27 @@ class ConversationRepository(
             .onFailure { t -> if (discardOnFailure) discardStaged(agentId, staged, t.userMessage().takeIf { staged.shown }) }
     }
 
-    /** The server has filed [staged] as [run]: the bubble is no longer pending, its images follow it, and its stream starts. */
-    private suspend fun accepted(e: Entry, agentId: String, staged: StagedFollowUp, run: RunDto) {
+    /**
+     * The server has filed [staged] as [run]: the bubble is no longer pending, its images follow it, and its stream
+     * starts. [viaAccount] for a message the account service took and started the run on at once, under
+     * [followupId] when the send minted one: the account's list may still name such a message for a moment after
+     * (its list is seconds behind its runs), so it is marked delivered in the frame that files it, and the card
+     * leaves the row out until a read of the list no longer has it — Bennett's frames of 2026-09-20 23:24 and
+     * 2026-09-21 09:18: his message as the sent bubble under "Starting…" and, at the same instant, on the card.
+     */
+    private suspend fun accepted(e: Entry, agentId: String, staged: StagedFollowUp, run: RunDto, viaAccount: Boolean = false, followupId: String? = null) {
         val localId = staged.localId
         // Filed under the run so the next history load finds them; the bubble follows the files to their new paths.
         val kept = runCatching { attachments.commit(agentId, run.id, staged.attachments) }.getOrDefault(staged.attachments.attachments)
         e.publish(
             mutate = {
+                if (viaAccount) {
+                    // The copies of the words besides this message's own bubble: the frame that files it shows one more.
+                    val key = QueuePlacement.textKey(staged.text)
+                    val prior = state.value.items.count { it is UserMessage && it.id != staged.localId && QueuePlacement.textKey(it.text) == key }
+                    val priorTranscript = messages.count { it.type == USER_MESSAGE && QueuePlacement.textKey(it.text) == key }
+                    delivered = delivered + Delivered(staged, followupId, staged.message.id, run.id, steered = false, filedAt = AppClock.now(), images = kept, priorTranscriptCopies = priorTranscript, priorCopies = prior)
+                }
                 // A reload that raced the request may already list this run. The local copy stays all the
                 // same: [Entry.items] shows the server's copy of the turn once the transcript has it, and ours
                 // for as long as only the run list does; the next load prunes it once both have caught up. A
