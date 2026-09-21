@@ -155,15 +155,17 @@ class MediaLoader(
     }
 
     /**
-     * Runs [block] and hands its answer (or its failure) back on the main thread. Every caller is a composition
-     * effect, and Coil, the retriever and the downloads all complete on their own threads: resuming a composition's
-     * coroutine on one of those puts snapshot writes and, under the test harness's unconfined effect dispatcher,
-     * whole frames on a worker thread while the main thread is mid-layout.
+     * Runs [block] confined to the main thread: it starts there (inline when the caller already is there, as a
+     * composition effect is), every hop it makes — Coil's fetch and decode, the retriever, a download — comes back
+     * to the main thread through the main looper, and the caller resumes there. Every caller is a composition
+     * coroutine; one that resumed on a worker thread instead would carry the composition with it — a snapshot write
+     * off the main thread, and under the test harness's unconfined effect dispatcher whole frames performed on a
+     * worker while the main thread is mid-layout, or a wake-up that races the main thread's and is lost.
+     *
+     * Wrapping the whole of [block] rather than only its answer matters: with the answer alone hopped to the main
+     * thread, the caller's continuation still ran on the worker up to that hop, and the harness's interceptors with it.
      */
-    private suspend fun <T> onMain(block: suspend () -> T): T {
-        val result = runCatching { block() }
-        return withContext(Dispatchers.Main.immediate) { result.getOrThrow() }
-    }
+    private suspend fun <T> onMain(block: suspend () -> T): T = withContext(Dispatchers.Main.immediate) { block() }
 
     private fun storeReads(): StoreFileRepository = stores() ?: throw IOException(StoreFileRepository.NOT_AVAILABLE)
 

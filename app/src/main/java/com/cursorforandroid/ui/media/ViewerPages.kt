@@ -135,7 +135,12 @@ internal fun ImagePage(
         // are asked for only once the page has landed, and the pager's neighbours have the swipe's time to arrive.
         snapshotFlow { state.phase }.first { it != MediaViewerState.Phase.Opening }
         if (presentation.bitmap == null) {
-            runCatching { environment.loader.image(ref, target.width / 3, target.height / 3) }.onSuccess { presentation.offer(it.asImageBitmap()) }
+            // A quick small decode to stand in until the full one lands; its failure is the full one's to report.
+            try {
+                presentation.offer(environment.loader.image(ref, target.width / 3, target.height / 3).asImageBitmap())
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+            }
         }
         try {
             presentation.offer(environment.loader.image(ref, target.width, target.height).asImageBitmap())
