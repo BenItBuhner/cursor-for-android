@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Static picture of the widget for the launcher's widget picker (Android 12+ renders this layout; older launchers
-  show @drawable/widget_chats_preview, and Android 15+ asks the widget itself for a live preview). Same geometry as
-  the rendered widget: a 40dp header — cube, list title with its picker chevron, refresh, "+" — then the sidebar's 36dp rows
-  in their 16dp glyph slot / 13sp title proportions, with the demo's showcase chats as sample rows.
+  show @drawable/widget_chats_preview, and Android 15+ asks the widget itself for a live preview, falling back to
+  this one whenever that preview is not in the system's memory — before the app has run, after a reboot). Same
+  geometry as the rendered widget: a 40dp header — cube, list title with its picker chevron, refresh, "+" — then the
+  sidebar's 36dp rows in their 16dp glyph slot / 13sp title proportions, with the demo's showcase chats as sample rows.
+
+  A launcher inflates this through RemoteViews' filter, which admits only classes annotated @RemoteView: the
+  layouts, ImageView, TextView and ProgressBar. A plain View (or Space) is refused with "Class not allowed to be
+  inflated", and the picker shows "Can't load widget" in the widget's place — so the header's flexible gap is the
+  title's own slot (a LinearLayout with the weight), never an empty View. WidgetProviderLayoutsTest inflates every
+  provider layout through the same filter.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
@@ -28,26 +35,29 @@
             android:src="@drawable/widget_cube"
             android:tint="@color/widget_text_primary" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:text="@string/widget_preview_title"
-            android:textColor="@color/widget_text_tertiary"
-            android:textSize="12sp" />
-
-        <ImageView
-            android:layout_width="15dp"
-            android:layout_height="15dp"
-            android:layout_marginStart="3dp"
-            android:importantForAccessibility="no"
-            android:src="@drawable/widget_chevron_down"
-            android:tint="@color/widget_icon_quaternary" />
-
-        <View
+        <LinearLayout
             android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:layout_weight="1" />
+            android:layout_height="match_parent"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_preview_title"
+                android:textColor="@color/widget_text_tertiary"
+                android:textSize="12sp" />
+
+            <ImageView
+                android:layout_width="15dp"
+                android:layout_height="15dp"
+                android:layout_marginStart="3dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/widget_chevron_down"
+                android:tint="@color/widget_icon_quaternary" />
+        </LinearLayout>
 
         <ImageView
             android:layout_width="32dp"
