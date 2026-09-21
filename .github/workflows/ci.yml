@@ -155,7 +155,7 @@ jobs:
       - name: Run JVM unit tests (shard ${{ matrix.shard }} of 4)
         run: >
           ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}/4
-          -Papp.testRetries=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
+          -Papp.testForks=2 -Papp.testRetries=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
       # Every test that failed and then passed on its retry becomes a warning on the run and a line in the job
       # summary, with the first attempt's failure: the fault, benchmark and Compose layout tests assert on wall-clock
