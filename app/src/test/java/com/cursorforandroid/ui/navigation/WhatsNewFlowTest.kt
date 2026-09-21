@@ -132,7 +132,9 @@ class WhatsNewFlowTest {
         // The next release installs: its notes are unread, on both surfaces, though 0.3.37's were read.
         compose.runOnIdle { graph = install("0.3.38") }
         compose.waitUntil(30_000) { onScreen(HOME_PLACEHOLDER) }
-        compose.waitUntil(10_000) { shown(SidebarTags.WHATS_NEW_HINT) }
+        // The same ceiling as the placeholder's: the shell is still composing the new build's sidebar when the
+        // placeholder shows, and the card waits on a preferences read besides — a fork-starved CI run blew 10 s here.
+        compose.waitUntil(30_000) { shown(SidebarTags.WHATS_NEW_HINT) }
         compose.onNodeWithText(WhatsNewCopy.title("0.3.38")).assertIsDisplayed()
         assertThat(readVersion()).isEqualTo("0.3.37")
 
