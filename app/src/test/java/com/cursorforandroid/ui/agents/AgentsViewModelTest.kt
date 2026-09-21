@@ -12,8 +12,10 @@ import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.CachedConversation
 import com.cursorforandroid.data.repo.AgentRepositoryTestHelper
+import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.AgentIndicator
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.AgentListOrganizer
 import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.StatusFilter
@@ -24,6 +26,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
@@ -121,7 +124,7 @@ class AgentsViewModelTest {
 
     /** The list once a fetch has settled: the indicator let go, and nothing still syncing underneath it. */
     private suspend fun AgentsViewModel.loaded(): AgentListUiState =
-        uiState.first { it.hasLoaded && !it.isRefreshing && !it.isSyncingOlder && it.recentRows.isNotEmpty() }
+        uiState.first { it.hasLoaded && !it.isRefreshing && it.tail !is SidebarTail.Loading && it.recentRows.isNotEmpty() }
 
     private suspend fun awaitRefresh(after: Long = graph.agents.refreshCompleted.value) {
         graph.agents.refreshCompleted.first { it > after }
@@ -326,6 +329,47 @@ class AgentsViewModelTest {
      * what is on screen, a screenful of the newest rows is read; the demo fits in one, so this drives the sidebar's
      * report by hand.)
      */
+    /**
+     * The one rule the sidebar's end is drawn by (see [sidebarTail]): nothing under the refresh indicator; the spinner
+     * for a page being fetched or the work the user asked for, named; the server's words with Retry for a page that
+     * failed; the ask for the next page while the server has one; else nothing — in that order of precedence.
+     */
+    @Test
+    fun `the tail is drawn by one rule, one row at a time`() {
+        val idle = PendingWork.State()
+        val page = PendingWork.State(items = listOf(PendingWork.Item(1, "list page 2", 0L)), shown = true)
+        val quietWork = PendingWork.State(items = listOf(PendingWork.Item(2, "list refresh (quick, silent)", 0L)), shown = false)
+        val loaded = AgentListState(hasLoaded = true)
+
+        assertThat(sidebarTail(AgentListState(), page)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(isRefreshing = true, hasMore = true), page)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(hasMore = true), page)).isEqualTo(SidebarTail.Loading(listOf("list page 2")))
+        assertThat(sidebarTail(loaded.copy(isLoadingMore = true, hasMore = true), idle)).isEqualTo(SidebarTail.Loading(emptyList()))
+        // Work the user did not ask for shows nothing: a poll's round is not the reader's spinner.
+        assertThat(sidebarTail(loaded.copy(hasMore = true), quietWork)).isEqualTo(SidebarTail.More)
+        assertThat(sidebarTail(loaded, quietWork)).isEqualTo(SidebarTail.None)
+        assertThat(sidebarTail(loaded.copy(hasMore = true, loadMoreError = "Rate limited by Cursor. Try again in 3 s."), idle)).isEqualTo(SidebarTail.Failed("Rate limited by Cursor. Try again in 3 s."))
+        // A page being fetched again outranks the words of the one that failed.
+        assertThat(sidebarTail(loaded.copy(isLoadingMore = true, hasMore = true, loadMoreError = "old words"), page)).isEqualTo(SidebarTail.Loading(listOf("list page 2")))
+        assertThat(sidebarTail(loaded.copy(hasMore = true), idle)).isEqualTo(SidebarTail.More)
+        assertThat(sidebarTail(loaded, idle)).isEqualTo(SidebarTail.None)
+    }
+
+    /** The demo's cold start, as the sidebar sees it: the indicator, then the one row for the tail, then nothing more; never both. */
+    @Test
+    fun `a cold start ends with an empty tail, and never shows the row under the indicator`() = runTest {
+        mainDispatcher.set(StandardTestDispatcher(testScheduler))
+        val vm = AgentsViewModel(graph)
+        val seen = mutableListOf<AgentListUiState>()
+        val watcher = backgroundScope.launch { vm.uiState.collect { seen += it } }
+        advanceUntilIdle()
+        val loaded = vm.loaded()
+        assertThat(loaded.tail).isEqualTo(SidebarTail.None)
+        assertThat(loaded.hasMore).isFalse()
+        assertThat(seen.none { it.isRefreshing && it.tail is SidebarTail.Loading }).isTrue()
+        watcher.cancel()
+    }
+
     @Test
     fun `pull request badges are read for the rows on screen, not for every row`() = runTest {
         mainDispatcher.set(StandardTestDispatcher(testScheduler))

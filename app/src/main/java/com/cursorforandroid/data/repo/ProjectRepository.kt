@@ -303,82 +303,97 @@ class ProjectRepository(
             val token = agents.token()
             val attempt = ++scanAttempts
             _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Running, attempts = attempt) }
-            // The list is read newest first; once a page is older than every live Project the registry knows, the
-            // pages behind it can name no Project newer than those — only one older, which a deep refresh reads for.
-            // Archived Projects are left out of the floor: they sit far down the list and are not what a pull is
-            // for. The floor stands on a registry that has read the whole account before — the word kept on disk
-            // by the pass that did (see [AgentRepository.registryCompleteAtMillis]) — never on what the first page
-            // happened to bring: the first pass of a fresh install, and the first after an upgrade from a build
-            // that kept no such word, read everything, once. A live root the registry holds undated (created here,
-            // named by a membership, restored from an older build's disk) has its record read by id first, so one
-            // such root does not send every pass over the whole account.
-            val complete = agents.registryCompleteAtMillis != null
-            val floor = if (deep || !complete) null else floorOfRegistry(token)
-            val scanStartedAt = now()
-            val scan = try {
-                api.scanRoots(ROOT_SCAN_PAGES, floor)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Failed, notice = describeFailure(t), atMillis = now(), attempts = attempt) }
-                scheduleRetry(attempt)
-                agents.materializeRoots(token)
-                return
+            runningJob.set(currentCoroutineContext()[Job])
+            try {
+                scan(token, attempt, deep)
+            } finally {
+                runningJob.set(null)
+                // A pass that left any other way — cut short between its Running and its outcome — is no pass in
+                // flight: it is a partial one, tried again, never a Running that outlives every request behind it.
+                if (_lastRootScan.value?.status == RootScanRecord.Status.Running) {
+                    _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Partial, notice = "interrupted before it finished", atMillis = now()) }
+                    scheduleRetry(attempt)
+                }
             }
-            if (scan == null || agents.token() != token) {
-                _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Never, attempts = attempt) }
-                agents.materializeRoots(token)
-                return
-            }
-            // Every record the pages carried — the Projects' and the workers' naming them above all: roots and
-            // placements, held or not, and every other row's record, so the rows are placed and named from the
-            // pages read for the roots rather than asked for one by one. The pages read count whether or not the
-            // pass reached the end.
-            val records = scan.snapshots.ifEmpty { scan.roots + scan.children }
-            if (records.isNotEmpty()) agents.applyAccountSnapshots(records, token)
-            // The pass is the account's word on every record it carried: a registry root among them that is neither
-            // a Project nor a manager by its record is no root (what an older build admitted on a source or a hint).
-            agents.revalidateRegistry(scan.seenIds, scan.roots.mapTo(HashSet()) { it.id }, scan.managers, token)
-            // A pass that read to the end, as far as it is allowed to, or to the page older than every known Project
-            // is done; one a page failed is tried again.
-            val finished = scan.failure == null && (scan.complete || scan.truncated || scan.stoppedEarly)
-            // A pass that read the whole account (or as far as one may) makes the registry complete, on disk too.
-            if (scan.failure == null && (scan.complete || scan.truncated) && agents.token() == token) agents.markRegistryComplete(now())
-            if (finished) {
-                lastRootScanAtMillis = now()
-                scanAttempts = 0
-                // A pass that finished ends the retry chain — unless this pass is the retry itself, whose job still
-                // has the memberships and the roots' rows to read (cancelling it here cut those off).
-                val self = currentCoroutineContext()[Job]
-                retryJob.getAndSet(null)?.takeIf { it !== self }?.cancel()
-            } else {
-                scheduleRetry(attempt)
-            }
-            _lastRootScan.value = RootScanRecord(
-                status = if (finished) RootScanRecord.Status.Done else RootScanRecord.Status.Partial,
-                rootsFound = scan.roots.size + scan.managers.size,
-                pagesRead = scan.pagesRead,
-                records = scan.records,
-                complete = scan.complete,
-                notice = scan.failure ?: when {
-                    scan.stoppedEarly -> "stopped after page ${scan.pagesRead}: the pages behind it are older than every known Project (a deep refresh reads on)"
-                    scan.truncated -> "stopped at $ROOT_SCAN_PAGES pages with more to read"
-                    else -> null
-                },
-                atMillis = now(),
-                attempts = attempt,
-            )
-            stats.stage(
-                "discovery scan (account pages)", scan.pagesRead, scanStartedAt, now(),
-                note = "${scan.roots.size} roots, ${scan.records} records" + when {
-                    scan.stoppedEarly -> ", stopped early at the registry's oldest root" + if (deep) "" else ""
-                    scan.complete -> ", end reached"
-                    scan.truncated -> ", capped"
-                    else -> ""
-                } + if (deep) " (deep)" else "",
-            )
-            agents.materializeRoots(token, budget = ROOT_FETCH_BUDGET)
         }
+    }
+
+    /** One discovery pass, under the mutex and past its Running mark (see [discoverRoots]). */
+    private suspend fun scan(token: Int, attempt: Int, deep: Boolean) {
+        // The list is read newest first; once a page is older than every live Project the registry knows, the
+        // pages behind it can name no Project newer than those — only one older, which a deep refresh reads for.
+        // Archived Projects are left out of the floor: they sit far down the list and are not what a pull is
+        // for. The floor stands on a registry that has read the whole account before — the word kept on disk
+        // by the pass that did (see [AgentRepository.registryCompleteAtMillis]) — never on what the first page
+        // happened to bring: the first pass of a fresh install, and the first after an upgrade from a build
+        // that kept no such word, read everything, once. A live root the registry holds undated (created here,
+        // named by a membership, restored from an older build's disk) has its record read by id first, so one
+        // such root does not send every pass over the whole account.
+        val complete = agents.registryCompleteAtMillis != null
+        val floor = if (deep || !complete) null else floorOfRegistry(token)
+        val scanStartedAt = now()
+        val scan = try {
+            api.scanRoots(ROOT_SCAN_PAGES, floor)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Failed, notice = describeFailure(t), atMillis = now(), attempts = attempt) }
+            scheduleRetry(attempt)
+            agents.materializeRoots(token)
+            return
+        }
+        if (scan == null || agents.token() != token) {
+            _lastRootScan.update { (it ?: RootScanRecord()).copy(status = RootScanRecord.Status.Never, attempts = attempt) }
+            agents.materializeRoots(token)
+            return
+        }
+        // Every record the pages carried — the Projects' and the workers' naming them above all: roots and
+        // placements, held or not, and every other row's record, so the rows are placed and named from the
+        // pages read for the roots rather than asked for one by one. The pages read count whether or not the
+        // pass reached the end.
+        val records = scan.snapshots.ifEmpty { scan.roots + scan.children }
+        if (records.isNotEmpty()) agents.applyAccountSnapshots(records, token)
+        // The pass is the account's word on every record it carried: a registry root among them that is neither
+        // a Project nor a manager by its record is no root (what an older build admitted on a source or a hint).
+        agents.revalidateRegistry(scan.seenIds, scan.roots.mapTo(HashSet()) { it.id }, scan.managers, token)
+        // A pass that read to the end, as far as it is allowed to, or to the page older than every known Project
+        // is done; one a page failed is tried again.
+        val finished = scan.failure == null && (scan.complete || scan.truncated || scan.stoppedEarly)
+        // A pass that read the whole account (or as far as one may) makes the registry complete, on disk too.
+        if (scan.failure == null && (scan.complete || scan.truncated) && agents.token() == token) agents.markRegistryComplete(now())
+        if (finished) {
+            lastRootScanAtMillis = now()
+            scanAttempts = 0
+            // A pass that finished ends the retry chain — unless this pass is the retry itself, whose job still
+            // has the memberships and the roots' rows to read (cancelling it here cut those off).
+            retryJob.getAndSet(null)?.takeIf { it !== currentJob() }?.cancel()
+        } else {
+            scheduleRetry(attempt)
+        }
+        _lastRootScan.value = RootScanRecord(
+            status = if (finished) RootScanRecord.Status.Done else RootScanRecord.Status.Partial,
+            rootsFound = scan.roots.size + scan.managers.size,
+            pagesRead = scan.pagesRead,
+            records = scan.records,
+            complete = scan.complete,
+            notice = scan.failure ?: when {
+                scan.stoppedEarly -> "stopped after page ${scan.pagesRead}: the pages behind it are older than every known Project (a deep refresh reads on)"
+                scan.truncated -> "stopped at $ROOT_SCAN_PAGES pages with more to read"
+                else -> null
+            },
+            atMillis = now(),
+            attempts = attempt,
+        )
+        stats.stage(
+            "discovery scan (account pages)", scan.pagesRead, scanStartedAt, now(),
+            note = "${scan.roots.size} roots, ${scan.records} records" + when {
+                scan.stoppedEarly -> ", stopped early at the registry's oldest root" + if (deep) "" else ""
+                scan.complete -> ", end reached"
+                scan.truncated -> ", capped"
+                else -> ""
+            } + if (deep) " (deep)" else "",
+        )
+        agents.materializeRoots(token, budget = ROOT_FETCH_BUDGET)
     }
 
     /** Another pass after a delay that grows with the attempt; one at a time, and a pass that finished cancels it. */
@@ -390,8 +405,15 @@ class ProjectRepository(
             // The roots the pass has just named need their memberships read too.
             syncLineage()
         }
-        retryJob.getAndSet(job)?.cancel()
+        // The retry before this one is cancelled — unless it is the pass scheduling this, a retry whose own pass
+        // failed: cancelling that cut it off before the memberships it owed, and left the pass it was in half done.
+        val previous = retryJob.getAndSet(job)
+        if (previous != null && previous !== currentJob()) previous.cancel()
     }
+
+    /** The job this is called on, when it is one of this repository's; the retry chain must not cancel itself. */
+    private fun currentJob(): Job? = runningJob.get()
+    private val runningJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
 
     /** The account's member count per root — workers and children the last membership pass named — for the rows' counts. */
     val memberCounts: Flow<Map<String, Int>>
@@ -465,6 +487,16 @@ class ProjectRepository(
     private suspend fun readLineage(rootId: String, token: Int): Boolean {
         val flow = extrasOf(rootId)
         flow.update { it.copy(isSyncing = true) }
+        try {
+            return readLineageMarked(rootId, token, flow)
+        } finally {
+            // However the read ended — its answer folded in, a failure noted, the pass cut short — the Project's
+            // view is not left "syncing" for a read that is over.
+            flow.update { if (it.isSyncing) it.copy(isSyncing = false) else it }
+        }
+    }
+
+    private suspend fun readLineageMarked(rootId: String, token: Int, flow: MutableStateFlow<Extras>): Boolean {
         val lineage = try {
             api.lineage(rootId)
         } catch (e: CancellationException) {

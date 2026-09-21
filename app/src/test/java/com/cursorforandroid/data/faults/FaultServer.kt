@@ -140,7 +140,33 @@ class FaultServer(
     /** Connections still to be closed the moment they open, before a byte of the request is read (see [resetNextConnections]). */
     private val resets = AtomicInteger()
 
-    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, Steer, Other }
+    enum class Route { Me, ListAgents, ListAgentsV0, GetAgent, ListRuns, GetRun, CreateRun, CancelRun, Conversation, Stream, Auth, Record, RecordState, Blob, QueueAdd, QueueList, QueueDelete, QueueUpdate, Steer, AccountList, Workers, Children, Pins, Other }
+
+    /**
+     * One row of the account's own list (`ListBackgroundComposers`, Extended mode): the record the sidebar's rows
+     * are placed and named by, and what the discovery scan pages over. [activityMs] orders the list (newest first)
+     * and pages it; [project] is the desktop's `project_metadata` present; [manager] a worker's coordinator;
+     * [sideChatOf] a side chat's parent.
+     */
+    data class Composer(
+        val id: String,
+        val name: String,
+        val activityMs: Long,
+        val running: Boolean = false,
+        val archived: Boolean = false,
+        val project: Boolean = false,
+        val manager: String? = null,
+        val sideChatOf: String? = null,
+    )
+
+    /** The account's list, by id; served newest first (see [Composer.activityMs]). */
+    val composers: MutableMap<String, Composer> = ConcurrentHashMap()
+    /** `ListWorkersForManager`: each coordinator's workers, as (workerId, spawnKind). */
+    val workers: MutableMap<String, List<Pair<String, String>>> = ConcurrentHashMap()
+    /** The account's pinned ids, as the first page of the list reports them. */
+    val pinned: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /** How many rows one account page carries whatever `n` asks (the service's window is 200; a small account still pages when this is small). */
+    @Volatile var accountPageSize = 200
 
     /** What one request meets instead of, or before, its answer. */
     sealed interface Fault {
@@ -266,6 +292,11 @@ class FaultServer(
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "DeletePendingFollowup" -> Route.QueueDelete
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "UpdatePendingFollowup" -> Route.QueueUpdate
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "InjectBackgroundComposerContext" -> Route.Steer
+            // The account's list and the Projects' memberships (the sidebar's account layer, Extended mode).
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposers" -> Route.AccountList
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListWorkersForManager" -> Route.Workers
+            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListBackgroundComposerChildren" -> Route.Children
+            segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "PinBackgroundComposers" || segments[1] == "UnpinBackgroundComposers") -> Route.Pins
             else -> Route.Other
         }
     }
@@ -321,6 +352,17 @@ class FaultServer(
             Route.QueueDelete -> queueDelete(request)
             Route.QueueUpdate -> queueUpdate(request)
             Route.Steer -> steer(request)
+            Route.AccountList -> accountList(request)
+            Route.Workers -> {
+                val manager = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject["managerBcId"]?.jsonPrimitive?.contentOrNull ?: ""
+                val items = workers[manager].orEmpty().joinToString(",") { (worker, kind) -> """{"workerBcId":"$worker","managerBcId":"$manager","spawnKind":"$kind"}""" }
+                json(200, """{"memberships":[$items]}""")
+            }
+            Route.Children -> {
+                val parent = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject["parentBcId"]?.jsonPrimitive?.contentOrNull ?: ""
+                json(200, """{"composers":[${composers.values.filter { it.sideChatOf == parent }.sortedByDescending { it.activityMs }.joinToString(",") { it.json() }}]}""")
+            }
+            Route.Pins -> json(200, "{}")
             Route.Other -> json(404, error("not_found", "No such route in the fault server: ${request.method} ${url.encodedPath}"))
         }
         return when (fault) {
@@ -353,7 +395,44 @@ class FaultServer(
         return json(200, encode(CreateRunResponseDto.serializer(), CreateRunResponseDto(run)))
     }
 
-    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.Steer
+    private val Route.isAccount: Boolean get() = this == Route.Record || this == Route.RecordState || this == Route.Blob || this == Route.QueueAdd || this == Route.QueueList || this == Route.QueueDelete || this == Route.QueueUpdate || this == Route.Steer || this == Route.AccountList || this == Route.Workers || this == Route.Children || this == Route.Pins
+
+    // ---- the account's list ----------------------------------------------------------------------------------------
+
+    private fun Composer.json(): String = buildString {
+        append("{\"bcId\":\"").append(id).append("\",\"name\":").append(quote(name))
+        append(",\"isArchived\":").append(archived)
+        append(",\"status\":\"").append(if (running) "BACKGROUND_COMPOSER_STATUS_RUNNING" else "BACKGROUND_COMPOSER_STATUS_FINISHED").append('"')
+        append(",\"lastMessageActivityAtMs\":\"").append(activityMs).append('"')
+        append(",\"createdAtMs\":\"").append(activityMs).append('"')
+        if (project) append(",\"projectMetadata\":{\"appearance\":{\"icon\":\"lightning\",\"colorId\":\"blue\"}}")
+        manager?.let { append(",\"managerAgentId\":\"").append(it).append('"') }
+        sideChatOf?.let { append(",\"sideChatInfo\":{\"parentBcId\":\"").append(it).append("\"}") }
+        append('}')
+    }
+
+    /**
+     * `ListBackgroundComposers`: one record by `bcId`; else the list newest first, `n` at a time and never more than
+     * [accountPageSize], paged by `pageToken` (asked for with `usePageTokens`) or by `lastMessageActivityAtMsOffset`
+     * the older way; the pins ride with the first page when `includePinnedState` asks.
+     */
+    private fun accountList(request: RecordedRequest): MockResponse {
+        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val ordered = composers.values.sortedWith(compareByDescending<Composer> { it.activityMs }.thenBy { it.id })
+        body["bcId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { id ->
+            val one = composers[id]
+            return json(200, """{"composers":[${one?.json() ?: ""}],"hasMore":false,"didLoadStatus":true}""")
+        }
+        val n = minOf(body["n"]?.jsonPrimitive?.intOrNull ?: 200, accountPageSize)
+        val start = body["pageToken"]?.jsonPrimitive?.contentOrNull?.removePrefix("p:")?.toIntOrNull()
+            ?: body["lastMessageActivityAtMsOffset"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.let { offset -> ordered.indexOfFirst { it.activityMs < offset }.takeIf { it >= 0 } ?: ordered.size }
+            ?: 0
+        val page = ordered.drop(start).take(n)
+        val hasMore = start + n < ordered.size
+        val pins = if (body["includePinnedState"]?.jsonPrimitive?.booleanOrNull == true) ""","pinnedBcIds":[${pinned.joinToString(",") { "\"$it\"" }}],"didLoadPinnedState":true""" else ""
+        val token = if (hasMore && body["usePageTokens"]?.jsonPrimitive?.booleanOrNull == true) ""","nextPageToken":"p:${start + n}"""" else ""
+        return json(200, """{"composers":[${page.joinToString(",") { it.json() }}],"hasMore":$hasMore,"didLoadStatus":true$pins$token}""")
+    }
 
     // ---- the account's queue ----------------------------------------------------------------------------------------
 

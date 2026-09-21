@@ -55,6 +55,24 @@ object ProjectDiagnostics {
         val nowMillis: Long = AppClock.now(),
         /** What the last refresh cost, stage by stage (see [RefreshStats]); null before a refresh this process. */
         val refresh: RefreshStats.Snapshot? = null,
+        /** The sidebar's tail as it stands: what it shows and the work behind it (see [PendingWork]); null when the graph has no list yet. */
+        val loading: LoadingSummary? = null,
+    )
+
+    /**
+     * What the sidebar's one loading row stands for right now: whether it is shown, the work in flight by name and
+     * age, and the list's paging state — so a row that spins can be read back to the request behind it, and a tail
+     * that cannot move (more promised, no cursor) to its cause.
+     */
+    data class LoadingSummary(
+        val shown: Boolean,
+        val work: List<String>,
+        val isRefreshing: Boolean,
+        val isLoadingMore: Boolean,
+        val hasMore: Boolean,
+        val loadMoreError: String?,
+        val pagesLoaded: Int,
+        val hasNextCursor: Boolean,
     )
 
     data class RootScanSummary(
@@ -163,6 +181,25 @@ object ProjectDiagnostics {
         val pendingRoots = input.agents.asSequence().mapNotNull { it.parent?.id }.distinct().filter { id -> rows.none { it.id == id } }.toList()
         pendingRoots.forEach { appendLine("  ${tail(it)} (not loaded) ${input.rootSyncs[it]?.let { s -> "sync=workers:${s.workersRead} children:${s.childrenRead}" } ?: "sync=never"}") }
 
+        appendLine()
+        appendLine("loading:")
+        val loading = input.loading
+        if (loading == null) {
+            appendLine("  no list yet")
+        } else {
+            val tail = when {
+                loading.isRefreshing -> "refresh indicator"
+                loading.isLoadingMore || loading.shown -> "Loading more…"
+                loading.loadMoreError != null -> "failed: ${loading.loadMoreError}"
+                loading.hasMore -> "Load more chats"
+                else -> "nothing"
+            }
+            appendLine("  tail=$tail shown=${loading.shown} isRefreshing=${loading.isRefreshing} isLoadingMore=${loading.isLoadingMore} hasMore=${loading.hasMore} nextCursor=${if (loading.hasNextCursor) "yes" else "none"} pagesLoaded=${loading.pagesLoaded}")
+            if (loading.work.isEmpty()) appendLine("  in flight: nothing") else {
+                appendLine("  in flight (${loading.work.size}):")
+                loading.work.forEach { appendLine("    $it") }
+            }
+        }
         appendLine()
         appendLine("refresh:")
         val refresh = input.refresh

@@ -12,6 +12,8 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.hasScrollToNodeAction
@@ -373,19 +375,82 @@ class SidebarSectionsTest {
      * says so in a quiet footer, and says nothing once it has settled. The rows on screen are reported to the view
      * model, which reads their pull request badges — not every row's.
      */
+    /**
+     * The sidebar's one loading row (see [SidebarTail]): "Loading more…" while the list has work in flight — a page,
+     * the tail of a pull — one row and one wording, whatever is in flight; the rows on screen are reported to the
+     * view model meanwhile, which reads their pull request badges.
+     */
     @Test
-    fun `while older items still sync the list shows a quiet footer, and reports the rows on screen`() {
+    fun `while the list has work in flight the tail is one loading row, and the rows on screen are reported`() {
         var visible: List<String> = emptyList()
-        showSidebar(isSyncingOlder = true, onVisibleRows = { visible = it })
-        compose.onNodeWithText("Still syncing older items\u2026").assertIsDisplayed()
+        showSidebar(tail = SidebarTail.Loading(listOf("list page 2", "account list")), onVisibleRows = { visible = it })
+        compose.onNodeWithText("Loading more\u2026").assertIsDisplayed()
+        compose.onAllNodesWithText("Loading more\u2026").assertCountEquals(1)
+        compose.onNodeWithText("Still syncing older items\u2026").assertDoesNotExist()
+        compose.onNodeWithText("Load more chats").assertDoesNotExist()
         compose.waitForIdle()
         assertThat(visible).containsExactly("pin", "today", "yday").inOrder()
     }
 
     @Test
-    fun `once the refresh has settled the footer is gone`() {
-        showSidebar(isSyncingOlder = false)
-        compose.onNodeWithText("Still syncing older items\u2026").assertDoesNotExist()
+    fun `with nothing in flight and nothing more, the tail is empty`() {
+        showSidebar(tail = SidebarTail.None)
+        compose.onNodeWithText("Loading more\u2026").assertDoesNotExist()
+        compose.onNodeWithText("Load more chats").assertDoesNotExist()
+        compose.onNodeWithText("Retry").assertDoesNotExist()
+    }
+
+    /** A page that failed ends in the server's words and Retry — the same page asked for again by the tap, and only by the tap. */
+    @Test
+    fun `a page that failed shows the server's words with Retry, and Retry asks for the page again`() {
+        var retries = 0
+        var loads = 0
+        showSidebar(tail = SidebarTail.Failed("Cursor is rate limiting requests. Try again in 30 s."), onRetryLoadMore = { retries++ }, onLoadMore = { loads++ })
+        compose.onNodeWithText("Cursor is rate limiting requests. Try again in 30 s.").assertIsDisplayed()
+        compose.onNodeWithText("Loading more\u2026").assertDoesNotExist()
+        compose.waitForIdle()
+        // The failed page is not asked for again by the list's own paging.
+        assertThat(loads).isEqualTo(0)
+        compose.onNodeWithTag("load-more-retry").performClick()
+        assertThat(retries).isEqualTo(1)
+    }
+
+    /**
+     * The next page is asked for on its own when the reader is at the end of an open group — not when the trailing
+     * group is folded: a page fetched into a fold shows nothing, and the whole account behind it would keep the row
+     * spinning to no visible end. The line to tap stays, and unfolding the group asks again.
+     */
+    @Test
+    fun `the next page is not asked for on its own while the trailing group is folded`() {
+        var loads = 0
+        showSidebar(tail = SidebarTail.More, collapsed = setOf("date:Yesterday"), onLoadMore = { loads++ })
+        compose.onNodeWithText("Load more chats").assertIsDisplayed()
+        compose.waitForIdle()
+        assertThat(loads).isEqualTo(0)
+        // Tapping the line still asks.
+        compose.onNodeWithText("Load more chats").performClick()
+        assertThat(loads).isEqualTo(1)
+        // Unfolding the trailing group puts its last row in reach: the page is asked for on its own.
+        compose.onNodeWithText("Yesterday").performClick()
+        compose.waitForIdle()
+        compose.waitUntil(5_000) { loads >= 2 }
+    }
+
+    @Test
+    fun `the next page is asked for on its own when the reader is at the end of an open list`() {
+        var loads = 0
+        showSidebar(tail = SidebarTail.More, onLoadMore = { loads++ })
+        compose.waitUntil(5_000) { loads >= 1 }
+    }
+
+    /** The folded group's count is the rows loaded into it, and follows a page that lands. */
+    @Test
+    fun `a folded group's count is what is loaded into it, and follows the pages`() {
+        showSidebar(collapsed = setOf("date:Yesterday"))
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertTextEquals(" · 1")
+        listState = listState.copy(sections = listState.sections.map { if (it.key == "date:Yesterday") it.copy(rows = it.rows + row("older-1", "Older one") + row("older-2", "Older two")) else it })
+        compose.waitForIdle()
+        compose.onNodeWithTag("section-count-date:Yesterday", useUnmergedTree = true).assertTextEquals(" · 3")
     }
 
     private fun showSidebar(
@@ -397,10 +462,12 @@ class SidebarSectionsTest {
         ),
         collapsed: Set<String> = emptySet(),
         onNewProject: (() -> Unit)? = null,
-        isSyncingOlder: Boolean = false,
+        tail: SidebarTail = SidebarTail.None,
         onVisibleRows: (List<String>) -> Unit = {},
+        onLoadMore: () -> Unit = {},
+        onRetryLoadMore: () -> Unit = {},
     ) {
-        listState = AgentListUiState(sections = sections, hasLoaded = true, collapsedSections = collapsed, isSyncingOlder = isSyncingOlder)
+        listState = AgentListUiState(sections = sections, hasLoaded = true, collapsedSections = collapsed, tail = tail, hasMore = tail == SidebarTail.More)
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Sidebar(
@@ -424,6 +491,8 @@ class SidebarSectionsTest {
                             listState = listState.copy(collapsedSections = if (folded) listState.collapsedSections + key else listState.collapsedSections - key)
                         },
                         onVisibleRows = onVisibleRows,
+                        onLoadMore = onLoadMore,
+                        onRetryLoadMore = onRetryLoadMore,
                     ),
                 )
             }

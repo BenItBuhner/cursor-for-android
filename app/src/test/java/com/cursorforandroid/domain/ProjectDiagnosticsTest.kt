@@ -106,6 +106,30 @@ class ProjectDiagnosticsTest {
         assertThat(none).contains("refresh:\n  none this process")
     }
 
+    /** The `loading:` block: the sidebar's tail as it stands and the work behind its spinner, so a row that spins can be read back to the request. */
+    @Test
+    fun `the report names what the sidebar's loading row stands for`() {
+        val base = ProjectDiagnostics.Input(
+            appVersion = "0.3.60", nowIso = "2026-09-21T14:00:00Z", extendedMode = true, projectsCapability = true, accountSession = true,
+            listFromCache = false, lastRefreshedIso = null, agents = emptyList(), placementOf = { null }, rootSyncs = emptyMap(),
+        )
+        val spinning = ProjectDiagnostics.render(
+            base.copy(loading = ProjectDiagnostics.LoadingSummary(shown = true, work = listOf("older page (1200 ms)", "account page (ListBackgroundComposers) (1100 ms)"), isRefreshing = false, isLoadingMore = true, hasMore = true, loadMoreError = null, pagesLoaded = 3, hasNextCursor = true)),
+        )
+        assertThat(spinning).contains("loading:\n  tail=Loading more… shown=true isRefreshing=false isLoadingMore=true hasMore=true nextCursor=yes pagesLoaded=3\n  in flight (2):\n    older page (1200 ms)\n    account page (ListBackgroundComposers) (1100 ms)")
+
+        val failed = ProjectDiagnostics.render(
+            base.copy(loading = ProjectDiagnostics.LoadingSummary(shown = false, work = emptyList(), isRefreshing = false, isLoadingMore = false, hasMore = true, loadMoreError = "Rate limited by Cursor. Try again in 3 s.", pagesLoaded = 3, hasNextCursor = true)),
+        )
+        assertThat(failed).contains("tail=failed: Rate limited by Cursor. Try again in 3 s. shown=false")
+        assertThat(failed).contains("in flight: nothing")
+
+        // A tail that promises more with no cursor to move on is named as such.
+        val stuck = ProjectDiagnostics.render(base.copy(loading = ProjectDiagnostics.LoadingSummary(shown = false, work = emptyList(), isRefreshing = false, isLoadingMore = false, hasMore = true, loadMoreError = null, pagesLoaded = 5, hasNextCursor = false)))
+        assertThat(stuck).contains("tail=Load more chats shown=false isRefreshing=false isLoadingMore=false hasMore=true nextCursor=none pagesLoaded=5")
+        assertThat(ProjectDiagnostics.render(base)).contains("loading:\n  no list yet")
+    }
+
     @Test
     fun `ids are shortened to a tail that tells rows apart without naming them`() {
         assertThat(ProjectDiagnostics.tail("bc-6c5768e2-379e-5d25-969b-23cb015f0e15")).isEqualTo("…5f0e15")

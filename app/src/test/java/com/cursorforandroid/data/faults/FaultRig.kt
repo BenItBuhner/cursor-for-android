@@ -4,6 +4,11 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.RootScan
+import com.cursorforandroid.data.api.ProjectLineageApi
+import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.ProjectApi
+import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiFactory
@@ -20,6 +25,9 @@ import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.local.TraceCache
 import com.cursorforandroid.data.repo.AgentRepository
+import com.cursorforandroid.data.repo.RefreshDepth
+import com.cursorforandroid.data.repo.ProjectRepository
+import com.cursorforandroid.data.repo.PinRepository
 import com.cursorforandroid.data.repo.ConversationRepository
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.FollowUpRepository
@@ -27,6 +35,8 @@ import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.PendingWork
+import com.cursorforandroid.domain.AgentScope
 import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.QueuedFollowUp
@@ -106,7 +116,9 @@ class FaultRig(
     val session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
     private val disk = JsonDiskCache(File(root, "cache").apply { mkdirs() }, dispatcher = Dispatchers.Unconfined)
     val attachments = AttachmentStore(context)
-    val agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
+    /** The list's work in flight, shared by the list and the account layer (see `PendingWork`): what the sidebar's one loading row stands for. */
+    val pending = PendingWork()
+    val agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10, capabilities = { capabilities }, recordOf = { id -> if (this.capabilities.accountSession) accountAgents.record(id) else null }, pending = pending)
     val hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 500, releaseGraceMs = 200, reconnectBaseMs = 200, reconnectMaxMs = 800, scope = scope)
     val conversationCache = ConversationCache(disk.child("conversations"))
     val traces = TraceCache(JsonDiskCache(File(root, "traces").apply { mkdirs() }, nowProvider = { now }, dispatcher = Dispatchers.Unconfined))
@@ -123,6 +135,32 @@ class FaultRig(
         .build()
     private val accountRpc = ConnectJsonClient(accountClient, baseUrl)
     private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
+    /** The account's list, pins and records (`BackgroundComposerService`), over [accountClient] on the same host. */
+    val accountAgents: BackgroundComposerApi = BackgroundComposerApi(accountRpc, sessionTokens)
+    /** The Projects' memberships, over the same host. */
+    val projectApi: ProjectApi = ProjectApi(accountRpc, sessionTokens)
+    /**
+     * The sidebar's account layer, wired as `AppGraph` wires it: the account round after every fetch, the account's
+     * list read ahead of each fetch's first page and alongside each page the reader asks for, the root discovery and
+     * the memberships off every list read. Short retry delays, so a test of a round that fails sees the next.
+     */
+    /** The lineage API as the graph wires it: the memberships from [projectApi], the records and the discovery scan from [accountAgents]. */
+    private val lineageApi = object : ProjectLineageApi by projectApi {
+        override suspend fun record(id: String): ComposerSnapshot? = accountAgents.record(id)
+        override suspend fun scanRoots(maxPages: Int): RootScan = accountAgents.scanRoots(maxPages)
+        override suspend fun scanRoots(maxPages: Int, stopBelowActivityMillis: Long?): RootScan = accountAgents.scanRoots(maxPages, stopBelowActivityMillis)
+    }
+    val projects: ProjectRepository = ProjectRepository(session, agents, lineageApi, actions = projectApi, store = projectApi, scope = scope, pollIntervalMs = 60_000, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 500L, 500L)).also { it.watchList() }
+    val pins: PinRepository = PinRepository(
+        session, prefs, agents, accountAgents, scope = scope, capabilities = { capabilities }, retryDelaysMs = listOf(500L, 1_000L, 2_000L), pending = pending,
+        onList = { list, token ->
+            agents.applySources(list.sources, token)
+            projects.scheduleRootDiscovery(list.composers.filter { it.scope == AgentScope.PROJECT_ROOT }.map { it.id }, deep = agents.lastRefreshDepth == RefreshDepth.Deep)
+        },
+    ).also { pins ->
+        agents.accountPrime = { pins.primeForFetch() }
+        agents.accountPage = { pins.loadMore() }
+    }
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
     val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens) else null
     /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */

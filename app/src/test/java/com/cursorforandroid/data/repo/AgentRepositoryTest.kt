@@ -6,6 +6,7 @@ import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ComposerLifecycleApi
 import com.cursorforandroid.data.api.ComposerSnapshot
+import com.cursorforandroid.data.api.CursorApiException
 import com.cursorforandroid.data.api.dto.RunDto
 import com.cursorforandroid.data.api.dto.V0AgentDto
 import com.cursorforandroid.data.api.dto.V0TargetDto
@@ -15,6 +16,7 @@ import com.cursorforandroid.data.local.AttachmentStore
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.domain.Agent
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.AgentParent
 import com.cursorforandroid.domain.AgentParentKind
@@ -269,6 +271,123 @@ class AgentRepositoryTest {
         repo.refresh()
         assertThat(api.listAgentsCalls).isEqualTo(6)
         assertThat(repo.state.value.agents).hasSize(250)
+    }
+
+    /**
+     * The next page is marked from the ask: the row spins at once, the account's page is read ahead of the public
+     * one through the hook, once — a second ask while the page is on its way is a no-op rather than a second account
+     * page — and the mark is gone the moment the page has landed, with nothing left registered as in flight.
+     */
+    @Test
+    fun `the next page is marked from the ask, reads the account's page once ahead of it, and is one ask at a time`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        val accountPages = java.util.concurrent.atomic.AtomicInteger()
+        val accountGate = CompletableDeferred<Unit>()
+        repo.accountPage = { accountPages.incrementAndGet(); accountGate.await() }
+        repo.refresh()
+        assertThat(repo.state.value.hasMore).isTrue()
+
+        val first = scope.launch { repo.loadMore() }
+        awaitUntil { repo.state.value.isLoadingMore }
+        // Marked and registered from the ask, while the account's page is still on its way.
+        assertThat(repo.pending.items.map { it.name }).contains("older page")
+        assertThat(repo.pending.state.value.shown).isTrue()
+        assertThat(api.listAgentsCalls).isEqualTo(1)
+        // A second ask meanwhile is a no-op: no second account page, no second public page.
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Skipped)
+        awaitUntil { accountPages.get() == 1 }
+        accountGate.complete(Unit)
+        first.join()
+        assertThat(accountPages.get()).isEqualTo(1)
+        assertThat(api.listAgentsCalls).isEqualTo(2)
+        assertThat(repo.state.value.agents).hasSize(150)
+        assertThat(repo.state.value.isLoadingMore).isFalse()
+        assertThat(repo.state.value.hasMore).isFalse()
+        assertThat(repo.state.value.loadMoreError).isNull()
+        awaitUntil { repo.pending.items.isEmpty() }
+        assertThat(repo.pending.state.value.shown).isFalse()
+    }
+
+    /**
+     * A page the server refuses ends in its words, in the tail's own field — the list above it stands, the refresh's
+     * error line is not written — with the mark gone and the page not asked for again until the next ask; that ask,
+     * once the server answers, clears the words and brings the page.
+     */
+    @Test
+    fun `a page that fails leaves the server's words for the tail, and the next ask clears them`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        repo.refresh()
+        assertThat(repo.state.value.agents).hasSize(100)
+
+        api.failListAgents = CursorApiException(429, "rate_limited", "Too many requests from this key.")
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Failed)
+        val failed = repo.state.value
+        assertThat(failed.loadMoreError).isEqualTo("Rate limited by Cursor: Too many requests from this key. Try again in a moment.")
+        assertThat(failed.error).isNull()
+        assertThat(failed.isLoadingMore).isFalse()
+        assertThat(failed.hasMore).isTrue()
+        assertThat(failed.agents).hasSize(100)
+        assertThat(repo.pending.items).isEmpty()
+        val asked = api.listAgentsCalls
+
+        // Nothing asks again on its own.
+        delay(300)
+        assertThat(api.listAgentsCalls).isEqualTo(asked)
+
+        // The tap, once the server answers: the words go, the page comes.
+        api.failListAgents = null
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Refreshed)
+        assertThat(repo.state.value.loadMoreError).isNull()
+        assertThat(repo.state.value.agents).hasSize(150)
+        assertThat(repo.state.value.hasMore).isFalse()
+    }
+
+    /** A refresh that goes through moots a page that failed before it: the window and its cursors are re-read. */
+    @Test
+    fun `a refresh clears the words of a page that failed before it`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        repo.refresh()
+        api.failListAgents = CursorApiException(503, "unavailable", "Try again later.")
+        assertThat(repo.loadMore()).isEqualTo(RefreshOutcome.Failed)
+        assertThat(repo.state.value.loadMoreError).isNotNull()
+        api.failListAgents = null
+        repo.refresh()
+        assertThat(repo.state.value.loadMoreError).isNull()
+        assertThat(repo.state.value.error).isNull()
+    }
+
+    /**
+     * Every pass a refresh makes registers itself for as long as it runs, and the pull raises the row once its first
+     * page is on screen; a silent refresh registers the same work and raises nothing. Nothing is left registered
+     * once the refresh is over.
+     */
+    @Test
+    fun `a refresh registers its passes as work in flight, shown for a pull and quiet for a poll`() = runBlocking<Unit> {
+        api.pageSize = 100
+        repeat(150) { i -> api.addIdleAgent("bc-$i", "Agent $i", "run-$i", createdAt = "2026-04-13T18:${(30 + i / 60) % 60}:${(i % 60).toString().padStart(2, '0')}.000Z") }
+        val repo = repository()
+        val seen = java.util.concurrent.CopyOnWriteArrayList<PendingWork.State>()
+        val watcher = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { repo.pending.state.collect { seen += it } }
+        repo.refresh()
+        awaitUntil { repo.pending.items.isEmpty() }
+        // The state flow conflates: the fake answers a page within a beat, so what a collector sees for certain is the
+        // fetch's own item, held for the whole refresh, and the row raised under it.
+        assertThat(seen.flatMap { it.items }.map { it.name }.distinct()).contains("list refresh (full)")
+        assertThat(seen.any { it.shown }).isTrue()
+        assertThat(repo.pending.state.value).isEqualTo(PendingWork.State())
+
+        seen.clear()
+        repo.refresh(silent = true, depth = RefreshDepth.Quick)
+        awaitUntil { repo.pending.items.isEmpty() }
+        assertThat(seen.flatMap { it.items }.map { it.name }.distinct()).contains("list refresh (quick, silent)")
+        assertThat(seen.none { it.shown }).isTrue()
+        watcher.cancel()
     }
 
     @Test
