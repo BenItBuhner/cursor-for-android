@@ -181,9 +181,14 @@ class SteeringRepository(
      * Files [followup] with the account. Behind a turn under way it joins the account's queue; on a free agent the
      * account starts its run and names it, which is returned. [now] sends it in place of the turn under way instead.
      */
-    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false): Result<String?> =
+    /**
+     * Files [followup]; the queue is read again after, unless the caller asks to [refresh] it itself — the composer's
+     * send does, once the transcript has taken the message's bubble down, so the card and the bubble never show the
+     * message at the same instant (see `OutgoingMessages`, `QueuePlacement`).
+     */
+    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false, refresh: Boolean = true): Result<String?> =
         action(agentId, "send", needs = { it.accountQueue || it.agentModes }, api = { queueApi }) { api ->
-            api.addFollowup(agentId, followup, synchronous = now).also { refreshQueue(agentId) }
+            api.addFollowup(agentId, followup, synchronous = now).also { if (refresh) refreshQueue(agentId) }
         }
 
     suspend fun updatePending(agentId: String, followupId: String, text: String): Result<Unit> =

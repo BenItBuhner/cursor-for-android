@@ -55,7 +55,8 @@ class MediaActions(private val context: Context, private val loader: MediaLoader
     suspend fun save(ref: MediaRef, entry: MediaEntry): Result<String> = runCatching {
         check(canSave) { "Saving needs Android 10 or newer." }
         val file = loader.file(ref, entry.fileName)
-        withContext(Dispatchers.IO) { insertIntoGallery(file, entry) }
+        // Back on the main thread once written: the caller is the viewer's composition, which must not resume on a worker.
+        withContext(Dispatchers.Main.immediate) { withContext(Dispatchers.IO) { insertIntoGallery(file, entry) } }
         if (entry.isVideo) "Saved to Movies" else "Saved to Pictures"
     }
 

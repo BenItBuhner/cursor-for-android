@@ -24,6 +24,7 @@ import com.cursorforandroid.domain.AgentLifecycle
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.util.AppClock
+import com.cursorforandroid.util.HeldSettings
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
@@ -34,6 +35,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -62,6 +65,9 @@ class FollowUpRepositoryTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var now = 1_800_000_000_000L
     private lateinit var context: Context
+    private lateinit var prefs: PreferencesStore
+    private lateinit var session: SessionManager
+    private lateinit var attachments: AttachmentStore
     private lateinit var agents: AgentRepository
     private lateinit var hub: LiveRunHub
     private lateinit var conversations: ConversationRepository
@@ -81,11 +87,11 @@ class FollowUpRepositoryTest {
         mcpGate = null
         mcpCalls.set(0)
         context = ApplicationProvider.getApplicationContext()
-        val prefs = PreferencesStore(context)
+        prefs = PreferencesStore(context)
         val backend = CursorBackend(api, streamer, isDemo = false)
-        val session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
+        session = SessionManager(SecureKeyStore(context), prefs, backend, CursorBackend(api, streamer, isDemo = true))
         val disk = JsonDiskCache(folder.newFolder("cache"), dispatcher = Dispatchers.Unconfined)
-        val attachments = AttachmentStore(context)
+        attachments = AttachmentStore(context)
         agents = AgentRepository(session, prefs, attachments, AgentListCache(disk.child("agents")), scope, persistDelayMs = 10)
         hub = LiveRunHub(session, agents, nowProvider = { now }, pollIntervalMs = 50, releaseGraceMs = 50, reconnectBaseMs = 20, reconnectMaxMs = 40, scope = scope)
         conversations = ConversationRepository(session, agents, prefs, hub, attachments, isForeground = { true }, prefetchLimit = 0, scope = scope)
@@ -105,6 +111,7 @@ class FollowUpRepositoryTest {
         idleSettleMs: Long = 20_000,
         retryBaseMs: Long = 20,
         scope: CoroutineScope = this.scope,
+        conversations: ConversationRepository = this.conversations,
     ) = FollowUpRepository(
         conversations, agents, hub,
         mcpServers = { mcpCalls.incrementAndGet(); mcpGate?.await(); emptyList() },
@@ -626,6 +633,77 @@ class FollowUpRepositoryTest {
         awaitUntil { sent() == listOf("Now") }
         awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
         assertThat(agents.agent("bc-1")?.latestRunId).isNotEqualTo("run-1")
+    }
+
+    /**
+     * The load a chat opens with reads its run page, renders, and — a read marker and a disk write later — follows
+     * the page's latest run. A steer in that gap, of a chat whose turn had moved on already (run-1 over, run-2 begun
+     * from another device, neither known here yet): the refused cancel of run-1 settles the row against the record,
+     * which names run-2, and run-2 is the turn stopped. The load then lands with the page it read before all that,
+     * calling run-1 running, and so does the detail read it launched. Followed as the turn under way, run-1 put the
+     * spinner back on a turn long over and held the steered message behind a stream with nothing to say (a replay
+     * round trip on a phone; forever here, the fake's stream being silent), and the detail moved the row back to it
+     * — the way the steer test above timed out one run in a few hundred under load. Run-1 began before the run this
+     * device saw end, so it is over by that alone (`AgentRepository.endedBefore`), a record naming it the latest is
+     * a read from before the end, and a load the Stop overtook is read again once it lands.
+     */
+    @Test
+    fun `a steer during a load whose run page predates the turn it stops does not put the chat back on the old turn`() = runBlocking<Unit> {
+        val settings = HeldSettings(context)
+        val conversations = ConversationRepository(session, agents, PreferencesStore(context, settings), hub, attachments, isForeground = { true }, prefetchLimit = 0, scope = scope)
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        agents.refresh()
+        val detailReads = api.getAgentCalls
+        // The load renders its page, then parks in the read marker it writes for it (the attach's own is the write
+        // before); its follow of the page's latest run is behind that — unless the page rendered ahead of the
+        // transcript, which follows at once: either order is a phone's, and the invariant below holds for both.
+        settings.holdFrom = 2
+        conversations.attach("bc-1")
+        awaitUntil { conversations.state("bc-1").value.let { it.activeRunId == "run-1" && !it.isLoading } && settings.waiting.get() == 1 && api.getAgentCalls == detailReads + 1 }
+
+        // Meanwhile, on the server: run-1 ended and run-2 began, and neither the row nor the chat has heard of it.
+        api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED")
+        api.notCancellable += "run-1"
+        api.runs["run-2"] = RunDto(id = "run-2", agentId = "bc-1", status = "RUNNING", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+
+        // Every frame of the row and of the chat from here: once each has shown the Stop of run-2 (the row cancelled
+        // on run-2, the chat cancelled), neither may go back to run-1 as the turn under way — the row naming it its
+        // latest or running on anything but the send's run, the chat calling it active. (Its stream may still be
+        // opened, for the replay that brings its trace; what it must not say is that the turn is under way.)
+        val rowFrames = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val chatFrames = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val recorder = scope.launch {
+            launch {
+                var stopped = false
+                agents.state.map { s -> s.agents.firstOrNull { it.id == "bc-1" } }.collect { row ->
+                    if (row?.runStatus == RunStatus.CANCELLED && row.latestRunId == "run-2") stopped = true
+                    if (stopped && row != null && (row.latestRunId == "run-1" || row.isRunning && row.latestRunId != "run-followup-1")) rowFrames += "${row.runStatus}/${row.latestRunId}"
+                }
+            }
+            launch {
+                var stopped = false
+                conversations.state("bc-1").collect { chat ->
+                    if (chat.runStatus == RunStatus.CANCELLED) stopped = true
+                    if (stopped && chat.activeRunId == "run-1" && chat.runStatus?.isActive == true) chatFrames += "${chat.runStatus}/${chat.activeRunId}/streaming=${chat.isStreaming}"
+                }
+            }
+        }
+        val followUps = repository(conversations = conversations)
+        val item = followUps.enqueue("bc-1", "Now")
+        assertThat(followUps.sendNow("bc-1", item.id)).isTrue()
+        awaitUntil { api.cancelled == listOf("run-2") }
+        val pagesRead = api.listRunsCalls
+        settings.release()
+
+        awaitUntil { sent() == listOf("Now") }
+        awaitUntil { followUps.state("bc-1").value.queue.isEmpty() }
+        // The page the Stop overtook was read again once the load landed; the chat is on the turn the send started.
+        awaitUntil { api.listRunsCalls > pagesRead && conversations.state("bc-1").value.activeRunId == "run-followup-1" }
+        recorder.cancel()
+        assertThat(rowFrames).isEmpty()
+        assertThat(chatFrames).isEmpty()
+        assertThat(agents.agent("bc-1")!!.latestRunId).isEqualTo("run-followup-1")
     }
 
     @Test

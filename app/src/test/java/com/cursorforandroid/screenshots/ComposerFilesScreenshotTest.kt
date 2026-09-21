@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -14,11 +15,14 @@ import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.unit.dp
@@ -35,8 +39,13 @@ import com.cursorforandroid.ui.components.FileUploadState
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
+import com.cursorforandroid.ui.conversation.OutgoingStatus
 import com.cursorforandroid.ui.conversation.TimelineItemView
 import com.cursorforandroid.ui.conversation.TranscriptControls
+import com.cursorforandroid.ui.media.FakeVideoPlayer
+import com.cursorforandroid.ui.media.MediaViewerState
+import com.cursorforandroid.ui.media.ViewerFixtures
+import com.cursorforandroid.ui.media.ViewerScene
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.RoborazziOptions
@@ -68,7 +77,11 @@ class ComposerFilesScreenshotTest {
 
     private val spec = PendingFile("f1", PromptFile(ByteArray(2_400 * 1024), "Q3-billing-spec.pdf", "application/pdf"))
     private val recording = PendingFile("f2", PromptFile(ByteArray(11_600 * 1024), "checkout-flow.mp4", "video/mp4"))
+    /** The same recording as the gallery hands it over: with its poster frame and its length. */
+    private val recordingWithPoster: PendingFile get() = PendingFile("f2", recording.file, thumbnail = swatchBitmap(160, 90, AndroidColor.rgb(46, 92, 60)), durationMs = 12_000)
     private val trace = PendingFile("f3", PromptFile(ByteArray(48 * 1024), "network-trace.har", "application/json"))
+
+    private fun swatchBitmap(width: Int, height: Int, color: Int) = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply { eraseColor(color) }.asImageBitmap()
 
     /** A swatch standing in for a picture: the bytes of a PNG, decodable for a thumbnail. */
     private fun swatch(width: Int, height: Int, color: Int): ByteArray {
@@ -95,19 +108,24 @@ class ComposerFilesScreenshotTest {
         }
     }
 
+    /**
+     * A mixed row — two pictures (one pasted, one picked), a recording, a PDF: every picture and recording as its
+     * own tile, whichever way it arrived, the recording with its poster, play glyph and length; the PDF as the chip
+     * with its name, kind and size.
+     */
     @Test
     fun composerFileChips() {
         compose.setContent {
             Scene {
                 ComposerBox(
-                    value = "Read the spec and the trace, then fix the checkout regression shown in the recording.",
+                    value = "Stitch the picture into the green screen in the recording; the spec says where.",
                     onValueChange = {},
                     placeholder = "Follow up…",
                     onSend = {},
                     plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
                     attachments = listOf(screenshot()),
                     onRemoveAttachment = {},
-                    files = listOf(photo(), recording, spec, trace),
+                    files = listOf(photo(), recordingWithPoster, spec),
                     onRemoveFile = {},
                     modelLabel = "Claude Fable 5.1",
                     onModel = {},
@@ -117,6 +135,70 @@ class ComposerFilesScreenshotTest {
         }
         compose.waitForIdle()
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "78_composer_file_chips.png").path, RoborazziOptions())
+    }
+
+    /**
+     * A tap on a tile opens the picture in the app's viewer, out of the tile: the page grown from the tile's box with
+     * the scrim coming in behind it (a frame in, and halfway), the page open, and — on dismiss — halfway back into the
+     * tile. The same transform the transcript's pictures ride (see MediaViewerScreenshotTest).
+     */
+    @Test
+    fun composerMediaOpensInViewer() {
+        val state = MediaViewerState(null)
+        val still = PendingAttachment.of(PromptImage(swatch(720, 1600, AndroidColor.rgb(52, 120, 246)), "image/png"), id = "img-open")
+        compose.setContent {
+            ViewerScene(state, ViewerFixtures.loader(), entries = emptyList(), playerFactory = { FakeVideoPlayer() }) {
+                Column(Modifier.fillMaxSize().background(CursorTheme.colors.canvas).padding(16.dp), verticalArrangement = Arrangement.Bottom) {
+                    ComposerBox(
+                        value = "Stitch the picture into the green screen in the recording.",
+                        onValueChange = {},
+                        placeholder = "Follow up…",
+                        onSend = {},
+                        plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                        attachments = listOf(still),
+                        onRemoveAttachment = {},
+                        files = listOf(photo(), recordingWithPoster, spec),
+                        onRemoveFile = {},
+                        modelLabel = "Claude Fable 5.1",
+                        onModel = {},
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        // The copy the viewer reads is written on the tap; the open follows. Frozen a frame in, then halfway.
+        compose.onAllNodesWithTag("media-tile")[0].performClick()
+        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Opening }
+        compose.mainClock.autoAdvance = false
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(outDir, "117_composer_media_open_start.png").path, RoborazziOptions())
+        compose.mainClock.advanceTimeBy(90)
+        compose.waitForIdle()
+        check(state.phase == MediaViewerState.Phase.Opening) { "the transform should still be running, was ${state.phase}" }
+        compose.onRoot().captureRoboImage(File(outDir, "118_composer_media_open_mid.png").path, RoborazziOptions())
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Open }
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("viewer-image-0").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage(File(outDir, "119_composer_media_open.png").path, RoborazziOptions())
+        // Dismissed: halfway back into the tile it came from. The close is picked up by the host's effect on the
+        // next frame, so the clock is stopped once the transform has begun.
+        compose.mainClock.autoAdvance = false
+        state.close()
+        var frames = 0
+        while (state.phase != MediaViewerState.Phase.Closing && frames++ < 10) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        compose.mainClock.advanceTimeBy(90)
+        compose.waitForIdle()
+        check(state.phase == MediaViewerState.Phase.Closing) { "the close should still be running, was ${state.phase}" }
+        compose.onRoot().captureRoboImage(File(outDir, "120_composer_media_close_mid.png").path, RoborazziOptions())
+        compose.mainClock.autoAdvance = true
+        compose.waitUntil(10_000) { state.phase == MediaViewerState.Phase.Closed }
     }
 
     /**
@@ -241,6 +323,99 @@ class ComposerFilesScreenshotTest {
         compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 2 }
         compose.waitForIdle()
         compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "95_transcript_attachment_row.png").path, RoborazziOptions())
+    }
+
+    /**
+     * Send tapped with a file still going up: the composer is empty from that frame — the message is the transcript's,
+     * its bubble carrying the picture, the file and the upload's progress — and a new draft can begin at once.
+     */
+    @Test
+    fun composerClearsOnSend() {
+        val (bubble, reply) = outgoingScene()
+        compose.setContent {
+            Scene {
+                CompositionLocalProvider(
+                    LocalTranscriptControls provides TranscriptControls(
+                        outgoing = mapOf(bubble.id to OutgoingStatus.Uploading(done = 1, total = 2, progress = 0.62f)),
+                        onRetryOutgoing = {},
+                        onEditOutgoing = {},
+                    ),
+                ) {
+                    TimelineItemView(reply)
+                    TimelineItemView(bubble)
+                }
+                ComposerBox(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 1 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "115_composer_clears_on_send.png").path, RoborazziOptions())
+    }
+
+    /**
+     * The send did not get through: the bubble says why and offers Retry and Edit — the message is never back in the
+     * composer unasked, and never lost — while a new draft, its own chips, is being written below.
+     */
+    @Test
+    fun outgoingFailedRetryEdit() {
+        val (bubble, reply) = outgoingScene()
+        compose.setContent {
+            Scene {
+                CompositionLocalProvider(
+                    LocalTranscriptControls provides TranscriptControls(
+                        outgoing = mapOf(bubble.id to OutgoingStatus.Failed("Couldn't upload network-trace.har: Storage is unavailable right now.")),
+                        onRetryOutgoing = {},
+                        onEditOutgoing = {},
+                    ),
+                ) {
+                    TimelineItemView(reply)
+                    TimelineItemView(bubble)
+                }
+                ComposerBox(
+                    value = "Meanwhile, compare the before and after",
+                    onValueChange = {},
+                    placeholder = "Follow up…",
+                    onSend = {},
+                    canSend = true,
+                    plusMenu = ComposerMenuActions(onPickMedia = {}, onPickFiles = {}),
+                    files = listOf(spec),
+                    onRemoveFile = {},
+                    fileUploads = mapOf("f1" to FileUploadState.DONE),
+                    modelLabel = "Claude Fable 5.1",
+                    onModel = {},
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().size == 1 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("scene").captureRoboImage(File(outDir, "116_outgoing_failed_retry_edit.png").path, RoborazziOptions())
+    }
+
+    /** A pending prompt with a picture and a file, and the reply before it, as the transcript holds them ahead of the server. */
+    private fun outgoingScene(): Pair<UserMessage, AssistantMessage> {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dir = File(context.filesDir, "attachments/bc-demo/local-9").apply { mkdirs() }
+        val still = File(dir, "img-0.png").apply { writeBytes(swatch(720, 1600, AndroidColor.rgb(52, 120, 246))) }
+        val har = File(dir, "f0-network-trace.har").apply { writeBytes(ByteArray(48 * 1024)) }
+        val bubble = UserMessage(
+            "local-9",
+            "Stitch the image into the green screen in the recording and send the trace along.",
+            timestampMillis = 1_736_949_700_000,
+            attachments = listOf(MessageAttachment(still.path, 720, 1600), MessageAttachment.file(har.path, "network-trace.har", "application/json", har.length())),
+            isPending = true,
+        )
+        val reply = AssistantMessage("a0", "Reading the spec first; the HAR shows the `/checkout/confirm` call returning 500 after the coupon step.")
+        return bubble to reply
     }
 
     @Test

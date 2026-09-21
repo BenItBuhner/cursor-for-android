@@ -61,8 +61,8 @@ class DockedCardsTest {
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
                 Column(Modifier.fillMaxWidth().padding(CursorDimens.composerGutter), horizontalAlignment = Alignment.CenterHorizontally) {
-                    LoadErrorRow("Couldn't refresh the transcript: Cursor took too long to respond.", onRetry = {}, onShareDiagnostics = {}, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
-                    RecordFallbackRow(RecordFallback("Rate limited by Cursor", sinceMillis = t0, readMillis = 640L, retryAfterMillis = null), onRetry = {}, onShareDiagnostics = {}, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                    LoadErrorRow("Couldn't refresh the transcript: Cursor took too long to respond.", onRetry = {}, onShareDiagnostics = {}, onDismiss = {}, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                    RecordFallbackRow(RecordFallback("Rate limited by Cursor", sinceMillis = t0, readMillis = 640L, retryAfterMillis = null), onRetry = {}, onShareDiagnostics = {}, onDismiss = {}, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
                     GoalStrip(goal = Goal("Ship the light theme", GoalStatus.ACTIVE, accruingSinceMillis = t0), clock = { t0 + 1_000L }, modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp))
                     QueuedFollowUps(
                         queue = listOf(QueuedFollowUp("q-1", "Then add a test for the light theme", queuedAtMillis = 1_000L)),

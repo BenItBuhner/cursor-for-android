@@ -33,6 +33,15 @@ data class TranscriptControls(
      * where the text would come from. Null where the rows are rendered without a chat behind them.
      */
     val onReloadTranscript: (() -> Unit)? = null,
+    /**
+     * Where each message sent from this chat's composer and not yet filed by the server stands, by its bubble's id
+     * (see [OutgoingStatus]): the bubble draws its files still going up, or a failure with the reason and its two
+     * ways on — [onRetryOutgoing] sends it again, [onEditOutgoing] hands the draft back to the composer. Empty where
+     * the rows are rendered without a composer behind them.
+     */
+    val outgoing: Map<String, OutgoingStatus> = emptyMap(),
+    val onRetryOutgoing: ((id: String) -> Unit)? = null,
+    val onEditOutgoing: ((id: String) -> Unit)? = null,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

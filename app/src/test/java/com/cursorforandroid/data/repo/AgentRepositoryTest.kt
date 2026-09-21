@@ -561,6 +561,59 @@ class AgentRepositoryTest {
     }
 
     /**
+     * An agent runs one turn at a time, so a run begun before the one this device saw end had ended before it began:
+     * a record that still calls the older run active — the run page a chat's load read before the Stop, landing after
+     * it — is over by that alone, whatever it says. Placed on the server's clock, from the records the list has read;
+     * a run the list never read the record of cannot be placed, and only its own end is remembered.
+     */
+    @Test
+    fun `a run begun before the one the list saw end is over too, whatever a record read before says`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        val repo = repository()
+        repo.refresh()
+        val older = api.runs.getValue("run-1")
+        // The turn moved on: run-2 began, and the list read its record — a settle of the row by the queue, a detail.
+        api.runs["run-2"] = older.copy(id = "run-2", createdAt = "2026-04-13T19:30:00.000Z", updatedAt = "2026-04-13T19:30:00.000Z")
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-2", updatedAt = "2026-04-13T19:30:00.000Z")
+        assertThat(repo.loadDetail("bc-1").getOrThrow().latestRunId).isEqualTo("run-2")
+        // Nothing has ended yet: run-1's record from before stands for what it says.
+        assertThat(repo.endedBefore("bc-1", older)).isFalse()
+
+        // Run-2 is stopped here. Run-1 began an hour before it, so it is over too; run-2 itself, and a run begun after it, are not "before".
+        assertThat(repo.cancelRun("bc-1", "run-2").isSuccess).isTrue()
+        assertThat(repo.endedStatus("bc-1", "run-2")).isEqualTo(RunStatus.CANCELLED)
+        assertThat(repo.endedStatus("bc-1", "run-1")).isNull()
+        assertThat(repo.endedBefore("bc-1", older)).isTrue()
+        assertThat(repo.endedBefore("bc-1", api.runs.getValue("run-2"))).isFalse()
+        assertThat(repo.endedBefore("bc-1", older.copy(id = "run-3", createdAt = "2026-04-13T20:30:00.000Z", updatedAt = "2026-04-13T20:30:00.000Z"))).isFalse()
+        // A record whose start cannot be read is not placed.
+        assertThat(repo.endedBefore("bc-1", older.copy(createdAt = ""))).isFalse()
+
+        // A detail read before the Stop lands after it, naming run-1 as the agent's latest and running: the row keeps
+        // its own word — the run it saw end, ended — and takes from the record only what is not about that.
+        api.agents["bc-1"] = api.agents.getValue("bc-1").copy(latestRunId = "run-1", updatedAt = older.updatedAt, name = "Renamed meanwhile")
+        api.runs["run-1"] = older
+        val settled = repo.loadDetail("bc-1").getOrThrow()
+        assertThat(settled.name).isEqualTo("Renamed meanwhile")
+        assertThat(settled.latestRunId).isEqualTo("run-2")
+        assertThat(settled.runStatus).isEqualTo(RunStatus.CANCELLED)
+        assertThat(settled.isRunning).isFalse()
+        assertThat(settled.updatedAtMillis).isEqualTo(parseIsoMillis("2026-04-13T19:30:00.000Z"))
+
+        // Run-1's own end, told late — its replay finishing, followed for its trace — is not the agent's last end:
+        // the memory keeps run-2's, whose stale records are the ones still on their way.
+        repo.noteRunEnded("bc-1", "run-1", RunStatus.FINISHED)
+        assertThat(repo.endedStatus("bc-1", "run-2")).isEqualTo(RunStatus.CANCELLED)
+        assertThat(repo.endedStatus("bc-1", "run-1")).isNull()
+        assertThat(repo.endedBefore("bc-1", older)).isTrue()
+
+        // A run the list never read the record of ends without a place in time: only its own end is remembered.
+        repo.noteRunEnded("bc-1", "run-9", RunStatus.FINISHED)
+        assertThat(repo.endedStatus("bc-1", "run-9")).isEqualTo(RunStatus.FINISHED)
+        assertThat(repo.endedBefore("bc-1", older)).isFalse()
+    }
+
+    /**
      * The fetch's own publications, its bookkeeping and its write to the disk are all guarded, but by two different
      * things: the repository's generation guards what is in memory, and the cache's generation guards the file — a
      * write samples the list and the cache's generation under the publish lock and writes outside it, so a reset
