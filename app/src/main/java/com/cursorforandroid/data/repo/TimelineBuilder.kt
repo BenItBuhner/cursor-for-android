@@ -65,18 +65,34 @@ object TimelineBuilder {
          * An ordinary chat's turn with its reply shown says enough; the count line above the transcript has the rest.
          */
         expiredRowWithReplies: Boolean = false,
+    ): List<TimelineItem> = fromTurns(TurnPairing.positional(messages, runs.sortedBy { parseIsoMillis(it.createdAt) }, firstRunAt), traces, attachments, pending, partial, expired, expiredRowWithReplies)
+
+    /**
+     * The transcript as a run of turns (see [TurnPairing.Turn]), oldest first: each prompt as the user message that
+     * started its run, the run's items — its trace when there is one, else the transcript's replies and its footer
+     * — under it; a run no prompt started on its own, its result standing for its reply when it has no trace; a
+     * prompt whose run is not in hand with its replies and nothing else. Every prompt handed in is drawn, in the
+     * order handed in. The other parameters as for [fromHistory].
+     */
+    fun fromTurns(
+        turns: List<TurnPairing.Turn>,
+        traces: Map<String, List<TimelineItem>> = emptyMap(),
+        attachments: Map<String, List<MessageAttachment>> = emptyMap(),
+        pending: Set<String> = emptySet(),
+        partial: Set<String> = emptySet(),
+        expired: Set<String> = emptySet(),
+        expiredRowWithReplies: Boolean = false,
+        /** Runs whose rows the caller appends itself (the run being followed): their turn contributes its prompt and nothing else. */
+        omit: Set<String> = emptySet(),
     ): List<TimelineItem> {
-        val ordered = runs.sortedBy { parseIsoMillis(it.createdAt) }
-        /** The run of the [index]th prompt, when it is in hand. */
-        fun runAt(index: Int): RunDto? = ordered.getOrNull(index - firstRunAt)
         val items = mutableListOf<TimelineItem>()
 
         /** The named row for a turn whose activity is gone from the server and from every other source (see [expired]). */
         fun expiredNotice(run: RunDto) = NoticeCard("expired-${run.id}", EXPIRED_TITLE, EXPIRED_DETAIL, NoticeTone.Neutral)
 
         /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
-        fun closeRun(run: RunDto?, replies: List<TimelineItem>) {
-            val trace = run?.let { traces[it.id] }
+        fun closeRun(run: RunDto, replies: List<TimelineItem>) {
+            val trace = traces[run.id]
             if (trace != null) {
                 items += if (run.id in partial) withReplies(trace, replies) else trace
                 // A whole trace ends on its own footer. The story a stream told before it broke does not: the run
@@ -85,39 +101,34 @@ object TimelineBuilder {
                 return
             }
             items += replies
-            if (run != null && run.id in expired && (replies.isEmpty() || expiredRowWithReplies)) items += expiredNotice(run)
+            if (run.id in expired && (replies.isEmpty() || expiredRowWithReplies)) items += expiredNotice(run)
             // Anything but a running turn is over as far as this build can tell, including a status it cannot read:
             // a footer says so, where none would leave the turn looking unfinished forever.
-            if (run != null && !run.statusEnum().isActive) items += footer(run)
+            if (!run.statusEnum().isActive) items += footer(run)
         }
 
         fun resultReply(run: RunDto) = listOfNotNull(run.result?.takeIf { it.isNotBlank() }?.let { AssistantMessage("res-${run.id}", it) })
 
-        if (messages.isEmpty()) {
-            ordered.forEach { run -> closeRun(run, resultReply(run)) }
-            return items.withUniqueIds()
-        }
-        var userIndex = -1
-        var replies = mutableListOf<TimelineItem>()
-        messages.forEach { msg ->
-            when (msg.type) {
-                "user_message" -> {
-                    if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
-                    replies = mutableListOf()
-                    userIndex++
-                    val run = runAt(userIndex)
-                    val startedAt = run?.let { parseIsoMillis(it.createdAt) }
-                    // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
-                    // but is shown as the notification it is rather than as something the user said.
-                    items += SystemNotifications.parse(msg.id, msg.text, startedAt)?.items
-                        ?: listOf(UserMessage(msg.id, msg.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
-                }
-                else -> replies += AssistantMessage(msg.id, msg.text)
+        for (turn in turns) {
+            val run = turn.run
+            val prompt = turn.prompt
+            if (prompt != null) {
+                val startedAt = run?.let { parseIsoMillis(it.createdAt) }
+                // A turn Cursor injected (a goal continuing, a subagent's report) starts a run like any prompt,
+                // but is shown as the notification it is rather than as something the user said.
+                items += SystemNotifications.parse(prompt.id, prompt.text, startedAt)?.items
+                    ?: listOf(UserMessage(prompt.id, prompt.text, startedAt, attachments = run?.let { attachments[it.id] } ?: emptyList(), isPending = run != null && run.id in pending))
+            }
+            val replies = turn.replies.map { AssistantMessage(it.id, it.text) }
+            when {
+                run != null && run.id in omit -> {}
+                // A prompt whose run is not in hand — not fetched, or not started yet — says what was said back, and no more.
+                run == null -> items += replies
+                // A run no prompt started: its result stands for its reply when it has no trace to show.
+                prompt == null -> closeRun(run, replies.ifEmpty { resultReply(run) })
+                else -> closeRun(run, replies)
             }
         }
-        if (userIndex >= 0) closeRun(runAt(userIndex), replies) else items += replies
-        // Runs without a matching transcript message (e.g. transcript truncated) still surface their result.
-        ordered.drop((userIndex + 1 - firstRunAt).coerceAtLeast(0)).forEach { run -> closeRun(run, resultReply(run)) }
         return items.withUniqueIds()
     }
 

@@ -55,6 +55,8 @@ data class TranscriptLoadDiagnostics(
     val record: RecordLine? = null,
     /** The chat's status as shown, and the words it was reconciled from (see `ConversationRepository.Entry.chatStatus`). */
     val status: StatusLine? = null,
+    /** How the transcript's prompts were paired with the runs on the documented path (see `TurnPairing`); null on the record path. */
+    val pairing: PairingLine? = null,
     /**
      * The record's newest turns as this session read them, step by step — keys and value types, the parser branch
      * that took each step, how each call's arguments came together — and never a value (see [TurnShape]). What says
@@ -68,6 +70,16 @@ data class TranscriptLoadDiagnostics(
      * [rowNewerThanRecordMs] how much newer the row's activity is than the record (negative: older). [failure] is
      * why the chat reads as failed when it does — or why its newest run does — see [FailureLine].
      */
+    /**
+     * The documented path's pairing of prompts with runs: how many prompts there are and how many runs, how many
+     * turns each kind of evidence settled — the time an injected turn carries, this device's own echoes, the turn
+     * under way, a run's result, position — how many runs no prompt started ([promptless]) and how many prompts
+     * have no run in hand ([runless]).
+     */
+    data class PairingLine(val prompts: Int, val runs: Int, val timestamp: Int, val echo: Int, val live: Int, val result: Int, val position: Int, val promptless: Int, val runless: Int) {
+        val text: String get() = "pairing: prompts=$prompts runs=$runs timestamp=$timestamp echo=$echo live=$live result=$result position=$position promptless=$promptless runless=$runless"
+    }
+
     data class StatusLine(
         val shown: String,
         val latestRun: String,
@@ -236,6 +248,7 @@ object TranscriptDiagnostics {
                 " runs=${load.runsLoaded} complete=${load.runsComplete} olderCursor=${load.hasOlderCursor} order=${load.runOrder?.name ?: "-"} latestById=${load.latestFetchedById}" +
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
+        load.pairing?.let { appendLine(it.text) }
         load.record?.let { r ->
             appendLine("record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
         }

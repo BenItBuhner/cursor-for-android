@@ -356,12 +356,18 @@ class ConversationRepository(
         private val promptImages = entry.promptImages
         private val window = entry.window
         private val runsComplete = entry.runsComplete
+        // What the turns' rows are drawn from besides: a log found expired, the oldest log the server still had, the chat's kind.
+        private val expiredRuns = entry.expiredRuns.toSet()
+        private val expiredBefore = entry.expiredBefore
+        private val projectMode = entry.projectMode
+        private val isProject = entry.state.value.isProjectConversation
         val ids: Set<String> = items.mapTo(HashSet(items.size)) { it.id }
 
         fun matches(entry: Entry, runId: String): Boolean = liveRunId == runId &&
             messages === entry.messages && runs === entry.runs && local === entry.local &&
             traces === entry.traces && partial === entry.partial && promptImages === entry.promptImages &&
-            window == entry.window && runsComplete == entry.runsComplete
+            window == entry.window && runsComplete == entry.runsComplete &&
+            expiredRuns.size == entry.expiredRuns.size && expiredRuns == entry.expiredRuns && expiredBefore == entry.expiredBefore && projectMode == entry.projectMode && isProject == entry.state.value.isProjectConversation
     }
 
     /**
@@ -398,24 +404,21 @@ class ConversationRepository(
     private class RenderedTurn(val inputs: TurnInputs, val items: List<TimelineItem>)
 
     /**
-     * How the transcript's messages line up with the runs shown. `/v0/agents/{id}/conversation` pairs its user
-     * messages with the runs by position, oldest first; the window renders the newest runs, so the messages shown
-     * start at the prompt of the first of them.
+     * The turns shown on the documented path: the newest [ConversationRepository.Entry.window] of the chat's turns
+     * as [TurnPairing] settles them — every prompt of `/v0/agents/{id}/conversation` in the transcript's own order,
+     * each with the run the evidence says it started, the runs no prompt started on their own between them.
      */
     private class Layout(
-        /** The transcript's messages shown: from the prompt of the oldest run in the window on. */
-        val messages: List<V0ConversationMessageDto>,
-        /** The runs those messages pair with by position, oldest first. */
-        val paired: List<RunDto>,
-        /** The runs shown after them — runs the transcript has no prompt for — each with the prompt sent from here when there is one. */
-        val standing: List<RunDto>,
-        /** Runs (and their prompts) older than the window: what [ConversationRepository.loadOlder] would bring. */
+        /** The turns shown, oldest first (see [TurnPairing.Turn]); a run the transcript has no prompt for carries the prompt sent from here when there is one. */
+        val turns: List<TurnPairing.Turn>,
+        /** Turns older than the window: what [ConversationRepository.loadOlder] would bring. */
         val olderCount: Int,
-        /** How many turns the chat has, runs in hand or not (see `Entry.chatTotal`). */
+        /** How many turns the chat has, runs in hand or not. */
         val total: Int,
-        /** How many of the window's prompts come before the first run in hand: they render without a run. */
-        val runOffset: Int = 0,
-    )
+    ) {
+        /** The runs shown, oldest first. */
+        val runs: List<RunDto> = turns.mapNotNull { it.run }
+    }
 
     /**
      * Everything shown for one agent is derived from a few inputs, so a trace that lands, a follow-up that is sent
@@ -744,18 +747,19 @@ class ConversationRepository(
         val isIdle: Boolean get() = attached == 0 && streamJob == null && traceJob?.isActive != true && loadJob?.isActive != true && runPagingJob?.isActive != true && !launching
 
         /**
-         * The server's view joined with the prompts sent from here. `/v0/agents/{id}/conversation` pairs its user
-         * messages with the runs by position, oldest first, and the two endpoints catch up with a new run
-         * independently: right after a launch the run list has the run while the transcript is still empty, and a
-         * follow-up's prompt can be in the transcript before the run list has its run. So the transcript is laid
-         * over as many runs as it has prompts for — the runs of prompts sent from here included, so a prompt the
-         * transcript already lists pairs with the run only the local copy has — and every run past that is rendered
-         * on its own, with the prompt sent from here when there is one, headed by the run alone when there is none
-         * (an agent without a transcript, a run started elsewhere the transcript has not caught up with). Whichever
-         * endpoint reports a prompt sent from here first, it shows once and never goes missing.
+         * The server's view joined with the prompts sent from here. `/v0/agents/{id}/conversation` carries the
+         * prompts and replies with no run ids, and the run list the runs with no prompts; which run each prompt
+         * started is settled by evidence — this device's own prompts, a run's result, the turn under way — and by
+         * position only in the gaps that leaves (see [TurnPairing]). Every prompt of the transcript is drawn, in the
+         * transcript's order, whatever the pairing says: one whose run cannot be told renders with its replies and no
+         * activity; a run no prompt started renders on its own between the turns. The two endpoints catch up with a
+         * new run independently — right after a launch the run list has the run while the transcript is still empty,
+         * and a follow-up's prompt can be in the transcript before the run list has its run — so a run whose prompt
+         * the transcript lacks carries the prompt sent from here, and whichever endpoint reports a prompt first, it
+         * shows once and never goes missing.
          *
-         * Only the newest [window] runs are rendered, with the messages from the first of them on (see [layout]);
-         * everything older waits for the reader to scroll up to it.
+         * Only the newest [window] turns are rendered (see [layout]); everything older waits for the reader to scroll
+         * up to it.
          *
          * Each segment has unique ids on its own; the join is made unique too, because a follow-up can briefly exist
          * on both sides (the server listed its run while the request was still in flight), and a repeated id aborts
@@ -768,12 +772,15 @@ class ConversationRepository(
             // A followed run is always the newest one there is, so it sorts last and everything the transcript
             // renders before it is untouched by an event. That part is built once and kept until an input actually
             // changes; a streamed event only re-appends the run's own items.
-            val tail = current?.takeIf { layout.standing.lastOrNull()?.id == it.runId && it.runId !in traces }
+            val last = layout.turns.lastOrNull()?.run
+            val tail = current?.takeIf { last?.id == it.runId && it.runId !in traces }
                 ?: return build(shownTraces(), layout)
             val prefix = builtPrefix?.takeIf { it.matches(this, tail.runId) } ?: buildPrefix(tail.runId, layout)
             val steered = local.firstOrNull { it.run.id == tail.runId && it.steeredAfter != null }
-            val story = if (steered == null) tail.items else tail.items.toMutableList().also { spliceSteered(it, layout.standing.last(), steered, mapOf(tail.runId to tail.items)) }
-            return prefix.items + story.withUniqueIds(prefix.ids)
+            val story = if (steered == null) tail.items else tail.items.toMutableList().also { spliceSteered(it, last!!, steered, mapOf(tail.runId to tail.items)) }
+            // The run's footer, as [TimelineBuilder.fromTurns] would close it: a run over by its record whose story has none yet.
+            val closed = if (!last!!.statusEnum().isActive && story.none { it is RunFooter && it.runId == last.id }) story + TimelineBuilder.footer(last) else story
+            return prefix.items + closed.withUniqueIds(prefix.ids)
         }
 
         /**
@@ -1046,122 +1053,65 @@ class ConversationRepository(
         }
 
         /**
-         * Where the window sits over the chat. The chat has as many runs as the list holds once it is complete;
-         * until then as many as the transcript has prompts for (every prompt starts a run), the runs not fetched yet
-         * being its oldest. Run `r`, counted oldest first over the whole chat, pairs with the `r`th prompt; the runs
-         * past the prompts stand on their own. The window is the newest [window] runs, and the messages shown start
-         * at the prompt of its first run.
+         * Where the window sits over the chat: the newest [window] of its turns, as [pairing] settles them. Every
+         * prompt of the transcript is a turn, in the transcript's order, with the run the evidence gives it; a run
+         * no prompt started is a turn of its own; a prompt sent from here that the transcript has not caught up
+         * with stands in for its run's prompt, and one the server has not answered for trails as pending.
          */
         fun layout(): Layout {
-            val ordered = allRuns()
-            val prompts = shownMessages().count { it.type == USER_MESSAGE }
-            val total = chatTotal(ordered, prompts)
-            // The runs in hand are the chat's newest; the ones before them are not fetched yet (or not at all).
-            val base = total - ordered.size
-            // The window is the newest [window] turns of the chat, runs in hand or not: a chat whose runs are still
-            // being fetched shows its newest prompts with what there is, never the whole transcript.
-            val firstShown = (total - window).coerceAtLeast(0)
-            val shown = ordered.drop((firstShown - base).coerceAtLeast(0))
-            val pairedCount = (prompts - maxOf(firstShown, base)).coerceIn(0, shown.size)
-            return Layout(
-                messages = messagesFromPrompt(firstShown),
-                paired = shown.take(pairedCount),
-                standing = shown.drop(pairedCount),
-                olderCount = firstShown,
-                total = total,
-                runOffset = (base - firstShown).coerceAtLeast(0),
-            )
+            val turns = pairing().turns
+            val firstShown = (turns.size - window).coerceAtLeast(0)
+            return Layout(turns = if (firstShown == 0) turns else turns.subList(firstShown, turns.size), olderCount = firstShown, total = turns.size)
         }
+
+        private var pairingFrom: Triple<List<V0ConversationMessageDto>, List<LocalPrompt>, List<RunDto>>? = null
+        private var pairingComplete = false
+        private var pairingCache: TurnPairing.Pairing? = null
 
         /**
-         * How many runs the chat has, counting the ones the list has not fetched. Exact once the list is complete.
-         * Until then every prompt started a run, plus the prompts sent from here that the transcript has not caught
-         * up with — told from the transcript's newest prompts, since a prompt sent from here is always the chat's
-         * newest — and never fewer than the runs in hand.
+         * The transcript's prompts paired with the chat's runs by evidence (see [TurnPairing]): this device's own
+         * prompts name their runs; a run's result names its reply; the rest by position. Computed once per set of
+         * inputs. A run the transcript has no prompt for takes the prompt sent from here that started it, when there
+         * is one, as its own — the same words the transcript will carry once it catches up.
          */
-        private fun chatTotal(ordered: List<RunDto>, prompts: Int, transcript: List<V0ConversationMessageDto> = shownMessages()): Int {
-            if (runsComplete) return ordered.size
-            val listed = runs.mapTo(HashSet()) { it.id }
-            val unlisted = local.filter { it.run.id !in listed }
-            var missing = 0
-            if (unlisted.isNotEmpty()) {
-                // The transcript's newest prompt: the newest of the prompts sent from here that it has caught up with.
-                val newest = transcript.lastOrNull { it.type == USER_MESSAGE }?.text?.trim()
-                for (prompt in unlisted.asReversed()) {
-                    if (newest != null && newest == prompt.message.text.trim()) break
-                    missing++
-                }
-            }
-            return maxOf(prompts + missing, ordered.size)
-        }
-
-        /** The transcript from its [index]th user message on (0 is the whole of it; past the last prompt, nothing). */
-        private fun messagesFromPrompt(index: Int): List<V0ConversationMessageDto> {
-            val shown = shownMessages()
-            if (index <= 0) return shown
-            var seen = 0
-            val start = shown.indexOfFirst { it.type == USER_MESSAGE && seen++ == index }
-            return if (start < 0) emptyList() else shown.subList(start, shown.size)
-        }
-
-        private var shownMessagesFrom: Triple<List<V0ConversationMessageDto>, List<LocalPrompt>, List<RunDto>>? = null
-        private var shownMessagesCache: List<V0ConversationMessageDto> = emptyList()
-
-        /**
-         * The transcript as laid over the runs: [messages] less the turns that are a prompt sent from here said
-         * again where the transcript's position puts it, when the prompt already stands under the run this device
-         * knows it started — or was steered into. The transcript pairs its prompts with the runs by position, and
-         * a chat with runs the transcript has no prompt for (a turn resumed after a usage limit) puts every later
-         * prompt under a run too early: Bennett's 2026-09-20 export paired 298 prompts with 324 runs, his own
-         * messages drawn under turns from an hour before while their echoes stood under the right runs. The echo
-         * knows its run; the transcript's newest copy of the same words is that echo said again, and is left out
-         * with the replies under it (the run's own trace shows them). The same words sent twice hide one copy each.
-         */
-        fun shownMessages(): List<V0ConversationMessageDto> {
-            shownMessagesFrom?.let { if (it.first === messages && it.second === local && it.third === runs) return shownMessagesCache }
-            val shown = hideEchoedTurns()
-            shownMessagesFrom = Triple(messages, local, runs)
-            shownMessagesCache = shown
-            return shown
-        }
-
-        private fun hideEchoedTurns(): List<V0ConversationMessageDto> {
-            if (local.none { it.filed } || messages.none { it.type == USER_MESSAGE }) return messages
-            val ordered = allRuns()
-            val listed = runs.mapTo(HashSet()) { it.id }
-            var hidden: Set<Int> = emptySet()
-            // Hiding a turn lowers the count of prompts, which lowers how many runs they cover, which can leave one
-            // more echo standing: a few passes reach the fixed point (there are only ever a handful of echoes).
-            repeat(local.size + 1) {
-                val reduced = if (hidden.isEmpty()) messages else messages.filterIndexed { i, _ -> i !in hidden }
-                val prompts = reduced.count { it.type == USER_MESSAGE }
-                val covered = coveredCount(ordered, prompts, reduced)
-                val standing = local.filter { it.filed && it.run.id in listed && (it.steeredAfter != null || ordered.indexOfFirst { r -> r.id == it.run.id } >= covered) }
-                val next = HashSet<Int>()
-                for (echo in standing) {
-                    val wanted = normalizePrompt(echo.message.text)
+        fun pairing(): TurnPairing.Pairing {
+            pairingFrom?.let { if (it.first === messages && it.second === local && it.third === runs && pairingComplete == runsComplete) return pairingCache!! }
+            // A prompt steered into a run under way has no turn of its own: the transcript's copy of its words — the
+            // newest — is drawn among that run's rows, where the account delivered it (see [spliceSteered]), and is
+            // no turn here.
+            val steers = local.filter { it.steeredAfter != null }
+            val messages = if (steers.isEmpty()) messages else {
+                val taken = HashSet<Int>()
+                for (steer in steers) {
+                    val wanted = TurnPairing.normalize(steer.message.text)
                     if (wanted.isEmpty()) continue
-                    // The newest copy of the words not already taken by another echo, with the replies that follow it.
-                    val at = messages.indices.reversed().firstOrNull { i -> i !in next && messages[i].type == USER_MESSAGE && normalizePrompt(messages[i].text) == wanted } ?: continue
-                    var j = at
-                    do { next += j; j++ } while (j < messages.size && messages[j].type != USER_MESSAGE)
+                    messages.indices.reversed().firstOrNull { i -> i !in taken && messages[i].type == USER_MESSAGE && TurnPairing.normalize(messages[i].text) == wanted }?.let { taken += it }
                 }
-                if (next == hidden) return@repeat
-                hidden = next
+                if (taken.isEmpty()) messages else messages.filterIndexed { i, _ -> i !in taken }
             }
-            if (hidden.isEmpty()) return messages
-            return messages.filterIndexed { i, _ -> i !in hidden }
+            val echoes = local.asSequence().filter { it.steeredAfter == null }.associate { it.run.id to TurnPairing.normalize(it.message.text) }
+            // An echo whose run is still under way, or that the list has not caught up with, keeps its run whatever
+            // the transcript's newest prompt is: the two endpoints report a new turn in their own time.
+            val listed = runs.mapTo(HashSet()) { it.id }
+            val reserved = local.asSequence().filter { it.steeredAfter == null && (it.run.id !in listed || it.run.statusEnum().isActive) }.mapTo(HashSet()) { it.run.id }
+            val paired = TurnPairing.pair(messages, allRuns(), echoes, runsComplete, reserved)
+            val standIns = local.filter { it.steeredAfter == null }.associateBy { it.run.id }
+            val result = if (standIns.isEmpty()) paired else TurnPairing.Pairing(
+                paired.turns.map { turn ->
+                    val run = turn.run
+                    val echo = if (turn.prompt == null && run != null) standIns[run.id] else null
+                    if (echo == null) turn else turn.copy(prompt = echo.message, replies = listOfNotNull(echo.reply), evidence = TurnPairing.Evidence.ECHO)
+                },
+                paired.promptCount,
+            )
+            pairingFrom = Triple(messages, local, runs)
+            pairingComplete = runsComplete
+            pairingCache = result
+            return result
         }
 
-        /** How many of the chat's runs, oldest first, [prompts] of [transcript] cover (see [coveredCount]). */
-        private fun coveredCount(ordered: List<RunDto>, prompts: Int, transcript: List<V0ConversationMessageDto>): Int {
-            if (runsComplete) return prompts
-            val unfetched = chatTotal(ordered, prompts, transcript) - ordered.size
-            return (prompts - unfetched).coerceIn(0, ordered.size)
-        }
-
-        /** The timeline with [shown] standing in for the runs that have a trace. */
-        private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout, steersOf: (RunDto) -> Boolean = { true }): List<TimelineItem> {
+        /** The timeline with [shown] standing in for the runs that have a trace; [omit]'s runs contribute their prompt only (see [buildPrefix]). */
+        private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout, steersOf: (RunDto) -> Boolean = { true }, omit: Set<String> = emptySet()): List<TimelineItem> {
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
             val stories = keptStories().keys
@@ -1169,15 +1119,10 @@ class ConversationRepository(
             // every such turn of a coordinator's (its message to the reader was activity), under a turn shown bare otherwise.
             val gone = expiredTurns()
             val coordinator = gone.isNotEmpty() && (projectMode || state.value.isProjectConversation || shown.values.any { CoordinatorTranscript.hasCoordinatorContent(it) })
-            val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset, partial = stories, expired = gone, expiredRowWithReplies = coordinator).toMutableList()
-            // A prompt steered into a run the transcript pairs with its own prompt: after the story the run had told by then.
-            layout.paired.forEach { run -> if (steersOf(run)) local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
-            layout.standing.forEach { run ->
-                // The prompt that started the run, sent from here, ahead of it; the ones steered into it among its rows.
-                val prompt = local.firstOrNull { it.run.id == run.id && it.steeredAfter == null }
-                val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending, partial = stories, expired = gone, expiredRowWithReplies = coordinator).toMutableList()
-                if (steersOf(run)) local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(turn, run, steered, shown) }
-                items += turn
+            val items = TimelineBuilder.fromTurns(layout.turns, shown, promptImages, pending, partial = stories, expired = gone, expiredRowWithReplies = coordinator, omit = omit).toMutableList()
+            // A prompt steered into a run under way: among the run's rows, after the story the run had told by then.
+            if (local.any { it.steeredAfter != null }) {
+                layout.runs.forEach { run -> if (steersOf(run)) local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
             }
             return items.withUniqueIds()
         }
@@ -1209,7 +1154,7 @@ class ConversationRepository(
         private fun buildPrefix(liveRunId: String, layout: Layout): Prefix {
             // The followed run's story is appended by [items], which splices the prompts steered into it among the
             // story's rows itself; the prefix holds the turn's head only, or a steer would be drawn twice.
-            val items = build(traces + keptStories() + (liveRunId to emptyList()), layout, steersOf = { it.id != liveRunId })
+            val items = build(traces + keptStories(), layout, steersOf = { it.id != liveRunId }, omit = setOf(liveRunId))
             return Prefix(this, liveRunId, items).also { builtPrefix = it }
         }
 
@@ -1248,20 +1193,8 @@ class ConversationRepository(
             return orderedRuns
         }
 
-        /**
-         * How many of the chat's runs, oldest first, the server's transcript has a prompt for: its prompts, less the
-         * runs older than what the list has fetched (whose prompts come first).
-         */
-        fun coveredCount(): Int {
-            val shown = shownMessages()
-            val prompts = shown.count { it.type == USER_MESSAGE }
-            if (runsComplete) return prompts
-            // The prompts of the runs not fetched yet come first; what is left pairs with the runs in hand, oldest first.
-            return coveredCount(allRuns(), prompts, shown)
-        }
-
-        /** True when this run's message is shown from a prompt sent from here rather than from the server's transcript. */
-        fun standsIn(runId: String): Boolean = local.any { it.run.id == runId } && allRuns().drop(coveredCount()).any { it.id == runId }
+        /** True when this run's message is shown from a prompt sent from here rather than from the server's transcript (see [pairing]). */
+        fun standsIn(runId: String): Boolean = local.any { it.run.id == runId && it.steeredAfter == null } && runId !in pairing().promptOf
 
         /** The newest run there is, counting prompts sent from here that the server's list has not caught up with (never a placeholder: there is nothing to stream for it yet). */
         fun latestRun(): RunDto? = (runs + local.filter { it.filed }.map { it.run }).maxByOrNull { parseIsoMillis(it.createdAt) }
@@ -1457,7 +1390,7 @@ class ConversationRepository(
                     TranscriptLoadDiagnostics.RunLine("turn@${turn.stepIndex}" + (run?.let { "/" + ProjectDiagnostics.tail(it.id) } ?: ""), run?.status ?: "-", trace, turn.items.size, message)
                 }
             } else {
-                (layout.paired + layout.standing).map { run ->
+                layout.runs.map { run ->
                     // What stands in for the run on screen: its whole trace, the story being streamed, or the story kept from a follow that ended.
                     val shown = e.traces[run.id] ?: e.live?.takeIf { it.runId == run.id }?.items ?: e.partial[run.id]
                     val via = when {
@@ -1486,6 +1419,14 @@ class ConversationRepository(
                 chatTurns = window?.turnCount ?: layout.total,
                 runs = runLines,
                 source = if (window != null) "record" else "runs",
+                pairing = if (window != null) null else e.pairing().let { p ->
+                    TranscriptLoadDiagnostics.PairingLine(
+                        prompts = p.promptCount, runs = e.allRuns().size,
+                        timestamp = p.count(TurnPairing.Evidence.TIMESTAMP), echo = p.count(TurnPairing.Evidence.ECHO), live = p.count(TurnPairing.Evidence.LIVE),
+                        result = p.count(TurnPairing.Evidence.RESULT), position = p.count(TurnPairing.Evidence.POSITION),
+                        promptless = p.promptless, runless = p.runless,
+                    )
+                },
                 record = if (window != null || e.recordEmpty || e.recordError != null) {
                     val fallback = e.state.value.recordFallback
                     TranscriptLoadDiagnostics.RecordLine(
@@ -1640,7 +1581,7 @@ class ConversationRepository(
                         recordWindow = RecordWindow(w.total, kept.first().stepIndex, kept, emptyList(), w.state, w.readAtMillis, w.newestTurn, w.turnIndexed)
                     }
                 }
-                val kept = layout().let { it.paired + it.standing }.mapTo(HashSet()) { it.id }
+                val kept = layout().runs.mapTo(HashSet()) { it.id }
                 traces = traces.filterKeys { it in kept }
                 if (partial.isNotEmpty()) partial = partial.filterKeys { it in kept }
             },
@@ -1935,7 +1876,7 @@ class ConversationRepository(
         var pending = 0
         var expired = 0
         var failed = 0
-        for (run in layout.paired + layout.standing) {
+        for (run in layout.runs) {
             if (!run.statusEnum().isTerminal) continue
             when {
                 run.id in traces -> shown++
@@ -2677,7 +2618,7 @@ class ConversationRepository(
     private fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
 
     /** The runs the window renders right now, newest last. */
-    private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { if (recordWindow != null) recordTurnsNeedingReplay() else layout().let { it.paired + it.standing } }
+    private fun Entry.shownRuns(): List<RunDto> = synchronized(this) { if (recordWindow != null) recordTurnsNeedingReplay() else layout().runs }
 
     /**
      * Folds the newest page of the run list into [Entry.runs], which hold the chat's newest runs and, behind them, as
@@ -2921,11 +2862,12 @@ class ConversationRepository(
             local = local - held
             return
         }
-        val ordered = allRuns()
-        val covered = coveredCount()
-        // A prompt steered into a run under way has no run of its own for the transcript to pair it with: its echo
-        // stays where the account delivered it, and the transcript's copy of it is left out (see [Entry.shownMessages]).
-        local = local.filter { prompt -> prompt.steeredAfter != null || prompt.run.id !in listed || ordered.indexOfFirst { it.id == prompt.run.id } >= covered }
+        // An echo whose run the server lists and whose prompt the transcript now carries, with the run's result to say
+        // which (see [TurnPairing]): reported in full, the echo goes. One the transcript pairs by the echo alone
+        // stays — it is the evidence — as does a prompt steered into a run under way, which has no run of its own,
+        // and one whose run is not listed yet.
+        val paired = pairing()
+        local = local.filter { prompt -> prompt.steeredAfter != null || prompt.run.id !in listed || paired.evidenceOf[prompt.run.id] != TurnPairing.Evidence.RESULT }
     }
 
     /** Shows the transcript and traces saved by an earlier visit, if any, while the network answers. */
@@ -3892,10 +3834,15 @@ class ConversationRepository(
                     if (attempt < ADOPT_ATTEMPTS) retry = true else if (!a.queuedOnAccount) { awaiting = awaiting - a; dropped += a.staged }
                     continue
                 }
-                val after = prompts.size - 1 - at
                 val behind = ordered.firstOrNull { it.id == a.behindRunId }
+                // The run the transcript's copy started, by the evidence (see [TurnPairing]) — a run that is not
+                // another echo's and that came after the turn the message waited behind; else, by position from the
+                // newest, the copies newer than it each taking a run.
+                val after = prompts.size - 1 - at
                 val newest = ordered.asReversed().filter { it.id !in taken && local.none { p -> p.run.id == it.id && p.steeredAfter == null } }
-                val run = newest.getOrNull(after)?.takeIf { behind == null || isNewer(it, behind) }
+                val free = newest.mapTo(HashSet()) { it.id }
+                val run = pairing().runOf[at]?.takeIf { r -> r.id in free && (behind == null || isNewer(r, behind)) }
+                    ?: newest.getOrNull(after)?.takeIf { behind == null || isNewer(it, behind) }
                     ?: newest.lastOrNull { behind == null || isNewer(it, behind) }
                 val prompt = if (run != null) {
                     taken += run.id
