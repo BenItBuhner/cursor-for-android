@@ -11,6 +11,7 @@ import com.cursorforandroid.data.api.dto.ListAgentsResponseDto
 import com.cursorforandroid.data.demo.DemoBackendFactory
 import com.cursorforandroid.data.demo.DemoData
 import com.cursorforandroid.data.local.CachedConversation
+import com.cursorforandroid.data.repo.AgentRepositoryTestHelper
 import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.domain.AgentIndicator
 import com.cursorforandroid.domain.AgentListOrganizer
@@ -232,14 +233,23 @@ class AgentsViewModelTest {
      * them, so "no fifth call within two seconds" was true only while the fifth call's thread had not reached the
      * server yet — and after three refusals the fifth attempt is eight intervals away, well inside two seconds. Under
      * load the thread got there first (three rounds in eight).
+     *
+     * The virtual clock is read from the fetch's thread, so nothing else may move it while a fetch is in flight —
+     * `runTest` runs any delayed task it finds the moment the body suspends. Hence no reader of [AgentsViewModel.uiState]
+     * here (a reader that leaves schedules the sharing's five-second stop, and while it stays the minute clock ticks),
+     * and the minute clock set never to tick: the poll's own delay is the only timer, scheduled once each fetch lands.
      */
     @Test
     fun `polling backs off while the list cannot be fetched and picks its cadence up once it can`() = runTest {
         mainDispatcher.set(StandardTestDispatcher(testScheduler))
         virtualNow = { testScheduler.currentTime }
-        val vm = AgentsViewModel(graph, pollIntervalMs = 100)
+        val vm = AgentsViewModel(graph, pollIntervalMs = 100, clockTickMs = Long.MAX_VALUE)
         advanceUntilIdle()
-        vm.loaded()
+        // The cold start's own fetch, landed — and run to the end of its job: a fetch lands before its tail (the rows
+        // fetched by id, the settle), and a poll that finds a fetch still in flight is skipped at the plain interval,
+        // which read as a first gap of 200 or 400 under load. Joining it here is what the cadence starts from.
+        awaitRefresh(0)
+        AgentRepositoryTestHelper.awaitFetchIdle(graph.agents)
         assertThat(listCalls).isEqualTo(1)
         val landed = graph.agents.refreshCompleted.value
         // The next three polls are refused; the one after them gets through.
