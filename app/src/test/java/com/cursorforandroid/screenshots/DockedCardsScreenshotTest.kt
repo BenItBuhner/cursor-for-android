@@ -167,7 +167,7 @@ class DockedCardsScreenshotTest {
     @Test
     fun recordFallbackCard() {
         compose.setContent {
-            Dock(notice = { RecordFallbackRow(fallback, onRetry = {}, onShareDiagnostics = {}, modifier = noticeModifier) }) {}
+            Dock(notice = { RecordFallbackRow(fallback, onRetry = {}, onShareDiagnostics = {}, onDismiss = {}, modifier = noticeModifier) }) {}
         }
         capture("105_dock_record_fallback_card")
     }
@@ -175,7 +175,7 @@ class DockedCardsScreenshotTest {
     @Test
     fun recordFallbackCardOverTheQueue() {
         compose.setContent {
-            Dock(notice = { RecordFallbackRow(fallback, onRetry = {}, onShareDiagnostics = {}, modifier = noticeModifier) }) { Queue(queued.take(2)) }
+            Dock(notice = { RecordFallbackRow(fallback, onRetry = {}, onShareDiagnostics = {}, onDismiss = {}, modifier = noticeModifier) }) { Queue(queued.take(2)) }
         }
         capture("106_dock_record_fallback_over_queue")
     }
@@ -183,7 +183,7 @@ class DockedCardsScreenshotTest {
     @Test
     fun loadErrorCard() {
         compose.setContent {
-            Dock(notice = { LoadErrorRow("Couldn't refresh the transcript: Cursor took too long to respond.", onRetry = {}, onShareDiagnostics = {}, modifier = noticeModifier) }) {}
+            Dock(notice = { LoadErrorRow("Couldn't refresh the transcript: Cursor took too long to respond.", onRetry = {}, onShareDiagnostics = {}, onDismiss = {}, modifier = noticeModifier) }) {}
         }
         capture("107_dock_load_error_card")
     }
