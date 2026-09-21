@@ -644,17 +644,31 @@ private fun NoticeView(item: NoticeCard, modifier: Modifier) {
         NoticeTone.Warning -> CursorIcons.Warning to colors.orange
         NoticeTone.Error -> CursorIcons.Warning to colors.red
     }
+    // A notice the reader may put away is informational, and says so quietly: tertiary words, and an X at its end
+    // that closes it and every notice like it in the chat (see NoticeCard.dismissKey).
+    val dismiss = item.dismissKey?.let { key -> LocalTranscriptControls.current.onDismissNotice?.let { on -> { on(key) } } }
+    val calm = item.dismissKey != null
     CursorCard(modifier.fillMaxWidth(), fill = colors.fillFaint, border = Color.Transparent) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = tint, modifier = Modifier.size(16.dp))
+        Row(Modifier.padding(start = 10.dp, end = if (dismiss != null) 4.dp else 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = if (calm) colors.iconQuaternary else tint, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(8.dp))
-            Column {
-                Text(item.title, style = CursorTheme.typography.base, color = colors.textSecondary)
+            Column(Modifier.weight(1f)) {
+                Text(item.title, style = CursorTheme.typography.base, color = if (calm) colors.textTertiary else colors.textSecondary)
                 item.subtitle?.let { Text(it, style = CursorTheme.typography.small, color = colors.textQuaternary, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+            }
+            if (dismiss != null) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier.size(28.dp).pressable(dismiss, CursorTheme.shapes.base).testTag("notice-dismiss-${item.dismissKey}").semantics { contentDescription = NOTICE_DISMISS },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(CursorIcons.Close, null, tint = colors.iconTertiary, modifier = Modifier.size(14.dp)) }
             }
         }
     }
 }
+
+/** What the X on a notice the reader may put away reads as. */
+internal const val NOTICE_DISMISS = "Hide these notices"
 
 @Composable
 internal fun RunFooterView(item: RunFooter, modifier: Modifier = Modifier, interrupted: Boolean = false) {

@@ -27,6 +27,7 @@ import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.SessionManager
 import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.util.AppClock
@@ -71,6 +72,11 @@ class FaultRig(
      * its Connect routes) is the transcript's source, as on Bennett's phone; off, the documented endpoints alone.
      */
     extended: Boolean = false,
+    /**
+     * The transcript engine in Extended mode (see `TranscriptEngine`): Beta reads the record, as every test written
+     * before the setting existed expects; Stable is the app's default, the documented endpoints alone.
+     */
+    engine: TranscriptEngine = TranscriptEngine.BETA,
     /** How often the account's queue is read while a chat is attached (production: 10 s): the card's staleness. */
     queuePollMs: Long = 10_000L,
 ) : AutoCloseable {
@@ -119,13 +125,14 @@ class FaultRig(
     private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
     val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens) else null
-    val capabilities: Capabilities = Capabilities.of(extended)
+    /** What the private surfaces may do; a test that switches the engine mid-run sets this, and the next load reads it (as the app's `ExtendedMode` would). */
+    @Volatile var capabilities: Capabilities = Capabilities.of(extended, engine)
     val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities })
     /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
     val steeringApi = SteeringApi(accountRpc, sessionTokens)
     val steering = SteeringRepository(
         session, agents,
-        interactions = steeringApi, queueApi = steeringApi, runs = steeringApi, goals = null,
+        interactions = steeringApi, queueApi = steeringApi, runs = steeringApi, goals = steeringApi,
         afterAction = { agentId -> conversations.revalidate(agentId) },
         onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
         placement = { agentId -> conversations.queuePlacement(agentId) },

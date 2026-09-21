@@ -59,6 +59,7 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
 import com.cursorforandroid.domain.EnvType
@@ -186,6 +187,7 @@ fun ConversationScreen(
             outgoing = outgoing,
             onRetryOutgoing = viewModel::retryOutgoing,
             onEditOutgoing = viewModel::editOutgoing,
+            onDismissNotice = viewModel::dismissInlineNotice,
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -243,7 +245,11 @@ fun ConversationScreen(
     // writes. Both come presented, a turn at a time, off the main thread (see [TranscriptPresenter]).
     val items = presentedTranscript.items
     val isActive = conversation.runStatus?.isActive == true || conversation.isStreaming
-    val rows = presentedTranscript.rows
+    // The notices among the rows the reader has put away for this chat (see NoticeCard.dismissKey, NoticeDismissals) are left out.
+    val rows = remember(presentedTranscript, hiddenNotices) {
+        val closed = NoticeDismissals.inlineKeys(hiddenNotices)
+        if (closed.isEmpty()) presentedTranscript.rows else presentedTranscript.rows.filterNot { row -> row is TranscriptRow.Item && (row.item as? NoticeCard)?.dismissKey in closed }
+    }
     // A live stretch says "Working" itself; the caption below the list is for a run with nothing on screen yet, and
     // for a connection being re-established, which only it can say.
     val showWorking = conversation.showsWorkingRow() && (conversation.isReconnecting || (rows.lastOrNull() as? TranscriptRow.Stretch)?.live != true)

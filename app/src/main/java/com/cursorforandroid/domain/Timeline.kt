@@ -434,6 +434,13 @@ data class NoticeCard(
     val title: String,
     val subtitle: String? = null,
     val tone: NoticeTone = NoticeTone.Neutral,
+    /**
+     * Set on a notice the reader may put away — an informational one that says the same thing under every turn it
+     * stands under (a turn's activity expired on the server): closing one closes every notice with the same key in
+     * the chat, and the closing is kept on the device for the chat (see `NoticeDismissals`). Null for a notice that
+     * stays.
+     */
+    val dismissKey: String? = null,
 ) : TimelineItem {
     /**
      * The bare notice builds before 0.3.26 wrote for every cancelled run, still in the traces they left on disk. A

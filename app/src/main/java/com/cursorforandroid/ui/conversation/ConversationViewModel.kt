@@ -261,6 +261,9 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     /** The reader's X on a notice's card: hidden for this chat until its words change or its condition clears and recurs. */
     fun dismissNotice(notice: LoadNotice) = dismissals.dismiss(notice)
 
+    /** The reader closed a notice among the rows (`NoticeCard.dismissKey`): every such notice in this chat goes, and stays gone. */
+    fun dismissInlineNotice(key: String) = dismissals.dismissInline(key)
+
     /** Which private surfaces the screen may offer: the answer chips, the account's queue, steering, Ask and Debug. */
     val capabilities: StateFlow<Capabilities> = graph.extendedMode.capabilities
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), Capabilities.DOCUMENTED)

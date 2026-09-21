@@ -27,6 +27,8 @@ object TimelineBuilder {
     /** What the row says for a turn whose log the server has let go (about a day after the run) with no record to read it from. */
     const val EXPIRED_TITLE = "Activity for this turn expired on the server"
     const val EXPIRED_DETAIL = "Cursor keeps a run's log for about a day; the reply is the transcript's."
+    /** The expired rows' dismiss key (see `NoticeCard.dismissKey`): closing one puts every expired row in the chat away. */
+    const val EXPIRED_DISMISS_KEY = "expired-activity"
 
     /**
      * Interleaves the legacy transcript with v1 runs. Each `user_message` begins a run, so a run footer
@@ -88,7 +90,7 @@ object TimelineBuilder {
         val items = mutableListOf<TimelineItem>()
 
         /** The named row for a turn whose activity is gone from the server and from every other source (see [expired]). */
-        fun expiredNotice(run: RunDto) = NoticeCard("expired-${run.id}", EXPIRED_TITLE, EXPIRED_DETAIL, NoticeTone.Neutral)
+        fun expiredNotice(run: RunDto) = NoticeCard("expired-${run.id}", EXPIRED_TITLE, EXPIRED_DETAIL, NoticeTone.Neutral, dismissKey = EXPIRED_DISMISS_KEY)
 
         /** Everything a run produced after its prompt: the trace when there is one, else the text replies + footer. */
         fun closeRun(run: RunDto, replies: List<TimelineItem>) {

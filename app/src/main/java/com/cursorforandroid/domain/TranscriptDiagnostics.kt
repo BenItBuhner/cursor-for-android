@@ -171,6 +171,8 @@ object TranscriptDiagnostics {
         val appVersion: String,
         val nowIso: String,
         val extendedMode: Boolean,
+        /** The transcript engine chosen in Settings (see [TranscriptEngine]); what `engine=` in the export says. */
+        val engine: TranscriptEngine = TranscriptEngine.DEFAULT,
         /** The chat diagnosed, or null when no chat has been opened this session. */
         val agentId: String?,
         /** The list's row for the chat, when the list holds one. */
@@ -200,7 +202,7 @@ object TranscriptDiagnostics {
 
     fun render(input: Input): String = buildString {
         appendLine("Cursor for Android ${input.appVersion} · transcript diagnostics · ${input.nowIso}")
-        appendLine("mode=${if (input.extendedMode) "extended" else "default"}")
+        appendLine("mode=${if (input.extendedMode) "extended" else "default"} engine=${input.engine.key}")
         val id = input.agentId
         if (id == null) {
             appendLine("chat: none opened this session")

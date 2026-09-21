@@ -25,11 +25,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
+import com.cursorforandroid.domain.TranscriptEngine
+import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.pressable
@@ -70,6 +73,14 @@ object ExtendedModeCopy {
 
     /** The dialog's text as one string, for the tests that pin the wording. */
     val DIALOG_TEXT: String get() = listOf(DIALOG_INTRO, DIALOG_POINTS.joinToString("\n") { "• $it" }, DIALOG_CLOSING).joinToString("\n\n")
+
+    // The transcript engine (see TranscriptEngine): shown under the switch while the mode is on, since it only matters then.
+    const val ENGINE_TITLE = "Transcript engine"
+    const val ENGINE_STABLE = "Stable"
+    const val ENGINE_STABLE_DETAIL = "Reads only Cursor's documented API for transcripts. Never shows the \"Account transcript unavailable\" notice."
+    const val ENGINE_BETA = "Beta"
+    const val ENGINE_BETA_DETAIL = "Adds the account record read over Cursor's private path (can break when Cursor changes it) and other in-progress transcript features."
+    const val ENGINE_FOOTNOTE = "Takes effect the next time a chat is opened."
 }
 
 /** Test tags, for the tests that drive the toggle and its dialog. */
@@ -79,13 +90,16 @@ object ExtendedModeTags {
     const val DIALOG_CHECKBOX = "extended_mode_dialog_checkbox"
     const val DIALOG_CONFIRM = "extended_mode_dialog_confirm"
     const val NOTICE = "extended_mode_notice"
+    const val ENGINE_STABLE = "transcript_engine_stable"
+    const val ENGINE_BETA = "transcript_engine_beta"
 }
 
 /**
- * The Extended mode section: one toggle, and nothing under it. Turning the mode on for the first time opens the
- * acknowledgment dialog, which is the only way the setting can come on; once acknowledged it flips like any other
- * switch, and turning it off is immediate. Everything the mode adds follows the switch — the pins sync with the
- * account exactly while it is on — so there is no option here that could do nothing.
+ * The Extended mode section: the toggle, and under it — only while the mode is on, since it matters only then — the
+ * transcript engine ([TranscriptEngineRows]). Turning the mode on for the first time opens the acknowledgment
+ * dialog, which is the only way the setting can come on; once acknowledged it flips like any other switch, and
+ * turning it off is immediate. Everything the mode adds follows the switch — the pins sync with the account exactly
+ * while it is on — so there is no option here that could do nothing.
  *
  * [enabled] is the screen's reading of the mode, collected once by the screen and shared with everything on it that
  * shows the mode (the debug sheet's API row), so the two can never disagree for a frame.
@@ -119,6 +133,10 @@ fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
         Spacer(Modifier.width(12.dp))
         CursorToggle(checked = enabled, onCheckedChange = ::setEnabled, modifier = Modifier.semantics { testTag = ExtendedModeTags.TOGGLE })
     }
+    if (enabled) {
+        HairlineDivider(Modifier.padding(horizontal = 14.dp))
+        TranscriptEngineRows(graph)
+    }
 
     if (dialogOpen) {
         ExtendedModeAcknowledgmentDialog(
@@ -131,6 +149,47 @@ fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
             },
         )
     }
+}
+
+/**
+ * The transcript engine (see [TranscriptEngine]): Stable or Beta, one chosen, in plain words about what each reads
+ * and risks. Written the moment it is tapped; the footnote says when it takes effect. Under the Extended mode switch
+ * because the record it governs is a private surface: with the mode off there is nothing for it to choose.
+ */
+@Composable
+fun TranscriptEngineRows(graph: AppGraph) {
+    val colors = CursorTheme.colors
+    val type = CursorTheme.typography
+    val scope = rememberCoroutineScope()
+    val engine by graph.extendedMode.engine.collectAsStateWithLifecycle(initialValue = TranscriptEngine.DEFAULT, context = Dispatchers.Main.immediate)
+    Text(
+        ExtendedModeCopy.ENGINE_TITLE,
+        style = type.rowMedium, color = colors.textTertiary,
+        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 2.dp),
+    )
+    TranscriptEngine.entries.forEach { choice ->
+        val (title, detail, tag) = when (choice) {
+            TranscriptEngine.STABLE -> Triple(ExtendedModeCopy.ENGINE_STABLE, ExtendedModeCopy.ENGINE_STABLE_DETAIL, ExtendedModeTags.ENGINE_STABLE)
+            TranscriptEngine.BETA -> Triple(ExtendedModeCopy.ENGINE_BETA, ExtendedModeCopy.ENGINE_BETA_DETAIL, ExtendedModeTags.ENGINE_BETA)
+        }
+        val chosen = engine == choice
+        Row(
+            Modifier.fillMaxWidth()
+                .pressable({ scope.launch { graph.extendedMode.setEngine(choice) } }, CursorTheme.shapes.lg)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .semantics { testTag = tag; selected = chosen },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = type.base, color = colors.textPrimary)
+                Text(detail, style = type.small, color = colors.textTertiary)
+            }
+            Spacer(Modifier.width(12.dp))
+            if (chosen) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+            else Spacer(Modifier.size(16.dp))
+        }
+    }
+    Text(ExtendedModeCopy.ENGINE_FOOTNOTE, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 12.dp))
 }
 
 /**
