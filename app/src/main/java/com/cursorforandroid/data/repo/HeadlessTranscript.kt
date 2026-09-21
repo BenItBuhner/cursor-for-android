@@ -39,7 +39,16 @@ object HeadlessTranscript {
      * [projectMode] says the prompt was sent in Project mode (`agent_mode = AGENT_MODE_PROJECT`): the chat is a coordinator's.
      * [promptShape] is the prompt step's shape, kept for the diagnostics (see [shape]).
      */
-    class Turn(val prompt: String?, val steps: List<HeadlessStep>, val projectMode: Boolean = false, val promptShape: StepShape? = null)
+    class Turn(
+        val prompt: String?,
+        val steps: List<HeadlessStep>,
+        val projectMode: Boolean = false,
+        val promptShape: StepShape? = null,
+        /** The turn's whole-chat index when the record was read by turns (see [HeadlessStep.turnIndex]); null for the step-indexed record. */
+        val turnIndex: Int? = null,
+        /** The prompt was delivered into the turn under way rather than starting one (see [HeadlessStep.steer]). */
+        val steer: Boolean = false,
+    )
 
     /**
      * The last [count] turns of the record, oldest first, read from its end a page at a time until [count] whole turns
@@ -48,6 +57,8 @@ object HeadlessTranscript {
      */
     suspend fun tailTurns(api: ConversationRecordApi, agentId: String, count: Int, pageSize: Int = PAGE_SIZE): List<Turn>? {
         if (count <= 0) return emptyList()
+        // The blob-backed record: the newest [count] turns by their blobs (see RecordPager.tailTurns).
+        if (api.readsTurns) return RecordPager.tailTurns(api, agentId, count)?.let { split(it.steps) }
         TranscriptPerf.session(agentId).network("record")
         val probe = api.fetch(agentId, startIndex = 0, limit = 1)
         val total = probe.totalResponses
@@ -75,22 +86,30 @@ object HeadlessTranscript {
         var prompt: String? = null
         var promptShape: StepShape? = null
         var projectMode = false
+        var steer = false
+        var turnIndex: Int? = null
         var current = ArrayList<HeadlessStep>()
         var started = false
         for (step in steps) {
-            if (step.userMessage != null) {
-                if (started) turns += Turn(prompt, current, projectMode, promptShape)
+            // A new turn at a prompt — and, for a record read by turns, at a step of the next turn whatever it is: a
+            // turn whose prompt could not be read is still a turn of its own, not the previous turn's tail.
+            val newTurn = step.userMessage != null || (step.turnIndex != null && turnIndex != null && step.turnIndex != turnIndex)
+            if (newTurn) {
+                if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
                 prompt = step.userMessage
-                promptShape = step.shape
+                promptShape = step.shape?.takeIf { step.userMessage != null }
                 projectMode = step.projectMode
+                steer = step.steer
+                turnIndex = step.turnIndex
                 current = ArrayList()
                 started = true
-                continue
+                if (step.userMessage != null) continue
             }
+            if (turnIndex == null) turnIndex = step.turnIndex
             current += step
             started = true
         }
-        if (started) turns += Turn(prompt, current, projectMode, promptShape)
+        if (started) turns += Turn(prompt, current, projectMode, promptShape, turnIndex, steer)
         return turns
     }
 

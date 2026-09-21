@@ -624,7 +624,9 @@ class ConversationRepositoryTest {
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Shipped.", durationMs = 30_000)
         streamer.emit("run-1", RunStreamEvent.Done)
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The footer and the end of streaming are published a beat apart; the wait covers both, so the assertions below
+        // read one settled state rather than the instant between the two.
+        awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.

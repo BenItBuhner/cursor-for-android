@@ -86,6 +86,14 @@ class AttachmentStore(context: Context) {
         moved
     }
 
+    /**
+     * The attachments [commit]ted under [runId] as a staged set again, in place — for a message the transcript filed
+     * under a run that turned out not to carry it, which goes back to waiting with its images (see
+     * `ConversationRepository.noteAccountQueue`); the next [commit] moves them under the run the account does start.
+     */
+    fun committed(agentId: String, runId: String, attachments: List<MessageAttachment>): StagedAttachments =
+        if (attachments.isEmpty()) StagedAttachments.EMPTY else StagedAttachments(runDir(agentId, runId), attachments)
+
     suspend fun discard(staged: StagedAttachments) = withContext(Dispatchers.IO) {
         staged.dir?.deleteRecursively()
         Unit

@@ -394,7 +394,7 @@ class FollowUpRepositoryTest {
         val followUps = FollowUpRepository(
             conversations, agents, hub,
             mcpServers = { emptyList() },
-            accountQueue = { _, item -> handed += item.previewText; null },
+            accountQueue = { _, item -> handed += item.previewText; FollowUpRepository.AccountHandoff(null, "fu-test") },
             accountQueueAvailable = { true },
             scope = scope,
             draftSaveDelayMs = 10,

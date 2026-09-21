@@ -11,9 +11,12 @@ import com.cursorforandroid.data.auth.SessionUnavailableException
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ConversationControls
 import com.cursorforandroid.domain.InteractionResolution
+import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueueLoad
+import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.SteerOutcome
 import com.cursorforandroid.domain.ToolPayload
+import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +26,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -52,6 +57,17 @@ class SteeringRepository(
     private val goals: GoalStateApi? = null,
     /** Runs after an action the transcript should reflect (an answer, a hold): the conversation's revalidation. */
     private val afterAction: suspend (String) -> Unit = {},
+    /**
+     * Hands every read of the account's queue to the transcript (`ConversationRepository.noteAccountQueue`), with when
+     * the read began: the transcript files the messages the account has delivered and confirms the ones it has let go.
+     */
+    private val onQueueRead: suspend (agentId: String, pending: List<PendingFollowup>, readAtMillis: Long) -> Unit = { _, _, _ -> },
+    /**
+     * Where the transcript says each queued message stands (`ConversationRepository.queuePlacement`): a message it has
+     * just filed under a run is the moment the account's queue is read again, whatever the poll's clock says (see
+     * [QueuePlacement]). Null leaves the poll to its interval.
+     */
+    private val placement: ((agentId: String) -> StateFlow<QueuePlacement>)? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val pollIntervalMs: Long = POLL_INTERVAL_MS,
     /** Whether the account's calls may be made (Extended mode). Everything, for tests of the calls themselves. */
@@ -83,6 +99,14 @@ class SteeringRepository(
         if (count > 1) return
         pollers[agentId]?.cancel()
         pollers[agentId] = scope.launch {
+            // A message the transcript files under its run has left the card in that very frame; the account's queue
+            // is read again at once, so the card's word and the account's agree without waiting on the poll.
+            placement?.let { placed ->
+                launch {
+                    placed(agentId).map { it.deliveredIds + it.deliveredTexts }.distinctUntilChanged().drop(1)
+                        .collect { delivered -> if (delivered.isNotEmpty()) refreshQueue(agentId) }
+                }
+            }
             var polls = 0
             while (isActive) {
                 refreshQueue(agentId)
@@ -140,9 +164,12 @@ class SteeringRepository(
             return
         }
         f.update { it.copy(queueLoad = QueueLoad.Loading) }
+        // When the read began, by the app's clock: the transcript reads the answer against what happened meanwhile.
+        val readAt = AppClock.now()
         try {
             val pending = api.listPending(agentId)
             f.update { it.copy(queue = pending, queueLoad = QueueLoad.Loaded) }
+            onQueueRead(agentId, pending, readAt)
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -154,9 +181,14 @@ class SteeringRepository(
      * Files [followup] with the account. Behind a turn under way it joins the account's queue; on a free agent the
      * account starts its run and names it, which is returned. [now] sends it in place of the turn under way instead.
      */
-    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false): Result<String?> =
+    /**
+     * Files [followup]; the queue is read again after, unless the caller asks to [refresh] it itself — the composer's
+     * send does, once the transcript has taken the message's bubble down, so the card and the bubble never show the
+     * message at the same instant (see `OutgoingMessages`, `QueuePlacement`).
+     */
+    suspend fun sendFollowup(agentId: String, followup: AccountFollowup, now: Boolean = false, refresh: Boolean = true): Result<String?> =
         action(agentId, "send", needs = { it.accountQueue || it.agentModes }, api = { queueApi }) { api ->
-            api.addFollowup(agentId, followup, synchronous = now).also { refreshQueue(agentId) }
+            api.addFollowup(agentId, followup, synchronous = now).also { if (refresh) refreshQueue(agentId) }
         }
 
     suspend fun updatePending(agentId: String, followupId: String, text: String): Result<Unit> =

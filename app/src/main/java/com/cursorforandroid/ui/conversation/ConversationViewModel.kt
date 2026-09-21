@@ -30,7 +30,6 @@ import com.cursorforandroid.domain.ModelResolution
 import com.cursorforandroid.domain.ModelVariant
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
-import com.cursorforandroid.domain.QueueLoad
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.domain.attachmentOnlyText
 import com.cursorforandroid.domain.SlashCatalog
@@ -307,11 +306,6 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         viewModelScope.launch {
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
-        }
-        viewModelScope.launch {
-            // Every read of the account's queue tells the transcript which of the messages queued from here the
-            // account still holds — the rest it has delivered, and they are filed where they landed.
-            controls.collect { c -> if (c.queueLoad == QueueLoad.Loaded) graph.conversations.noteAccountQueue(agentId, c.queue.map { it.text }) }
         }
         viewModelScope.launch {
             // A file whose upload has completed takes its reference onto the draft, so the copy on disk sends what is

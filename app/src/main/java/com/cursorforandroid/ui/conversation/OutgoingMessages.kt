@@ -97,9 +97,12 @@ class OutgoingMessages(
          * The account's follow-up (`AddAsyncFollowupBackgroundComposer`): what carries files, a mode, or a message
          * for a busy agent's queue. [rpc] is given the files as uploaded and returns the run the account started —
          * null when it queued the message behind a turn, in which case the bubble comes down and the queue's card
-         * shows it (see [ConversationRepository.sendStagedVia]).
+         * shows it (see [ConversationRepository.sendStagedVia]). [followupId] is the account's id for the message,
+         * minted here and kept across retries (the account files nothing twice under it); the card's row and the
+         * transcript's copy are known by it. [afterAccepted] runs once the account has the message and the transcript
+         * has settled — where the queue is read again, so the card never shows the message while its bubble is up.
          */
-        class Account(val rpc: suspend (uploaded: List<UploadedFile>) -> String?) : Route
+        class Account(val followupId: String, val rpc: suspend (uploaded: List<UploadedFile>) -> String?, val afterAccepted: suspend () -> Unit = {}) : Route
 
         /** The documented run request (`POST /v1/agents/{id}/followup`), with the MCP servers enabled when it goes out. */
         class Documented(val mcpServers: suspend () -> List<McpServer>) : Route
@@ -209,12 +212,13 @@ class OutgoingMessages(
                     message.draft.override?.model?.id,
                     message.draft.override?.params.orEmpty(),
                     message.draft.override?.label,
+                    followupId = route.followupId,
                     discardOnFailure = false,
                 ) {
                     val uploaded = awaitUploads(message)
                     setStatus(id, OutgoingStatus.Sending)
                     route.rpc(uploaded)
-                }
+                }.onSuccess { route.afterAccepted() }
                 is Route.Documented -> conversations.sendStaged(
                     agentId,
                     message.staged,
@@ -316,16 +320,28 @@ class OutgoingSends(
         perChat.values.forEach { it.reset() }
     }
 
-    /** The account's follow-up for [draft]: `AddAsyncFollowupBackgroundComposer` with its images inline and its files by their uploads. */
-    fun accountRoute(agentId: String, draft: OutgoingMessages.Draft): OutgoingMessages.Route.Account = OutgoingMessages.Route.Account { uploaded ->
-        val followup = AccountFollowup(
-            text = draft.text,
-            images = draft.images.map { it.image },
-            files = uploaded,
-            mode = draft.mode,
-            modelId = draft.override?.model?.id,
+    /**
+     * The account's follow-up for [draft]: `AddAsyncFollowupBackgroundComposer` with its images inline and its files
+     * by their uploads, under an id of this device's minting. The queue is read again only once the transcript has
+     * settled the message — its bubble filed under its run, or down for the card — never while the bubble is still up.
+     */
+    fun accountRoute(agentId: String, draft: OutgoingMessages.Draft): OutgoingMessages.Route.Account {
+        val followupId = AccountFollowup.newId()
+        return OutgoingMessages.Route.Account(
+            followupId = followupId,
+            rpc = { uploaded ->
+                val followup = AccountFollowup(
+                    text = draft.text,
+                    images = draft.images.map { it.image },
+                    files = uploaded,
+                    mode = draft.mode,
+                    modelId = draft.override?.model?.id,
+                    followupId = followupId,
+                )
+                steering.sendFollowup(agentId, followup, refresh = false).getOrThrow()
+            },
+            afterAccepted = { steering.refreshQueue(agentId) },
         )
-        steering.sendFollowup(agentId, followup).getOrThrow()
     }
 
     /** The documented run request, with the MCP servers enabled when it goes out. */

@@ -112,7 +112,7 @@ class TranscriptDiagnosticsTest {
             TranscriptDiagnostics.Input("0.3.15", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668", agent = null, state = TranscriptDiagnostics.State(items), load = load),
         )
         assertThat(report).contains("load: source=record attached=1 paused=false fetched=true fetchedAt=2026-09-14T03:59:58Z messages=319 prompts=160 runs=160 complete=true olderCursor=false order=OLDEST_FIRST latestById=true window=10 turns=[150,160)")
-        assertThat(report).contains("record: total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
+        assertThat(report).contains("record: read=steps total=8320 firstStep=8060 turnsLoaded=10 turnCount=320 state=read empty=false")
         assertThat(report).contains("status: shown=RUNNING latestRun=CANCELLED streaming=false rowRunning=false accountRunning=true rowNewerThanRecordMs=600000 failed: run=…run158 source=run-record+account-record current=false reason=\"Tool result not found for toolu_01CRGAspS8qhi8Wfr74zYnJA (agent bc-…)\"")
         assertThat(report).doesNotContain("bc-24e35e9f")
         assertThat(report).contains("traces: shown=3 of 5 queue=0 inFlight=1 worker=true expiredRuns=7 expiredBefore=2026-09-07T10:00:00Z failed=1")
@@ -188,7 +188,8 @@ class TranscriptDiagnosticsTest {
         val report = TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input("0.3.34", "2026-09-17T10:00:00Z", extendedMode = true, agentId = "bc-send", agent = null, state = TranscriptDiagnostics.State(emptyList()), send = send),
         )
-        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle accountAgeMs=-2000")
+        // The account's word carries its instant and whether the gate let it speak, so a fresher `status:` line is read against it.
+        assertThat(report).contains("send: decision=send by=account at=2026-09-17T10:00:05Z row=idle chat=FINISHED streaming=false reconnecting=false account=idle@1970-01-01T00:16:42Z accountAgeMs=-2000 accountUsed=true")
         // The launch that started the chat from here: which request, what it named as the place to run, what came of it.
         assertThat(report).contains("  launch: at=2026-09-17T09:59:00Z via=account target=no-repo(personal environment) files=1 images=1 outcome=refused by the account http=400 code=invalid_argument \"At least one model details is required\"")
         assertThat(report).contains("  queue: 1 […q-1 chars=42 busyRefusals=3 heldFor=83s]")

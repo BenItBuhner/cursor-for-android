@@ -2,12 +2,14 @@ package com.cursorforandroid.data.faults
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.ConnectJsonClient
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.CursorApi
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.SseRunStreamer
+import com.cursorforandroid.data.api.SteeringApi
 import com.cursorforandroid.data.auth.SessionTokenProvider
 import com.cursorforandroid.data.local.AgentListCache
 import com.cursorforandroid.data.local.AttachmentStore
@@ -23,11 +25,13 @@ import com.cursorforandroid.data.repo.CursorBackend
 import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.LiveRunHub
 import com.cursorforandroid.data.repo.SessionManager
+import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -67,6 +71,8 @@ class FaultRig(
      * its Connect routes) is the transcript's source, as on Bennett's phone; off, the documented endpoints alone.
      */
     extended: Boolean = false,
+    /** How often the account's queue is read while a chat is attached (production: 10 s): the card's staleness. */
+    queuePollMs: Long = 10_000L,
 ) : AutoCloseable {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     var now: Long = 1_800_000_000_000L
@@ -109,14 +115,34 @@ class FaultRig(
         .callTimeout(60, TimeUnit.SECONDS)
         .dns(object : Dns { override fun lookup(hostname: String) = Dns.SYSTEM.lookup(hostname).let { it + it } })
         .build()
+    private val accountRpc = ConnectJsonClient(accountClient, baseUrl)
+    private val sessionTokens = SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })
     /** The account service's record of a chat, over [accountClient] on the same host (Extended mode); null with the mode off. */
-    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(ConnectJsonClient(accountClient, baseUrl), SessionTokenProvider(accountClient, key, apiUrl = baseUrl, now = { now })) else null
+    val record: ConversationRecordApi? = if (extended) HeadlessConversationApi(accountRpc, sessionTokens) else null
     val capabilities: Capabilities = Capabilities.of(extended)
     val conversations = ConversationRepository(session, agents, prefs, hub, attachments, conversationCache, traces, isForeground = { true }, prefetchLimit = 0, scope = scope, record = record, capabilities = { capabilities })
+    /** The account's controls on a chat — its queue above all — over the same host, wired as the app wires them (see AppGraph). */
+    val steeringApi = SteeringApi(accountRpc, sessionTokens)
+    val steering = SteeringRepository(
+        session, agents,
+        interactions = steeringApi, queueApi = steeringApi, runs = steeringApi, goals = null,
+        afterAction = { agentId -> conversations.revalidate(agentId) },
+        onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+        placement = { agentId -> conversations.queuePlacement(agentId) },
+        scope = scope,
+        pollIntervalMs = queuePollMs,
+        capabilities = { capabilities },
+    )
     val followUpStore = FollowUpStore(context)
     val followUps = FollowUpRepository(
         conversations, agents, hub,
         mcpServers = { emptyList() },
+        // A message the server refuses as busy goes to the account's queue in Extended mode, as in the app (see AppGraph).
+        accountQueue = { agentId, item ->
+            val followup = AccountFollowup(text = item.previewText, images = item.images.map { it.image })
+            FollowUpRepository.AccountHandoff(steering.sendFollowup(agentId, followup).getOrThrow(), followup.followupId)
+        },
+        accountQueueAvailable = { extended },
         store = followUpStore,
         persist = { true },
         scope = scope,
@@ -170,7 +196,9 @@ class QueueRecording(flow: StateFlow<FollowUpComposerState>, scope: CoroutineSco
     enum class Card { QUEUED, SENDING, HELD, FAILED, CONFIRM, STEERED }
 
     private val frames = CopyOnWriteArrayList<Map<String, Card>>()
-    private val job: Job = scope.launch { flow.collect { state -> frames += state.queue.associate { it.id to it.card() } } }
+    // Subscribed before the caller's next line runs (undispatched): the first frame recorded is the queue as it stands,
+    // not as the dispatcher has moved it a few milliseconds later under a loaded test run.
+    private val job: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) { flow.collect { state -> frames += state.queue.associate { it.id to it.card() } } }
 
     private fun QueuedFollowUp.card(): Card = when {
         error != null -> Card.FAILED

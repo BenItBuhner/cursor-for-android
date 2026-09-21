@@ -321,6 +321,8 @@ private fun AccountQueueRow(
                     AttachedFileNames(item.files.map { it.name } + images)
                 }
                 if (item.isEditing) Text("Being edited on another device", style = type.small, color = colors.textQuaternary, maxLines = 1)
+                // A message put back on the card: the transcript had shown it under a run that ended without it (see QueuePlacement.returned).
+                item.note?.let { Text(it, style = type.small, color = colors.textQuaternary, maxLines = 2, modifier = Modifier.testTag("account-queue-note")) }
             }
             Spacer(Modifier.width(8.dp))
             if (inFlight) {
