@@ -21,7 +21,8 @@ import org.robolectric.annotation.Config
 
 /**
  * Closing the record's notice over a real chat on the app's own stack (Extended mode, the account service refusing
- * the record): the X hides it now and on the next open; it stays hidden while the refusal reads the same; it comes
+ * the record's first read — the conversation state that names the turns, after which nothing else of it is asked):
+ * the X hides it now and on the next open; it stays hidden while the refusal reads the same; it comes
  * back when the refusal changes its words, and when the record is served and then refused again; and the
  * diagnostics the menu shares carry the refusal whether or not the card is on screen.
  */
@@ -52,7 +53,7 @@ class NoticeDismissalsTest {
         server.transcripts[agentId] = LongProject.v0Transcript(turns)
         server.records[agentId] = turns.flatMap { it.record }
         server.outage(FaultServer.Route.Stream, FaultServer.Fault.StreamCut(events = newest.log.size), path = "/${newest.runId}/")
-        server.outage(FaultServer.Route.Record, rateLimited)
+        server.outage(FaultServer.Route.RecordState, rateLimited)
     }
 
     @After
@@ -104,7 +105,7 @@ class NoticeDismissalsTest {
         assertThat(rig.prefs.dismissedNotices.first()[agentId]).containsExactly(notice.identity)
 
         // The server's words change: a different notice, which shows — and the one that is gone is forgotten.
-        server.outage(FaultServer.Route.Record, FaultServer.Fault.Status(503, "unavailable", "Service unavailable"))
+        server.outage(FaultServer.Route.RecordState, FaultServer.Fault.Status(503, "unavailable", "Service unavailable"))
         rig.now += 60_000
         conversations.reload(agentId)
         rig.awaitSettled { it.recordFallback?.reason?.contains("Service unavailable") == true }
@@ -116,7 +117,7 @@ class NoticeDismissalsTest {
         rig.awaitUntil { rig.prefs.dismissedNotices.first()[agentId] == setOf(reworded.identity) }
 
         // The record is served: the condition has cleared, and the closing is forgotten with it.
-        server.clear(FaultServer.Route.Record)
+        server.clear(FaultServer.Route.RecordState)
         rig.now += 60_000
         conversations.reload(agentId)
         rig.awaitSettled { it.recordFallback == null }
@@ -125,7 +126,7 @@ class NoticeDismissalsTest {
 
         // Refused again, in the words closed before, with the record's window emptied by "Reload transcript": the
         // notice is new to the reader and shows.
-        server.outage(FaultServer.Route.Record, FaultServer.Fault.Status(503, "unavailable", "Service unavailable"))
+        server.outage(FaultServer.Route.RecordState, FaultServer.Fault.Status(503, "unavailable", "Service unavailable"))
         rig.now += 60_000
         conversations.reloadTranscript(agentId)
         rig.awaitSettled { it.recordFallback != null }
