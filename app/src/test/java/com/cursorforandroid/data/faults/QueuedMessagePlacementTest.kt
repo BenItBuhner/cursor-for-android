@@ -391,25 +391,49 @@ class QueuedMessagePlacementTest {
         assertThat(row.files.single().mimeType).isEqualTo("application/pdf")
         assertThat(row.imageCount).isEqualTo(1)
         assertThat(rig.steering.state(agentId).value.placed(queued.queuePlacement).queue.map { it.id }).containsExactly(followupId)
-        // Never a frame with the message in neither place, nor in both: the recorder saw the bubble, or the card, at every step.
+        // From the first frame the bubble stood on: never a frame with the message in neither place, nor in both — the
+        // recorder saw the bubble, or the card, at every step. (A frame recorded between the tap and the bubble's publish
+        // — a queue read's — has the message nowhere yet, rightly.)
         val sinceSent = frames.filter { it.atNanos >= sentAt }
-        sinceSent.forEachIndexed { i, frame ->
+        val firstShown = sinceSent.indexOfFirst { it.transcriptShows(MESSAGE) }
+        assertWithMessage("the recorder never saw the bubble").that(firstShown).isAtLeast(0)
+        sinceSent.drop(firstShown).forEachIndexed { i, frame ->
             val card = frame.cardShows(followupId, MESSAGE)
             val transcript = frame.transcriptShows(MESSAGE)
             assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
             assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
         }
-        // The turn ends; the account starts the next run on the message.
-        rig.awaitNextQueueRead()
+        // The turn ends; the account starts the next run on the message — and keeps listing the message for a while
+        // after, its list seconds behind its runs. A read landing then, the run known and the message still listed,
+        // must not take the message for one waiting behind its own run (it would be filed into that run as a steer,
+        // after the run's first rows, and drawn twice while the run is followed).
+        // The transcript is out of reach meanwhile (the filing reads it once the run is known; here that read hangs
+        // to the timeout), so the reads land with the run known and the message unfiled: the case a slow transcript
+        // makes of every delivery.
+        server.queueLagMs = 20_000L
+        server.outage(Route.Conversation, Fault.Silence())
         server.endTurn(agentId)
         val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1).last().log)!!
         server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+        rig.awaitUntilOr(30_000, "the new run to be known") { rig.conversations.loadDiagnostics(agentId)?.runsLoaded == TURNS + 1 }
+        rig.awaitNextQueueRead()
+        rig.awaitNextQueueRead()
+        assertWithMessage("the list should still name the message: its lag is the case").that(rig.steering.state(agentId).value.queue.map { it.id }).contains(followupId)
+        assertThat(state.items.none { it is UserMessage && it.text == MESSAGE }).isTrue()
+        // The transcript answers again, and the list lets the message go: it is filed where the transcript has it.
+        server.clear(Route.Conversation)
+        server.queueLagMs = 0L
         rig.awaitUntilOr(45_000, "line") { state.items.any { it is UserMessage && it.text == MESSAGE } }
         rig.awaitUntilOr(20_000, "line") { rig.steering.state(agentId).value.queue.none { it.id == followupId } }
         delay(1_500)
         assertOnePlace(followupId, MESSAGE, fromNanos = sentAt)
+        // Once, ahead of the run the account started on it — the prompt that started it, not a steer among its rows.
+        val s = state
+        assertThat(s.items.count { it is UserMessage && it.text == MESSAGE }).isEqualTo(1)
+        val at = s.items.indexOfFirst { it is UserMessage && it.text == MESSAGE }
+        assertThat(s.items.drop(at + 1).firstOrNull { it !is UserMessage }?.id?.startsWith("activity-${next.id}-")).isTrue()
         // Filed under the run the account started on it, its attachments with it — the copies moved under that run.
-        val filed = state.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
+        val filed = s.items.filterIsInstance<UserMessage>().single { it.text == MESSAGE }
         assertThat(filed.attachments.map { it.isFile }).containsExactly(false, true).inOrder()
         val pdf = filed.attachments.single { it.isFile }
         assertThat(pdf.name).isEqualTo("Q3-billing-spec.pdf")

@@ -1148,7 +1148,7 @@ class ConversationRepository(
         }
 
         /** The timeline with [shown] standing in for the runs that have a trace. */
-        private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout): List<TimelineItem> {
+        private fun build(shown: Map<String, List<TimelineItem>>, layout: Layout, steersOf: (RunDto) -> Boolean = { true }): List<TimelineItem> {
             // Prompts the server has not answered for yet read as pending; their placeholder run is the key.
             val pending = local.filterNot { it.filed }.mapTo(HashSet()) { it.run.id }
             val stories = keptStories().keys
@@ -1158,12 +1158,12 @@ class ConversationRepository(
             val coordinator = gone.isNotEmpty() && (projectMode || state.value.isProjectConversation || shown.values.any { CoordinatorTranscript.hasCoordinatorContent(it) })
             val items = TimelineBuilder.fromHistory(layout.messages, layout.paired, shown, promptImages, pending, firstRunAt = layout.runOffset, partial = stories, expired = gone, expiredRowWithReplies = coordinator).toMutableList()
             // A prompt steered into a run the transcript pairs with its own prompt: after the story the run had told by then.
-            layout.paired.forEach { run -> local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
+            layout.paired.forEach { run -> if (steersOf(run)) local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(items, run, steered, shown) } }
             layout.standing.forEach { run ->
                 // The prompt that started the run, sent from here, ahead of it; the ones steered into it among its rows.
                 val prompt = local.firstOrNull { it.run.id == run.id && it.steeredAfter == null }
                 val turn = TimelineBuilder.fromHistory(listOfNotNull(prompt?.message, prompt?.reply), listOf(run), shown, promptImages, pending, partial = stories, expired = gone, expiredRowWithReplies = coordinator).toMutableList()
-                local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(turn, run, steered, shown) }
+                if (steersOf(run)) local.filter { it.run.id == run.id && it.steeredAfter != null }.forEach { steered -> spliceSteered(turn, run, steered, shown) }
                 items += turn
             }
             return items.withUniqueIds()
@@ -1194,7 +1194,9 @@ class ConversationRepository(
 
         /** Everything but the followed run's own items: an empty trace makes the builder contribute nothing for it. */
         private fun buildPrefix(liveRunId: String, layout: Layout): Prefix {
-            val items = build(traces + keptStories() + (liveRunId to emptyList()), layout)
+            // The followed run's story is appended by [items], which splices the prompts steered into it among the
+            // story's rows itself; the prefix holds the turn's head only, or a steer would be drawn twice.
+            val items = build(traces + keptStories() + (liveRunId to emptyList()), layout, steersOf = { it.id != liveRunId })
             return Prefix(this, liveRunId, items).also { builtPrefix = it }
         }
 
@@ -3757,11 +3759,22 @@ class ConversationRepository(
         synchronized(e) {
             if (e.awaiting.isEmpty() && e.delivered.isEmpty() && e.returned.isEmpty()) return
             if (e.awaiting.isNotEmpty()) {
-                val behind = e.latestRun()?.id?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+                val ordered = allServerRuns(e)
                 e.awaiting = e.awaiting.map { a ->
                     val queued = listed(a.followupId, a.staged.text)
                     when {
-                        queued && a.queuedOnAccount -> if (a.behindRunId == behind) a else a.copy(behindRunId = behind)
+                        queued && a.queuedOnAccount -> {
+                            // The run it waits behind moves up with the runs the account has started since — on the
+                            // messages listed ahead of it, in order, one run each — and never onto its own: the account
+                            // keeps listing a message for a moment after starting its run (the read is seconds behind),
+                            // and a message taken for one waiting behind its own run would be filed into that run as a
+                            // steer, after the run's first rows, rather than ahead of it as the prompt that started it.
+                            val ahead = pending.indexOfFirst { p -> if (a.followupId != null) p.id == a.followupId else normalizePrompt(p.text) == normalizePrompt(a.staged.text) }.coerceAtLeast(0)
+                            val waited = ordered.firstOrNull { it.id == a.behindRunId }
+                            val since = ordered.filter { isNewer(it, waited) && it.id != a.behindRunId }
+                            val behind = since.take(ahead).lastOrNull()?.id ?: a.behindRunId
+                            if (a.behindRunId == behind) a else a.copy(behindRunId = behind)
+                        }
                         !queued && a.queuedOnAccount -> { adopt = true; changed = true; a.copy(queuedOnAccount = false) }
                         else -> a
                     }
