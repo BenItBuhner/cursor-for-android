@@ -135,6 +135,8 @@ class FaultRig(
         interactions = steeringApi, queueApi = steeringApi, runs = steeringApi, goals = steeringApi,
         afterAction = { agentId -> conversations.revalidate(agentId) },
         onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+        onQueuedDeleted = { agentId, followupId -> conversations.queuedDeleted(agentId, followupId) },
+        onQueuedEdited = { agentId, followupId, text -> conversations.queuedEdited(agentId, followupId, text) },
         placement = { agentId -> conversations.queuePlacement(agentId) },
         scope = scope,
         pollIntervalMs = queuePollMs,

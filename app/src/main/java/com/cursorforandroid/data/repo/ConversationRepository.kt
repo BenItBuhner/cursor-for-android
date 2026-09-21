@@ -188,6 +188,8 @@ class StagedFollowUp internal constructor(
 ) {
     /** The same message with its attachments where they are now (see `AttachmentStore.committed`). */
     internal fun withAttachments(attachments: StagedAttachments): StagedFollowUp = StagedFollowUp(localId, text, attachments, stagedAt, shown, message, placeholder)
+    /** The same message with its words changed (the reader edited it on the card while it waited). */
+    internal fun withText(text: String): StagedFollowUp = StagedFollowUp(localId, text, attachments, stagedAt, shown, message.copy(text = text), placeholder)
 }
 
 /**
@@ -308,8 +310,11 @@ class ConversationRepository(
         /** How many prompts with these words the `/v0` transcript held when the message was queued: a copy beyond them is this message's (see [adoptDelivered]). */
         val priorTranscriptCopies: Int = 0,
     ) {
-        fun copy(behindRunId: String? = this.behindRunId, queuedOnAccount: Boolean = this.queuedOnAccount, staged: StagedFollowUp = this.staged, queuedAt: Long = this.queuedAt) =
+        fun copy(behindRunId: String? = this.behindRunId, queuedOnAccount: Boolean = this.queuedOnAccount, staged: StagedFollowUp = this.staged, queuedAt: Long = this.queuedAt, priorTranscriptCopies: Int = this.priorTranscriptCopies) =
             Awaiting(staged, behindRunId, queuedAt, queuedOnAccount, followupId, priorCopies, priorTranscriptCopies)
+
+        /** The same message: the followup id when the send minted one, else the staged copy's own id (an [Awaiting] is replaced by [copy] as it waits). */
+        fun sameAs(other: Awaiting): Boolean = if (followupId != null) followupId == other.followupId else staged.localId == other.staged.localId
     }
 
     /**
@@ -530,14 +535,21 @@ class ConversationRepository(
         var awaiting: List<Awaiting> = emptyList()
         /** Messages filed from the account's queue the account has not yet confirmed gone from it (see [Delivered]). */
         var delivered: List<Delivered> = emptyList()
+        /** Set by [fileInFrame] when a copy it saw needs the run list read alongside the transcript to be filed (see [adoptDelivered]). */
+        var adoptWanted: Boolean = false
+        /** The adoption under way, so a run of frames asking for one starts one. */
+        var adoptJob: Job? = null
         /** Messages put back on the card after the run they were filed under ended without them, by followup id, with the card's word. */
         var returned: Map<String, String> = emptyMap()
 
         /**
          * Where the queued messages stand, for the frame [items] being published (see [ConversationState.queuePlacement]):
-         * the messages filed under their run ([delivered]), and the ones still waiting whose words the frame shows
-         * already — the server's copy, from the transcript or the record, a frame ahead of the filing — so the card
-         * never shows a message the transcript it is drawn beside shows, whichever source drew it first.
+         * the messages filed under their run ([delivered]) whose own filing the frame shows, and the ones still
+         * waiting, which are on the card until the frame that files them. Identity is the followup id and the
+         * message's own filing — the prompt the pairing attaches to its run, or its echo — never its words alone:
+         * the same words are other messages' too (an earlier prompt's, a resend's, another queued message's), and a
+         * frame that shows more of them says nothing about this one (Bennett, 0.3.58: queued messages gone from the
+         * card while still pending, once their words matched a prompt the frame drew).
          */
         fun queuePlacement(items: List<TimelineItem>): QueuePlacement {
             val bubbles = local.filter { !it.filed }
@@ -545,44 +557,118 @@ class ConversationRepository(
             val ids = HashSet<String>()
             val texts = HashSet<String>()
             val waiting = ArrayList<PendingFollowup>()
-            val shown = HashMap<String, Int>()
-            for (item in items) if (item is UserMessage) shown.merge(QueuePlacement.textKey(item.text), 1, Int::plus)
             // A message the composer shows as a bubble ahead of its request is off the card for as long as the bubble
             // stands: the account may list it — the send's reply still on its way back — before the bubble has come
             // down for the card to take it (see [sendStagedVia]). Its place is the bubble, whatever the list says.
             // Kept apart from the delivered sets: a bubble's coming is no reason to read the account's queue again.
             val shownIds = bubbles.mapNotNullTo(HashSet()) { it.followupId }
             val shownTexts = bubbles.mapTo(HashSet()) { QueuePlacement.textKey(it.message.text) }
-            // A message filed under its run: off the card while the frame shows it — which is every frame, bar a
-            // conversation rewound past it, when the account's list (which still names it) is the place it is.
-            for (d in delivered) {
-                val key = QueuePlacement.textKey(d.staged.text)
-                if ((shown[key] ?: 0) > d.priorCopies) { if (d.followupId != null) ids += d.followupId else texts += key }
-            }
-            if (awaiting.isNotEmpty()) {
-                for (a in awaiting) {
-                    val key = QueuePlacement.textKey(a.staged.text)
-                    if ((shown[key] ?: 0) > a.priorCopies) {
-                        // The frame shows it — the server's copy ahead of the filing: off the card from this frame on.
-                        if (a.followupId != null) ids += a.followupId else texts += key
-                    } else {
-                        // Not shown yet: on the card, from this device's own knowledge, until it is — with what it
-                        // carries, as the account's own row would say it: its files by name and type, its pictures by count.
-                        val carried = a.staged.attachments.attachments
-                        waiting += PendingFollowup(
-                            id = a.followupId ?: "local:${a.staged.localId}",
-                            text = a.staged.text,
-                            createdAtMillis = a.queuedAt,
-                            files = carried.filter { it.isFile }.map { PendingAttachment(it.name ?: "Document", it.mimeType.orEmpty()) },
-                            imageCount = carried.count { !it.isFile },
-                            note = if (a.queuedOnAccount) null else QueuePlacement.DELIVERING_NOTE,
-                        )
-                    }
+            if (delivered.isNotEmpty()) {
+                // A message filed under its run: off the card while the frame shows its own filing — the transcript's
+                // prompt its run was started by, or its echo standing in until the transcript carries it (a steer's
+                // echo among the run's rows) — which is every frame, bar a conversation rewound past it, when the
+                // account's list (which still names it) is the place it is.
+                val onScreen = items.asSequence().filterIsInstance<UserMessage>().mapTo(HashSet()) { it.id }
+                val turns = pairing().turns
+                for (d in delivered) {
+                    val own = d.localMessageId in onScreen ||
+                        (!d.steered && turns.firstOrNull { it.run?.id == d.runId }?.prompt?.id?.let { it in onScreen } == true)
+                    if (own) { if (d.followupId != null) ids += d.followupId else texts += QueuePlacement.textKey(d.staged.text) }
                 }
+            }
+            for (a in awaiting) {
+                // Waiting: on the card, from this device's own knowledge, until the frame that files it (see
+                // [fileInFrame]) — with what it carries, as the account's own row would say it: its files by name and
+                // type, its pictures by count.
+                val carried = a.staged.attachments.attachments
+                waiting += PendingFollowup(
+                    id = a.followupId ?: QueuePlacement.LOCAL_ID_PREFIX + a.staged.localId,
+                    text = a.staged.text,
+                    createdAtMillis = a.queuedAt,
+                    files = carried.filter { it.isFile }.map { PendingAttachment(it.name ?: "Document", it.mimeType.orEmpty()) },
+                    imageCount = carried.count { !it.isFile },
+                    note = if (a.queuedOnAccount) null else QueuePlacement.DELIVERING_NOTE,
+                )
             }
             if (ids.isEmpty() && texts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()) return QueuePlacement.NONE
             return QueuePlacement(deliveredIds = ids, deliveredTexts = texts, returned = returned, waiting = waiting, shownIds = shownIds, shownTexts = shownTexts)
         }
+
+        /**
+         * Files, in the frame being published, every waiting message whose copy the transcript in hand now carries
+         * (see [adoptDelivered], which fetches the transcript and runs for this): the frame that first draws the
+         * server's copy of a queued message is the frame that files it, so the message is never on the card and in
+         * the transcript at once. Returns what was filed, for its attachments to be moved under the run after the
+         * frame ([commitFiled]).
+         *
+         * Where a message landed is read off the transcript, never guessed from a clock: its newest copy of the
+         * words, counted beyond the copies the transcript held when the message was queued and beyond the copies
+         * the queued messages ahead of it with the same words have taken since (the same words queued twice are
+         * told apart by their order, and by which of them the account's list has let go of first). The copy names
+         * the run by the evidence ([TurnPairing]) — a run that is not another echo's and that came after the turn
+         * the message waited behind — else, by position from the newest; a copy whose count reaches no newer run
+         * was delivered into the run under way (the account promoted it): it is filed among that run's rows after
+         * the story streamed so far.
+         */
+        fun fileInFrame(fileSteers: Boolean): List<Pair<Awaiting, LocalPrompt>> {
+            adoptWanted = false
+            if (awaiting.isEmpty()) return emptyList()
+            val prompts = messages.filter { it.type == USER_MESSAGE }
+            if (prompts.isEmpty()) return emptyList()
+            val ordered = allRuns().filterNot { it.id.startsWith(LOCAL_RUN_PREFIX) }
+            val taken = HashSet<String>()
+            val filed = ArrayList<Pair<Awaiting, LocalPrompt>>()
+            // The messages the account's list has let go of first — those are delivered, whatever their order — then the rest in queue order.
+            val due = awaiting.sortedBy { if (it.queuedOnAccount) 1 else 0 }
+            for (candidate in due) {
+                // As it stands now: a filing earlier in this pass may have raised its baseline (the same words, queued ahead of it).
+                val a = awaiting.firstOrNull { it.sameAs(candidate) } ?: continue
+                val wanted = normalizePrompt(a.staged.text)
+                val copies = prompts.indices.filter { normalizePrompt(prompts[it].text) == wanted }
+                val at = copies.lastOrNull()?.takeIf { copies.size > a.priorTranscriptCopies } ?: continue
+                val behind = ordered.firstOrNull { it.id == a.behindRunId }
+                val after = prompts.size - 1 - at
+                val newest = ordered.asReversed().filter { it.id !in taken && local.none { p -> p.run.id == it.id && p.steeredAfter == null } }
+                val free = newest.mapTo(HashSet()) { it.id }
+                val run = pairing().runOf[at]?.takeIf { r -> r.id in free && (behind == null || isNewer(r, behind)) }
+                    ?: newest.getOrNull(after)?.takeIf { behind == null || isNewer(it, behind) }
+                    ?: newest.lastOrNull { behind == null || isNewer(it, behind) }
+                val prompt = if (run != null) {
+                    taken += run.id
+                    LocalPrompt(a.staged.message, run)
+                } else {
+                    // No run newer than the one it waited behind: delivered into the turn under way — or as the next
+                    // turn, whose run the list has not reported yet (the two endpoints report a new turn in their
+                    // own time). Only a frame with the run list read alongside the transcript may say which (see
+                    // [adoptDelivered]); any other asks for that read and leaves the message on the card meanwhile.
+                    if (!fileSteers) { adoptWanted = true; continue }
+                    val into = behind ?: ordered.lastOrNull() ?: continue
+                    val story = live?.takeIf { it.runId == into.id }?.items ?: partial[into.id] ?: traces[into.id]
+                    LocalPrompt(a.staged.message, into, steeredAfter = story?.size ?: 0)
+                }
+                val localId = a.staged.localId
+                filed += a to prompt
+                // The copy is this message's: the ones queued after it with the same words are one further along.
+                awaiting = awaiting.mapNotNull { other ->
+                    when {
+                        other === a -> null
+                        other.queuedAt >= a.queuedAt && normalizePrompt(other.staged.text) == wanted -> other.copy(priorTranscriptCopies = other.priorTranscriptCopies + 1)
+                        else -> other
+                    }
+                }
+                // The echo under its run, its attachments where they were staged until [commitFiled] has moved them.
+                local = local.filterNot { it.run.id == localId } + prompt
+                val staged = a.staged.attachments.attachments
+                val imagesKey = if (prompt.steeredAfter == null) prompt.run.id else prompt.message.id
+                promptImages = (promptImages - localId).let { if (staged.isEmpty()) it else it + (imagesKey to staged) }
+                inputsUpdatedAt = maxOf(inputsUpdatedAt, a.staged.stagedAt)
+                delivered = delivered + Delivered(a.staged, a.followupId, prompt.message.id, prompt.run.id, steered = prompt.steeredAfter != null, filedAt = AppClock.now(), images = staged, priorTranscriptCopies = a.priorTranscriptCopies, priorCopies = a.priorCopies)
+                a.followupId?.let { returned = returned - it }
+            }
+            if (filed.isNotEmpty()) pruneLocal()
+            return filed
+        }
+
         /**
          * Finished runs whose traces are wanted and not yet in memory, by run id, in the order they were asked for.
          * One worker ([traceJob]) drains it, disk first, then the retained logs; asking for more runs adds to it
@@ -1791,9 +1877,16 @@ class ConversationRepository(
      * says about the chat's workers — the one word default mode has on a Project's lineage — goes to the agent list
      * once it has changed (see [Entry.coordinatorLineage]), outside the entry's monitor.
      */
-    private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }) {
+    private inline fun Entry.publish(mutate: Entry.() -> Unit = {}, transform: ConversationState.() -> ConversationState = { this }, fileSteers: Boolean = false) {
+        var filed: List<Pair<Awaiting, LocalPrompt>> = emptyList()
+        var adopt = false
         val workers = synchronized(this) {
             mutate()
+            // A queued message whose copy the transcript now carries is filed in this very frame (see [Entry.fileInFrame]).
+            if (awaiting.isNotEmpty()) {
+                filed = fileInFrame(fileSteers)
+                adopt = adoptWanted
+            }
             lastPublishAtMs = monotonicMillis()
             val buildStartedAt = System.nanoTime()
             val items = items()
@@ -1816,6 +1909,41 @@ class ConversationRepository(
             val (created, _) = workers
             if (created.isNotEmpty()) agents.applyLineage(agentId, created.associateWith { AgentParentKind.PROJECT_WORKER }, LineageSignal.COORDINATOR_CREATED)
         }
+        if (filed.isNotEmpty()) { val toCommit = filed; scope.launch { commitFiled(this@publish, toCommit) } }
+        if (adopt) requestAdoption(this)
+    }
+
+    /**
+     * Asks for the queued messages to be filed ([adoptDelivered]) — once at a time, and never awaited: the adoption
+     * reads the transcript and the run list and asks again a few times, seconds apart, for a message not filed yet,
+     * and a caller that waited on that held its own work up for as long — the follow's look for the next run
+     * ([followNextRun]) among them, whose request for a look at the run after was then dropped as one in progress
+     * (Bennett, 0.3.58: three messages queued, the first delivered, the second's run never followed).
+     */
+    private fun requestAdoption(e: Entry) {
+        synchronized(e) {
+            if (e.adoptJob?.isActive == true) return
+            e.adoptJob = e.scope.launch { adoptDelivered(e) }
+        }
+    }
+
+    /**
+     * The attachments of the messages [Entry.fileInFrame] filed, moved under their runs (so the next history load
+     * finds them), the echoes following the files to their new paths; then the chat written back.
+     */
+    private suspend fun commitFiled(e: Entry, filed: List<Pair<Awaiting, LocalPrompt>>) {
+        val agentId = e.agentId
+        val kept = filed.map { (a, prompt) -> Triple(a, prompt, runCatching { attachments.commit(agentId, prompt.run.id, a.staged.attachments) }.getOrDefault(a.staged.attachments.attachments)) }
+        e.publish(
+            mutate = {
+                for ((_, prompt, moved) in kept) {
+                    val imagesKey = if (prompt.steeredAfter == null) prompt.run.id else prompt.message.id
+                    promptImages = if (moved.isEmpty()) promptImages - imagesKey else promptImages + (imagesKey to moved)
+                    delivered.firstOrNull { it.localMessageId == prompt.message.id && it.runId == prompt.run.id }?.images = moved
+                }
+            },
+        )
+        persist(e, session.current)
     }
 
     /**
@@ -2147,7 +2275,7 @@ class ConversationRepository(
                     }
                     loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
                     if (pageOlder) pageOlderRuns(e, agentId)
-                    adoptDelivered(e)
+                    requestAdoption(e)
                 }
             }
         } catch (t: Throwable) {
@@ -2191,7 +2319,7 @@ class ConversationRepository(
         // every load that landed during the turn (a foreground return, a reload).
         if (active != null && !e.isFollowing(active.id)) startStreaming(e, agentId, active, unlessMovedOn = true)
         loadTraces(e, agentId, e.shownRuns().filter { it.statusEnum().isTerminal })
-        adoptDelivered(e)
+        requestAdoption(e)
     }
 
     /**
@@ -2362,7 +2490,7 @@ class ConversationRepository(
             if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
             // A turn the record gave without its text and no log left to ask: the transcript's copy of its reply.
             fillTextFromTranscript(e, agentId)
-            adoptDelivered(e)
+            requestAdoption(e)
         } else if (rawWindow == null) {
             // Neither the record nor the runs answered: nothing new to show, and the record's failure already stands.
         }
@@ -2410,7 +2538,13 @@ class ConversationRepository(
      */
     private fun keepFollowing(e: Entry, endedRunId: String?) {
         synchronized(e) {
-            if (e.keepFollowingJob?.isActive == true || e.attached == 0 || e.paused) return
+            if (e.attached == 0 || e.paused) return
+            // A look under way was asked for by an earlier end (or a load): the run that ended now is the one to look
+            // past, so it starts over. Dropping the newer request left the chat on the run that ended, never looking again.
+            if (e.keepFollowingJob?.isActive == true) {
+                if (endedRunId == null) return
+                e.keepFollowingJob?.cancel()
+            }
             e.keepFollowingJob = e.scope.launch {
                 var wait = KEEP_FOLLOWING_BASE_MS
                 var idleLooks = 0
@@ -2468,7 +2602,7 @@ class ConversationRepository(
         agents.recordRun(agentId, run, adopt = true)
         if (follow) startStreaming(e, agentId, run)
         // A new run is where a message the account queued from here lands (see [expectDelivery]).
-        adoptDelivered(e)
+        requestAdoption(e)
         return true
     }
 
@@ -2550,7 +2684,7 @@ class ConversationRepository(
             transform = { if (over != null) copy(isStreaming = false, isReconnecting = false, runStatus = e.chatStatus(over, streaming = false)) else this },
         )
         if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
-        adoptDelivered(e)
+        requestAdoption(e)
     }
 
     /** Widens the record's window by [WINDOW_RUNS] older turns (see [loadOlderNow]). */
@@ -3717,6 +3851,38 @@ class ConversationRepository(
      * the run the account does start on it. A read from before the run started (the poll is seconds behind) still
      * listing a message filed a moment ago is the ordinary case, and changes nothing.
      */
+    /**
+     * The reader deleted a queued message from the card and the account has taken it off its queue: nothing of it is
+     * waited for any more, and its staged copy goes. Without this the next read of the list, which no longer names it,
+     * would take it for delivered and keep it on the card as "delivering" until the transcript never showed it.
+     */
+    fun queuedDeleted(agentId: String, followupId: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        var gone: List<Awaiting> = emptyList()
+        e.publish(mutate = {
+            gone = awaiting.filter { it.followupId == followupId }
+            if (gone.isNotEmpty()) awaiting = awaiting - gone
+            if (followupId in returned) returned = returned - followupId
+        })
+        if (gone.isNotEmpty()) e.scope.launch { gone.forEach { attachments.discard(it.staged.attachments) } }
+    }
+
+    /**
+     * The reader edited a queued message on the card and the account holds the new words: the copy waited for — and
+     * filed under the run the account starts on it, its attachments with it — carries them, and the copies of the new
+     * words the transcript holds now are the baseline its own is counted beyond.
+     */
+    fun queuedEdited(agentId: String, followupId: String, text: String) {
+        val e = synchronized(entries) { entries[agentId] } ?: return
+        val trimmed = text.trim()
+        e.publish(mutate = {
+            if (awaiting.none { it.followupId == followupId }) return@publish
+            val key = QueuePlacement.textKey(trimmed)
+            val priorTranscript = messages.count { it.type == USER_MESSAGE && QueuePlacement.textKey(it.text) == key }
+            awaiting = awaiting.map { a -> if (a.followupId == followupId && a.staged.text != trimmed) a.copy(staged = a.staged.withText(trimmed), priorTranscriptCopies = priorTranscript) else a }
+        })
+    }
+
     fun noteAccountQueue(agentId: String, pending: List<PendingFollowup>, readAtMillis: Long = AppClock.now()) {
         val e = synchronized(entries) { entries[agentId] } ?: return
         val listedIds = pending.mapTo(HashSet()) { it.id }
@@ -3784,7 +3950,7 @@ class ConversationRepository(
         }
         if (changed) e.publish()
         if (putBack.isNotEmpty()) e.scope.launch { persist(e, session.current) }
-        if (adopt) e.scope.launch { adoptDelivered(e) }
+        if (adopt) requestAdoption(e)
     }
 
 
@@ -3818,10 +3984,7 @@ class ConversationRepository(
             runs.await() to conversation.await()
         }
         if (transcript == null) return
-        val prompts = transcript.filter { it.type == USER_MESSAGE }
-        var retry = false
-        val filed = ArrayList<Pair<Awaiting, LocalPrompt>>()
-        val dropped = ArrayList<StagedFollowUp>()
+        // Merged and published: the frame files every message the transcript now holds a copy of (see [Entry.fileInFrame]).
         e.publish(mutate = {
             if (page != null) {
                 val fresh = page.items.associateBy { it.id }
@@ -3830,81 +3993,26 @@ class ConversationRepository(
             }
             // The transcript read now is the fresher copy: the load's may predate the delivery.
             if (transcript.size >= messages.size) messages = transcript
-            val ordered = allServerRuns(this)
-            val taken = HashSet<String>()
-            for (a in due) {
-                if (a !in awaiting) continue
-                val wanted = normalizePrompt(a.staged.text)
-                // The transcript's newest copy of the words — one beyond the copies it held when the message was
-                // queued: the same words sent before are an earlier turn's, and never this message's home.
-                val copies = prompts.indices.filter { normalizePrompt(prompts[it].text) == wanted }
-                val at = copies.lastOrNull()?.takeIf { copies.size > a.priorTranscriptCopies }
-                if (at == null) {
-                    // Not in the transcript yet — or no longer anywhere: gone from the queue and never filed.
-                    if (attempt < ADOPT_ATTEMPTS) retry = true else if (!a.queuedOnAccount) { awaiting = awaiting - a; dropped += a.staged }
-                    continue
-                }
-                val behind = ordered.firstOrNull { it.id == a.behindRunId }
-                // The run the transcript's copy started, by the evidence (see [TurnPairing]) — a run that is not
-                // another echo's and that came after the turn the message waited behind; else, by position from the
-                // newest, the copies newer than it each taking a run.
-                val after = prompts.size - 1 - at
-                val newest = ordered.asReversed().filter { it.id !in taken && local.none { p -> p.run.id == it.id && p.steeredAfter == null } }
-                val free = newest.mapTo(HashSet()) { it.id }
-                val run = pairing().runOf[at]?.takeIf { r -> r.id in free && (behind == null || isNewer(r, behind)) }
-                    ?: newest.getOrNull(after)?.takeIf { behind == null || isNewer(it, behind) }
-                    ?: newest.lastOrNull { behind == null || isNewer(it, behind) }
-                val prompt = if (run != null) {
-                    taken += run.id
-                    LocalPrompt(a.staged.message, run)
-                } else {
-                    // Delivered into the turn under way: after what the run had streamed by now.
-                    val into = behind ?: ordered.lastOrNull() ?: continue
-                    val story = live?.takeIf { it.runId == into.id }?.items ?: partial[into.id] ?: traces[into.id]
-                    LocalPrompt(a.staged.message, into, steeredAfter = story?.size ?: 0)
-                }
-                filed += a to prompt
-                awaiting = awaiting - a
-                // Marked delivered in this very frame — the frame that shows the transcript's copy of the message,
-                // the `/v0` read just merged — so the card leaves it out from here on, not from the filing's frame.
-                delivered = delivered + Delivered(a.staged, a.followupId, prompt.message.id, prompt.run.id, steered = prompt.steeredAfter != null, filedAt = AppClock.now(), images = a.staged.attachments.attachments, priorTranscriptCopies = a.priorTranscriptCopies, priorCopies = a.priorCopies)
-                a.followupId?.let { returned = returned - it }
-            }
-            pruneLocal()
-        })
-        for ((a, prompt) in filed) file(e, agentId, a, prompt)
-        dropped.forEach { attachments.discard(it.attachments) }
-        if (retry) {
+        }, fileSteers = true)
+        // Not in the transcript yet — the account files a message a beat after it starts the run — asked for again a
+        // few times, a moment apart; one the queue has dropped that the transcript never shows was taken back from
+        // another client, and is let go: nothing is ever shown that the server does not hold.
+        val still = synchronized(e) { e.awaiting.filter { a -> due.any { it.sameAs(a) } } }
+        if (still.isEmpty()) return
+        if (attempt < ADOPT_ATTEMPTS) {
             delay(ADOPT_RETRY_MS)
             adoptDelivered(e, attempt + 1)
+            return
         }
-    }
-
-    /**
-     * The account has [prompt]'s message where [prompt] says (see [adoptDelivered]): the staged copy becomes the
-     * prompt's echo under its run — its images filed under the run — and the chat is written back. Like [accepted],
-     * less the follow: the caller follows the run the account is on. The same frame that shows the echo marks the
-     * message delivered ([Delivered]), so the card above the composer leaves it out from that frame on, whatever the
-     * last read of the account's queue said (see [ConversationState.queuePlacement]).
-     */
-    private suspend fun file(e: Entry, agentId: String, a: Awaiting, prompt: LocalPrompt) {
-        val staged = a.staged
-        val localId = staged.localId
-        val kept = runCatching { attachments.commit(agentId, prompt.run.id, staged.attachments) }.getOrDefault(staged.attachments.attachments)
-        e.publish(
-            mutate = {
-                local = local.filterNot { it.run.id == localId } + prompt
-                // A prompt that started its run keeps its images under the run, like every prompt; one steered into a
-                // run keeps them under its own id, the run's key being its own prompt's.
-                val imagesKey = if (prompt.steeredAfter == null) prompt.run.id else prompt.message.id
-                promptImages = (promptImages - localId).let { if (kept.isEmpty()) it else it + (imagesKey to kept) }
-                inputsUpdatedAt = maxOf(inputsUpdatedAt, staged.stagedAt)
-                // Marked delivered by the adoption's own frame (see [adoptDelivered]); its images are where the filing put them now.
-                delivered.firstOrNull { it.localMessageId == prompt.message.id && it.runId == prompt.run.id }?.images = kept
-                pruneLocal()
-            },
-        )
-        persist(e, session.current)
+        val dropped = ArrayList<StagedFollowUp>()
+        e.publish(mutate = {
+            val gone = awaiting.filter { a -> !a.queuedOnAccount && still.any { it.sameAs(a) } }
+            if (gone.isNotEmpty()) {
+                awaiting = awaiting - gone
+                dropped += gone.map { it.staged }
+            }
+        })
+        dropped.forEach { attachments.discard(it.attachments) }
     }
 
     /** The server's runs of [e]'s chat, oldest first: never a prompt's placeholder. */

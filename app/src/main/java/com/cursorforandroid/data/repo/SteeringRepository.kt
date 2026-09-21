@@ -62,6 +62,10 @@ class SteeringRepository(
      * the read began: the transcript files the messages the account has delivered and confirms the ones it has let go.
      */
     private val onQueueRead: suspend (agentId: String, pending: List<PendingFollowup>, readAtMillis: Long) -> Unit = { _, _, _ -> },
+    /** A queued message the reader deleted from the card, once the account has taken it off its queue (`ConversationRepository.queuedDeleted`). */
+    private val onQueuedDeleted: (agentId: String, followupId: String) -> Unit = { _, _ -> },
+    /** A queued message the reader edited on the card, once the account holds the new words (`ConversationRepository.queuedEdited`). */
+    private val onQueuedEdited: (agentId: String, followupId: String, text: String) -> Unit = { _, _, _ -> },
     /**
      * Where the transcript says each queued message stands (`ConversationRepository.queuePlacement`): a message it has
      * just filed under a run is the moment the account's queue is read again, whatever the poll's clock says (see
@@ -192,10 +196,10 @@ class SteeringRepository(
         }
 
     suspend fun updatePending(agentId: String, followupId: String, text: String): Result<Unit> =
-        queueEdit(agentId, followupId) { it.updatePending(agentId, followupId, text.trim()) }
+        queueEdit(agentId, followupId) { it.updatePending(agentId, followupId, text.trim()); onQueuedEdited(agentId, followupId, text.trim()) }
 
     suspend fun deletePending(agentId: String, followupId: String): Result<Unit> =
-        queueEdit(agentId, followupId) { it.deletePending(agentId, followupId) }
+        queueEdit(agentId, followupId) { it.deletePending(agentId, followupId); onQueuedDeleted(agentId, followupId) }
 
     /** Moves a queued message one place up (earlier) or down (later); nothing happens at either end. */
     suspend fun movePending(agentId: String, followupId: String, up: Boolean): Result<Unit> {

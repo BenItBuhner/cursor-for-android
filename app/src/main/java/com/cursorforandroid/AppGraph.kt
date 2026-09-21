@@ -659,6 +659,8 @@ class AppGraph(
             afterAction = { agentId -> conversations.revalidate(agentId) },
             // Every queue read goes to the transcript, and a message the transcript files under its run has the queue read again (see QueuePlacement).
             onQueueRead = { agentId, pending, readAt -> conversations.noteAccountQueue(agentId, pending, readAt) },
+            onQueuedDeleted = { agentId, followupId -> conversations.queuedDeleted(agentId, followupId) },
+            onQueuedEdited = { agentId, followupId, text -> conversations.queuedEdited(agentId, followupId, text) },
             placement = { agentId -> conversations.queuePlacement(agentId) },
             capabilities = capabilities,
         )
