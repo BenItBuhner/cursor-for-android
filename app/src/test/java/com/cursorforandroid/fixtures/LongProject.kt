@@ -48,6 +48,12 @@ object LongProject {
         val record: List<JsonObject>,
         /** The run's log as the documented stream serves it: `event` to `data` pairs. */
         val log: List<Pair<String, String>>,
+        /**
+         * The run has no message in the `/v0` transcript at all — a turn resumed after a usage limit, a turn the
+         * account opened on its own: Bennett's Polymarket Project had 26 such runs among 324 (2026-09-21). The
+         * record still carries the turn; the documented transcript does not.
+         */
+        val promptless: Boolean = false,
     ) {
         val status: String get() = if (durationMs == null) "RUNNING" else "FINISHED"
         val endedAt: Long get() = startedAt + (durationMs ?: 0L)
@@ -64,13 +70,22 @@ object LongProject {
     fun messageText(userIndex: Int): String = MESSAGES[userIndex % MESSAGES.size]
 
     /** The [TURNS] turns, oldest first, the first started at [firstAt]; a fixed seed so every run of a test sees the same chat. */
-    fun turns(firstAt: Long, turns: Int = TURNS, seed: Int = 20): List<Turn> {
+    fun turns(
+        firstAt: Long,
+        turns: Int = TURNS,
+        seed: Int = 20,
+        /** Which turns (1-based) the `/v0` transcript has no message for (see [Turn.promptless]); never a user's turn. */
+        promptless: (Int) -> Boolean = { false },
+        /** The newest turn is the user's, whatever [USER_EVERY] says: the live turn started on the reader's own prompt. */
+        lastIsUser: Boolean = false,
+    ): List<Turn> {
         val random = Random(seed)
         var lastMessage: Pair<Call, JsonObject>? = null
         val out = ArrayList<Turn>(turns)
         for (i in 1..turns) {
-            val isUser = (i - 1) % USER_EVERY == 0
-            val userIndex = (i - 1) / USER_EVERY
+            val isUser = (i - 1) % USER_EVERY == 0 || (lastIsUser && i == turns)
+            // The newest turn made the user's out of turn takes the next prompt and message, not its predecessor's words again.
+            val userIndex = (i - 1) / USER_EVERY + (if (lastIsUser && i == turns && (i - 1) % USER_EVERY != 0) 1 else 0)
             val startedAt = firstAt + (i - 1) * TURN_SPACING_MS
             val running = i == turns
             val calls = ArrayList<Call>()
@@ -130,16 +145,19 @@ object LongProject {
                 record += buildJsonObject { put("text", ""); put("isMessageDone", true) }
                 log += "result" to """{"runId":"$runId","status":"FINISHED","text":"","durationMs":$durationMs}"""
             }
-            out += Turn(i, runId, if (isUser) userMessageText(userIndex) else (record.first()["humanMessage"] as JsonObject)["text"]!!.let { (it as JsonPrimitive).content }, isUser, startedAt, durationMs, message, narration, record, log)
+            out += Turn(i, runId, if (isUser) userMessageText(userIndex) else (record.first()["humanMessage"] as JsonObject)["text"]!!.let { (it as JsonPrimitive).content }, isUser, startedAt, durationMs, message, narration, record, log, promptless = !isUser && promptless(i))
         }
         return out
     }
 
-    /** The `/v0` transcript: each turn's prompt as a `user_message`, its narration as the `assistant_message`. */
-    fun v0Transcript(turns: List<Turn>): List<V0ConversationMessageDto> = turns.flatMap { turn ->
+    /** The `/v0` transcript: each turn's prompt as a `user_message`, its narration as the `assistant_message`; a prompt-less turn (see [Turn.promptless]) has nothing in it. */
+    fun v0Transcript(turns: List<Turn>): List<V0ConversationMessageDto> = turns.filterNot { it.promptless }.flatMap { turn ->
         listOf(V0ConversationMessageDto("${turn.runId}-u", "user_message", turn.prompt)) +
             turn.narration.mapIndexed { i, text -> V0ConversationMessageDto("${turn.runId}-a$i", "assistant_message", text) }
     }
+
+    /** The run's `result` as `/v1` reports it for a finished run: its final text, the same words as the transcript's last reply to the turn. */
+    fun result(turn: Turn): String? = if (turn.durationMs == null) null else turn.narration.lastOrNull()
 
     fun iso(millis: Long): String = Instant.ofEpochMilli(millis).toString()
 
