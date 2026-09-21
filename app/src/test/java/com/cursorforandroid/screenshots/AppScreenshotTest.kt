@@ -539,9 +539,16 @@ class AppScreenshotTest {
         compose.onAllNodesWithText("Revenue Scaling Pipeline Research").onFirst().performClick()
         waitForText("Worked", 30_000)
         // The finished run's thinking / tool / subagent trace is replayed from its retained stream a beat after the
-        // transcript; capture once it has been spliced in.
+        // transcript; capture once it has been spliced in — the frame's word, not the state's: the state can hold the
+        // group a frame before the transcript draws it, and a trace still loading shows its row meanwhile (the frame
+        // used to be taken between the two, one run in three).
         val revenueId = graph.agents.state.value.agents.first { it.name == "Revenue Scaling Pipeline Research" }.id
-        compose.waitUntil(30_000) { graph.conversations.state(revenueId).value.items.any { it is ActivityGroup } }
+        compose.waitUntil(30_000) {
+            val state = graph.conversations.state(revenueId).value
+            state.items.any { it is ActivityGroup } && state.traceStatus.pending == 0 &&
+                compose.onAllNodes(hasText("Loading the activity", substring = true)).fetchSemanticsNodes().isEmpty() &&
+                compose.onAllNodes(hasText("1 thought", substring = true)).fetchSemanticsNodes().isNotEmpty()
+        }
         compose.waitForIdle()
         capture("10_tablet_conversation")
     }
