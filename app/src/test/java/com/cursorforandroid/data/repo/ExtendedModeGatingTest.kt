@@ -32,7 +32,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -202,6 +204,11 @@ class ExtendedModeGatingTest {
                 if (attempts.incrementAndGet() == 1) {
                     listed.complete(Unit)
                     release.await()
+                    // A network read ends in a cancelled coroutine with the cancellation, whichever came first, its
+                    // answer or the cancel. `await` on a deferred completed already returns at once without looking,
+                    // so a round descheduled between `listed` and here — the reset and the release both landing in
+                    // that gap — would read on as if never cancelled; the check is what a real call does on its own.
+                    currentCoroutineContext().ensureActive()
                 }
                 return account.list()
             }
