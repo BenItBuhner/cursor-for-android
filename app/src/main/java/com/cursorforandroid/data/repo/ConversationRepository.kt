@@ -3670,7 +3670,10 @@ class ConversationRepository(
             // How many prompts with these words the transcript shows besides the bubble coming down: the bubble is
             // this message, not a prior copy of it.
             val key = QueuePlacement.textKey(staged.text)
-            val prior = state.value.items.count { it is UserMessage && it.id != staged.localId && QueuePlacement.textKey(it.text) == key }
+            // Not a prior copy: this message's own bubble, nor another bubble the composer still shows ahead of its
+            // request (the device's queue tried the run first and is handing the message over) — those come down.
+            val bubbles = local.filterNot { it.filed }.mapTo(HashSet()) { it.message.id }
+            val prior = state.value.items.count { it is UserMessage && it.id != staged.localId && it.id !in bubbles && QueuePlacement.textKey(it.text) == key }
             val priorTranscript = messages.count { it.type == USER_MESSAGE && QueuePlacement.textKey(it.text) == key }
             if (staged.shown) {
                 local = local.filterNot { it.run.id == staged.localId }
