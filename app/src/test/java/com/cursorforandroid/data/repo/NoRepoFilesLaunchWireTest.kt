@@ -240,7 +240,10 @@ class NoRepoFilesLaunchWireTest {
 
         val id = LaunchIdempotency.agentId(fromScratchWithVideo, NONCE)
         launcher.launch(fromScratchWithVideo.copy(agentId = id), "Cursor Grok 4.6", NONCE)
-        awaitUntil { agents.launchDiagnostics(id)?.outcome?.startsWith("stood in") == true || failures.isNotEmpty() }
+        // The diagnostics line is settled inside the start, the row published by the launch a step after it returns:
+        // the wait is for the row (its name is the record's only once the stand-in has replaced the provisional row
+        // the launch began with — a fork-starved CI run read the prompt's name in between).
+        awaitUntil { agents.agent(id)?.name == AccountServer.RECORD_NAME || failures.isNotEmpty() }
 
         // No failure, no rollback: the chat exists on the account. The row carries the record's name and the request's
         // facts until the API lists the chat; the API was asked the usual few times first.
