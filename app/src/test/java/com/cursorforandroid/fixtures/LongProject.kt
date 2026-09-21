@@ -84,7 +84,8 @@ object LongProject {
         val out = ArrayList<Turn>(turns)
         for (i in 1..turns) {
             val isUser = (i - 1) % USER_EVERY == 0 || (lastIsUser && i == turns)
-            val userIndex = (i - 1) / USER_EVERY
+            // The newest turn made the user's out of turn takes the next prompt and message, not its predecessor's words again.
+            val userIndex = (i - 1) / USER_EVERY + (if (lastIsUser && i == turns && (i - 1) % USER_EVERY != 0) 1 else 0)
             val startedAt = firstAt + (i - 1) * TURN_SPACING_MS
             val running = i == turns
             val calls = ArrayList<Call>()
