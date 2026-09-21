@@ -206,7 +206,7 @@ class SendFaultsTest {
         assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
         assertThat(sends()).hasSize(1)
         recording.assertNoFlap(item.id)
-        assertThat(recording.history(item.id)).containsExactly(QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING).inOrder()
+        recording.assertHistory(item.id, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING)
         val outcomes = rig.followUps.sendDiagnostics("bc-1")!!.attempts.map { it.outcome }
         assertThat(outcomes).containsExactly("accepted")
         rig.awaitUntil { prompts().any { it.text == "Now the tests" && !it.isPending } }
@@ -233,7 +233,7 @@ class SendFaultsTest {
         recording.assertNoFlap(item.id)
         // The user's retry clears the reason a moment before the dispatcher claims the message again: the one
         // "queued" after "sending" the card may show.
-        assertThat(recording.history(item.id)).containsExactly(QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.FAILED, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING).inOrder()
+        recording.assertHistory(item.id, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.FAILED, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING)
     }
 
     @Test
@@ -254,7 +254,7 @@ class SendFaultsTest {
         assertWithMessage("the second attempt waited out the Retry-After").that(attempts[1].atMillis - attempts[0].atMillis).isAtLeast(2_000L)
         assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
         recording.assertNoFlap(item.id)
-        assertThat(recording.history(item.id)).containsExactly(QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.HELD).inOrder()
+        recording.assertHistory(item.id, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.HELD)
     }
 
     @Test
@@ -284,8 +284,9 @@ class SendFaultsTest {
         recording.stop()
         assertThat(server.sent.map { it.first }).containsExactly("Now the tests")
         recording.assertNoFlap(item.id)
-        assertThat(recording.history(item.id).first()).isEqualTo(QueueRecording.Card.QUEUED)
-        assertThat(recording.history(item.id).drop(2).all { it == QueueRecording.Card.HELD }).isTrue()
+        // Queued, sending, then held from the first refusal to the send that went through (the attempts in between
+        // read held throughout, never "sending" again).
+        recording.assertHistory(item.id, QueueRecording.Card.QUEUED, QueueRecording.Card.SENDING, QueueRecording.Card.HELD)
         assertThat(rig.agents.agent("bc-1")!!.runStatus).isEqualTo(RunStatus.RUNNING)
     }
 

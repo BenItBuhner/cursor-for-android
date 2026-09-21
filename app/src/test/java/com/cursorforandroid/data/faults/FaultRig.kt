@@ -220,6 +220,28 @@ class QueueRecording(flow: StateFlow<FollowUpComposerState>, scope: CoroutineSco
     fun stop() = job.cancel()
 
     /**
+     * The card read [expected] in that order, as far as a reader could tell. The recorder collects the same
+     * conflated [StateFlow] a screen does, so two frames published within one beat reach it as the second alone
+     * (a fork-starved CI run caught "sending" without the "queued" before it): what it saw is [expected] with
+     * frames dropped — nothing [expected] does not name, nothing out of its order — and every state the card
+     * rests in until something outside moves it (held for its pause, failed for the user's retry, awaiting the
+     * user's word) was seen, those being the ones a reader has the time to see.
+     */
+    fun assertHistory(id: String, vararg expected: Card) {
+        val seen = history(id)
+        if (seen.isEmpty()) throw AssertionError("nothing of the card was seen; expected ${expected.toList()}")
+        var next = 0
+        for (card in seen) {
+            val at = (next until expected.size).firstOrNull { expected[it] == card }
+                ?: throw AssertionError("the card read $card, which ${expected.toList()} does not have after position $next: saw $seen")
+            next = at + 1
+        }
+        val resting = expected.filter { it == Card.HELD || it == Card.FAILED || it == Card.CONFIRM }
+        val missed = resting.filterNot { it in seen }
+        if (missed.isNotEmpty()) throw AssertionError("states the card rests in were never seen: $missed; expected ${expected.toList()}, saw $seen")
+    }
+
+    /**
      * No message reads plainly "queued" after it has read "sending": a refusal parks it as held or failed, never
      * back at the start of the line as if nothing had happened. The one way back to "queued" is the user's retry of
      * a failed card, which clears its reason a moment before the dispatcher claims it again. And no message reads
