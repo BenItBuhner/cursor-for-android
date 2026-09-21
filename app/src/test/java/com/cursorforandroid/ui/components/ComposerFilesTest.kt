@@ -136,8 +136,9 @@ class ComposerFilesTest {
         assertThat(sent).isEqualTo(1)
     }
 
+    /** A picture picked as a file is a picture to the composer: its own tile, no name and no size on it (see ComposerMediaChipTest). */
     @Test
-    fun `an image file's chip shows its thumbnail in place of the glyph`() {
+    fun `a picture picked as a file is a media tile, not a chip with a name and a size`() {
         val bitmap = ImageBitmap(4, 4)
         val photo = PendingFile("f3", PromptFile(ByteArray(900), "IMG_20260917_074100.jpg", "image/jpeg"), thumbnail = bitmap)
         compose.setContent {
@@ -146,9 +147,12 @@ class ComposerFilesTest {
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithText("IMG_20260917_074100.jpg").assertIsDisplayed()
-        compose.onNodeWithText("Image · 900 B").assertIsDisplayed()
+        compose.onNodeWithTag("media-tile").assertIsDisplayed()
+        compose.onAllNodesWithTag("file-chip").assertCountEquals(0)
+        compose.onAllNodesWithText("IMG_20260917_074100.jpg").assertCountEquals(0)
+        compose.onAllNodesWithText("Image · 900 B").assertCountEquals(0)
         assertThat(photo.isImage).isTrue()
+        assertThat(photo.isMedia).isTrue()
     }
 
     @Test

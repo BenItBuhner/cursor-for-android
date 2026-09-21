@@ -597,6 +597,8 @@ fun ConversationScreen(
                 fileUploads = fileUploads,
                 onRetryFile = viewModel::retryFile,
                 sendHint = uploadHint,
+                mediaAgentId = agentId,
+                media = graph.media,
                 // The chip names the model the chat runs on and, like on cursor.com/agents, switches it for the next
                 // follow-up; an archived chat takes no follow-ups, so there is nothing to switch.
                 modelLabel = picker.chipLabel,

@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -105,10 +106,11 @@ class AttachmentCarouselTest {
         compose.waitForIdle()
         assertThat(state.canScrollBackward).isTrue()
 
-        // The chip going up, and the failed one's retry, wherever the row has been scrolled to.
-        compose.onNodeWithTag("attachment-row").performScrollToIndex(2)
+        // The recording going up (a media tile: the ring over it, the progress in its description), and the failed
+        // file's retry, wherever the row has been scrolled to. Media come first in the row: the picture, the recording.
+        compose.onNodeWithTag("attachment-row").performScrollToIndex(1)
         compose.waitForIdle()
-        compose.onNodeWithText("Uploading · 50%").assertIsDisplayed()
+        compose.onNode(hasContentDescription("uploading 50%", substring = true)).assertIsDisplayed()
         compose.onNodeWithTag("attachment-row").performScrollToIndex(3)
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Retry upload").assertIsDisplayed().performClick()
@@ -214,7 +216,7 @@ class AttachmentCarouselTest {
         }
         compose.waitForIdle()
         compose.onAllNodesWithTag("attachment-row").assertCountEquals(1)
-        compose.onNodeWithTag("image-thumb").assertIsDisplayed()
+        compose.onNodeWithTag("media-tile").assertIsDisplayed()
         compose.onNodeWithTag("file-chip").assertIsDisplayed()
         // The image's badge, first in the row.
         compose.onAllNodesWithContentDescription("Remove attachment")[0].performClick()
@@ -224,7 +226,7 @@ class AttachmentCarouselTest {
         attached = false
         compose.waitForIdle()
         compose.onAllNodesWithTag("attachment-row").assertCountEquals(0)
-        compose.onAllNodesWithTag("image-thumb").assertCountEquals(0)
+        compose.onAllNodesWithTag("media-chip").assertCountEquals(0)
         compose.onAllNodesWithTag("file-chip").assertCountEquals(0)
     }
 }
