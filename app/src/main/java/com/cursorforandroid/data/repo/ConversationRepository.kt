@@ -1952,6 +1952,25 @@ class ConversationRepository(
     }
 
     /**
+     * Inside a merge's `mutate`, under the entry's monitor: the run being followed is over by the run record just
+     * merged. Its stream, whatever it still says, no longer stands for the turn: the follow ends here, its story
+     * kept (see [keepStory]), so the very frame that first shows the run's footer from the record is the frame that
+     * turns the stream off — the same frame, never two (#237/#241's rule read the other way round: a run is never
+     * shown ended with its stream on; `ConversationRepositoryTest` caught the two-frame version once on main at
+     * `adcd808`). Returns the record the follow ended over, for the transform's word; null when nothing ended.
+     */
+    private fun Entry.endFollowIfOver(): RunDto? {
+        val followed = live?.runId ?: return null
+        val record = runs.firstOrNull { it.id == followed } ?: return null
+        if (record.statusEnum().isActive) return null
+        streamJob?.cancel()
+        streamJob = null
+        keepStory()
+        live = null
+        return record
+    }
+
+    /**
      * The story the followed run's stream has told so far is kept for the run (see [partial]) when the run has no
      * complete trace: what the screen showed of the turn does not go blank because the follow ends — the screen
      * paused, the next run followed, the run over by its record with the stream broken. Under the entry's monitor.
@@ -2079,6 +2098,8 @@ class ConversationRepository(
                             latest = latestRun()
                             merged = runs
                             pageOlder = !runsComplete && olderRunsCursor != null
+                            // The run followed is over by the list just merged: the follow ends in this frame, with the footer.
+                            endFollowIfOver()
                         },
                         transform = {
                             // A stream already open on the latest run (the runs rendered ahead of the transcript) keeps its word.
@@ -2149,6 +2170,7 @@ class ConversationRepository(
         val newest = newestRuns(api, agentId, firstPage, latestId, known, knownComplete)
         if (newest.page.items.isEmpty()) return
         var latest: RunDto? = null
+        var over: RunDto? = null
         e.publish(
             mutate = {
                 mergeNewestPage(newest.page, endKnown = newest.endKnown)
@@ -2157,9 +2179,11 @@ class ConversationRepository(
                 pruneLocal()
                 promptImages = onDevice + promptImages.filterKeys { key -> local.any { it.run.id == key } }
                 latest = latestRun()
+                // The run followed is over by the page just merged: its footer and the stream's end in one frame.
+                over = endFollowIfOver()
             },
             // Still loading: the transcript is on its way. The screen shows what there is meanwhile.
-            transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest)) },
+            transform = { copy(activeRunId = latest?.id, runStatus = e.chatStatus(latest), isStreaming = over == null && isStreaming, isReconnecting = over == null && isReconnecting) },
         )
         latest?.let { run -> agents.recordRun(agentId, e.known(run)) }
         val active = latest?.takeIf { it.statusEnum().isActive }
@@ -2307,6 +2331,8 @@ class ConversationRepository(
                     pruneLocal()
                     latest = latestRun()
                     merged = runs
+                    // The run followed is over by the list just merged: the follow ends in this frame, with the footer.
+                    endFollowIfOver()
                 },
                 transform = {
                     // A stream already open on the latest run keeps its word (see [publishRunsFirst]).
@@ -2485,8 +2511,10 @@ class ConversationRepository(
 
     /**
      * Reads the run list's first page again and folds it in: the newest runs' records (a finished turn's status, a
-     * run started since) with the order the list came in read as [loadFromRecord] reads it. The chat's own status and
-     * follow are left as they are; this serves the pairing of record turns with runs (see [Entry.recordNeedsRuns]).
+     * run started since) with the order the list came in read as [loadFromRecord] reads it. This serves the pairing
+     * of record turns with runs (see [Entry.recordNeedsRuns]); the chat's status and follow are left as they are —
+     * except a follow on a run the list now shows over, which ends in the frame that first shows the run's footer
+     * (see [Entry.endFollowIfOver]), never a frame later.
      */
     private suspend fun refreshNewestRuns(e: Entry) {
         val api = session.current.api
@@ -2507,13 +2535,16 @@ class ConversationRepository(
             page = ListRunsResponseDto(items = page.items + more.items.filter { it.id !in have }, nextCursor = more.nextCursor)
             pages++
         }
+        var over: RunDto? = null
         e.publish(
             mutate = {
                 mergeNewestPage(page, endKnown = newest.endKnown)
                 runOrder = if (newest.ascending) RunOrder.OLDEST_FIRST else RunOrder.NEWEST_FIRST
                 latestFetchedById = newest.latestFetched
                 pruneLocal()
+                over = endFollowIfOver()
             },
+            transform = { if (over != null) copy(isStreaming = false, isReconnecting = false, runStatus = e.chatStatus(over, streaming = false)) else this },
         )
         if (synchronized(e) { e.recordNeedsRuns() }) pageOlderRuns(e, agentId)
         adoptDelivered(e)
@@ -3410,6 +3441,7 @@ class ConversationRepository(
     private suspend fun recordFinish(e: Entry, run: RunDto, snapshot: LiveRunHub.Snapshot, finishedAt: Long) {
         val first = synchronized(e) { e.recordedFinishes.add(run.id) }
         if (!first) return
+        var followed = false
         e.publish(
             mutate = {
                 recordFinishedRun(run, snapshot, finishedAt)
@@ -3417,11 +3449,22 @@ class ConversationRepository(
                     traces = traces + (run.id to snapshot.items)
                     if (run.id in partial) partial = partial - run.id
                 }
+                followed = live?.runId == run.id
             },
             // With no screen following it, the status would otherwise stay at the last thing the screen saw. The
             // run's end is the run's; the chat's status is the freshest word there is (see [Entry.chatStatus]): an
-            // account running on past this run keeps the chat running.
-            transform = { if (activeRunId == run.id) copy(runStatus = if (run.id != e.cancelledRunId && (e.accountNamesNewerRun(run.id) || e.rowSaysRunning())) RunStatus.RUNNING else snapshot.status) else this },
+            // account running on past this run keeps the chat running. And this frame — the finished run's footer
+            // in it — is the frame the stream's word on the run ends in, whichever of the hub's two listeners (this
+            // one, or the follow's own, see [startStreaming]) publishes first: a run is never shown ended with its
+            // stream on (main's CI at `adcd808` caught the frame once). The follow's job settles itself right after.
+            transform = {
+                if (activeRunId != run.id) this
+                else copy(
+                    runStatus = if (run.id != e.cancelledRunId && (e.accountNamesNewerRun(run.id) || e.rowSaysRunning())) RunStatus.RUNNING else snapshot.status,
+                    isStreaming = isStreaming && !(followed && snapshot.finished),
+                    isReconnecting = isReconnecting && !(followed && snapshot.finished),
+                )
+            },
         )
         persist(e, session.current)
         if (snapshot.hasTrace) writeTrace(e.agentId, run.id, parseIsoMillis(run.createdAt, snapshot.startedAtMillis), snapshot.items)
@@ -3448,7 +3491,10 @@ class ConversationRepository(
         val reply = text.takeIf { it.isNotEmpty() }?.let { V0ConversationMessageDto("res-${run.id}", ASSISTANT_MESSAGE, it) }
         runs = runs.map { if (it.id == run.id) terminal else it }
         local = local.map { if (it.run.id == run.id) it.copy(run = terminal, reply = reply) else it }
-        if (!standsIn(run.id) && reply != null && messages.none { it.id == reply.id }) messages = messages + reply
+        // The transcript may hold the reply already — a load that read it before the stream's end came through
+        // (the same words under the transcript's own id): the run's copy is not added on top of it.
+        val transcriptHasIt = reply != null && messages.lastOrNull { it.type == ASSISTANT_MESSAGE }?.text?.trim() == text
+        if (!standsIn(run.id) && reply != null && messages.none { it.id == reply.id } && !transcriptHasIt) messages = messages + reply
         inputsUpdatedAt = maxOf(inputsUpdatedAt, finishedAt)
     }
 

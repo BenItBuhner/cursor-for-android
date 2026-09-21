@@ -315,6 +315,26 @@ class ConversationRepositoryTest {
 
     private fun ConversationState.types() = items.map { it::class.simpleName }
 
+    /**
+     * Every frame [conversations] publishes for [agentId] from now on, subscribed before the caller's next line runs.
+     * [assertNoEndedRunStreaming] is the rule #237/#241 pinned read the other way round: no frame shows a run's footer
+     * while the stream on that run is still on — the record's footer and the stream's end arrive in one frame.
+     * Main's CI at `adcd808` caught a frame that broke it, once, in the test below; a sampled `state.value` can miss it.
+     */
+    private inner class Frames(conversations: ConversationRepository, agentId: String) {
+        val frames = java.util.concurrent.CopyOnWriteArrayList<ConversationState>()
+        private val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { conversations.state(agentId).collect { frames += it } }
+
+        fun stop() = job.cancel()
+
+        fun assertNoEndedRunStreaming(runId: String) {
+            frames.forEachIndexed { i, f ->
+                val footer = f.items.any { it is RunFooter && it.runId == runId }
+                assertWithMessage("frame $i shows $runId's footer with the stream still on: streaming=${f.isStreaming} status=${f.runStatus} items=${f.types()}").that(footer && f.isStreaming && f.activeRunId == runId).isFalse()
+            }
+        }
+    }
+
     @Test
     fun `a transcript saved earlier renders before the network and is then revalidated`() = runBlocking<Unit> {
         api.addIdleAgent("bc-1", "Agent", "run-1", result = "Second reply")
@@ -620,13 +640,16 @@ class ConversationRepositoryTest {
         assertThat(api.conversationCalls).isEqualTo(1)
 
         // The connection drops after the first tool call; the hub polls, and the run is finished by then.
+        val frames = Frames(conversations, "bc-1")
         streamFirstHalf("run-1")
         awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
         api.runs["run-1"] = api.runs.getValue("run-1").copy(status = "FINISHED", result = "Shipped.", durationMs = 30_000)
         streamer.emit("run-1", RunStreamEvent.Done)
-        // The footer and the end of streaming are published a beat apart; the wait covers both, so the assertions below
-        // read one settled state rather than the instant between the two.
+        // The footer and the stream's end come in one frame, whichever of the hub's poll and a list refresh brings the
+        // finished record first: waited for as a pair, and every frame between checked for the pair's halves apart.
         awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
+        frames.stop()
+        frames.assertNoEndedRunStreaming("run-1")
         val polled = conversations.state("bc-1").value
         assertThat(polled.isStreaming).isFalse()
         // The outcome is shown right away — final reply included — even though the edit in between never arrived.
@@ -649,6 +672,45 @@ class ConversationRepositoryTest {
         assertThat(replayed.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
         assertThat(api.conversationCalls).isEqualTo(2)
         awaitUntil { traces.read("bc-1")["run-1"]?.items?.filterIsInstance<ActivityGroup>()?.single()?.calls?.size == 2 }
+    }
+
+    /**
+     * The ordering main's CI hit once (`adcd808`, 1 of 2046): the run list reports the followed run finished before
+     * its stream has said so — a revalidation landing while the connection is only dropped — and the merge drew the
+     * record's footer under the run in one frame and turned the stream off in the next. Forced here: the record is
+     * finished and merged by a revalidation while the stream is still open; the frame that first carries the footer
+     * must be the frame the stream ends in, and the run's status must be the record's in that same frame.
+     */
+    @Test
+    fun `a run list that reports the followed run finished before its stream does ends the follow in the frame that shows the footer`() = runBlocking<Unit> {
+        api.addRunningAgent("bc-1", "Agent", "run-1")
+        api.transcripts["bc-1"] = transcript("user_message" to "Ship it")
+        agents.refresh()
+        val conversations = repository()
+        conversations.attach("bc-1")
+        awaitUntil { !conversations.state("bc-1").value.isLoading && conversations.state("bc-1").value.isStreaming }
+        streamFirstHalf("run-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is ActivityGroup } }
+        val frames = Frames(conversations, "bc-1")
+        // The server has the run over; the stream has not said so (the connection is merely quiet).
+        now += 60_000
+        finishOnServer("bc-1", "run-1", "Shipped.", at = "2026-04-13T19:00:00.000Z")
+        conversations.revalidate("bc-1")
+        awaitUntil { conversations.state("bc-1").value.items.any { it is RunFooter && it.runId == "run-1" } }
+        frames.stop()
+        frames.assertNoEndedRunStreaming("run-1")
+        val settled = conversations.state("bc-1").value
+        assertThat(settled.isStreaming).isFalse()
+        assertThat(settled.isReconnecting).isFalse()
+        assertThat(settled.runStatus).isEqualTo(RunStatus.FINISHED)
+        // The story the stream told stands under the run, with the record's footer and the transcript's reply.
+        assertThat(settled.items.filterIsInstance<ActivityGroup>().single().calls).hasSize(1)
+        assertThat(settled.items.filterIsInstance<AssistantMessage>().single().markdown).isEqualTo("Shipped.")
+        // The stream's own late word changes nothing.
+        streamer.emit("run-1", RunStreamEvent.Done)
+        delay(200)
+        assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
+        assertThat(conversations.state("bc-1").value.types()).isEqualTo(settled.types())
     }
 
     @Test
