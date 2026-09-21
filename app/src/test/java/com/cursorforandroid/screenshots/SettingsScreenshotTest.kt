@@ -74,7 +74,7 @@ class SettingsScreenshotTest {
         AppClock.nowMillis = { FIXED_NOW }
         val context = ApplicationProvider.getApplicationContext<Context>()
         // Robolectric has no Android Keystore; an ordinary private file stands in, as in AppScreenshotTest.
-        graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+        graph = AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, appVersion = SCREENSHOT_APP_VERSION)
         // Turning the mode on would reach for the account (its picture, the pins' first round); there is none here.
         graph.extendedMode.onEnabled = {}
     }

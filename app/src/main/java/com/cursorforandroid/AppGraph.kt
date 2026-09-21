@@ -164,6 +164,11 @@ class AppGraph(
      * already on disk — so the What's new surfaces can be driven without GitHub.
      */
     private val releaseNotes: WhatsNewRepository? = null,
+    /**
+     * The version this build reports - in Settings, the User-Agent, the diagnostics and to the What's new lookup.
+     * Injectable for tests only: the screenshot tests render a fixed version, so cutting a release re-records nothing.
+     */
+    val appVersion: String = BuildConfig.VERSION_NAME,
 ) {
     private val app = context.applicationContext
 
@@ -316,7 +321,7 @@ class AppGraph(
             probe = DesktopProbe(client = { lazyAccountClient.value }, origin = DesktopPage.ORIGIN),
             capabilities = capabilities,
             isDemo = { session.isDemo },
-            appVersion = BuildConfig.VERSION_NAME,
+            appVersion = appVersion,
         )
     }
     val remote: RemoteRepository get() = lazyRemote.value
@@ -683,7 +688,7 @@ class AppGraph(
             client = lazyReleases.value,
             prefs = prefs,
             cache = UpdateCache(JsonDiskCache(File(app.cacheDir, "update-check"))),
-            platform = AndroidUpdatePlatform(app),
+            platform = AndroidUpdatePlatform(app, installedVersionName = appVersion),
             downloadDir = File(app.cacheDir, "updates"),
             // The background service streaming a run is the one thing a silent self-update would cut off; a monitor
             // this process never built is holding no stream, and asking is not worth building one.
@@ -701,7 +706,7 @@ class AppGraph(
             client = lazyReleases.value,
             prefs = prefs,
             cache = JsonDiskCache(File(app.cacheDir, "whats-new")),
-            installedVersionName = BuildConfig.VERSION_NAME,
+            installedVersionName = appVersion,
         )
     }
     val whatsNew: WhatsNewRepository get() = lazyWhatsNew.value
@@ -850,7 +855,7 @@ class AppGraph(
         val syncs = if (lazyProjects.isInitialized()) projects.syncRecords() else emptyMap()
         return ProjectDiagnostics.render(
             ProjectDiagnostics.Input(
-                appVersion = BuildConfig.VERSION_NAME,
+                appVersion = appVersion,
                 nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
                 extendedMode = extendedMode.enabled.first(),
                 projectsCapability = allowed.projects,
@@ -893,7 +898,7 @@ class AppGraph(
         val state = agentId?.let { conversations.state(it).value }
         return TranscriptDiagnostics.render(
             TranscriptDiagnostics.Input(
-                appVersion = BuildConfig.VERSION_NAME,
+                appVersion = appVersion,
                 nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
                 extendedMode = extendedMode.enabled.first(),
                 agentId = agentId,
@@ -944,7 +949,7 @@ class AppGraph(
     suspend fun sendDiagnosticsToProject(): String {
         if (session.isDemo) throw java.io.IOException(DiagnosticsInbox.DEMO_HAS_NO_ACCOUNT)
         val now = AppClock.now()
-        val text = DiagnosticsInbox.compose(BuildConfig.VERSION_NAME, now, projectDiagnosticsReport(), transcriptDiagnosticsReport())
+        val text = DiagnosticsInbox.compose(appVersion, now, projectDiagnosticsReport(), transcriptDiagnosticsReport())
         return storeFiles.writeText(DiagnosticsInbox.PROJECT_ID, DiagnosticsInbox.path(now), text)
     }
 

@@ -48,7 +48,6 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.api.CursorEndpoints
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.repo.SessionState
@@ -440,7 +439,7 @@ private fun UpdateRows(graph: AppGraph, open: (String) -> Unit, onDebug: () -> U
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("Version ${BuildConfig.VERSION_NAME}", style = type.base, color = colors.textPrimary)
+            Text("Version ${graph.appVersion}", style = type.base, color = colors.textPrimary)
             Text(
                 updateStatusLine(state),
                 style = type.small,

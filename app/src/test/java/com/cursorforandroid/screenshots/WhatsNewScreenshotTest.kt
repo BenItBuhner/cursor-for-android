@@ -19,7 +19,6 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.local.PreferencesStore
 import com.cursorforandroid.data.local.SecureKeyStore
 import com.cursorforandroid.data.update.WhatsNewFixtures
@@ -68,10 +67,9 @@ import java.util.TimeZone
  * What's new for the installed version: the page (the version and its release date in the header, the curated notes
  * in the transcript's markdown, the release page and Done in the footer) and the two ways in — the row beneath
  * "Check for updates" in Settings and the card in the sidebar's slot above the account footer. The notes are a
- * release's own (see [WhatsNewFixtures]); the page and the card carry that release's version, so those frames stand
- * across version bumps, while the Settings frame is titled with the build under test so it reads as one version
- * with the row above it — and is re-recorded with the other Settings frames when the version moves. Same device
- * qualifiers as [AppScreenshotTest].
+ * release's own (see [WhatsNewFixtures]); the page and the card carry that release's version, while the Settings
+ * frame is titled with [SCREENSHOT_APP_VERSION] like the other Settings frames, so it reads as one version with the
+ * row above it. None of them depends on the build's own version. Same device qualifiers as [AppScreenshotTest].
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalRoborazziApi::class)
 @RunWith(AndroidJUnit4::class)
@@ -100,7 +98,7 @@ class WhatsNewScreenshotTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val notes = WhatsNewFixtures.repository(PreferencesStore(context), folder.newFolder(), versionName = version, notes = WhatsNewFixtures.notes(version))
         // Robolectric has no Android Keystore; an ordinary private file stands in, as in AppScreenshotTest.
-        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, releaseNotes = notes)
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, releaseNotes = notes, appVersion = version)
     }
 
     @After
@@ -139,12 +137,12 @@ class WhatsNewScreenshotTest {
     /** Settings, at the Version and updates card: the row directly beneath the version and its Check for updates. */
     @Test
     fun settingsRow() {
-        val graph = graph(BuildConfig.VERSION_NAME)
+        val graph = graph(SCREENSHOT_APP_VERSION)
         compose.setContent { Scene { SettingsScreen(graph = graph, user = USER, isDemo = false, onOpenSidebar = null, onBack = {}) } }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag(SettingsTags.WHATS_NEW_ROW)).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText(SettingsCopy.DISCLAIMER).performScrollTo()
         compose.waitForIdle()
-        compose.onNodeWithText(WhatsNewCopy.title(BuildConfig.VERSION_NAME)).assertIsDisplayed()
+        compose.onNodeWithText(WhatsNewCopy.title(SCREENSHOT_APP_VERSION)).assertIsDisplayed()
         compose.onNodeWithText("Check for updates").assertIsDisplayed()
         capture("91_whats_new_settings_row")
     }
