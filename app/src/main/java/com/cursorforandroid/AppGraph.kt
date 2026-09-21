@@ -103,6 +103,7 @@ import com.cursorforandroid.data.repo.SteeringRepository
 import com.cursorforandroid.data.repo.StoreFileRepository
 import com.cursorforandroid.domain.AgentMode
 import com.cursorforandroid.domain.AgentScope
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.Capabilities
 import com.cursorforandroid.domain.ProjectDiagnostics
@@ -443,6 +444,12 @@ class AppGraph(
     /** What the last refresh cost, stage by stage, across the list, the account round, the Projects and the badges (see [RefreshStats]). */
     val refreshStats = RefreshStats()
 
+    /**
+     * The list's work in flight — its pages, its passes by id, the account's list read — shared by the list and the
+     * account layer (see [PendingWork]): what the sidebar's one loading row stands for, and what the diagnostics name.
+     */
+    val pendingWork = PendingWork()
+
     private val lazyAgents = lazy {
         AgentRepository(
             session,
@@ -454,6 +461,7 @@ class AppGraph(
             account = accountAgents,
             capabilities = capabilities,
             stats = refreshStats,
+            pending = pendingWork,
             // A pinned chat the public API will not give (Extended mode): stood in from its account record.
             recordOf = { id -> if (!session.isDemo && capabilities().accountSession) lazyAccountAgents.value.record(id) else null },
             start = { lazyAgentStart.value },
@@ -469,6 +477,8 @@ class AppGraph(
             // so building the list does not build the pins; the read itself asks the capabilities, and with
             // Extended mode off it returns at once.
             repo.accountPrime = { pins.primeForFetch() }
+            // The account's list paged alongside the public one, once per page the reader asks for (see loadMore).
+            repo.accountPage = { pins.loadMore() }
         }
     }
     val agents: AgentRepository get() = lazyAgents.value
@@ -510,6 +520,7 @@ class AppGraph(
             },
             capabilities = capabilities,
             stats = refreshStats,
+            pending = pendingWork,
         )
     }
     val pins: PinRepository get() = lazyPins.value
@@ -920,6 +931,16 @@ class AppGraph(
                 notificationPrefs = prefs.projectNotifications.first(),
                 managerCandidates = list.agents.mapNotNullTo(LinkedHashSet()) { row -> row.parent?.takeIf { it.kind == com.cursorforandroid.domain.AgentParentKind.PROJECT_WORKER }?.id },
                 refresh = refreshStats.snapshot.value,
+                loading = ProjectDiagnostics.LoadingSummary(
+                    shown = pendingWork.state.value.shown,
+                    work = pendingWork.describe(),
+                    isRefreshing = list.isRefreshing,
+                    isLoadingMore = list.isLoadingMore,
+                    hasMore = list.hasMore,
+                    loadMoreError = list.loadMoreError,
+                    pagesLoaded = agents.pagesLoadedCount(),
+                    hasNextCursor = agents.hasNextCursor(),
+                ),
             ),
         )
     }

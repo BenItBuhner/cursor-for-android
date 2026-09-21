@@ -33,6 +33,7 @@ import com.cursorforandroid.ui.agents.AgentListUiState
 import com.cursorforandroid.ui.agents.AgentRowActions
 import com.cursorforandroid.ui.agents.Sidebar
 import com.cursorforandroid.ui.agents.SidebarCallbacks
+import com.cursorforandroid.ui.agents.SidebarTail
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
@@ -255,16 +256,25 @@ class ProjectFilterScreenshotTest {
     }
 
     /**
-     * A pull's indicator is let go once the first page and the status scan have landed; while the older pages, the
-     * rows fetched by id and the account's round settle underneath, the list ends in a quiet "Still syncing older
-     * items…" footer rather than holding the spinner.
+     * The sidebar's one loading row: a pull's indicator is let go once the first page and the status scan have
+     * landed, and while the older pages and the rows fetched by id are still on the wire the list ends in
+     * "Loading more…" — the same row a page the reader scrolled to shows, never two rows at once.
      */
     @Test
-    fun sidebarStillSyncingOlderItems() {
-        val state = state(ListPreferences()).copy(isSyncingOlder = true)
+    fun sidebarLoadingMore() {
+        val state = state(ListPreferences()).copy(tail = SidebarTail.Loading(listOf("list page 2")))
         show(state)
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Still syncing older items\u2026").fetchSemanticsNodes().isNotEmpty() }
-        capture("88_sidebar_still_syncing")
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Loading more\u2026").fetchSemanticsNodes().isNotEmpty() }
+        capture("125_sidebar_loading_more")
+    }
+
+    /** A page that failed: the server's words in the tail, and Retry — nothing spins for a page that is not being fetched. */
+    @Test
+    fun sidebarLoadMoreFailed() {
+        val state = state(ListPreferences()).copy(tail = SidebarTail.Failed("Cursor is rate limiting requests. Try again in 30 s."))
+        show(state)
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Retry").fetchSemanticsNodes().isNotEmpty() }
+        capture("126_sidebar_load_more_failed")
     }
 
     private companion object {

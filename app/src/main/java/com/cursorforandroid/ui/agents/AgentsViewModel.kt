@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.RefreshDepth
-import com.cursorforandroid.data.repo.RootScanRecord
+import com.cursorforandroid.data.repo.AgentListState
 import com.cursorforandroid.data.repo.RefreshOutcome
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.AgentIndicator
@@ -18,6 +18,7 @@ import com.cursorforandroid.domain.FilterKind
 import com.cursorforandroid.domain.GitFilter
 import com.cursorforandroid.domain.GroupBy
 import com.cursorforandroid.domain.ListPreferences
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.KnownRoot
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SortOrder
@@ -45,6 +46,41 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
+/**
+ * The sidebar's tail: the one row past the last chat, and never more than one. A spinner there is work in flight —
+ * the pages and passes the list registered ([com.cursorforandroid.domain.PendingWork]), named in the diagnostics —
+ * and every state ends within the bounds of that work: in rows, in nothing (the end of the list), or in the server's
+ * words with Retry. Nothing spins for a flag; nothing is asked for again behind a spinner once it has failed.
+ */
+sealed interface SidebarTail {
+    /** Nothing past the last chat: the list is whole, or a refresh shows its own indicator at the top. */
+    data object None : SidebarTail
+
+    /** "Loading more…": [work] is what is in flight, as the diagnostics name it. */
+    data class Loading(val work: List<String>) : SidebarTail
+
+    /** The server has older chats and nothing fetches them: a line that asks for the next page. */
+    data object More : SidebarTail
+
+    /** The last page could not be fetched: the server's words, and Retry. */
+    data class Failed(val message: String) : SidebarTail
+}
+
+/**
+ * The tail from the list's state and the work in flight: nothing while the refresh indicator is up (one indicator
+ * at a time); a spinner while a page is being fetched or the work the user asked for is still in flight — the
+ * items named for the diagnostics; the server's words with Retry for a page that failed; the ask for the next page
+ * while the server has one; else nothing. The one rule the sidebar's end is drawn by, here so a test of the list
+ * under a phone's weather reads its tail the way the sidebar would.
+ */
+internal fun sidebarTail(list: AgentListState, work: PendingWork.State): SidebarTail = when {
+    !list.hasLoaded || list.isRefreshing -> SidebarTail.None
+    list.isLoadingMore || work.shown -> SidebarTail.Loading(work.items.map { it.name })
+    list.loadMoreError != null -> SidebarTail.Failed(list.loadMoreError)
+    list.hasMore -> SidebarTail.More
+    else -> SidebarTail.None
+}
+
 data class AgentListUiState(
     /** The sidebar's groups: filtered by [prefs] and [query], sorted per [prefs], pinned first. */
     val sections: List<AgentSection> = emptyList(),
@@ -59,11 +95,8 @@ data class AgentListUiState(
     val local: LocalAgentState = LocalAgentState(),
     val query: String = "",
     val isRefreshing: Boolean = false,
-    /**
-     * The pull's indicator has been let go but the refresh still settles underneath — the older pages, the rows
-     * fetched by id, the account round, the memberships: the sidebar's quiet "still syncing" footer.
-     */
-    val isSyncingOlder: Boolean = false,
+    /** The one row past the last chat: what the list is doing at its end, or nothing (see [SidebarTail]). */
+    val tail: SidebarTail = SidebarTail.None,
     val hasLoaded: Boolean = false,
     /** The server lists agents older than the ones loaded; the sidebar's end asks for them (see [AgentsViewModel.loadMore]). */
     val hasMore: Boolean = false,
@@ -130,15 +163,12 @@ class AgentsViewModel(
     }
 
     /**
-     * The account layer still at work under the released indicator: the account round, a membership pass, a
-     * discovery scan. The list's own tail ([AgentListState.isSettling]) is read off the list state itself, in the
-     * same emission as the rows, so the two never disagree for a frame.
+     * The list's work in flight, and whether the user asked for it (see [com.cursorforandroid.domain.PendingWork]):
+     * what the tail's spinner stands for. The account layer's own passes — a membership read, a discovery scan —
+     * are not the list's tail and show nothing here; they had a row of their own that outlived every request
+     * behind it (0.3.39–0.3.59), which is what this replaces.
      */
-    private val accountSyncing: Flow<Boolean> = combine(
-        graph.pins.state.map { it.isSyncing }.distinctUntilChanged(),
-        graph.projects.syncingLineage,
-        graph.projects.lastRootScan.map { it?.status == RootScanRecord.Status.Running }.distinctUntilChanged(),
-    ) { round, memberships, scanning -> round || memberships || scanning }
+    private val pending = graph.pendingWork.state
 
     /** The rows on screen, as the sidebar reports them (see [rowsVisible]): what the pull request badges are read for. */
     private val visibleIds = MutableStateFlow<List<String>>(emptyList())
@@ -176,8 +206,8 @@ class AgentsViewModel(
         graph.prefs.listPreferences,
         device,
         query,
-        combine(clock, accountSyncing) { now, syncing -> now to syncing },
-    ) { list, prefs, device, q, (now, syncing) ->
+        combine(clock, pending) { now, work -> now to work },
+    ) { list, prefs, device, q, (now, work) ->
         val local = device.local
         val sections = AgentListOrganizer.organize(list.agents, prefs, local, q, nowMillis = now, unavailableProjects = device.unavailableProjects, knownRoots = device.knownRoots, memberCounts = device.memberCounts)
         // The sidebar search narrows the sidebar only; while it is in use the recents are organized without it.
@@ -192,7 +222,7 @@ class AgentsViewModel(
             local = local,
             query = q,
             isRefreshing = list.isRefreshing,
-            isSyncingOlder = !list.isRefreshing && (list.isSettling || syncing),
+            tail = sidebarTail(list, work),
             hasLoaded = list.hasLoaded,
             hasMore = list.hasMore,
             isLoadingMore = list.isLoadingMore,
@@ -292,8 +322,15 @@ class AgentsViewModel(
     fun loadMore() = viewModelScope.launch {
         val list = graph.agents.state.value
         if (!list.hasMore || list.isLoadingMore || list.isRefreshing) return@launch
-        // The account's page first, so the rows the public page brings are published placed and named.
-        graph.pins.loadMore()
+        // The repository reads the account's page ahead of the public one (see AgentRepository.accountPage) and
+        // marks the ask at once, so a second ask while the page is on its way is a no-op rather than another page.
+        if (graph.agents.loadMore() != RefreshOutcome.Refreshed) return@launch
+        refreshPullRequests()
+    }
+
+    /** The tail's Retry: the page that failed, asked for again — the one way a failed page is asked for again. */
+    fun retryLoadMore() = viewModelScope.launch {
+        if (graph.agents.state.value.isRefreshing) return@launch
         if (graph.agents.loadMore() != RefreshOutcome.Refreshed) return@launch
         refreshPullRequests()
     }

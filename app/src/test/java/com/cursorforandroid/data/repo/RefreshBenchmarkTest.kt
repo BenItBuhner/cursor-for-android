@@ -418,7 +418,7 @@ class RefreshBenchmarkTest {
                     if (s.hasLoaded && marks.firstPaintMs < 0) marks.firstPaintMs = log.nowMs()
                     if (s.isRefreshing) { shown = true; marks.spinnerShown = true }
                     if (shown && !s.isRefreshing && marks.spinnerReleasedMs < 0) marks.spinnerReleasedMs = log.nowMs()
-                    if (marks.pulledAtMs >= 0 && !s.isRefreshing && !s.isSettling && s.agents.isNotEmpty() && marks.listSettledMs < 0 && log.nowMs() > marks.pulledAtMs + 50) marks.listSettledMs = log.nowMs()
+                    if (marks.pulledAtMs >= 0 && !s.isRefreshing && !agents.pending.state.value.shown && s.agents.isNotEmpty() && marks.listSettledMs < 0 && log.nowMs() > marks.pulledAtMs + 50) marks.listSettledMs = log.nowMs()
                 }
             }
             agents.restoreFromCache()
@@ -444,7 +444,7 @@ class RefreshBenchmarkTest {
             while (true) {
                 delay(100)
                 val quiet = log.nowMs() - log.lastEndMs() >= quietMs && log.calls.isNotEmpty()
-                if (quiet && !pins.state.value.isSyncing && !agents.state.value.isRefreshing && !agents.state.value.isSettling && !projects.syncingLineage.value && projects.lastRootScan.value?.status != RootScanRecord.Status.Running) return@withTimeout
+                if (quiet && !pins.state.value.isSyncing && !agents.state.value.isRefreshing && agents.pending.items.isEmpty() && !projects.syncingLineage.value && projects.lastRootScan.value?.status != RootScanRecord.Status.Running) return@withTimeout
             }
         }
     }

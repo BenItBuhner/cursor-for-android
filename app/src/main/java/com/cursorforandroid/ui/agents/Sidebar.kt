@@ -104,6 +104,8 @@ data class SidebarCallbacks(
     val onVisibleRows: (List<String>) -> Unit = {},
     /** The "What's new in …" card above the account footer was tapped: opens the installed version's notes. */
     val onWhatsNew: () -> Unit = {},
+    /** The tail's Retry after a page failed: the same page, asked for again (see `AgentsViewModel.retryLoadMore`). */
+    val onRetryLoadMore: () -> Unit = {},
 )
 
 /** Test tags for the card slot above the account footer: one card at a time, the update's or the notes'. */
@@ -202,16 +204,21 @@ fun Sidebar(
             // The list holds the newest agents; the pages behind them are fetched as the reader nears its end. In
             // the sidebar that is the last row being within a few of the bottom, whatever filter is on: with a
             // narrow filter the loaded pages may match little, and the ones behind them are where more matches are.
-            val hasMore = state.hasMore
-            val isLoadingMore = state.isLoadingMore
+            // Not while the trailing group is folded, though: a page fetched into a fold shows the reader nothing,
+            // and with the whole account behind it the row would spin for minutes to no visible end (Bennett's
+            // frame of 2026-09-21: "Older · 108" folded, "Loading more…" below it). The line to tap stays.
+            // And only while the tail asks for it: a page that failed is asked for again by Retry, not by a spinner.
+            val tail = state.tail
+            val lastGroupFolded = state.sections.lastOrNull()?.let { query.isBlank() && it.key in state.collapsedSections } == true
+            val autoLoad = tail == SidebarTail.More && !lastGroupFolded
             // The rows on screen, reported as the list settles: their keys are `<section>:<agent id>`.
             LaunchedEffect(listState) {
                 snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? String)?.takeIf { key -> key.contains(':') && !key.startsWith("hdr-") }?.substringAfterLast(':') } }
                     .distinctUntilChanged()
                     .collect { callbacks.onVisibleRows(it) }
             }
-            LaunchedEffect(listState, hasMore, isLoadingMore) {
-                if (!hasMore || isLoadingMore) return@LaunchedEffect
+            LaunchedEffect(listState, autoLoad) {
+                if (!autoLoad) return@LaunchedEffect
                 snapshotFlow { listState.layoutInfo.let { info -> (info.visibleItemsInfo.lastOrNull()?.index ?: -1) to info.totalItemsCount } }
                     .collect { (lastVisible, total) -> if (total > 0 && lastVisible >= total - MoreAgentsPrefetchRows) callbacks.onLoadMore() }
             }
@@ -281,20 +288,10 @@ fun Sidebar(
                         }
                     }
                 }
-                // Past the last row, while the server has older agents: the page being fetched, or a tap away.
-                if (state.hasLoaded && hasMore) {
-                    item("more") { MoreAgentsRow(isLoading = isLoadingMore, onLoad = callbacks.onLoadMore) }
-                }
-                // The pull's indicator is let go once the first page is on screen; the rest of the refresh — the
-                // older pages, the rows fetched by id, the account's round — says so quietly here until it settles.
-                if (state.isSyncingOlder) {
-                    item("syncing") {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("syncing-older"), verticalAlignment = Alignment.CenterVertically) {
-                            SpinnerRing()
-                            Spacer(Modifier.width(8.dp))
-                            Text("Still syncing older items\u2026", style = type.small, color = colors.textQuaternary)
-                        }
-                    }
+                // Past the last row, one row at most: the work in flight, the server's words with Retry, or the
+                // ask for the next page (see [SidebarTail]).
+                if (tail != SidebarTail.None) {
+                    item("tail") { SidebarTailRow(tail, onLoad = callbacks.onLoadMore, onRetry = callbacks.onRetryLoadMore) }
                 }
             }
         }
@@ -349,19 +346,24 @@ const val PROJECTS_DEFAULT_MODE_NOTICE = "Project workers appear as plain chats 
 /** How many rows from the end of the list the reader may be before the next page of agents is asked for. */
 private const val MoreAgentsPrefetchRows = 4
 
-/** The row past the last agent while the server has older ones: "Loading more…" as a page comes, else a line that asks for one. */
+/**
+ * The row past the last agent — the sidebar's one loading row. "Loading more…" while the list has work in flight
+ * (a page, the tail of a refresh: see [SidebarTail.Loading]); the server's words and Retry when the page failed;
+ * "Load more chats" while the server has older ones and nothing fetches them. One wording for the spinner, one row
+ * at a time, and never a spinner without a request behind it.
+ */
 @Composable
-internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Modifier = Modifier) {
+internal fun SidebarTailRow(tail: SidebarTail, onLoad: () -> Unit, onRetry: () -> Unit, modifier: Modifier = Modifier) {
     val colors = CursorTheme.colors
     val type = CursorTheme.typography
-    Box(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag(if (isLoading) "loading-more-agents" else "load-more-agents")) {
-        if (isLoading) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SpinnerRing(size = 12.dp)
-                Spacer(Modifier.width(8.dp))
-                Text("Loading more…", style = type.small, color = colors.textQuaternary)
-            }
-        } else {
+    when (tail) {
+        SidebarTail.None -> Unit
+        is SidebarTail.Loading -> Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("loading-more-agents"), verticalAlignment = Alignment.CenterVertically) {
+            SpinnerRing(size = 12.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(LOADING_MORE, style = type.small, color = colors.textQuaternary)
+        }
+        SidebarTail.More -> Box(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("load-more-agents")) {
             Text(
                 "Load more chats",
                 style = type.small,
@@ -369,8 +371,21 @@ internal fun MoreAgentsRow(isLoading: Boolean, onLoad: () -> Unit, modifier: Mod
                 modifier = Modifier.pressable(onLoad, CursorTheme.shapes.base).padding(vertical = 4.dp),
             )
         }
+        is SidebarTail.Failed -> Row(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("load-more-failed"), verticalAlignment = Alignment.CenterVertically) {
+            Text(tail.message, style = type.small, color = colors.red, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Retry",
+                style = type.small,
+                color = colors.textPrimary,
+                modifier = Modifier.pressable(onRetry, CursorTheme.shapes.base).padding(horizontal = 6.dp, vertical = 4.dp).testTag("load-more-retry"),
+            )
+        }
     }
 }
+
+/** The tail's one wording for work in flight. */
+internal const val LOADING_MORE = "Loading more…"
 
 /**
  * The desktop app's "Restart to update" affordance, sized to the sidebar rows: one card in the slot above the account

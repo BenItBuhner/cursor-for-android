@@ -64,7 +64,8 @@ class RefreshFaultsTest {
         assertWithMessage("rows after the failed refresh").that(list.agents.map { it.id }).containsExactly("bc-0", "bc-1", "bc-2", "bc-3", "bc-4")
         assertThat(list.error).isEqualTo(words)
         assertThat(list.isRefreshing).isFalse()
-        assertThat(list.isSettling).isFalse()
+        // Nothing registered as in flight: the tail's row has no request left to stand for.
+        assertThat(rig.agents.pending.items).isEmpty()
         assertThat(list.hasLoaded).isTrue()
     }
 

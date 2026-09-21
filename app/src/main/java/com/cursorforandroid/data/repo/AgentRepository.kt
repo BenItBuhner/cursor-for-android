@@ -44,6 +44,7 @@ import com.cursorforandroid.domain.ModelParam
 import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.PendingWork
 import com.cursorforandroid.domain.RefreshStats
 import com.cursorforandroid.domain.RunStatus
 import com.cursorforandroid.domain.RunningScan
@@ -92,13 +93,14 @@ data class AgentListState(
     val error: String? = null,
     /** The server has agents older than the ones loaded: the next page is a scroll to the end of the list away (see [AgentRepository.loadMore]). */
     val hasMore: Boolean = false,
+    /** The next page is being fetched (see [AgentRepository.loadMore]): from the ask to the page's landing or its failure, never longer. */
     val isLoadingMore: Boolean = false,
     /**
-     * The pull-to-refresh indicator has been let go — the first page and the status scan landed — while the rest of
-     * the refresh still runs underneath: the older pages, the run records, the rows fetched by id. The sidebar shows
-     * a quiet footer for it rather than a spinner (see `AgentsViewModel`).
+     * The last page could not be fetched: the server's words (or the connection's). The sidebar's tail shows them
+     * with Retry, and asks for no page on its own until the user does or a refresh has gone through — an ask that
+     * failed is not made again behind a spinner (see `AgentsViewModel.SidebarTail.Failed`).
      */
-    val isSettling: Boolean = false,
+    val loadMoreError: String? = null,
 )
 
 /**
@@ -289,6 +291,12 @@ class AgentRepository(
     private val maxMaterializedRunning: Int = MAX_MATERIALIZED_RUNNING,
     /** What each refresh cost, for the diagnostics (see [RefreshStats]); the graph shares one recorder across the layers. */
     private val stats: RefreshStats = RefreshStats(),
+    /**
+     * The list's work in flight (see [PendingWork]): every page, every pass fetching rows by id, registered for as
+     * long as it runs. The sidebar's one loading row is drawn from it; the graph shares one registry with the
+     * account layer, so the account's list read shows in the same row.
+     */
+    val pending: PendingWork = PendingWork(),
     /** How a launch whose reply was lost looks for its chat (see [launch]): reads of `GET /v1/agents/{id}`, and the wait between them. */
     private val lostReplyProbes: Int = LOST_REPLY_PROBES,
     private val lostReplyProbeDelayMs: Long = LOST_REPLY_PROBE_DELAY_MS,
@@ -662,7 +670,8 @@ class AgentRepository(
             val held = _state.value.agents.mapTo(HashSet()) { it.id }
             val now = AppClock.now()
             val due = rootRecords.keys.filter { it !in held && (rootUnresolved[it]?.let { until -> now >= until } ?: true) }.take(budget)
-            byId(due, startedIn) { id ->
+            if (due.isEmpty()) return@withLock 0
+            pending.track("Project roots by id (${due.size})") { byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     rootUnresolved.remove(id)
@@ -698,7 +707,7 @@ class AgentRepository(
                         rootFailures[id] = failure?.describe() ?: "failed"
                     }
                 }
-            }
+            } }
         }
     }
 
@@ -931,9 +940,17 @@ class AgentRepository(
         restoreFromCache()
         if (!silent) stats.begin()
         val (job, joined) = startOrJoin(silent, depth)
-        // A pull that joins a fetch already past its first page and status scan (the cold start's own silent fetch,
-        // most often) has nothing to hold the indicator for: the rest settles under the footer, as its own would.
-        if (joined && !silent) publish(null, startedIn) { if (firstPageLanded) it.copy(isSettling = true) else it.copy(isRefreshing = true) }
+        if (joined && !silent) {
+            // A pull that joins a fetch already past its first page and status scan (the cold start's own silent
+            // fetch, most often) has nothing to hold the indicator for: the rest settles under the tail's row, as its
+            // own would. One still before its first page shows the indicator until that page lands.
+            if (firstPageLanded) pending.show() else publish(null, startedIn) { it.copy(isRefreshing = true) }
+            job.join()
+            // The fetch may have ended between the join and the word above: an indicator raised on a fetch that is
+            // over is let go here, unless a newer fetch is showing its own.
+            publish(null, startedIn) { s -> if (s.isRefreshing && !synchronized(this) { inFlight?.job?.let { it !== job && it.isActive } == true }) s.copy(isRefreshing = false) else s }
+            return
+        }
         job.join()
     }
 
@@ -941,22 +958,54 @@ class AgentRepository(
     @Volatile private var firstPageLanded = false
 
     /**
+     * The account's list paged alongside the public one (Extended mode): set by the graph to the pin repository's
+     * page read, so the rows a page brings are published placed and named. Called by [loadMore] ahead of each public
+     * page, once per page — the ask is the list's, so a second ask while one is on its way is a no-op rather than a
+     * second account page. Best effort: a failure of the account's page fails nothing of the public one.
+     */
+    @Volatile var accountPage: (suspend () -> Unit)? = null
+
+    /**
      * Fetches the page after the window's last one, on both endpoints, and adds its rows to the list: for the reader
-     * reaching the end of the sidebar. One at a time; a refresh in flight is waited for first, since it lands the
-     * cursors this reads from. [RefreshOutcome.Skipped] when there is no page to fetch or one is already being fetched.
+     * reaching the end of the sidebar. One at a time — the ask is marked at once ([AgentListState.isLoadingMore]), so
+     * the row spins from the ask and a second ask meanwhile is a no-op — and a refresh in flight is waited for first,
+     * since it lands the cursors this reads from; the account's page ([accountPage]) is read ahead of the public one.
+     * [RefreshOutcome.Skipped] when there is no page to fetch or one is already being fetched; a page that fails
+     * leaves its words in [AgentListState.loadMoreError] and is not asked for again until [loadMore] is called again.
      */
     suspend fun loadMore(): RefreshOutcome {
         val backend = session.current
         val startedIn = token()
-        synchronized(this) { inFlight?.job?.takeIf { it.isActive } }?.join()
         val job = synchronized(publishLock) {
             if (generation.get() != startedIn || owner !== backend) return RefreshOutcome.Skipped
             loadingMore?.takeIf { it.isActive }?.let { return RefreshOutcome.Skipped }
-            val cursor = nextCursor ?: return RefreshOutcome.Skipped
-            scope.launch { fetchMore(backend, startedIn, cursor, legacyCursor) }.also { loadingMore = it }
+            if (nextCursor == null && synchronized(this) { inFlight?.job?.isActive } != true) {
+                // Nothing to page to, whatever the flag said: the end was reached, or the cursors were never learned.
+                if (_state.value.hasMore) publish(backend, startedIn) { it.copy(hasMore = false) }
+                return RefreshOutcome.Skipped
+            }
+            val work = pending.begin("older page")
+            pending.show()
+            publish(backend, startedIn) { it.copy(isLoadingMore = true, loadMoreError = null) }
+            scope.launch {
+                try {
+                    // A refresh in flight lands the cursors this page reads from; the account's page places the rows.
+                    synchronized(this@AgentRepository) { inFlight?.job?.takeIf { it.isActive } }?.join()
+                    val cursor = synchronized(publishLock) { if (generation.get() == startedIn) nextCursor else null }
+                    if (cursor == null) {
+                        publish(backend, startedIn) { it.copy(isLoadingMore = false, hasMore = false) }
+                        return@launch
+                    }
+                    accountPage?.takeIf { !backend.isDemo }?.let { hook -> pending.track("account page") { runCatching { hook() }.exceptionOrNull()?.let { if (it is CancellationException) throw it } } }
+                    fetchMore(backend, startedIn, cursor, synchronized(publishLock) { legacyCursor })
+                } finally {
+                    pending.end(work)
+                    publish(backend, startedIn) { s -> if (s.isLoadingMore) s.copy(isLoadingMore = false) else s }
+                }
+            }.also { loadingMore = it }
         }
         job.join()
-        return if (synchronized(publishLock) { generation.get() == startedIn && !_state.value.isLoadingMore && _state.value.error == null }) RefreshOutcome.Refreshed else RefreshOutcome.Failed
+        return if (synchronized(publishLock) { generation.get() == startedIn && !_state.value.isLoadingMore && _state.value.loadMoreError == null }) RefreshOutcome.Refreshed else RefreshOutcome.Failed
     }
 
     private suspend fun fetchMore(backend: CursorBackend, startedIn: Int, cursor: String, legacy: String?) {
@@ -967,12 +1016,11 @@ class AgentRepository(
         val before = _state.value.agents
         val knownBefore = before.mapTo(HashSet()) { it.id }
         val ceiling = synchronized(publishLock) { pagedFloor }
-        publish { it.copy(isLoadingMore = true) }
         try {
             coroutineScope {
                 // The legacy list enriches the rows and never gates them: its page is read alongside, best effort.
                 val legacyPage = async { legacy?.let { runCatching { api.listAgentsV0(limit = PAGE_SIZE, cursor = it) }.getOrNull() } }
-                val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
+                val page = pending.track("list page (older)") { api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true) }
                 val enrichment = legacyPage.await()
                 val more = page.nextCursor?.isNotBlank() == true
                 val pinned = prefs.localAgentState.first().pinnedIds
@@ -987,7 +1035,7 @@ class AgentRepository(
                         .let { s2 ->
                             s2.copy(agents = s2.agents.filter { it.id in seen || it.id !in knownBefore || it.createdAtMillis >= ceiling || it.createdAtMillis < pageFloor || it.createdAtMillis > startedAt - RECENT_WINDOW_MS || it.id in pinned })
                         }
-                        .copy(isLoadingMore = false, hasMore = more, error = null)
+                        .copy(isLoadingMore = false, hasMore = more, loadMoreError = null)
                 }
                 if (landed) synchronized(publishLock) {
                     if (generation.get() == startedIn) {
@@ -998,10 +1046,11 @@ class AgentRepository(
                     }
                 }
             }
-            materializeRecords(startedIn)
+            pending.track("account records by id") { materializeRecords(startedIn) }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
-            publish { it.copy(isLoadingMore = false, error = t.userMessage()) }
+            // The page's failure is the tail's to show, in the server's words, with Retry: the list above it stands.
+            publish { it.copy(isLoadingMore = false, loadMoreError = t.userMessage()) }
         }
     }
 
@@ -1048,6 +1097,10 @@ class AgentRepository(
         fun publish(transform: (AgentListState) -> AgentListState): Boolean = publish(backend, startedIn, transform)
         firstPageLanded = false
         publish { it.copy(isRefreshing = it.isRefreshing || !silent, error = null) }
+        // The whole fetch is one item of work in flight — its pages, its passes and the moments between them — so the
+        // tail's row does not blink off between one call's end and the next one's start; the parts name themselves
+        // inside it for the diagnostics. Ended in `finally`: a fetch cut short leaves nothing registered.
+        val work = pending.begin("list refresh (${depth.name.lowercase()}${if (silent) ", silent" else ""})")
         try {
             var truncated = false
             var lastCursor: String? = null
@@ -1061,10 +1114,10 @@ class AgentRepository(
             coroutineScope {
                 // The legacy list is read further than the window: its pages carry the one execution status per agent
                 // the documented API has, so the pass over them is also the running scan (see [RunningScan]).
-                val legacy = async { stats.timed("status scan (v0 pages)", calls = { r: LegacyRead -> r.pagesRead }, note = { r -> "${r.running.size} running" + if (r.complete) ", end reached" else "" }) { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) } }
+                val legacy = async { pending.track("status scan (v0 pages)") { stats.timed("status scan (v0 pages)", calls = { r: LegacyRead -> r.pagesRead }, note = { r -> "${r.running.size} running" + if (r.complete) ", end reached" else "" }) { fetchLegacy(api, windowPages = pages, scanPages = maxOf(pages, runningScanPages)) } } }
                 var cursor: String? = null
                 do {
-                    val page = api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true)
+                    val page = pending.track("list page ${pagesRead + 1}") { api.listAgents(limit = PAGE_SIZE, cursor = cursor, includeArchived = true) }
                     pagesRead++
                     seen += page.items.map { it.id }
                     page.items.minOfOrNull { parseIsoMillis(it.createdAt) }?.let { windowFloor = minOf(windowFloor, it) }
@@ -1083,7 +1136,7 @@ class AgentRepository(
                     if (pagesRead == 1) {
                         // The first page is on screen and the status scan is about to land: the pull-to-refresh indicator
                         // is let go here, and the rest of the pass — the older pages, the run records, the rows fetched
-                        // by id — settles underneath a quiet footer (see [AgentListState.isSettling]).
+                        // by id — settles underneath the tail's one row (see [PendingWork.show]).
                         legacyRead = legacy.await()
                         if (legacyRead.rows.isNotEmpty()) publish { it.withLegacy(legacyRead.rows) }
                         if (legacyRead.pagesRead > 0) {
@@ -1091,10 +1144,13 @@ class AgentRepository(
                         }
                         val more = page.nextCursor?.isNotBlank() == true && pagesRead < pages
                         // Whether this fetch showed the indicator or a pull joined it and did: it is let go here, and
-                        // the footer stands for the rest. A silent fetch nobody pulled on shows neither.
+                        // the tail's row stands for the rest of the work. A silent fetch nobody pulled on shows neither.
                         firstPageLanded = true
                         if (_state.value.isRefreshing) {
-                            publish { it.copy(isRefreshing = false, isSettling = true, hasMore = if (more) true else it.hasMore) }
+                            // The row is raised before the indicator is let go, so no frame shows neither: the tail
+                            // takes over from the indicator in the same breath.
+                            pending.show()
+                            publish { it.copy(isRefreshing = false, hasMore = if (more) true else it.hasMore) }
                             stats.spinnerReleased()
                         }
                     }
@@ -1107,7 +1163,7 @@ class AgentRepository(
                 synchronized(publishLock) { if (generation.get() == startedIn) legacyCursor = legacyRead.windowCursor }
             }
             stats.stage("v1 pages", pagesRead, pagesStartedAt, note = "${seen.size} rows" + if (truncated) ", more behind" else "")
-            stats.timed("run records (verify)", calls = { n: Int -> n }) { verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) } }
+            pending.track("run records (verify)") { stats.timed("run records (verify)", calls = { n: Int -> n }) { verifyRunStatuses(api, before, startedAt) { transform -> publish(transform) } } }
             if (legacyRead.pagesRead > 0) {
                 _runningScan.update { it.copy(ids = legacyRead.running, scannedAtMillis = AppClock.now(), pagesRead = legacyRead.pagesRead, complete = legacyRead.complete) }
             }
@@ -1122,7 +1178,8 @@ class AgentRepository(
             val landed = publish { s ->
                 s.withoutUnseen(seen, knownBefore, startedAt, pinned, floor)
                     .let { if (backend.isDemo) it.withSources(demoSources).withAccountSnapshots(demoComposers) else it }
-                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated)
+                    // A page that failed before this refresh is moot: the window and its cursors are re-read here.
+                    .copy(isRefreshing = false, hasLoaded = true, isFromCache = false, error = null, hasMore = truncated, loadMoreError = null)
             }
             if (!silent) stats.spinnerReleased()
             // Under the same lock as the publication: a completed fetch is the cue the account's pins are synced
@@ -1150,13 +1207,17 @@ class AgentRepository(
                 }
                 stats.timed("account records by id", calls = { n: Int -> n }) { materializeRecords(startedIn) }
             }
-            publish { it.copy(isSettling = false) }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             publish { s ->
                 val keepQuiet = silent && s.agents.isNotEmpty()
-                s.copy(isRefreshing = false, isSettling = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
+                s.copy(isRefreshing = false, hasLoaded = true, error = if (keepQuiet) s.error else t.userMessage())
             }
+        } finally {
+            pending.end(work)
+            // A fetch that ends any other way — cut short with the indicator up — lets the indicator go with it: an
+            // indicator is a fetch in flight, never a flag left behind by one that is not.
+            publish { s -> if (s.isRefreshing) s.copy(isRefreshing = false) else s }
         }
     }
 
@@ -1214,7 +1275,8 @@ class AgentRepository(
         val scan = _runningScan.value
         val held = _state.value.agents.mapTo(HashSet()) { it.id }
         val missing = scan.all.filter { it !in held }.take(maxMaterializedRunning)
-        return byId(missing, startedIn) { id -> loadDetail(id) }
+        if (missing.isEmpty()) return 0
+        return pending.track("running rows by id (${missing.size})") { byId(missing, startedIn) { id -> loadDetail(id) } }
     }
 
     /**
@@ -1272,7 +1334,8 @@ class AgentRepository(
             pinnedUnresolved.keys.retainAll(pinned)
             val now = AppClock.now()
             val due = pinned.filter { it !in held && (pinnedUnresolved[it]?.let { tried -> now >= tried } ?: true) }
-            byId(due, startedIn) { id ->
+            if (due.isEmpty()) return@withLock 0
+            pending.track("pinned rows by id (${due.size})") { byId(due, startedIn) { id ->
                 val fetched = loadDetail(id)
                 if (fetched.isSuccess) {
                     pinnedUnresolved.remove(id)
@@ -1288,12 +1351,18 @@ class AgentRepository(
                     val gone = (fetched.exceptionOrNull() as? CursorApiException)?.httpCode == 404
                     pinnedUnresolved[id] = now + if (gone) PINNED_GONE_RETRY_MS else retryDelayFor(fetched.exceptionOrNull())
                 }
-            }
+            } }
         }
     }
 
     /** The pinned ids the list does not hold and could not fetch, for the diagnostics. */
     fun unresolvedPinned(): Set<String> = pinnedUnresolved.keys.toSet()
+
+    /** How many pages of the list are loaded, for the diagnostics. */
+    fun pagesLoadedCount(): Int = synchronized(publishLock) { pagesLoaded }
+
+    /** Whether the list knows where its next page starts, for the diagnostics: [AgentListState.hasMore] without this is a tail that cannot move. */
+    fun hasNextCursor(): Boolean = synchronized(publishLock) { nextCursor != null }
 
     /**
      * Extended mode: every row the public API alone gave — a page's row before the account's round reached it, an
@@ -1311,8 +1380,9 @@ class AgentRepository(
                 .filter { it.record == null && it.id !in pendingLaunches && (recordUnresolved[it.id]?.let { until -> now >= until } ?: true) }
                 .sortedWith(compareByDescending<Agent> { it.isRunning }.thenByDescending { it.updatedAtMillis })
                 .take(budget)
+            if (due.isEmpty()) return@withLock 0
             val asked = java.util.concurrent.atomic.AtomicInteger()
-            coroutineScope {
+            pending.track("account records by id (${due.size})") { coroutineScope {
                 due.forEach { row ->
                     launch {
                         byIdPool.withPermit {
@@ -1336,7 +1406,7 @@ class AgentRepository(
                         }
                     }
                 }
-            }
+            } }
             asked.get()
         }
     }
