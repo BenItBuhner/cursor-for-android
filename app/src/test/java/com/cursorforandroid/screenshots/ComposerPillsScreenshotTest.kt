@@ -35,11 +35,12 @@ import java.io.File
 
 /**
  * The home composer alone, in each of the states its footer and text can take: nothing on, the Plan pill (amber,
- * beside a `/command` in the brand orange so the two hues sit together), the Multitask pill (violet), a `/command`
- * painted in the Cursor orange on its own, and — in the light theme, with a long model name — the Plan pill with the
- * model chip giving way to it. Plan and Multitask are one slot, so no state wears both. Written to `screenshots/`
- * beside the walkthrough; CI compares them pixel for pixel (`verifyRoborazziDebug`), and `recordRoborazziDebug`
- * re-records them on purpose. The composer's padding and placeholder frames are [ComposerScreenshotTest].
+ * beside a `/command` in the same amber, so the pill and the command read as one thing), the Multitask pill
+ * (violet), two `/commands` painted in the Plan pill's tint on their own, and — in the light theme, with a long
+ * model name — the Plan pill with the model chip giving way to it. Plan and Multitask are one slot, so no state
+ * wears both. Written to `screenshots/` beside the walkthrough; CI compares them pixel for pixel
+ * (`verifyRoborazziDebug`), and `recordRoborazziDebug` re-records them on purpose. The composer's padding and
+ * placeholder frames are [ComposerScreenshotTest]; the same tint on a sent message is [SlashHighlightScreenshotTest].
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -102,7 +103,7 @@ class ComposerPillsScreenshotTest {
         capture("33_composer_no_pill", settledText = "Ask Cursor to build")
 
         // Plan mode, as the model picker's toggle or `/plan` leaves it: an amber pill right of "+", the chip the model's
-        // name alone, and a `/command` in the brand orange beside it in the text.
+        // name alone, and a `/command` in the pill's amber beside it in the text.
         scene = Scene(planMode = true, value = "/review Work out how the sidebar should group projects")
         capture("34_composer_plan_pill", settledText = "Work out how")
 
@@ -110,7 +111,7 @@ class ComposerPillsScreenshotTest {
         scene = Scene(value = "/multitask Fan the flaky suites out to subagents and land the fixes")
         capture("35_composer_multitask_pill", settledText = "Fan the flaky")
 
-        // Every other command stays in the text, painted in the Cursor orange.
+        // Every other command stays in the text, painted in the Plan pill's tint.
         scene = Scene(value = "/review Ship the release notes, then /subscribe to the checks")
         capture("36_composer_slash_highlight", settledText = "Ship the release")
 

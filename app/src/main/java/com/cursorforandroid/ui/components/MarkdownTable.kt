@@ -36,7 +36,7 @@ private val TableFallbackWidth = 360.dp
  * table scrolls sideways inside the card rather than breaking words. The header row is bold on a faint wash.
  */
 @Composable
-fun TableBlock(table: MdBlock.Table, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+fun TableBlock(table: MdBlock.Table, style: TextStyle, color: Color, modifier: Modifier = Modifier, commandColor: Color = Color.Unspecified) {
     val colors = CursorTheme.colors
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val available = if (constraints.hasBoundedWidth) constraints.maxWidth else with(LocalDensity.current) { TableFallbackWidth.roundToPx() }
@@ -47,23 +47,23 @@ fun TableBlock(table: MdBlock.Table, style: TextStyle, color: Color, modifier: M
                 .horizontalScrollEdgeFade(clippedAtStart = scroll.canScrollBackward, clippedAtEnd = scroll.canScrollForward)
                 .horizontalScroll(scroll),
         ) {
-            TableGrid(table, style, color, available)
+            TableGrid(table, style, color, commandColor, available)
         }
     }
 }
 
 @Composable
-private fun TableGrid(table: MdBlock.Table, style: TextStyle, color: Color, availableWidth: Int) {
+private fun TableGrid(table: MdBlock.Table, style: TextStyle, color: Color, commandColor: Color, availableWidth: Int) {
     val columns = table.header.size
     val rows = 1 + table.rows.size
     Layout(
         content = {
             table.header.forEachIndexed { c, cell ->
-                TableCell(cell, style, color, table.alignments[c], header = true, lastColumn = c == columns - 1, lastRow = rows == 1)
+                TableCell(cell, style, color, commandColor, table.alignments[c], header = true, lastColumn = c == columns - 1, lastRow = rows == 1)
             }
             table.rows.forEachIndexed { r, row ->
                 row.forEachIndexed { c, cell ->
-                    TableCell(cell, style, color, table.alignments[c], header = false, lastColumn = c == columns - 1, lastRow = r == table.rows.size - 1)
+                    TableCell(cell, style, color, commandColor, table.alignments[c], header = false, lastColumn = c == columns - 1, lastRow = r == table.rows.size - 1)
                 }
             }
         },
@@ -127,6 +127,7 @@ private fun TableCell(
     text: String,
     style: TextStyle,
     color: Color,
+    commandColor: Color,
     align: TableAlign,
     header: Boolean,
     lastColumn: Boolean,
@@ -159,6 +160,6 @@ private fun TableCell(
             TableAlign.End -> Alignment.TopEnd
         },
     ) {
-        InlineText(text, cellStyle, color)
+        InlineText(text, cellStyle, color, commandColor = commandColor)
     }
 }
