@@ -25,8 +25,9 @@ import kotlinx.coroutines.withContext
  * `File` in a map, and `_sendFollowupRequest` / `_createAgentReal` run `PresignPromptUpload` → `PUT` → `CompletePromptUpload`
  * inside the request — which is why a phone's send used to sit greyed out for the length of the transfer. Here the
  * transfer starts on attach and runs in a scope no screen owns, so it goes on while the user types and across the
- * composer being left and come back to; the chip follows it, the send is held only while something is still going up,
- * and once every file carries its reference the prompt goes out at once, no upload in the way.
+ * composer being left and come back to; the chip follows it, and once every file carries its reference the prompt
+ * goes out at once, no upload in the way. A chat's message may be sent before then: its files finish going up on
+ * the message's bubble (`OutgoingMessages`), the composer empty from the tap; a new chat's launch waits for them.
  *
  * Files go up one at a time in the order they were attached (the desktop's `WKy` loops its files the same way), so a
  * chip's ring reads as one progression and the composer can say "Uploading 2 of 3". A file taken off the composer
@@ -198,7 +199,7 @@ class AttachmentUploads(
 
     /**
      * What the prompt names each of [items] as, waiting for any still going up and trying a failed one again first:
-     * with every file done — the case a send meets, since the send is held while one is not — it returns at once.
+     * with every file done — the usual case, the files having gone up as they were attached — it returns at once.
      * A file the account would not take throws its [PromptUploadException], the chip left marked for a retry.
      */
     suspend fun awaitAll(items: List<Pair<String, PromptFile>>): List<UploadedFile> = items.map { (id, file) -> await(id, file) }

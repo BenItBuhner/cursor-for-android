@@ -110,7 +110,8 @@ import kotlinx.coroutines.withContext
  * Extended mode the "+" menu also attaches [files] of any type ([PendingFile]), shown as chips with their name, kind
  * and size. Images and files share one row above the text ([ComposerAttachments]) that scrolls sideways, its ends
  * fading, once it runs past the composer's width; each file goes up the moment it is attached, its chip filling
- * meanwhile, and the owner holds send — saying why in [sendHint] — only while one is still going up.
+ * meanwhile, the footer saying so in [sendHint]. The chat's composer sends regardless — the message finishes its
+ * uploads on its own bubble — and empties at the tap; the New Chat composer holds its launch until the files are up.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -141,8 +142,9 @@ fun ComposerBox(
     fileUploads: Map<String, FileUploadState> = emptyMap(),
     onRetryFile: ((PendingFile) -> Unit)? = null,
     /**
-     * Why send is held, in a few words beside the model chip — "Uploading 2 of 3…" while a file is still going up;
-     * null when nothing holds it. The owner turns [canSend] off for the same reason.
+     * Where the attached files stand, in a few words beside the model chip — "Uploading 2 of 3…" while one is still
+     * going up; null when none is. Whether send waits on it is the owner's ([canSend]): the New Chat composer holds
+     * its launch; the chat's composer sends, the uploads finishing on the message's bubble.
      */
     sendHint: String? = null,
     modelLabel: String? = null,
