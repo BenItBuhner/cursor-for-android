@@ -22,6 +22,8 @@ import com.cursorforandroid.domain.UserMessage
 import com.cursorforandroid.ui.components.LocalMarkdownMedia
 import com.cursorforandroid.ui.components.MarkdownMediaContext
 import com.cursorforandroid.ui.media.ConversationMedia
+import com.cursorforandroid.ui.media.FakeVideoPlayer
+import com.cursorforandroid.ui.media.LocalVideoPlayerFactory
 import com.cursorforandroid.ui.media.MediaEntry
 import com.cursorforandroid.ui.media.MediaViewerHost
 import com.cursorforandroid.ui.media.MediaViewerState
@@ -162,9 +164,12 @@ class MessageAttachmentsTest {
         )
         compose.setContent {
             CursorTheme(mode = ThemeMode.Dark) {
-                MediaViewerHost(viewer, loader) {
-                    CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext("bc-1", loader, entries = { ConversationMedia.of(listOf(message)) })) {
-                        TimelineItemView(message)
+                // A stand-in player, as every viewer test hands in: a real ExoPlayer's threads would outlive the test.
+                CompositionLocalProvider(LocalVideoPlayerFactory provides { FakeVideoPlayer() }) {
+                    MediaViewerHost(viewer, loader) {
+                        CompositionLocalProvider(LocalMarkdownMedia provides MarkdownMediaContext("bc-1", loader, entries = { ConversationMedia.of(listOf(message)) })) {
+                            TimelineItemView(message)
+                        }
                     }
                 }
             }
@@ -181,6 +186,8 @@ class MessageAttachmentsTest {
         assertThat(viewer.current?.kind).isEqualTo(MediaEntry.Kind.Video)
         assertThat(viewer.session?.autoplay).isTrue()
         assertThat(viewer.session?.origin).isNotNull()
+        viewer.close()
+        compose.waitUntil(30_000) { compose.waitForIdle(); !viewer.isOpen }
     }
 
     /** Without a viewer hosted (a preview, a test of the row alone) the thumbnail is inert rather than a crash. */
