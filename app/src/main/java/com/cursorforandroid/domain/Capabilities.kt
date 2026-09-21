@@ -60,16 +60,18 @@ data class Capabilities(
     /** Ask and Debug modes for a follow-up, which only the account's follow-up RPC can carry (`agent.v1.AgentMode`). Off: agent and plan. */
     val agentModes: Boolean,
     /**
-     * The account's own copy of a chat's transcript, tool calls included (`BackgroundComposerService/FetchBackgroundComposer`),
-     * for the turns whose documented event log has expired and which this device never saw. Off: those turns keep
-     * their text alone.
+     * The account's own copy of a chat's transcript, tool calls included (`BackgroundComposerService/StreamConversation`
+     * for the state and `GetBlobForAgentKV` for the turns' blobs), for the turns whose documented event log has
+     * expired and which this device never saw. Off: those turns keep their text alone. In Extended mode this follows
+     * the [TranscriptEngine]: on for Beta, off for Stable.
      */
     val accountTranscript: Boolean = false,
     /**
-     * The goal the account keeps on a chat (`BackgroundComposerService/GetLatestAgentConversationState`, the
-     * `goal_state` of the conversation's `ConversationStateStructure`): its status, its objective and the active time
-     * it has accrued, as Cursor's own clients read them. Off: the goal as the chat's own transcript tells it — the
-     * agent's `CreateGoal` / `UpdateGoal` calls on the documented stream and the "Goal continued" turns.
+     * The goal the account keeps on a chat (`StreamConversation`'s initial state, the `goal_state` of the
+     * conversation's `ConversationStateStructure`): its status, its objective and the active time it has accrued, as
+     * Cursor's own clients read them. Off: the goal as the chat's own transcript tells it — the agent's `CreateGoal` /
+     * `UpdateGoal` calls on the documented stream and the "Goal continued" turns. The same record read as
+     * [accountTranscript], so it follows the [TranscriptEngine] the same way.
      */
     val accountGoal: Boolean = false,
     /**
@@ -131,6 +133,20 @@ data class Capabilities(
             promptFiles = true,
         )
 
-        fun of(extendedMode: Boolean): Capabilities = if (extendedMode) EXTENDED else DOCUMENTED
+        /** Extended mode's Stable transcript engine: every private surface but the record read and the goal it carries (see [TranscriptEngine]). */
+        val EXTENDED_STABLE = EXTENDED.copy(accountTranscript = false, accountGoal = false)
+
+        /**
+         * What the mode and the transcript engine allow: nothing private with the mode off; with it on, the record
+         * read only under the Beta engine. This is what the app reads (see `ExtendedMode.capabilities`).
+         */
+        fun of(extendedMode: Boolean, engine: TranscriptEngine): Capabilities = when {
+            !extendedMode -> DOCUMENTED
+            engine == TranscriptEngine.BETA -> EXTENDED
+            else -> EXTENDED_STABLE
+        }
+
+        /** Every private surface at once, as before the transcript engine setting existed — the Beta engine's set; the tests' shorthand. */
+        fun of(extendedMode: Boolean): Capabilities = of(extendedMode, TranscriptEngine.BETA)
     }
 }

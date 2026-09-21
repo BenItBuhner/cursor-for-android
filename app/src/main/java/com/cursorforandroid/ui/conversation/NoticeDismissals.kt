@@ -52,7 +52,9 @@ class NoticeDismissals(
             // the record's refusal is published while its load is still under way, and a notice closed in that
             // window would otherwise be compared with the state from before the load, which had no such notice.
             combine(states, hidden) { state, closed ->
-                if (closed == null || !LoadNotices.isSettled(state)) emptySet() else closed - LoadNotices.of(state).map { it.identity }.toSet()
+                // A notice among the rows (see NoticeCard.dismissKey) always says the same thing, so its closing is
+                // never forgotten here: the count line above the transcript still reports what it stood for.
+                if (closed == null || !LoadNotices.isSettled(state)) emptySet() else closed.filterNot { it.startsWith(INLINE_PREFIX) }.toSet() - LoadNotices.of(state).map { it.identity }.toSet()
             }
                 .filter { it.isNotEmpty() }
                 .collect { cleared ->
@@ -66,5 +68,22 @@ class NoticeDismissals(
     fun dismiss(notice: LoadNotice) {
         closedHere.update { it + notice.identity }
         scope.launch { prefs.setNoticeDismissed(agentId, notice.identity, dismissed = true) }
+    }
+
+    /** The reader closed a notice among the rows by its [key] (`NoticeCard.dismissKey`): every such notice in the chat goes, and stays gone for the chat. */
+    fun dismissInline(key: String) {
+        val identity = inlineIdentity(key)
+        closedHere.update { it + identity }
+        scope.launch { prefs.setNoticeDismissed(agentId, identity, dismissed = true) }
+    }
+
+    companion object {
+        private const val INLINE_PREFIX = "inline:"
+
+        /** How a closed inline notice is kept, apart from the dock's notices. */
+        fun inlineIdentity(key: String): String = INLINE_PREFIX + key
+
+        /** The dismiss keys of the inline notices among [hidden] (see [hidden]); empty until the device's record has been read. */
+        fun inlineKeys(hidden: Set<String>?): Set<String> = hidden.orEmpty().mapNotNullTo(HashSet()) { it.removePrefix(INLINE_PREFIX).takeIf { key -> key.length != it.length } }
     }
 }

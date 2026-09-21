@@ -492,6 +492,8 @@ class ConversationRepository(
          * standing on the screen (see [ConversationState.recordFallback]); the next load after it asks again.
          */
         var recordRefusedUntil = 0L
+        /** Whether the last [load] was allowed the account's record (the mode and the transcript engine, see [TranscriptEngine]); null before the first. A change makes the next attach a load rather than a fresh reopen. */
+        var recordAllowedAtLoad: Boolean? = null
         /** The transcript is built from the account's record (see [recordWindow]). */
         val fromRecord: Boolean get() = recordWindow != null
         /**
@@ -962,7 +964,7 @@ class ConversationRepository(
             val replyWord = if (turn.textFromTranscript) "the reply is the transcript's." else "the reply is shown when the record has it."
             return when {
                 run == null -> null
-                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> NoticeCard(id, "This turn's activity is no longer available", "Cursor no longer has its log; $replyWord", NoticeTone.Neutral)
+                run.id in expiredRuns || parseIsoMillis(run.createdAt) < expiredBefore -> NoticeCard(id, "This turn's activity is no longer available", "Cursor no longer has its log; $replyWord", NoticeTone.Neutral, dismissKey = TimelineBuilder.EXPIRED_DISMISS_KEY)
                 run.id in failedTraces -> NoticeCard(id, "This turn's activity couldn't be loaded", "Retry from the line above the transcript.", NoticeTone.Warning)
                 else -> null
             }
@@ -1495,12 +1497,15 @@ class ConversationRepository(
             e.trimJob = null
             if (e.attached == 1 && !e.launching) {
                 e.loadJob?.cancel()
-                // A chat read from the network moments ago is shown as it stands — the transcript in memory, whole —
-                // and only its live run is picked up again: nothing is fetched for a reader who stepped out and
-                // straight back in. Any longer away, and the chat is read again for what changed since (see [load]).
-                val fresh = e.fetched && e.hasInputs && AppClock.now() - e.fetchedAt < REOPEN_FRESH_MS
                 e.loadJob = e.scope.launch {
                     agents.agent(agentId)?.let { prefs.markRead(agentId, it.listedAtMillis) }
+                    // A chat read from the network moments ago is shown as it stands — the transcript in memory, whole —
+                    // and only its live run is picked up again: nothing is fetched for a reader who stepped out and
+                    // straight back in. Any longer away, and the chat is read again for what changed since (see [load]).
+                    // A chat read under the other transcript engine (see [TranscriptEngine]) is read again whatever the
+                    // clock says: the engine takes effect on the next open, and this is it.
+                    val recordAllowed = record != null && !session.isDemo && capabilities().accountTranscript
+                    val fresh = synchronized(e) { e.fetched && e.hasInputs && AppClock.now() - e.fetchedAt < REOPEN_FRESH_MS && e.recordAllowedAtLoad == recordAllowed }
                     if (fresh) reopen(e, agentId) else load(e, agentId)
                 }
             }
@@ -1987,9 +1992,11 @@ class ConversationRepository(
         // below stands in only for a chat the record has nothing for, or when the record cannot be read before
         // anything is on screen.
         val recordEnabled = record != null && !backend.isDemo && capabilities().accountTranscript
-        if (!recordEnabled && synchronized(e) { e.recordWindow != null }) {
-            // The mode was switched off since the record's window was shown (or restored): the documented path renders.
-            e.publish(mutate = { recordWindow = null; recordError = null })
+        synchronized(e) { e.recordAllowedAtLoad = recordEnabled }
+        if (!recordEnabled && synchronized(e) { e.recordWindow != null || e.recordError != null || e.recordRefusedUntil > 0L || e.state.value.recordFallback != null }) {
+            // The mode was switched off — or the transcript engine set to Stable — since the record was read: the
+            // documented path renders, and nothing the record left (its window, its refusal and the notice of it) stands.
+            e.publish(mutate = { recordWindow = null; recordError = null; recordRefusedUntil = 0L }, transform = { copy(recordFallback = null) })
         }
         val recordApi = record?.takeIf { recordEnabled && !synchronized(e) { e.recordEmpty } }
         // The run list's first page the record path read beside the record, handed on when the record was not served:

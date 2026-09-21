@@ -42,6 +42,12 @@ data class TranscriptControls(
     val outgoing: Map<String, OutgoingStatus> = emptyMap(),
     val onRetryOutgoing: ((id: String) -> Unit)? = null,
     val onEditOutgoing: ((id: String) -> Unit)? = null,
+    /**
+     * The reader closes a notice among the rows that offers it (`NoticeCard.dismissKey`): every notice with that key
+     * in the chat goes, and stays gone for the chat (see `NoticeDismissals`). Null where the rows are rendered
+     * without a chat behind them, and the notices show no X.
+     */
+    val onDismissNotice: ((key: String) -> Unit)? = null,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

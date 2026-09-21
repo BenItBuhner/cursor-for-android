@@ -24,6 +24,7 @@ import com.cursorforandroid.domain.ListPreferences
 import com.cursorforandroid.domain.ProjectNotificationPrefs
 import com.cursorforandroid.domain.LocalAgentState
 import com.cursorforandroid.domain.SignInMethod
+import com.cursorforandroid.domain.TranscriptEngine
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
@@ -148,6 +149,8 @@ class PreferencesStore(
         val extendedModeAcknowledgedAt = longPreferencesKey("extended_mode_acknowledged_at")
         val extendedModeIntroduced = booleanPreferencesKey("extended_mode_introduced")
         val extendedModeNoticePending = booleanPreferencesKey("extended_mode_notice_pending")
+        /** Which engine renders transcripts in Extended mode (`stable` / `beta`, see `domain/TranscriptEngine.kt`); absent is Stable. */
+        val transcriptEngine = stringPreferencesKey("transcript_engine")
         val crashReports = booleanPreferencesKey("crash_reports")
         val modeChoicePending = booleanPreferencesKey("mode_choice_pending")
         /** The sidebar groups the reader has folded closed, by section key ("projects", "pinned", "date:Today", …). */
@@ -246,6 +249,14 @@ class PreferencesStore(
 
     /** True while the notice about features that now need Extended mode has yet to be shown to an upgraded install. */
     val extendedModeNoticePending: Flow<Boolean> = data.map { it[Keys.extendedModeNoticePending] ?: false }
+
+    /**
+     * The transcript engine Extended mode renders with (see `TranscriptEngine`): Stable unless Beta was chosen here —
+     * for every install, upgrades included; it is never inferred from what an earlier build did.
+     */
+    val transcriptEngine: Flow<TranscriptEngine> = data.map { TranscriptEngine.parse(it[Keys.transcriptEngine]) }
+
+    suspend fun setTranscriptEngine(engine: TranscriptEngine) = edit { it[Keys.transcriptEngine] = engine.key }
 
     suspend fun setExtendedMode(enabled: Boolean) = edit { it[Keys.extendedMode] = enabled }
 

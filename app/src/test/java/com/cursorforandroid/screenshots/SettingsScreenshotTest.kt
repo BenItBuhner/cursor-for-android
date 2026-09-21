@@ -8,6 +8,14 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
+import com.google.common.truth.Truth.assertThat
+import com.cursorforandroid.domain.TranscriptEngine
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.isSelected
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.isOn
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -147,7 +155,38 @@ class SettingsScreenshotTest {
         compose.waitUntil(30_000) { modeReadsOn() }
         scrollToBottom()
         compose.onNodeWithText(ExtendedModeCopy.SETTING_ON).assertIsDisplayed()
+        // The transcript engine under the switch, Stable chosen — the default, for every install.
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_TITLE).assertIsDisplayed()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_STABLE).assertIsSelected()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_BETA).assertIsNotSelected()
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_STABLE_DETAIL).assertIsDisplayed()
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_BETA_DETAIL).assertIsDisplayed()
         capture("67_settings_extended_on")
+    }
+
+    /** Beta chosen: the tap writes the setting, the check moves, and the footnote says when it takes effect. */
+    @Test
+    fun transcriptEngineBeta() {
+        turnExtendedModeOn()
+        composeSettings()
+        compose.waitUntil(30_000) { modeReadsOn() }
+        scrollToBottom()
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_BETA).performClick()
+        compose.waitUntil(10_000) { compose.onAllNodes(isSelected() and hasTestTag(ExtendedModeTags.ENGINE_BETA)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag(ExtendedModeTags.ENGINE_STABLE).assertIsNotSelected()
+        compose.onNodeWithText(ExtendedModeCopy.ENGINE_FOOTNOTE).assertIsDisplayed()
+        assertThat(runBlocking { graph.extendedMode.engine() }).isEqualTo(TranscriptEngine.BETA)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isTrue()
+        capture("123_settings_transcript_engine_beta")
+    }
+
+    /** With the mode off the engine chooses nothing, and the rows are not shown. */
+    @Test
+    fun transcriptEngineHiddenWithModeOff() {
+        composeSettings()
+        scrollToBottom()
+        compose.onAllNodesWithText(ExtendedModeCopy.ENGINE_TITLE).assertCountEquals(0)
+        assertThat(runBlocking { graph.extendedMode.capabilities() }.accountTranscript).isFalse()
     }
 
     /**

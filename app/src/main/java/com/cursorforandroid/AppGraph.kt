@@ -935,6 +935,7 @@ class AppGraph(
                 appVersion = appVersion,
                 nowIso = java.time.Instant.ofEpochMilli(AppClock.now()).toString(),
                 extendedMode = extendedMode.enabled.first(),
+                engine = extendedMode.engine(),
                 agentId = agentId,
                 agent = agentId?.let { agents.agent(it) },
                 state = state?.let {
