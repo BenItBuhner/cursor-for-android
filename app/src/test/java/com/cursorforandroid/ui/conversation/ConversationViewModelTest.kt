@@ -368,19 +368,26 @@ class ConversationViewModelTest {
     }
 
     /**
-     * A busy agent's follow-up is queued; anything else the server refuses comes back to the composer. The composer
-     * stays editable while it is in flight, so the one that came back must not undo what was typed since.
+     * A busy agent's follow-up is queued; anything else the server refuses stays in the transcript as the bubble it
+     * was shown in, with the reason and a retry on it (see [OutgoingMessages]) — it does not come back to the
+     * composer, which was emptied at the tap and may hold a new draft by now, and it is not a toast that vanishes.
      */
     @Test
-    fun `a refused follow-up does not overwrite a draft typed while it was in flight`() = runBlocking {
+    fun `a refused follow-up shows on its bubble and does not touch a draft typed while it was in flight`() = runBlocking {
         val vm = open(ARCHIVED)
         vm.setDraft("Try it")
         vm.send()
+        assertThat(vm.draftText.value).isEmpty()
         vm.setDraft("Actually, do this instead")
         withTimeout(10_000) { vm.isSending.first { !it } }
 
         assertThat(vm.draftText.value).isEqualTo("Actually, do this instead")
-        assertThat(vm.toastMessage.value).isNotNull()
+        val failed = vm.outgoingStatuses.value.values.single()
+        assertThat(failed).isInstanceOf(OutgoingStatus.Failed::class.java)
+        val bubble = graph.conversations.state(ARCHIVED).value.items.filterIsInstance<com.cursorforandroid.domain.UserMessage>().single { it.isPending }
+        assertThat(bubble.text).isEqualTo("Try it")
+        assertThat(vm.outgoingStatuses.value).containsKey(bubble.id)
+        assertThat(vm.toastMessage.value).isNull()
     }
 
     /**

@@ -202,6 +202,7 @@ class PagedLoadingScreenshotTest {
                             message = "Couldn't refresh the transcript: Cursor took too long to respond.",
                             onRetry = {},
                             onShareDiagnostics = {},
+                            onDismiss = {},
                             modifier = Modifier.widthIn(max = CursorDimens.composerMaxWidth).padding(bottom = 4.dp),
                         )
                         ComposerBox(

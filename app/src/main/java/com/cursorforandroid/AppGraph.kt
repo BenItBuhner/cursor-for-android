@@ -34,6 +34,7 @@ import com.cursorforandroid.data.api.AgentStoreApi
 import com.cursorforandroid.data.api.MachineApi
 import com.cursorforandroid.data.api.MachineLookupApi
 import com.cursorforandroid.data.api.InteractionApi
+import com.cursorforandroid.data.api.PromptUploadApi
 import com.cursorforandroid.data.api.OriginApi
 import com.cursorforandroid.data.api.PinsApi
 import com.cursorforandroid.data.api.PresignedStoreRead
@@ -127,6 +128,7 @@ import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.data.update.WhatsNewRepository
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.conversation.AttachmentImages
+import com.cursorforandroid.ui.conversation.OutgoingSends
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import kotlinx.coroutines.Dispatchers
@@ -169,6 +171,13 @@ class AppGraph(
      * Injectable for tests only: the screenshot tests render a fixed version, so cutting a release re-records nothing.
      */
     val appVersion: String = BuildConfig.VERSION_NAME,
+    /**
+     * Injectable for tests only: the account's follow-up queue and prompt-upload services, so a send that carries
+     * files can be driven end to end — the composer, the bubble, the retry — against a scripted account (latency,
+     * refusals, rate limits, slow uploads) with none of api2's real network.
+     */
+    followupQueue: FollowupQueueApi? = null,
+    promptUploadApi: PromptUploadApi? = null,
 ) {
     private val app = context.applicationContext
 
@@ -415,7 +424,7 @@ class AppGraph(
      * A prompt's files of any type, staged the way the desktop stages them (`PresignPromptUpload`, the parts `PUT`,
      * `CompletePromptUpload`) and referenced from the account's follow-up or start (Extended mode, `promptFiles`).
      */
-    private val lazyPromptUploadApi = lazy { ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    private val lazyPromptUploadApi = lazy { promptUploadApi ?: ConnectPromptUploadApi(lazyAccountRpc.value, lazySessionTokens.value) }
     private val lazyPromptUploads = lazy { PromptUploader(lazyPromptUploadApi.value, lazyAccountClient.value) }
     val promptUploads: PromptUploader get() = lazyPromptUploads.value
 
@@ -569,6 +578,23 @@ class AppGraph(
     val launcher: ChatLauncher get() = lazyLauncher.value
 
     /**
+     * The messages on their way out of each chat's composer, in a scope no screen owns: a send tapped just before the
+     * chat was left finishes all the same, and its bubble keeps its status for the next visit (see [OutgoingSends]).
+     */
+    private val lazyOutgoing = lazy {
+        OutgoingSends(
+            conversations = conversations,
+            uploads = attachmentUploads,
+            steering = steering,
+            followUps = followUps,
+            mcpServers = { mcpServers.enabled() },
+            capabilities = capabilities,
+            isDemo = { session.isDemo },
+        )
+    }
+    val outgoing: OutgoingSends get() = lazyOutgoing.value
+
+    /**
      * Each chat's unsent follow-ups: the composer's draft, and the queue of messages sent while the agent was still on
      * its previous turn, which go out by themselves once it is free. Kept on disk so leaving the chat loses nothing.
      */
@@ -624,7 +650,7 @@ class AppGraph(
             session = session,
             agents = agents,
             interactions = steeringAccount,
-            queueApi = steeringAccount,
+            queueApi = followupQueue ?: steeringAccount,
             runs = steeringAccount,
             goals = accountGoals,
             afterAction = { agentId -> conversations.revalidate(agentId) },
@@ -730,6 +756,9 @@ class AppGraph(
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
+            // Sends and uploads on their way out for this account stop here, before the composer's stores are wiped.
+            if (lazyOutgoing.isInitialized()) outgoing.resetAll()
+            if (lazyAttachmentUploads.isInitialized()) attachmentUploads.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
             if (lazyProjects.isInitialized()) projects.reset()
             if (lazySteering.isInitialized()) steering.reset()
@@ -831,6 +860,8 @@ class AppGraph(
             "liveRuns" to lazyLiveRuns,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,
+            "outgoing" to lazyOutgoing,
+            "attachmentUploads" to lazyAttachmentUploads,
             "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
             "storeFiles" to lazyStoreFiles,
