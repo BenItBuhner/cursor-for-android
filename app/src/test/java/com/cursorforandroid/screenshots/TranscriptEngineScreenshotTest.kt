@@ -101,8 +101,9 @@ class TranscriptEngineScreenshotTest {
         // The record refused in the server's words, as on Bennett's phone — never met under Stable.
         server.outage(Route.RecordState, Fault.Status(404, "unimplemented", FaultServer.REMOVED_UNARY))
         server.outage(Route.Stream, Fault.StreamCut(events = live.log.size), path = "/${live.runId}/")
-        // The newest finished turn's log is gone: its row says so, calmly.
-        server.logs.remove(turns[turns.size - 2].runId)
+        // The logs of the window's older turns are gone (Cursor keeps a log about a day), the newest finished turn's
+        // still there: whichever order the replays land in, the same turns read as expired, so the frame is the same.
+        turns.dropLast(2).takeLast(8).forEach { server.logs.remove(it.runId) }
     }
 
     @After
