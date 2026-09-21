@@ -41,6 +41,7 @@ import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.ui.theme.ThemeMode
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -140,24 +141,22 @@ class KeyboardFrameBenchmarkTest {
     /** Which arrangement is on screen; changing it builds the transcript afresh, so nothing is carried over. */
     private var variant by mutableStateOf<Pair<Boolean, Boolean>?>(null)
 
-    /** A show then a hide, each frame timed; the first pass of each variant is a warm-up and is thrown away. */
+    /** One pass over an arrangement: a show then a hide, each frame timed. */
     private fun measure(prefetch: Boolean, paintedFade: Boolean): Pair<Frames, Frames> {
         variant = prefetch to paintedFade
         compose.waitForIdle()
-        var show = emptyList<Double>()
-        var hide = emptyList<Double>()
-        repeat(2) {
-            frame(0)
-            compose.mainClock.advanceTimeBy(500)
-            compose.waitForIdle()
-            show = showFrames().map(::frame)
-            compose.mainClock.advanceTimeBy(500)
-            compose.waitForIdle()
-            hide = showFrames().asReversed().drop(1).map(::frame) + frame(0)
-        }
+        frame(0)
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        val show = showFrames().map(::frame)
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
+        val hide = showFrames().asReversed().drop(1).map(::frame) + frame(0)
         val label = if (prefetch) "after (prefetch + painted fade)" else "before (default prefetch + offscreen dissolve)"
         return Frames("$label show", show) to Frames("$label hide", hide)
     }
+
+    private fun List<Double>.median(): Double = sorted()[size / 2]
 
     private fun transcript(turns: Int): List<TimelineItem> = buildList {
         repeat(turns) { turn ->
@@ -201,22 +200,47 @@ class KeyboardFrameBenchmarkTest {
         // Interleaved, and the first round thrown away, so neither arrangement gets the JIT's warm-up or its benefit.
         measure(prefetch = false, paintedFade = false)
         measure(prefetch = true, paintedFade = true)
-        val (beforeShow, beforeHide) = measure(prefetch = false, paintedFade = false)
-        val (afterShow, afterHide) = measure(prefetch = true, paintedFade = true)
-        println("BENCHMARK keyboard-frames turns=30 rows=${items.size} keyboard=${Keyboard}px steps=18")
-        for (frames in listOf(beforeShow, beforeHide, afterShow, afterHide)) {
-            println("BENCHMARK $frames")
-            println("BENCHMARK   frames: ${frames.millis.joinToString(" ") { "%.1f".format(it) }}")
+        // Then the two arrangements pass by pass, each pass of one beside a pass of the other: the frames are a few
+        // milliseconds each on the JVM, and a burst on the runner (a GC, another process on a shared core) landing
+        // on one 17-frame pass alone read as the arrangement being twice as slow — CI failed twice on a single pair.
+        // A pass is compared with the pass beside it in time, which saw the same machine; the comparison is the
+        // median of those pairs, so a burst on one pass is one vote of several.
+        val passes = (1..PASSES).map { measure(prefetch = false, paintedFade = false) to measure(prefetch = true, paintedFade = true) }
+        val beforeHides = passes.map { (before, _) -> before.second }
+        val afterHides = passes.map { (_, after) -> after.second }
+        val pairRatios = passes.map { (before, after) -> after.second.median / before.second.median }
+        // The same JVM's own noise, from the same arrangement measured pass after pass: how far apart two passes of
+        // identical work land right now. The budget for the arrangements' difference is read against it — on a
+        // quiet machine it is the plain 1.5×, on a runner that cannot repeat its own measurement to within 1.5× the
+        // budget widens with what it can repeat, rather than a fixed number failing on the runner's noise.
+        val control = beforeHides.map { it.median }.zipWithNext { a, b -> maxOf(a, b) / minOf(a, b) }
+        val noise = control.median()
+        val pooledBefore = Frames("before hide, ${PASSES} passes pooled", beforeHides.flatMap { it.millis })
+        val pooledAfter = Frames("after hide, ${PASSES} passes pooled", afterHides.flatMap { it.millis })
+        println("BENCHMARK keyboard-frames turns=30 rows=${items.size} keyboard=${Keyboard}px steps=18 passes=$PASSES")
+        passes.forEachIndexed { i, (before, after) ->
+            for (frames in listOf(before.first, before.second, after.first, after.second)) {
+                println("BENCHMARK pass ${i + 1} $frames")
+                println("BENCHMARK   frames: ${frames.millis.joinToString(" ") { "%.1f".format(it) }}")
+            }
         }
+        println("BENCHMARK $pooledBefore")
+        println("BENCHMARK $pooledAfter")
+        println("BENCHMARK hide ratio after/before per pass: ${pairRatios.joinToString(" ") { "%.2f".format(it) }} median=${"%.2f".format(pairRatios.median())}")
+        println("BENCHMARK same-arrangement pass-to-pass noise (before hide): ${control.joinToString(" ") { "%.2f".format(it) }} median=${"%.2f".format(noise)} → budget ${"%.2f".format(BUDGET * maxOf(1.0, noise))}×")
 
         // Every frame laid out with the composer where the insets put it.
         assertThat(compose.onNodeWithTag("composer").fetchSemanticsNode().boundsInRoot.height).isGreaterThan(0f)
         // The hide uncovers rows: with them prefetched it is not slower than composing them on the frame.
-        assertThat(afterHide.median).isAtMost(beforeHide.median * 1.5)
+        assertWithMessage("hide ratios after/before per pass: $pairRatios; noise: $control").that(pairRatios.median()).isAtMost(BUDGET * maxOf(1.0, noise))
     }
 
     private companion object {
         const val NavigationBar = 126
         const val Keyboard = 900
+        /** Passes of each arrangement, interleaved, after the warm-up pair. */
+        const val PASSES = 5
+        /** The hide's median may be this many times the other arrangement's, on a machine that repeats its own measurement. */
+        const val BUDGET = 1.5
     }
 }
