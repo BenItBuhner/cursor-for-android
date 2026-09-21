@@ -58,10 +58,10 @@ object TurnPairing {
         /** How many of the transcript's prompts there are. */
         val promptCount: Int,
     ) {
-        /** The run each prompt started, by the prompt's index, for the prompts whose run is known. */
-        val runOf: Map<Int, RunDto> = turns.asSequence().filter { it.prompt != null && it.run != null }.associate { it.promptIndex to it.run!! }
-        /** The prompt each run was started by, by run id, for the runs a prompt started. */
-        val promptOf: Map<String, Int> = turns.asSequence().filter { it.prompt != null && it.run != null }.associate { it.run!!.id to it.promptIndex }
+        /** The run each of the transcript's prompts started, by the prompt's index, for the prompts whose run is known. */
+        val runOf: Map<Int, RunDto> = turns.asSequence().filter { it.promptIndex >= 0 && it.run != null }.associate { it.promptIndex to it.run!! }
+        /** The transcript's prompt each run was started by, by run id, for the runs one of the transcript's prompts started (a run shown under a prompt sent from here is not among them). */
+        val promptOf: Map<String, Int> = turns.asSequence().filter { it.promptIndex >= 0 && it.run != null }.associate { it.run!!.id to it.promptIndex }
         /** What settled each run's turn, by run id. */
         val evidenceOf: Map<String, Evidence> = turns.asSequence().filter { it.run != null }.associate { it.run!!.id to it.evidence }
         /** Runs no prompt started. */
