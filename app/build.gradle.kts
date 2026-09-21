@@ -392,19 +392,19 @@ class TestShardFilter(private val shard: TestShard, private val slices: Map<Stri
 
 /**
  * The test classes that take 15 s or more each - the fault and harness suites, built on real timeouts and paced
- * retries: a dozen of the ~300 classes but half of the suite's time. Dealt out first, one per slice in turn, so no
- * slice ends up with several of them while another has none; everything else follows, sorted, in the same manner.
- * A slow class missing here only costs balance, never correctness. Measure with the per-class `time` in
- * the TEST-*.xml files under app/build/test-results/testDebugUnitTest after a full run. (The benchmarks are not here: they have their own
- * shard.)
+ * retries: a dozen of the ~300 classes but half of the suite's time - heaviest first. Dealt out first, one per slice
+ * in turn, so no slice ends up with several of the biggest while another has none; everything else follows, sorted,
+ * in the same manner. A slow class missing here only costs balance, never correctness; so does a stale order. Measure
+ * with the per-class `time` in the `unit-tests-results-*` artifacts every CI run uploads (the TEST-*.xml files under
+ * app/build/test-results/testDebugUnitTest). The benchmarks are not here: they have their own shard.
  */
-val heavyTestClasses = setOf(
-    "DemoBackendTest", "LiveFinishFaultsTest", "LiveNotificationServiceTest", "LiveTurnDeliveryTest", "LongProjectLoadTest",
-    "LongProjectReopenTest", "NewAgentViewModelTest", "RefreshFaultsTest", "SendFaultsTest", "TranscriptFaultsTest",
-    "TranscriptVerifyHarness",
+val heavyTestClasses = listOf(
+    "SendFaultsTest", "LongProjectReopenTest", "TranscriptVerifyHarness", "TranscriptFaultsTest", "LiveTurnDeliveryTest",
+    "RefreshFaultsTest", "NewAgentViewModelTest", "LongProjectLoadTest", "LiveFinishFaultsTest", "DemoBackendTest",
+    "LiveNotificationServiceTest",
 )
 
-/** Every ordinary test source file as the class path it compiles to, the heavy ones first, then the rest, each group sorted and dealt out over [count] slices in turn. */
+/** Every ordinary test source file as the class path it compiles to: the heavy ones first, heaviest first, then the rest sorted, dealt out over [count] slices in turn. */
 fun testShardSlices(count: Int): Map<String, Int> {
     val classPaths = layout.projectDirectory.dir("src/test/java").asFileTree
         .matching { include("**/*.kt", "**/*.java") }
@@ -412,7 +412,8 @@ fun testShardSlices(count: Int): Map<String, Int> {
         .filterNot { TestShardFilter.isBenchmark(it.substringAfterLast('/')) }
         .sorted()
     val (heavy, light) = classPaths.partition { it.substringAfterLast('/') in heavyTestClasses }
-    return (heavy + light).withIndex().associate { (position, classPath) -> classPath to position % count + 1 }
+    val heaviestFirst = heavy.sortedBy { heavyTestClasses.indexOf(it.substringAfterLast('/')) }
+    return (heaviestFirst + light).withIndex().associate { (position, classPath) -> classPath to position % count + 1 }
 }
 
 tasks.withType<Test>().configureEach {
