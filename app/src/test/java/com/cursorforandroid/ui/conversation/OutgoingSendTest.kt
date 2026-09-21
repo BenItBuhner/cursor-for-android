@@ -76,6 +76,8 @@ class OutgoingSendTest {
     private val account = AccountService(api)
     private lateinit var graph: AppGraph
     private lateinit var uploads: AttachmentUploads
+    /** Every view model opened by a test, cleared with it, so no composer's scope outlives the test that made it. */
+    private val stores = ArrayList<ViewModelStore>()
 
     @Before
     fun setUp() = runBlocking {
@@ -96,6 +98,12 @@ class OutgoingSendTest {
 
     @After
     fun tearDown() {
+        // Nothing of a test's sends, uploads or composers goes on into the next test: the composers are cleared,
+        // the sends and uploads cancelled, the storage's held requests released before it closes.
+        stores.forEach { it.clear() }
+        account.gate?.countDown()
+        graph.outgoing.resetAll()
+        graph.attachmentUploads.resetAll()
         storage.release()
         storage.shutdown()
     }
@@ -189,7 +197,13 @@ class OutgoingSendTest {
     private fun image() = PendingAttachment.of(PromptImage(ByteArray(64) { 9 }, "image/png"), id = "img-${Random.nextInt()}")
 
     /** A composer open on the chat: its catalogue read, and Extended mode known to it — a file attached before that is refused. */
-    private fun open(): ConversationViewModel = ConversationViewModel(graph, AGENT).also { vm -> runBlocking { vm.ready() } }
+    private fun open(): ConversationViewModel = runBlocking { openIn(ViewModelStore()) }
+
+    /** A composer in [store], as the screen holds one; cleared with the test. */
+    private suspend fun openIn(store: ViewModelStore): ConversationViewModel {
+        stores += store
+        return ViewModelProvider(store, ConversationViewModel.Factory(graph, AGENT))[ConversationViewModel::class.java].also { it.ready() }
+    }
 
     private suspend fun ConversationViewModel.ready() = withTimeout(10_000) {
         modelPicker.first { !it.isLoading }
@@ -492,9 +506,6 @@ class OutgoingSendTest {
      */
     @Test
     fun `a send outlives the chat being left, and a failure waits for the next visit with its Retry`() = runBlocking<Unit> {
-        suspend fun openIn(store: ViewModelStore): ConversationViewModel =
-            ViewModelProvider(store, ConversationViewModel.Factory(graph, AGENT))[ConversationViewModel::class.java].also { it.ready() }
-
         val firstVisit = ViewModelStore()
         val vm = openIn(firstVisit)
         val big = file("big.mov", size = 8_192)
