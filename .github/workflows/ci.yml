@@ -124,18 +124,21 @@ jobs:
           path: app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-  # The ~2000 JVM unit tests, split over four runners: each runs one deterministic quarter of the test classes
-  # (`-Papp.testShard=I/4`, app/build.gradle.kts) in two test JVMs side by side - two, not more: the runner's four
-  # vCPUs are two cores, and the fault and benchmark tests time out when they are starved. The four checks are named
-  # "Unit tests (1/4)" .. "(4/4)"; `ci` below folds them, and every other job, into the one check to require.
+  # The ~2000 JVM unit tests over six runners, one test JVM each: five deterministic slices of the ordinary classes
+  # (`-Papp.testShard=I/5`, app/build.gradle.kts) and one for the benchmarks - the frame-time and throughput claims
+  # (`*BenchmarkTest`, `TranscriptPerf*`) - alone, so what they measure is the code and not a neighbour. One JVM
+  # because the runner's four vCPUs are two cores: with two or three test JVMs side by side the fault, benchmark and
+  # Compose UI tests, which assert on or wait for wall-clock behaviour, timed out on one shard job in five; alone in
+  # their JVM they never have. The checks are named "Unit tests (1/5)" .. "(5/5)" and "Unit tests (benchmarks)"; `ci`
+  # below folds them, and every other job, into the one check to require.
   unit-tests:
-    name: Unit tests (${{ matrix.shard }}/4)
+    name: Unit tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ["1/5", "2/5", "3/5", "4/5", "5/5", "benchmarks"]
     steps:
       - uses: actions/checkout@v7
 
@@ -150,48 +153,16 @@ jobs:
         run: echo "suffix=-dev.${GITHUB_RUN_NUMBER}+g${HEAD_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The Roborazzi walkthrough is covered by the `screenshots` job below.
-      # A test that fails is run once more (-Papp.testRetries=1, app/build.gradle.kts); one that then passes is a
-      # flake, reported below rather than hidden. Five or more failures are a breakage and are not retried.
-      - name: Run JVM unit tests (shard ${{ matrix.shard }} of 4)
+      - name: Run JVM unit tests (${{ matrix.shard }})
         run: >
-          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}/4
-          -Papp.testForks=2 -Papp.testRetries=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
-
-      # Every test that failed and then passed on its retry becomes a warning on the run and a line in the job
-      # summary, with the first attempt's failure: the fault, benchmark and Compose layout tests assert on wall-clock
-      # behaviour, and a flake is a signal about them worth reading, not noise to make disappear.
-      - name: Report flaky tests
-        if: always()
-        run: |
-          shopt -s nullglob
-          lines=()
-          for report in app/build/test-results/testDebugUnitTest/TEST-*.xml; do
-            grep -q '<flakyFailure' "$report" || continue
-            while IFS=$'\t' read -r cls name message; do
-              [[ -n "$name" ]] || continue
-              echo "::warning title=Flaky test (passed on retry)::${cls##*.} > ${name}: ${message}"
-              lines+=("- \`${cls##*.} > ${name}\`: ${message}")
-            done < <(python3 - "$report" <<'PY'
-          import sys, xml.etree.ElementTree as ET
-          for case in ET.parse(sys.argv[1]).getroot().iter("testcase"):
-              flaky = case.find("flakyFailure")
-              if flaky is not None:
-                  message = (flaky.get("message") or flaky.get("type") or "").splitlines()[0][:200]
-                  print(case.get("classname", ""), case.get("name", ""), message, sep="\t")
-          PY
-          )
-          done
-          if (( ${#lines[@]} > 0 )); then
-            { echo "### Shard ${{ matrix.shard }}: ${#lines[@]} flaky test(s) passed on retry"; printf '%s\n' "${lines[@]}"; } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No flaky tests."
-          fi
+          ./gradlew :app:testDebugUnitTest -Papp.skipScreenshotTests=true -Papp.testShard=${{ matrix.shard }}
+          -Papp.testForks=1 -Papp.versionNameSuffix="${{ steps.stamp.outputs.suffix }}"
 
       - name: Upload test report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: unit-test-report-${{ matrix.shard }}
+          name: unit-test-report-${{ strategy.job-index }}
           path: |
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/

@@ -8,7 +8,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.roborazzi)
-    alias(libs.plugins.test.retry)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -328,75 +327,103 @@ tasks.withType<Test>().configureEach {
 // ---------------------------------------------------------------------------------------------------------------------
 // Unit-test parallelism and sharding
 //
-// src/test is ~2000 Robolectric tests. One test JVM runs them one after another in about eleven minutes; several JVMs
-// side by side finish in a fraction of that, and CI splits the classes over several runners on top. Both are plain
-// Gradle properties so a developer can run the whole suite the ordinary way and CI can shape it:
+// src/test is ~2000 Robolectric tests. One test JVM runs them one after another in about eleven minutes; CI splits the
+// classes over several runners, one test JVM each. Both knobs are plain Gradle properties, so a developer can run the
+// whole suite the ordinary way and CI can shape it:
 //
-//   -Papp.testForks=N       test JVMs run side by side (default: half the machine's cores, at least one and at most
-//                           four). Each fork holds a Robolectric SDK in a 2 GB heap. Half, because a hosted runner's
-//                           four "cores" are two hyper-threaded ones: three forks there starved the fault and
-//                           benchmark tests, which assert on wall-clock behaviour, into timeouts on one run in three.
-//   -Papp.testShard=I/N     run only the I-th of N deterministic slices of the test classes (I from 1). The test
-//                           source files are sorted by path and dealt out in turn, so the slices are stable across
-//                           runs and machines, together cover every class exactly once, and the slow classes - which
-//                           sit next to each other (data/faults, the benchmarks) - land in different slices rather
-//                           than, as a hash of the name had it, mostly in one. A nested class travels with its outer
-//                           class; a class whose file is not named after it goes by the hash. Combine with `--tests`
-//                           or `-Papp.skipScreenshotTests` as usual: both filters apply.
-//   -Papp.testRetries=N     run a failed test up to N more times before it counts as failed (default 0: no retries).
-//                           CI passes 1. The fault, benchmark and Compose layout tests assert on wall-clock behaviour
-//                           and a shared runner occasionally starves one of them for a few seconds; a test that fails
-//                           and then passes is reported in the JUnit XML as a `flakyFailure`, and ci.yml turns every
-//                           one of those into a warning on the run, so a flake is seen, not hidden. When more than
-//                           four tests fail there are no retries: that is a breakage, not noise.
+//   -Papp.testForks=N        test JVMs run side by side, each holding a Robolectric SDK in a 2 GB heap (default: half
+//                            the machine's cores, at least one and at most four - never more than the cores minus one,
+//                            and no more heap between them than the machine has). CI passes 1: a hosted runner's four
+//                            "cores" are two hyper-threaded ones, and with two or three forks the fault, benchmark and
+//                            Compose UI tests - which assert on wall-clock behaviour, or wait on it - timed out on one
+//                            shard job in five; alone in their JVM, as they always were, they did not.
+//   -Papp.testShard=I/N      run only the I-th of N deterministic slices of the test classes (I from 1), the benchmarks
+//                            excepted (below). The test source files are sorted by path and dealt out in turn, the
+//                            classes in `heavyTestClasses` first so that each slice gets its share of them; the slices
+//                            are stable across runs and machines and together cover every class exactly once. A nested
+//                            class travels with its outer class; a class whose file is not named after it goes by a
+//                            hash of the name. Combine with `--tests` or `-Papp.skipScreenshotTests` as usual: both
+//                            filters apply.
+//   -Papp.testShard=benchmarks
+//                            run only the benchmark classes (`*BenchmarkTest`, `TranscriptPerf*`): the frame-time and
+//                            throughput claims. Always one JVM, whatever -Papp.testForks says, and nothing else beside
+//                            them, so what they measure is the code and not the neighbour.
 // ---------------------------------------------------------------------------------------------------------------------
 val testForks: Int = providers.gradleProperty("app.testForks").map(String::toInt)
     .getOrElse((Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4))
-val testShard: Pair<Int, Int>? = providers.gradleProperty("app.testShard").orNull?.let { spec ->
-    val match = Regex("""^(\d+)/(\d+)$""").matchEntire(spec) ?: error("app.testShard must look like I/N, e.g. 1/3; got '$spec'")
+
+/** One slice of the test classes: `Slice(index, count)` for the I-th of N ordinary slices, or [Benchmarks]. */
+sealed interface TestShard : java.io.Serializable {
+    data class Slice(val index: Int, val count: Int) : TestShard
+    object Benchmarks : TestShard { private fun readResolve(): Any = Benchmarks }
+}
+
+val testShard: TestShard? = providers.gradleProperty("app.testShard").orNull?.let { spec ->
+    if (spec == "benchmarks") return@let TestShard.Benchmarks
+    val match = Regex("""^(\d+)/(\d+)$""").matchEntire(spec) ?: error("app.testShard must be I/N (e.g. 1/5) or 'benchmarks'; got '$spec'")
     val (index, count) = match.destructured.toList().map(String::toInt)
     require(count >= 1 && index in 1..count) { "app.testShard=$spec: I must be between 1 and N" }
-    index to count
+    TestShard.Slice(index, count)
 }
 
 /**
- * Keeps the class files of slice [index] of [count]. [slices] maps a class (relative path without extension, e.g.
+ * Keeps the class files of one [TestShard]. [slices] maps an ordinary class (relative path without extension, e.g.
  * `com/x/FooTest`) to its slice; a class not in it goes by a hash of that path. A standalone class rather than a
  * lambda: the configuration cache has to serialize the filter with the task, and a lambda in this script would drag
  * the script object along.
  */
-class TestShardFilter(private val index: Int, private val count: Int, private val slices: Map<String, Int>) : Spec<FileTreeElement>, java.io.Serializable {
-    // Directories have to pass or nothing under them is visited; only class files are assigned to a slice.
-    override fun isSatisfiedBy(element: FileTreeElement): Boolean =
-        element.isDirectory || !element.name.endsWith(".class") || shardOf(element.relativePath.pathString) == index
+class TestShardFilter(private val shard: TestShard, private val slices: Map<String, Int>) : Spec<FileTreeElement>, java.io.Serializable {
+    // Directories have to pass or nothing under them is visited; only class files are assigned.
+    override fun isSatisfiedBy(element: FileTreeElement): Boolean {
+        if (element.isDirectory || !element.name.endsWith(".class")) return true
+        val outerClass = element.relativePath.pathString.substringBefore('$').removeSuffix(".class")
+        val benchmark = isBenchmark(outerClass.substringAfterLast('/'))
+        return when (shard) {
+            is TestShard.Benchmarks -> benchmark
+            is TestShard.Slice -> !benchmark && (slices[outerClass] ?: (Math.floorMod(outerClass.hashCode(), shard.count) + 1)) == shard.index
+        }
+    }
 
-    /** Which slice the test class compiled to [classFilePath] (relative, e.g. `com/x/FooTest$Inner.class`) belongs to, from 1. */
-    private fun shardOf(classFilePath: String): Int {
-        val outerClass = classFilePath.substringBefore('$').removeSuffix(".class")
-        return slices[outerClass] ?: (Math.floorMod(outerClass.hashCode(), count) + 1)
+    companion object {
+        /** A benchmark class by name: a frame-time or throughput claim, measured rather than asserted on state. */
+        fun isBenchmark(simpleName: String): Boolean = simpleName.endsWith("BenchmarkTest") || simpleName.startsWith("TranscriptPerf")
     }
 }
 
-/** Every test source file as the class path it compiles to, sorted, dealt out over [count] slices in turn. */
-fun testShardSlices(count: Int): Map<String, Int> = layout.projectDirectory.dir("src/test/java").asFileTree
-    .matching { include("**/*.kt", "**/*.java") }
-    .files.map { it.relativeTo(file("src/test/java")).path.replace(File.separatorChar, '/').substringBeforeLast('.') }
-    .sorted()
-    .withIndex()
-    .associate { (position, classPath) -> classPath to position % count + 1 }
+/**
+ * The test classes that take 15 s or more each - the fault and harness suites, built on real timeouts and paced
+ * retries: a dozen of the ~300 classes but half of the suite's time. Dealt out first, one per slice in turn, so no
+ * slice ends up with several of them while another has none; everything else follows, sorted, in the same manner.
+ * A slow class missing here only costs balance, never correctness. Measure with the per-class `time` in
+ * the TEST-*.xml files under app/build/test-results/testDebugUnitTest after a full run. (The benchmarks are not here: they have their own
+ * shard.)
+ */
+val heavyTestClasses = setOf(
+    "DemoBackendTest", "LiveFinishFaultsTest", "LiveNotificationServiceTest", "LiveTurnDeliveryTest", "LongProjectLoadTest",
+    "LongProjectReopenTest", "NewAgentViewModelTest", "RefreshFaultsTest", "SendFaultsTest", "TranscriptFaultsTest",
+    "TranscriptVerifyHarness",
+)
 
-val testRetries: Int = providers.gradleProperty("app.testRetries").map(String::toInt).getOrElse(0)
+/** Every ordinary test source file as the class path it compiles to, the heavy ones first, then the rest, each group sorted and dealt out over [count] slices in turn. */
+fun testShardSlices(count: Int): Map<String, Int> {
+    val classPaths = layout.projectDirectory.dir("src/test/java").asFileTree
+        .matching { include("**/*.kt", "**/*.java") }
+        .files.map { it.relativeTo(file("src/test/java")).path.replace(File.separatorChar, '/').substringBeforeLast('.') }
+        .filterNot { TestShardFilter.isBenchmark(it.substringAfterLast('/')) }
+        .sorted()
+    val (heavy, light) = classPaths.partition { it.substringAfterLast('/') in heavyTestClasses }
+    return (heavy + light).withIndex().associate { (position, classPath) -> classPath to position % count + 1 }
+}
 
 tasks.withType<Test>().configureEach {
-    maxParallelForks = testForks
+    maxParallelForks = if (testShard is TestShard.Benchmarks) 1 else testForks
     // The JVM's default collector (G1) stays: the fault and benchmark tests assert on wall-clock behaviour, and a
     // throughput collector's long stop-the-world pauses are one more way to starve them.
     maxHeapSize = "2g"
-    testShard?.let { (index, count) -> include(TestShardFilter(index, count, testShardSlices(count))) }
-    retry {
-        maxRetries.set(testRetries)
-        maxFailures.set(4)
-        failOnPassedAfterRetry.set(false)
+    when (val shard = testShard) {
+        null -> Unit
+        is TestShard.Benchmarks -> include(TestShardFilter(shard, emptyMap()))
+        is TestShard.Slice -> include(TestShardFilter(shard, testShardSlices(shard.count)))
     }
 }
 
