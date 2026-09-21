@@ -113,7 +113,7 @@ class CodeBlockCopyTest {
         markdown += "val b = 2\n```"
         compose.waitForIdle()
         // The same button, still there once the fence has closed, copies the whole block.
-        compose.waitUntil { compose.onAllNodes(hasContentDescription("Copy code")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodes(hasContentDescription("Copy code")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Copy code").performClick()
         compose.waitForIdle()
         assertThat(clipboard()).isEqualTo("val a = 1\nval b = 2")

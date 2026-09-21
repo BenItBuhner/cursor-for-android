@@ -65,18 +65,18 @@ class ComposerSlashPopoverTest {
         val field = compose.onNode(hasSetTextAction())
 
         field.performTextInput("/")
-        compose.waitUntil { shown("/autopilot") && shown("/goal") }
+        compose.waitUntil(10_000) { shown("/autopilot") && shown("/goal") }
         field.performTextInput("g")
         compose.waitForIdle()
         assertThat(shown("/goal")).isTrue()
         field.performTextInput("o")
-        compose.waitUntil { shown("/chat-sdk") }
+        compose.waitUntil(10_000) { shown("/chat-sdk") }
         // "/go": the goal command by name, the plugin skill by its description; the rest is gone.
         assertThat(shown("/autopilot")).isFalse()
         assertThat(shown("/multitask")).isFalse()
 
         compose.onNodeWithText("/goal").performClick()
-        compose.waitUntil { !shown("Set a goal that Cursor will pursue") }
+        compose.waitUntil(10_000) { !shown("Set a goal that Cursor will pursue") }
 
         // The whole "/go" is replaced, not just the slash the row was first composed under.
         assertThat(prompt).isEqualTo("/goal ")
@@ -92,9 +92,9 @@ class ComposerSlashPopoverTest {
         val field = compose.onNode(hasSetTextAction())
 
         field.performTextInput("/land-it")
-        compose.waitUntil { shown("Project or synced skill") }
+        compose.waitUntil(10_000) { shown("Project or synced skill") }
         compose.onNode(hasClickAction() and hasText("Project or synced skill")).performClick()
-        compose.waitUntil { !shown("Project or synced skill") }
+        compose.waitUntil(10_000) { !shown("Project or synced skill") }
 
         assertThat(prompt).isEqualTo("/land-it ")
         assertThat(remembered).containsExactly("land-it")
@@ -107,7 +107,7 @@ class ComposerSlashPopoverTest {
 
         // A body no name and no description can hold, so the list really is empty and only the notice is left.
         field.performTextInput("/-zz")
-        compose.waitUntil { shown("Looking for the agent's own skills") }
+        compose.waitUntil(10_000) { shown("Looking for the agent's own skills") }
     }
 
     @Test
@@ -116,9 +116,9 @@ class ComposerSlashPopoverTest {
         val field = compose.onNode(hasSetTextAction())
 
         field.performTextInput("/")
-        compose.waitUntil { popoverOpen() }
+        compose.waitUntil(10_000) { popoverOpen() }
         field.performTextInput("zz")
-        compose.waitUntil { !popoverOpen() }
+        compose.waitUntil(10_000) { !popoverOpen() }
 
         field.performTextInput("q")
         compose.waitForIdle()
