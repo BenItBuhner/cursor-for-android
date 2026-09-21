@@ -1124,7 +1124,10 @@ class FollowUpRepositoryTest {
 
             followUps.state("bc-1").first { it.queue.single().error != null }
             assertThat(api.runRequests).hasSize(1)
-            assertThat(FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1")).isFalse()
+            // The failure is published from inside the loop's turn; the loop then comes round once more, finds
+            // nothing it may send and lets go of itself. Both are the same beat on an idle machine and two under
+            // load, so the letting-go is waited for rather than read the instant the card shows the failure.
+            awaitUntil { !FollowUpRepositoryTestHelper.dispatcherActive(followUps, "bc-1") }
 
             followUps.enqueue("bc-1", "Second")
             api.failCreateRun = false

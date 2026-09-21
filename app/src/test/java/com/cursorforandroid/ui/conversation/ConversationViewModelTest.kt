@@ -306,8 +306,11 @@ class ConversationViewModelTest {
         assertThat(queued.error).isNull()
         // Nothing reached the server: the row still knows no model.
         assertThat(graph.agents.agent(RUNNING)?.modelId).isNull()
-        // The pick stays for the next message too, as on the desktop.
-        assertThat(vm.picker().override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
+        // The pick stays for the next message too, as on the desktop. Read once the picker shows a pick: `modelPicker`
+        // is shared `WhileSubscribed(5_000)`, and a new collector is handed the value it last shared before the
+        // upstream restarts — on a run slow enough for the sharing to have lapsed since the pick (a loaded machine),
+        // that value predates it (the stress loop caught a null here). A screen collects continuously and sees the pick.
+        assertThat(vm.picker { it.override != null }.override).isEqualTo(ModelChoice(gemini, gemini.defaultVariant))
     }
 
     @Test
