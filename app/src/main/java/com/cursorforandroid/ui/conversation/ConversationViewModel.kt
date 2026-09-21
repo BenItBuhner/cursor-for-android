@@ -5,7 +5,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.cursorforandroid.AppGraph
-import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AgentRepository
 import com.cursorforandroid.data.repo.AttachmentUploads
@@ -155,18 +154,15 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     private val files = MutableStateFlow<List<PendingFile>>(emptyList())
     private val toast = MutableStateFlow<String?>(null)
     /**
-     * The messages sent from this composer and not yet filed by the server: their bubbles' statuses — uploading,
-     * sending, failed with a retry and an edit — and the sends themselves, in the order tapped.
+     * The messages sent from this chat's composer and not yet filed by the server — their bubbles' statuses
+     * (uploading, sending, failed with a retry and an edit) and the sends themselves, in the order tapped. The
+     * graph's, not this view model's: a send outlives the screen, and this composer only listens while it is open.
      */
-    private val outgoing = OutgoingMessages(
-        agentId,
-        viewModelScope,
-        graph.conversations,
-        graph.attachmentUploads,
-        onSent = ::onSent,
-        onBusy = ::onRefusedAsBusy,
-        onReturned = ::onReturned,
-    )
+    private val outgoing = graph.outgoing.forAgent(agentId)
+    private val outgoingListener = object : OutgoingMessages.Listener {
+        override fun onSent(message: OutgoingMessages.Outgoing) = this@ConversationViewModel.onSent(message)
+        override fun onReturned(draft: OutgoingMessages.Draft) = this@ConversationViewModel.onReturned(draft)
+    }
     /** The picker's own state; the catalog and the chat's current model are folded in by [modelPicker]. */
     private val picker = MutableStateFlow(FollowUpModelState())
     /** Decoded previews of the images the queue cards and a restored draft show, by [DraftImage.id]. */
@@ -280,6 +276,7 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), graph.slashCommands.current(commandScope(graph.agents.agent(agentId))))
 
     init {
+        outgoing.listener = outgoingListener
         graph.conversations.attach(agentId)
         graph.steering.attach(agentId)
         viewModelScope.launch { loadModels() }
@@ -344,6 +341,8 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
     }
 
     override fun onCleared() {
+        // The sends go on in the graph's scope; only this composer stops hearing of them.
+        if (outgoing.listener === outgoingListener) outgoing.listener = null
         graph.conversations.detach(agentId)
         graph.steering.detach(agentId)
         graph.followUps.flush(agentId)
@@ -537,19 +536,21 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
             typed = text,
             images = images,
             files = attached,
-            options = options,
+            mode = options.mode,
+            planMode = options.planMode,
+            override = options.override,
         )
         when {
             // Mid-turn in Extended mode: into the account's queue, behind the turn under way. The account answers with
             // no run, the bubble comes down and the card above the composer shows the message until it is delivered.
-            busy && accountQueue -> dispatch(message, accountRoute(message))
+            busy && accountQueue -> dispatch(message, graph.outgoing.accountRoute(agentId, message))
             // This device's queue sends the documented run request, which cannot carry Ask or Debug: a message in
             // either mode is not put behind the ones waiting there to go out as an agent turn without a word.
             accountMode && (busy || waiting) -> toast.value = "${options.mode?.label} mode follow-ups cannot wait in this device's queue. Let the queued messages go first, or take the pill off."
             busy || waiting -> enqueue(text, images, attached, options)
             // A mode, or files: only the account's follow-up carries them.
-            accountMode || withFiles -> dispatch(message, accountRoute(message))
-            else -> dispatch(message, OutgoingMessages.Route.Documented { graph.mcpServers.enabled() })
+            accountMode || withFiles -> dispatch(message, graph.outgoing.accountRoute(agentId, message))
+            else -> dispatch(message, graph.outgoing.documentedRoute())
         }
     }
 
@@ -573,36 +574,10 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.followUps.clearDraft(agentId)
     }
 
-    /** The account's follow-up for [message]: `AddAsyncFollowupBackgroundComposer` with its images inline and its files by their uploads. */
-    private fun accountRoute(message: OutgoingMessages.Draft) = OutgoingMessages.Route.Account { uploaded ->
-        val followup = AccountFollowup(
-            text = message.text,
-            images = message.images.map { it.image },
-            files = uploaded,
-            mode = message.options.mode,
-            modelId = message.options.override?.model?.id,
-        )
-        graph.steering.sendFollowup(agentId, followup).getOrThrow()
-    }
-
     /** The server has the message: the model override it went out with is spent — unless another was picked meanwhile. */
     private fun onSent(sent: OutgoingMessages.Outgoing) {
-        val override = sent.draft.options.override
+        val override = sent.draft.override
         picker.update { if (it.override == override) it.copy(override = null) else it }
-    }
-
-    /**
-     * The documented run request refused the message as busy — the server still winding down the last turn against
-     * every word here: the message goes where the composer would have put it had it known, the account's queue in
-     * Extended mode (which sends it when the agent is free), this device's otherwise (which waits with a growing
-     * pause and says so on the card).
-     */
-    private fun onRefusedAsBusy(message: OutgoingMessages.Draft) {
-        if (capabilities.value.accountQueue && !graph.session.isDemo) {
-            outgoing.send(message, accountRoute(message))
-        } else {
-            enqueue(message.typed, message.images, emptyList(), message.options, refusedAsBusy = true)
-        }
     }
 
     /**

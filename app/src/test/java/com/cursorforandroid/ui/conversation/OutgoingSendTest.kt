@@ -1,6 +1,8 @@
 package com.cursorforandroid.ui.conversation
 
 import android.content.Context
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.AppGraph
@@ -186,8 +188,12 @@ class OutgoingSendTest {
     private fun file(name: String, size: Int = 2_048) = PendingFile.of(PromptFile(ByteArray(size) { 3 }, name, "application/pdf"))
     private fun image() = PendingAttachment.of(PromptImage(ByteArray(64) { 9 }, "image/png"), id = "img-${Random.nextInt()}")
 
-    private fun open(): ConversationViewModel = ConversationViewModel(graph, AGENT).also { vm ->
-        runBlocking { withTimeout(10_000) { vm.modelPicker.first { !it.isLoading } } }
+    /** A composer open on the chat: its catalogue read, and Extended mode known to it — a file attached before that is refused. */
+    private fun open(): ConversationViewModel = ConversationViewModel(graph, AGENT).also { vm -> runBlocking { vm.ready() } }
+
+    private suspend fun ConversationViewModel.ready() = withTimeout(10_000) {
+        modelPicker.first { !it.isLoading }
+        capabilities.first { it.promptFiles }
     }
 
     private fun pendingBubbles(): List<UserMessage> = graph.conversations.state(AGENT).value.items.filterIsInstance<UserMessage>().filter { it.isPending }
@@ -243,7 +249,7 @@ class OutgoingSendTest {
         val uploading = awaitStatus(vm, bubble.id) { it is OutgoingStatus.Uploading } as OutgoingStatus.Uploading
         assertThat(uploading.total).isEqualTo(1)
         assertThat(uploading.done).isEqualTo(0)
-        assertThat(vm.isSending.value).isTrue()
+        withTimeout(15_000) { vm.isSending.first { it } }
         // The account has not been asked: the request waits for the file, on the bubble, not in the composer.
         delay(400)
         assertThat(account.calls.get()).isEqualTo(0)
@@ -279,7 +285,7 @@ class OutgoingSendTest {
         val failed = awaitStatus(vm, bubble.id) { it is OutgoingStatus.Failed } as OutgoingStatus.Failed
         assertThat(failed.message).contains("trace.har")
         assertThat(account.calls.get()).isEqualTo(0)
-        assertThat(vm.isSending.value).isFalse()
+        withTimeout(15_000) { vm.isSending.first { !it } }
         assertThat(vm.composerIsEmpty()).isTrue()
         assertThat(pendingBubbles().map { it.id }).containsExactly(bubble.id)
 
@@ -477,6 +483,56 @@ class OutgoingSendTest {
         withTimeout(15_000) { vm.isSending.first { !it } }
         assertThat(vm.outgoingStatuses.value).isEmpty()
         awaitUntil("bubble down") { pendingBubbles().isEmpty() }
+    }
+
+    /**
+     * The chat is left the moment after send, its file still going up. The send is the graph's, not the screen's: it
+     * goes on all the same and the next visit finds the message filed. Left with a refusal instead, the next visit
+     * finds the bubble with its failure — and Retry from there files it. Nothing is lost to a screen being closed.
+     */
+    @Test
+    fun `a send outlives the chat being left, and a failure waits for the next visit with its Retry`() = runBlocking<Unit> {
+        suspend fun openIn(store: ViewModelStore): ConversationViewModel =
+            ViewModelProvider(store, ConversationViewModel.Factory(graph, AGENT))[ConversationViewModel::class.java].also { it.ready() }
+
+        val firstVisit = ViewModelStore()
+        val vm = openIn(firstVisit)
+        val big = file("big.mov", size = 8_192)
+        storage.hold("big.mov")
+        vm.addFiles(listOf(big))
+        vm.setDraft("Left the chat on this")
+        awaitChip(vm, big.id) { it?.isUploading == true }
+        vm.send()
+        assertThat(vm.composerIsEmpty()).isTrue()
+        val first = await("the bubble") { pendingBubbles().singleOrNull() }
+        // The chat is left: the view model is cleared, its scope with it.
+        firstVisit.clear()
+        storage.release("big.mov")
+        await("sent after the chat was left") { account.sent.singleOrNull { it.text == "Left the chat on this" } }
+        awaitUntil("filed") { pendingBubbles().none { it.id == first.id } }
+
+        // A refusal that lands after the chat is left waits on the bubble for the next visit.
+        val secondVisit = ViewModelStore()
+        val vm2 = openIn(secondVisit)
+        account.gate = CountDownLatch(1)
+        account.failNext = ConnectRpcException(503, "unavailable", "The account service is unavailable right now.")
+        vm2.addFiles(listOf(file("spec.pdf")))
+        vm2.setDraft("And the spec")
+        vm2.send()
+        val second = await("the bubble") { pendingBubbles().singleOrNull() }
+        secondVisit.clear()
+        account.gate!!.countDown()
+        account.gate = null
+        val sends = graph.outgoing.forAgent(AGENT)
+        await("failed after the chat was left") { (sends.statuses.value[second.id] as? OutgoingStatus.Failed) }
+
+        val vm3 = openIn(ViewModelStore())
+        assertThat(vm3.outgoingStatuses.value[second.id]).isInstanceOf(OutgoingStatus.Failed::class.java)
+        assertThat(pendingBubbles().map { it.id }).containsExactly(second.id)
+        vm3.retryOutgoing(second.id)
+        awaitStatus(vm3, second.id) { it == null }
+        assertThat(account.sent.map { it.text }).containsExactly("Left the chat on this", "And the spec").inOrder()
+        awaitUntil("filed") { pendingBubbles().isEmpty() }
     }
 
     private companion object {

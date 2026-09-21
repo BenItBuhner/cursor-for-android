@@ -1,24 +1,34 @@
 package com.cursorforandroid.ui.conversation
 
+import com.cursorforandroid.data.api.AccountFollowup
 import com.cursorforandroid.data.api.UploadedFile
 import com.cursorforandroid.data.api.toCursorError
 import com.cursorforandroid.data.api.userMessage
 import com.cursorforandroid.data.repo.AttachmentUploads
 import com.cursorforandroid.data.repo.ConversationRepository
+import com.cursorforandroid.data.repo.FollowUpRepository
 import com.cursorforandroid.data.repo.StagedFollowUp
+import com.cursorforandroid.data.repo.SteeringRepository
+import com.cursorforandroid.domain.AgentMode
+import com.cursorforandroid.domain.Capabilities
+import com.cursorforandroid.domain.DraftImage
 import com.cursorforandroid.domain.McpServer
+import com.cursorforandroid.domain.ModelChoice
 import com.cursorforandroid.ui.components.PendingAttachment
 import com.cursorforandroid.ui.components.PendingFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Where a message sent from the composer stands between the tap and the server filing it, for the bubble the
@@ -53,19 +63,19 @@ sealed interface OutgoingStatus {
  * own chips, its own uploads. Sends go out in the order they were tapped ([Ticket]), whatever their uploads and
  * staging take, so the account sees the conversation in the order it was written.
  *
- * @param stage shows the message in the transcript ahead of its request, and stages its attachments.
- * @param onSent a message the server has taken (or queued); the composer settles what the send consumed (a model override).
- * @param onBusy the documented run request refused the message as busy: it goes to a queue, as the composer would have sent it had it known.
- * @param onReturned an edit: the draft is the composer's again.
+ * One per chat, kept by [OutgoingSends] in a scope no screen owns: a send goes on after the chat is left, and its
+ * bubble keeps its status — a failure's Retry and Edit included — for the next visit. The composer open on the chat
+ * is the [listener]; what needs a composer (an edit) waits for one.
+ *
+ * @param onBusy the documented run request refused the message as busy: it goes to a queue, as the composer would
+ *   have sent it had it known — decided by [OutgoingSends], since no composer need be open by then.
  */
 class OutgoingMessages(
     private val agentId: String,
     private val scope: CoroutineScope,
     private val conversations: ConversationRepository,
     private val uploads: AttachmentUploads,
-    private val onSent: (Outgoing) -> Unit = {},
-    private val onBusy: (Draft) -> Unit = {},
-    private val onReturned: (Draft) -> Unit = {},
+    private val onBusy: (Draft) -> Unit,
 ) {
     /** What the composer held when send was tapped. [text] is what the message says; [typed] what the user wrote (an attachment-only message says what it carries). */
     class Draft(
@@ -73,7 +83,11 @@ class OutgoingMessages(
         val typed: String,
         val images: List<PendingAttachment>,
         val files: List<PendingFile>,
-        val options: FollowUpModelState,
+        /** The mode the message goes out under (Ask, Debug…); null keeps the chat's. */
+        val mode: AgentMode?,
+        val planMode: Boolean?,
+        /** The model the chat switches to from this run on; null keeps the current one. */
+        val override: ModelChoice?,
     )
 
     /** How the message reaches the server. */
@@ -93,6 +107,15 @@ class OutgoingMessages(
     /** One message on its way: the draft it was, its route, and the bubble ([staged]) that stands for it. */
     class Outgoing internal constructor(val id: String, val draft: Draft, val route: Route, internal val staged: StagedFollowUp)
 
+    /** What the composer open on the chat hears of its messages. */
+    interface Listener {
+        /** The server has taken (or queued) [message]: the composer settles what the send consumed — a model override. */
+        fun onSent(message: Outgoing) {}
+
+        /** An edit: [draft] is the composer's again. */
+        fun onReturned(draft: Draft) {}
+    }
+
     /** Each message's turn: its request goes out once the one tapped before it has returned, whatever their uploads took. */
     private class Ticket(val previous: Deferred<Unit>?, val done: CompletableDeferred<Unit> = CompletableDeferred())
 
@@ -100,6 +123,10 @@ class OutgoingMessages(
 
     /** Where each message not yet filed by the server stands, by its bubble's id. */
     val statuses: StateFlow<Map<String, OutgoingStatus>> = _statuses.asStateFlow()
+
+    /** The composer open on the chat, while one is. */
+    @Volatile
+    var listener: Listener? = null
 
     private val lock = Any()
     private val outgoing = HashMap<String, Outgoing>()
@@ -135,16 +162,19 @@ class OutgoingMessages(
         scope.launch { run(message, ticket) }
     }
 
-    /** Takes a failed message back: its bubble comes down and the draft is the composer's again ([onReturned]). */
+    /**
+     * Takes a failed message back: its bubble comes down and the draft is the composer's again ([Listener.onReturned]).
+     * Nothing happens without a composer to hand it to.
+     */
     fun edit(id: String) {
-        val message = synchronized(lock) { outgoing.remove(id) } ?: return
-        if (_statuses.value[id] !is OutgoingStatus.Failed) {
-            synchronized(lock) { outgoing[id] = message }
-            return
-        }
+        val composer = listener ?: return
+        val message = synchronized(lock) {
+            if (_statuses.value[id] !is OutgoingStatus.Failed) return
+            outgoing.remove(id)
+        } ?: return
         _statuses.update { it - id }
         scope.launch { conversations.discardStaged(agentId, message.staged) }
-        onReturned(message.draft)
+        composer.onReturned(message.draft)
     }
 
     private fun take(): Ticket = synchronized(lock) { Ticket(tail).also { tail = it.done } }
@@ -159,9 +189,9 @@ class OutgoingMessages(
                 is Route.Account -> conversations.sendStagedVia(
                     agentId,
                     message.staged,
-                    message.draft.options.override?.model?.id,
-                    message.draft.options.override?.params.orEmpty(),
-                    message.draft.options.override?.label,
+                    message.draft.override?.model?.id,
+                    message.draft.override?.params.orEmpty(),
+                    message.draft.override?.label,
                     discardOnFailure = false,
                 ) {
                     val uploaded = awaitUploads(message)
@@ -173,10 +203,10 @@ class OutgoingMessages(
                     message.staged,
                     message.draft.images.map { it.image },
                     route.mcpServers(),
-                    planMode = message.draft.options.planMode,
-                    modelId = message.draft.options.override?.model?.id,
-                    modelParams = message.draft.options.override?.params.orEmpty(),
-                    modelDisplayName = message.draft.options.override?.label,
+                    planMode = message.draft.planMode,
+                    modelId = message.draft.override?.model?.id,
+                    modelParams = message.draft.override?.params.orEmpty(),
+                    modelDisplayName = message.draft.override?.label,
                 ).map { }
             }
             result.fold(
@@ -184,7 +214,7 @@ class OutgoingMessages(
                     synchronized(lock) { outgoing.remove(id) }
                     _statuses.update { it - id }
                     uploads.forget(fileIds)
-                    onSent(message)
+                    listener?.onSent(message)
                 },
                 onFailure = { t ->
                     if (message.route is Route.Documented && t.toCursorError()?.code == AGENT_BUSY) {
@@ -235,5 +265,66 @@ class OutgoingMessages(
     private companion object {
         /** `POST /v1/agents/{id}/followup` while a run is under way: the message is queued rather than shown failed. */
         const val AGENT_BUSY = "agent_busy"
+    }
+}
+
+/**
+ * The [OutgoingMessages] of every chat, and the two ways a message reaches the server. Kept by the graph, in a scope
+ * no screen owns, so a send tapped just before the chat was left finishes all the same — as a launch does in the
+ * `ChatLauncher` — and its bubble is found with its status, a failure's Retry and Edit included, on the next visit.
+ */
+class OutgoingSends(
+    private val conversations: ConversationRepository,
+    private val uploads: AttachmentUploads,
+    private val steering: SteeringRepository,
+    private val followUps: FollowUpRepository,
+    private val mcpServers: suspend () -> List<McpServer>,
+    private val capabilities: suspend () -> Capabilities,
+    private val isDemo: () -> Boolean,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+) {
+    private val perChat = ConcurrentHashMap<String, OutgoingMessages>()
+
+    fun forAgent(agentId: String): OutgoingMessages =
+        perChat.getOrPut(agentId) { OutgoingMessages(agentId, scope, conversations, uploads, onBusy = { draft -> refusedAsBusy(agentId, draft) }) }
+
+    /** The account's follow-up for [draft]: `AddAsyncFollowupBackgroundComposer` with its images inline and its files by their uploads. */
+    fun accountRoute(agentId: String, draft: OutgoingMessages.Draft): OutgoingMessages.Route.Account = OutgoingMessages.Route.Account { uploaded ->
+        val followup = AccountFollowup(
+            text = draft.text,
+            images = draft.images.map { it.image },
+            files = uploaded,
+            mode = draft.mode,
+            modelId = draft.override?.model?.id,
+        )
+        steering.sendFollowup(agentId, followup).getOrThrow()
+    }
+
+    /** The documented run request, with the MCP servers enabled when it goes out. */
+    fun documentedRoute(): OutgoingMessages.Route.Documented = OutgoingMessages.Route.Documented(mcpServers)
+
+    /**
+     * The documented run request refused the message as busy — the server still winding down the last turn against
+     * every word here: the message goes where the composer would have put it had it known, the account's queue in
+     * Extended mode (which sends it when the agent is free), this device's otherwise (which waits with a growing
+     * pause and says so on the card). Nothing of the composer is touched: it may hold a new draft by now.
+     */
+    private fun refusedAsBusy(agentId: String, draft: OutgoingMessages.Draft) {
+        scope.launch {
+            if (capabilities().accountQueue && !isDemo()) {
+                forAgent(agentId).send(draft, accountRoute(agentId, draft))
+            } else {
+                followUps.enqueue(
+                    agentId,
+                    draft.typed,
+                    draft.images.map { DraftImage(it.id, it.image) },
+                    planMode = draft.planMode,
+                    modelId = draft.override?.model?.id,
+                    modelParams = draft.override?.params.orEmpty(),
+                    modelDisplayName = draft.override?.label,
+                    refusedAsBusy = true,
+                )
+            }
+        }
     }
 }

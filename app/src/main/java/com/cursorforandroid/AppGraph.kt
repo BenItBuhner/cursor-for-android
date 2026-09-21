@@ -127,6 +127,7 @@ import com.cursorforandroid.data.update.UpdateManager
 import com.cursorforandroid.data.update.WhatsNewRepository
 import com.cursorforandroid.notifications.LiveNotifications
 import com.cursorforandroid.ui.conversation.AttachmentImages
+import com.cursorforandroid.ui.conversation.OutgoingSends
 import com.cursorforandroid.update.AndroidUpdatePlatform
 import com.cursorforandroid.update.allocatableBytes
 import kotlinx.coroutines.Dispatchers
@@ -564,6 +565,23 @@ class AppGraph(
     /** Sees new chats' launches through once the composer has handed them over, so no screen has to stay for the answer. */
     private val lazyLauncher = lazy { ChatLauncher(conversations) }
     val launcher: ChatLauncher get() = lazyLauncher.value
+
+    /**
+     * The messages on their way out of each chat's composer, in a scope no screen owns: a send tapped just before the
+     * chat was left finishes all the same, and its bubble keeps its status for the next visit (see [OutgoingSends]).
+     */
+    private val lazyOutgoing = lazy {
+        OutgoingSends(
+            conversations = conversations,
+            uploads = attachmentUploads,
+            steering = steering,
+            followUps = followUps,
+            mcpServers = { mcpServers.enabled() },
+            capabilities = capabilities,
+            isDemo = { session.isDemo },
+        )
+    }
+    val outgoing: OutgoingSends get() = lazyOutgoing.value
 
     /**
      * Each chat's unsent follow-ups: the composer's draft, and the queue of messages sent while the agent was still on
