@@ -1,5 +1,6 @@
 package com.cursorforandroid.data.faults
 
+import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.CursorJson
 import com.cursorforandroid.data.api.dto.AgentDto
 import com.cursorforandroid.data.api.dto.AgentSummaryDto
@@ -257,7 +258,8 @@ class FaultServer(
             // The account service: the session handshake and the two record RPCs (Extended mode), on the same host.
             segments.size == 2 && segments[0] == "auth" && segments[1] == "exchange_user_api_key" -> Route.Auth
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "FetchBackgroundComposer" -> Route.Record
-            segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetLatestAgentConversationState" -> Route.RecordState
+            // The conversation state, however it is asked: the removed unary, or the stream the desktop reads it off.
+            segments.size == 2 && segments[0] == RECORD_SERVICE && (segments[1] == "GetLatestAgentConversationState" || segments[1] == "StreamConversation") -> Route.RecordState
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "GetBlobForAgentKV" -> Route.Blob
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "AddAsyncFollowupBackgroundComposer" -> Route.QueueAdd
             segments.size == 2 && segments[0] == RECORD_SERVICE && segments[1] == "ListPendingFollowups" -> Route.QueueList
@@ -486,21 +488,56 @@ class FaultServer(
      * `GetLatestAgentConversationState {bcId}`: the scripted state, else one turn per prompt of the record — each
      * turn its blob id, as the account names them (see [blobRecord]) — with the runs' timings.
      */
+    /**
+     * The conversation state as the account gives it. Asked as `StreamConversation` (the read Cursor's client makes,
+     * PREWARM): a Connect stream — the newest turns' blobs prefetched first ([prefetchBlobs] of them, the ones the
+     * request says the client holds left out), then `initial_state` with the state, then the end of the stream.
+     * Asked as the removed unary `GetLatestAgentConversationState`: refused in the server's own words, as on
+     * Bennett's phone on 2026-09-21. [recordStates] scripts the `conversationState` JSON per chat.
+     */
     private fun recordState(request: RecordedRequest): MockResponse {
-        val body = CursorJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+        val path = request.path.orEmpty()
+        if (path.endsWith("/GetLatestAgentConversationState")) return json(404, connectError("unimplemented", REMOVED_UNARY))
+        val body = CursorJson.parseToJsonElement(ConnectStreamFixtures.requestJson(request)).jsonObject
         val agentId = body["bcId"]?.jsonPrimitive?.contentOrNull ?: return json(400, connectError("invalid_argument", "bcId is required"))
-        recordStates[agentId]?.let { return json(200, it) }
-        val record = blobRecord(agentId) ?: return json(200, """{"latestConversationState":{"conversationState":{"turns":[],"turnTimings":[]}}}""")
-        val prompts = record.turnCount
-        val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
-        val timings = (0 until prompts).joinToString(",") { t ->
-            val run = chatRuns.getOrNull(t)
-            val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
-            """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
+        val held = (body["preFetchedBlobIds"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet() ?: emptySet()
+        streamRequests += body
+        val state = recordStates[agentId] ?: run {
+            val record = blobRecord(agentId) ?: return ConnectStreamFixtures.prewarmResponse("""{"turns":[],"turnTimings":[]}""")
+            val prompts = record.turnCount
+            val chatRuns = runs.values.filter { it.agentId == agentId }.sortedBy { it.createdAt }
+            val timings = (0 until prompts).joinToString(",") { t ->
+                val run = chatRuns.getOrNull(t)
+                val ended = run?.let { Instant.parse(it.updatedAt).toEpochMilli() } ?: 0L
+                """{"durationMs":"${run?.durationMs ?: 0}","timestampMs":"$ended"}"""
+            }
+            val ids = record.turnIds.joinToString(",") { "\"$it\"" }
+            """{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}"""
         }
-        val ids = record.turnIds.joinToString(",") { "\"$it\"" }
-        return json(200, """{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+        // The prefetch, as the desktop's request asks for it (`prefetch_only_last_step_per_turn`, `max_blobs_after_prefetch`):
+        // the newest [prefetchTurns] turns' blobs — each turn's structure, its prompt, its last step — less what the
+        // client says it holds, up to [prefetchBlobs] in all. A client holding them all is sent none.
+        val record = blobRecord(agentId)
+        val prefetched = ArrayList<Pair<String, ByteArray>>()
+        if (record != null && prefetchBlobs > 0) {
+            for (turnId in record.turnIds.asReversed().take(prefetchTurns)) {
+                if (prefetched.size >= prefetchBlobs) break
+                val turn = com.cursorforandroid.data.api.proto.ProtoWire.decode(record.blobs.getValue(turnId), com.cursorforandroid.data.api.proto.AgentSchemas.CONVERSATION_TURN)
+                val agentTurn = turn["agentConversationTurn"]?.jsonObject
+                val ids = listOf(turnId) + listOfNotNull(agentTurn?.get("userMessage")?.jsonPrimitive?.contentOrNull) + listOfNotNull((agentTurn?.get("steps") as? JsonArray)?.lastOrNull()?.jsonPrimitive?.contentOrNull)
+                for (id in ids) if (id !in held && prefetched.none { it.first == id }) record.blobs[id]?.let { prefetched += id to it }
+            }
+        }
+        prefetched.forEach { (_, bytes) -> recordBytes.merge(agentId, bytes.size.toLong(), Long::plus) }
+        return ConnectStreamFixtures.prewarmResponse(state, prefetched)
     }
+
+    /** Every `StreamConversation` request body seen, for the tests that check what the client told the server it holds. */
+    val streamRequests = CopyOnWriteArrayList<JsonObject>()
+    /** How many blobs the state stream prefetches for a chat at most (the desktop asks for 30); 0 sends none. */
+    @Volatile var prefetchBlobs: Int = 30
+    /** How many of the newest turns the prefetch draws from. */
+    @Volatile var prefetchTurns: Int = 10
 
     /** The chat's blob-backed record: made from its legacy steps (and made again whenever they change), else as scripted. */
     private fun blobRecord(agentId: String): BlobFixtures.Record? {
@@ -575,5 +612,7 @@ class FaultServer(
     companion object {
         /** The account service the record RPCs belong to (see `HeadlessConversationApi.SERVICE`). */
         const val RECORD_SERVICE = "aiserver.v1.BackgroundComposerService"
+        /** The server's own words for the removed unary, lowerCamel as its handler names it (Bennett's phone, 2026-09-21). */
+        const val REMOVED_UNARY = "getLatestAgentConversationState has been removed"
     }
 }

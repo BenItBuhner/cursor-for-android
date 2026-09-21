@@ -377,6 +377,6 @@ class LiveTurnDeliveryTest {
     private companion object {
         const val TURNS = 8
         const val MESSAGE = "Push the pricing table to the notes and tell the research worker to verify the free tier once more."
-        const val REMOVED = "GetLatestAgentConversationState has been removed"
+        const val REMOVED = "streamConversation has been removed"
     }
 }

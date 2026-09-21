@@ -123,8 +123,17 @@ data class TranscriptLoadDiagnostics(
      * `ConversationState.recordFallback`): since when, how long the read took, the pause the server named, and until
      * when the record is left alone.
      */
-    data class FallbackLine(val sinceIso: String, val readMs: Long, val retryAfterMs: Long?, val refusedUntilIso: String?) {
-        val text: String get() = "fallback=runs since=$sinceIso readMs=$readMs retryAfterMs=${retryAfterMs ?: "-"} refusedUntil=${refusedUntilIso ?: "-"}"
+    data class FallbackLine(
+        val sinceIso: String,
+        val readMs: Long,
+        val retryAfterMs: Long?,
+        val refusedUntilIso: String?,
+        /** The request path the refused read was made on, as sent, and what the server answered — so a casing or a routing question is settled from the export alone. */
+        val path: String? = null,
+        val httpCode: Int? = null,
+        val code: String? = null,
+    ) {
+        val text: String get() = "fallback=runs since=$sinceIso readMs=$readMs retryAfterMs=${retryAfterMs ?: "-"} refusedUntil=${refusedUntilIso ?: "-"} asked=${path?.let { "POST $it" } ?: "-"} http=${httpCode ?: "-"} code=${code ?: "-"}"
     }
 
     data class LiveStreamLine(val events: Int, val status: String, val reconnecting: Boolean, val expired: Boolean, val finished: Boolean, val items: Int)

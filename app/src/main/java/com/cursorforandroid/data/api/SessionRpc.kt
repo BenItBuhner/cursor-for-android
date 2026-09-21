@@ -27,3 +27,23 @@ suspend fun <I, O> ConnectJsonClient.unaryWithSession(
         unary(service, method, tokens.accessToken(), body, requestSerializer, responseSerializer, retryRefusals)
     }
 }
+
+/** [ConnectJsonClient.serverStream] with the account session, renewed once on `unauthenticated` (see [unaryWithSession]). */
+suspend fun <I> ConnectJsonClient.serverStreamWithSession(
+    service: String,
+    method: String,
+    tokens: SessionTokenProvider,
+    body: I,
+    requestSerializer: KSerializer<I>,
+    retryRefusals: Boolean = false,
+    onMessage: (kotlinx.serialization.json.JsonObject) -> Boolean,
+): Int {
+    val token = tokens.accessToken()
+    return try {
+        serverStream(service, method, token, body, requestSerializer, retryRefusals, onMessage)
+    } catch (e: ConnectRpcException) {
+        if (!e.isUnauthenticated) throw e
+        tokens.invalidate()
+        serverStream(service, method, tokens.accessToken(), body, requestSerializer, retryRefusals, onMessage)
+    }
+}

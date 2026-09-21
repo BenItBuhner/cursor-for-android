@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.RunStreamEvent
@@ -123,11 +124,11 @@ class CoordinatorDuplicateMessagesTest {
                         val page = served.drop(start).take(limit)
                         MockResponse().setBody(buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", served.size) }.toString())
                     }
-                    path.endsWith("/GetLatestAgentConversationState") -> {
+                    path.endsWith("/StreamConversation") -> {
                         val timings = runs.joinToString(",") { r -> """{"durationMs":"${r.durationMs ?: 0}","timestampMs":"${firstAt + r.index * 60_000L + (r.durationMs ?: 0)}"}""" }
-                        // The turns by their blob ids, as the account names them: the blob-backed read (see BlobFixtures).
+                        // The turns by their blob ids, as the account names them: the blob-backed read (see BlobFixtures), off the stream's initial state.
                         val ids = blobs().turnIds.joinToString(",") { "\"$it\"" }
-                        MockResponse().setBody("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+                        ConnectStreamFixtures.prewarmResponse("""{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}""")
                     }
                     path.endsWith("/GetBlobForAgentKV") -> {
                         val body = kotlinx.serialization.json.Json.parseToJsonElement(request.body.readUtf8()).jsonObject

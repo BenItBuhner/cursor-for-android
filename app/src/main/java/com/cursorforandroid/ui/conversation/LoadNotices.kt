@@ -54,9 +54,14 @@ object LoadNotices {
 
     fun recordFallback(state: ConversationState): LoadNotice? = state.recordFallback?.takeIf { state.error == null }?.let(::recordFallback)
 
-    /** The record's refusal in the words [RecordFallbackRow] has always used: the title names the reason, the detail what is on screen because of it. */
+    /**
+     * The record's refusal in the words [RecordFallbackRow] has always used: the title names the reason, the detail
+     * what is on screen because of it — and, under that, exactly what was asked and what came back
+     * (`Asked: POST /aiserver.v1.BackgroundComposerService/StreamConversation → HTTP 404 unimplemented`), so the next
+     * screenshot settles a casing or a routing question in one glance (see `RecordFallback.asked`).
+     */
     fun recordFallback(fallback: RecordFallback): LoadNotice =
-        LoadNotice(LoadNotice.Kind.RecordFallback, "$RECORD_FALLBACK_TITLE: ${fallback.reason}", RECORD_FALLBACK_DETAIL)
+        LoadNotice(LoadNotice.Kind.RecordFallback, "$RECORD_FALLBACK_TITLE: ${fallback.reason}", fallback.asked?.let { "$RECORD_FALLBACK_ASKED $it\n$RECORD_FALLBACK_DETAIL" } ?: RECORD_FALLBACK_DETAIL)
 
     /**
      * Whether [state] is one a notice's absence can be read from: a load has run to its end and left a transcript

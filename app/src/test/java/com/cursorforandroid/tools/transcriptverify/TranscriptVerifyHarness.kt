@@ -134,7 +134,8 @@ class TranscriptVerifyHarness {
             assertThat(calls.any { it.endsWith("/auth/exchange_user_api_key") }).isTrue()
             // The record: the state names the turns, the blobs carry them; the removed step-indexed read is never asked.
             assertThat(calls.any { it.endsWith("/FetchBackgroundComposer") }).isFalse()
-            assertThat(calls.any { it.endsWith("/GetLatestAgentConversationState") }).isTrue()
+            assertThat(calls.any { it.endsWith("/GetLatestAgentConversationState") }).isFalse()
+            assertThat(calls.any { it.endsWith("/StreamConversation") }).isTrue()
             assertThat(calls.any { it.endsWith("/GetBlobForAgentKV") }).isTrue()
             assertThat(calls.any { it.endsWith("/ListBackgroundComposers") }).isTrue()
             assertThat(calls.count { it.startsWith("GET") && it.endsWith("/runs") }).isAtLeast(2)

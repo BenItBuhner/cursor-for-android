@@ -29,6 +29,12 @@ class ConnectRpcException(
     /** How long the server asked us to wait (`Retry-After`), on a 429 or a 503 that named one; null otherwise. */
     val retryAfterMillis: Long? = null,
     cause: Throwable? = null,
+    /**
+     * The request path the call was made on, as sent — `/<package>.<Service>/<Method>` — so a refusal can be read
+     * beside exactly what was asked (a casing, a service, a method the server no longer routes), on the screen and in
+     * the diagnostics. Null for a failure before any request was built.
+     */
+    val path: String? = null,
 ) : IOException(message, cause) {
     val isUnauthenticated: Boolean get() = httpCode == 401 || code == "unauthenticated"
     val isRateLimited: Boolean get() = httpCode == 429 || code == "resource_exhausted"
@@ -53,14 +59,76 @@ object ConnectRpc {
     /** A bare `application/json` body; the String overload would append a charset parameter. */
     fun jsonBody(json: String): RequestBody = json.toByteArray(Charsets.UTF_8).toRequestBody(JSON)
 
+    /** The path of a Connect call as connect-es builds it: `/` + the service's `typeName` + `/` + the method's `name` (PascalCase, never the lowerCamel `localName`). */
+    fun path(service: String, method: String): String = "/$service/$method"
+
     fun request(baseUrl: String, service: String, method: String, accessToken: String, json: String): Request =
         Request.Builder()
-            .url("${baseUrl.trimEnd('/')}/$service/$method")
+            .url("${baseUrl.trimEnd('/')}${path(service, method)}")
             .header("Authorization", "Bearer $accessToken")
             .header("Accept", "application/json")
             .header("Connect-Protocol-Version", "1")
             .post(jsonBody(json))
             .build()
+
+    // ---- streaming ----------------------------------------------------------------------------------------------
+
+    private val CONNECT_JSON = "application/connect+json".toMediaType()
+
+    /**
+     * A server-streaming Connect call over HTTP (connectrpc.com/docs/protocol, "Streaming RPCs"): the same path as a
+     * unary call, `Content-Type: application/connect+json`, and the one request message enveloped — a flags byte
+     * (0), a four-byte big-endian length, the JSON — as every message of the response is. No compression is
+     * offered (`Connect-Accept-Encoding` left out), so the frames come as they are.
+     */
+    fun streamRequest(baseUrl: String, service: String, method: String, accessToken: String, json: String): Request =
+        Request.Builder()
+            .url("${baseUrl.trimEnd('/')}${path(service, method)}")
+            .header("Authorization", "Bearer $accessToken")
+            .header("Connect-Protocol-Version", "1")
+            .post(envelope(0, json.toByteArray(Charsets.UTF_8)).toRequestBody(CONNECT_JSON))
+            .build()
+
+    /** One enveloped message: [flags], the payload's length as four big-endian bytes, the payload. */
+    fun envelope(flags: Int, payload: ByteArray): ByteArray {
+        val out = ByteArray(5 + payload.size)
+        out[0] = flags.toByte()
+        val n = payload.size
+        out[1] = (n ushr 24).toByte(); out[2] = (n ushr 16).toByte(); out[3] = (n ushr 8).toByte(); out[4] = n.toByte()
+        payload.copyInto(out, 5)
+        return out
+    }
+
+    /** One frame of a Connect stream as read off the wire. */
+    class Frame(val flags: Int, val data: ByteArray) {
+        /** The end-of-stream frame: `{ error?, metadata? }` rather than a message (bit 0b10). */
+        val isEndStream: Boolean get() = flags and END_STREAM != 0
+        /** Compressed with the encoding negotiated (bit 0b01); never expected, none having been offered. */
+        val isCompressed: Boolean get() = flags and COMPRESSED != 0
+    }
+
+    /** The next frame of [source], or null at a clean end of the body. Throws [ConnectRpcException] for a frame cut short. */
+    fun readFrame(source: okio.BufferedSource, path: String, httpCode: Int): Frame? {
+        if (source.exhausted()) return null
+        val flags = source.readByte().toInt() and 0xFF
+        val length = source.readInt()
+        if (length < 0 || length > MAX_FRAME_BYTES) throw ConnectRpcException(httpCode, ConnectRpcException.UNREADABLE_ANSWER, "A frame of $path declared $length bytes.", path = path)
+        val data = try { source.readByteArray(length.toLong()) } catch (e: java.io.EOFException) { throw ConnectRpcException(httpCode, ConnectRpcException.UNREADABLE_ANSWER, "A frame of $path ended after fewer than its $length bytes.", cause = e, path = path) }
+        return Frame(flags, data)
+    }
+
+    /** The end-of-stream frame's error, as the exception to throw, or null when the stream ended well. */
+    fun endStreamError(frame: Frame, path: String, httpCode: Int): ConnectRpcException? {
+        val text = String(frame.data, Charsets.UTF_8)
+        val error = parse(text)?.get("error") as? JsonObject ?: return null
+        val body = error.toString()
+        return ConnectRpcException(httpCode, errorCode(body), errorReason(body) ?: "The stream ended in an error.", path = path)
+    }
+
+    const val END_STREAM = 0b10
+    const val COMPRESSED = 0b01
+    /** A frame larger than this is not a message this app reads (the largest, a page of blobs, is a few megabytes). */
+    const val MAX_FRAME_BYTES = 64 * 1024 * 1024
 
     /** The protocol's `code` field of an error body, if the body is one. */
     fun errorCode(body: String): String? = parse(body)?.string("code")
@@ -163,6 +231,7 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
     ): O = throttle.call(retryRefusals) {
         withContext(Dispatchers.IO) {
             val json = CursorJson.encodeToString(requestSerializer, body)
+            val path = ConnectRpc.path(service, method)
             client.newCall(ConnectRpc.request(baseUrl, service, method, accessToken, json)).await().use { response ->
                 val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
@@ -171,6 +240,7 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
                         code = ConnectRpc.errorCode(text),
                         message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
                         retryAfterMillis = response.retryAfterMillis(),
+                        path = path,
                     )
                 }
                 try {
@@ -179,10 +249,70 @@ class ConnectJsonClient(private val client: OkHttpClient, private val baseUrl: S
                     // The server answered; this build could not read the answer. Said as that — the call and the
                     // reason — rather than as the serializer's own words about a field, which is what a composer
                     // showed when the account's environment list carried a shape the DTO refused.
-                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e)
+                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
                 } catch (e: IllegalArgumentException) {
-                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e)
+                    throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "Cursor's answer to $method could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
                 }
+            }
+        }
+    }
+
+    /**
+     * A server-streaming Connect call (see [ConnectRpc.streamRequest]): [onMessage] is given each message of the
+     * stream as JSON and says whether to read on; false closes the connection — the caller has what it came for —
+     * without waiting for the server's end. A refusal before the stream (a status other than 200, a Connect error
+     * body) and an error in the end-of-stream frame are thrown as [ConnectRpcException], the request path on them.
+     * Returns how many messages [onMessage] was given.
+     */
+    suspend fun <I> serverStream(
+        service: String,
+        method: String,
+        accessToken: String,
+        body: I,
+        requestSerializer: KSerializer<I>,
+        retryRefusals: Boolean = false,
+        onMessage: (JsonObject) -> Boolean,
+    ): Int = throttle.call(retryRefusals) {
+        withContext(Dispatchers.IO) {
+            val json = CursorJson.encodeToString(requestSerializer, body)
+            val path = ConnectRpc.path(service, method)
+            client.newCall(ConnectRpc.streamRequest(baseUrl, service, method, accessToken, json)).await().use { response ->
+                if (!response.isSuccessful) {
+                    val text = response.body?.string().orEmpty()
+                    throw ConnectRpcException(
+                        httpCode = response.code,
+                        code = ConnectRpc.errorCode(text),
+                        message = ConnectRpc.errorReason(text) ?: "HTTP ${response.code}",
+                        retryAfterMillis = response.retryAfterMillis(),
+                        path = path,
+                    )
+                }
+                val responseBody = response.body ?: return@use 0
+                val contentType = response.header("Content-Type").orEmpty()
+                if (!contentType.startsWith("application/connect+json")) {
+                    // A unary-shaped answer to a streaming call: an error body the server wrote plainly, or a shape this build does not read.
+                    val text = responseBody.string()
+                    val code = ConnectRpc.errorCode(text)
+                    throw ConnectRpcException(response.code, code ?: ConnectRpcException.UNREADABLE_ANSWER, ConnectRpc.errorReason(text) ?: "Cursor answered $path with '$contentType', not a Connect stream.", path = path)
+                }
+                val source = responseBody.source()
+                var messages = 0
+                while (true) {
+                    val frame = ConnectRpc.readFrame(source, path, response.code) ?: break
+                    if (frame.isEndStream) {
+                        ConnectRpc.endStreamError(frame, path, response.code)?.let { throw it }
+                        break
+                    }
+                    if (frame.isCompressed) throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A frame of $path came compressed, which was not offered.", path = path)
+                    val message = try {
+                        CursorJson.parseToJsonElement(String(frame.data, Charsets.UTF_8)).jsonObject
+                    } catch (e: Exception) {
+                        throw ConnectRpcException(response.code, ConnectRpcException.UNREADABLE_ANSWER, "A message of $path could not be read: ${e.message ?: e.javaClass.simpleName}", cause = e, path = path)
+                    }
+                    messages++
+                    if (!onMessage(message)) break
+                }
+                messages
             }
         }
     }

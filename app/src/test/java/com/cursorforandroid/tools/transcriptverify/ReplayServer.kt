@@ -2,6 +2,7 @@ package com.cursorforandroid.tools.transcriptverify
 
 import com.cursorforandroid.data.api.BackgroundComposerApi
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.CursorApiFactory
 import com.cursorforandroid.fixtures.BlobFixtures
 import com.cursorforandroid.data.api.HeadlessConversationApi
@@ -162,14 +163,14 @@ class ReplayServer : AutoCloseable {
                 val page = responses.drop(start).take(limit)
                 json(buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", responses.size) }.toString())
             }
-            path.endsWith("/GetLatestAgentConversationState") -> {
+            path.endsWith("/StreamConversation") -> {
                 // The turns by their blob ids, as the account names them (see BlobFixtures): the blob-backed read.
                 val ids = blobs.turnIds.joinToString(",") { "\"$it\"" }
                 val timings = turnStarts.indices.joinToString(",") { t ->
                     val live = t == turnStarts.lastIndex && !liveServed.get()
                     if (live) "{}" else """{"durationMs":"$TURN_MS","timestampMs":"${turnStartedAt(t).toEpochMilli() + TURN_MS}"}"""
                 }
-                json("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true},"numPriorInteractionUpdates":"0"}}""")
+                ConnectStreamFixtures.prewarmResponse("""{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}""", cloudAgentExtra = """"numPriorInteractionUpdates":0""")
             }
             path.endsWith("/GetBlobForAgentKV") -> {
                 fetches.incrementAndGet()

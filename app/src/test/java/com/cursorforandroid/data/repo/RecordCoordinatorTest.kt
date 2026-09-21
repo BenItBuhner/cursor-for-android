@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.cursorforandroid.data.FakeCursorApi
 import com.cursorforandroid.data.FakeRunStreamer
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.ConnectStreamFixtures
 import com.cursorforandroid.data.api.ConversationRecordApi
 import com.cursorforandroid.data.api.HeadlessConversationApi
 import com.cursorforandroid.data.api.HeadlessPage
@@ -126,12 +127,12 @@ class RecordCoordinatorTest {
                         val page = served.drop(start).take(limit)
                         MockResponse().setBody(buildJsonObject { put("responses", JsonArray(page)); put("totalResponses", served.size) }.toString())
                     }
-                    path.endsWith("/GetLatestAgentConversationState") -> {
+                    path.endsWith("/StreamConversation") -> {
                         // One turn per prompt, each twelve seconds long, an hour apart: the footers of the turns the run list does not reach.
                         val turns = served.count { it.containsKey("humanMessage") || it.containsKey("userMessage") }
                         val timings = (0 until turns).joinToString(",") { t -> """{"durationMs":"12000","timestampMs":"${now - (turns - t) * 3_600_000L + 12_000L}"}""" }
                         val ids = (0 until turns).joinToString(",") { "\"turn-$it\"" }
-                        MockResponse().setBody("""{"latestConversationState":{"conversationState":{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}}}""")
+                        ConnectStreamFixtures.prewarmResponse("""{"turns":[$ids],"turnTimings":[$timings],"isRootProjectConversation":true}""")
                     }
                     else -> MockResponse().setResponseCode(404)
                 }

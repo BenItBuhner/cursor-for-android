@@ -175,7 +175,8 @@ class RecordPathRestoredScreenshotTest {
         val rows = rowsBefore()
         // No coordinator message survives the logs' expiry on the documented path; the expired rows say why.
         assertThat(rows.filterIsInstance<TranscriptRow.Message>()).isEmpty()
-        val fallback = RecordFallback("FetchBackgroundComposer has been removed", sinceMillis = AppClock.now(), readMillis = 133L, retryAfterMillis = null)
+        // Bennett's phone, 2026-09-21: the server's words, and under them what was asked, byte for byte.
+        val fallback = RecordFallback("getLatestAgentConversationState has been removed", sinceMillis = AppClock.now(), readMillis = 133L, retryAfterMillis = null, path = "/aiserver.v1.BackgroundComposerService/GetLatestAgentConversationState", httpCode = 404, code = "unimplemented")
         show(fallback) { rows.takeLast(7).forEach { TranscriptRowView(it) } }
         compose.waitUntil(10_000) { compose.onAllNodesWithText(TimelineBuilder.EXPIRED_TITLE).fetchSemanticsNodes().isNotEmpty() }
         capture("108_record_path_before")

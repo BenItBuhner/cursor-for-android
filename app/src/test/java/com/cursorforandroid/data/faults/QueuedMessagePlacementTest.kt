@@ -90,7 +90,7 @@ class QueuedMessagePlacementTest {
         server.transcripts[agentId] = LongProject.v0Transcript(turns)
         server.records[agentId] = turns.flatMap { it.record }
         // The documented path, as on Bennett's phone: the record refused in the server's words.
-        server.outage(Route.RecordState, Fault.Status(404, "unimplemented", "GetLatestAgentConversationState has been removed"))
+        server.outage(Route.RecordState, Fault.Status(404, "unimplemented", "streamConversation has been removed"))
         // The live run's stream delivers everything it has and drops; the hub keeps coming back to it.
         server.outage(Route.Stream, Fault.StreamCut(events = live.log.size), path = "/${live.runId}/")
     }

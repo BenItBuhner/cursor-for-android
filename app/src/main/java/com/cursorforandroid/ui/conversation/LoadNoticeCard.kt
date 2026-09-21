@@ -95,7 +95,8 @@ internal fun LoadNoticeCard(
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, style = type.base, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("load-notice-title"))
-                detail?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+                // Four lines: the record's refusal says what was asked (one line, two when the path wraps) and what is on screen because of it.
+                detail?.let { Text(it, style = type.small, color = colors.textTertiary, maxLines = 4, overflow = TextOverflow.Ellipsis) }
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
             }
             if (onDismiss != null) {

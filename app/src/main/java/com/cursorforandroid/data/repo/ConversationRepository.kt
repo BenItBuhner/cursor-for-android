@@ -142,7 +142,20 @@ data class ConversationState(
  * [retryAfterMillis] the pause the server asked for when it named one — until it has passed the record is not
  * asked again (see `ConversationRepository.RECORD_RETRY_MS` for a failure that named none).
  */
-data class RecordFallback(val reason: String, val sinceMillis: Long, val readMillis: Long, val retryAfterMillis: Long?)
+data class RecordFallback(
+    val reason: String,
+    val sinceMillis: Long,
+    val readMillis: Long,
+    val retryAfterMillis: Long?,
+    /** The request path the refused call was made on, as sent (`/aiserver.v1.BackgroundComposerService/StreamConversation`); null when the failure came before a request. */
+    val path: String? = null,
+    /** The HTTP status and the Connect `code` the server answered with, when it answered. */
+    val httpCode: Int? = null,
+    val code: String? = null,
+) {
+    /** The one line that settles what was asked and what came back: `POST /…/StreamConversation → HTTP 404 unimplemented`. */
+    val asked: String? get() = path?.let { p -> "POST $p" + (httpCode?.let { h -> " → HTTP $h" + (code?.let { c -> " $c" } ?: "") } ?: "") }
+}
 
 /**
  * Of the finished runs the window shows, how many have their trace (thoughts, tool calls, payloads) on screen and
@@ -1484,6 +1497,9 @@ class ConversationRepository(
                                 readMs = f.readMillis,
                                 retryAfterMs = f.retryAfterMillis,
                                 refusedUntilIso = e.recordRefusedUntil.takeIf { it > 0 }?.let { Instant.ofEpochMilli(it).toString() },
+                                path = f.path,
+                                httpCode = f.httpCode,
+                                code = f.code,
                             )
                         },
                     )
@@ -2296,7 +2312,8 @@ class ConversationRepository(
                 stateRead.cancel()
                 val now = AppClock.now()
                 val retryAfter = (failure as? ConnectRpcException)?.retryAfterMillis
-                val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter)
+                val connect = failure as? ConnectRpcException
+                val fallback = RecordFallback(message, now, (System.nanoTime() - readStartedAt) / 1_000_000, retryAfter, path = connect?.path, httpCode = connect?.httpCode, code = connect?.code)
                 // A removal is not a pause: the server has said the read is gone, and asking every half minute
                 // costs a round trip on every open for nothing (see [RECORD_REMOVED_RETRY_MS]).
                 val pause = when {
