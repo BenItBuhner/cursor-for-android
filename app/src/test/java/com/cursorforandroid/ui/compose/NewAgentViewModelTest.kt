@@ -253,7 +253,10 @@ class NewAgentViewModelTest {
         var opened: String? = null
 
         vm.launch(onOpen = { opened = it }, awaitServer = true)
-        awaitUntil { vm.state.value.isLaunching && graph.agents.state.value.agents.any { it.name == "Do the thing" } }
+        // The chat's row is on the list a beat before the request is on its entry (ConversationRepository.launch
+        // publishes the chat, then hands the request to the entry's scope), and a stop in between finds nothing to
+        // stop; so wait for the request to have reached the API — the demo answers it half a second later.
+        awaitUntil { vm.state.value.isLaunching && created.isNotEmpty() && graph.agents.state.value.agents.any { it.name == "Do the thing" } }
         vm.cancelLaunch()
 
         awaitUntil { !vm.state.value.isLaunching }
