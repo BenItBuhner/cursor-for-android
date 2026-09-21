@@ -1971,6 +1971,21 @@ class ConversationRepository(
     }
 
     /**
+     * Before a merge whose page shows the followed run over: the agent's row learns the run's end first, so the frame
+     * the merge publishes — the footer under the run, the stream off (see [Entry.endFollowIfOver]) — is never drawn
+     * beside a row still running (#237/#241: the row is patched before the frame that ends the stream). A run that
+     * is no longer the row's latest changes nothing on the row (see `Agent.withLatestRun`).
+     */
+    private fun patchRowIfFollowedOver(e: Entry, agentId: String, page: List<RunDto>) {
+        val record = synchronized(e) {
+            val followed = e.live?.runId ?: return
+            val over = page.firstOrNull { it.id == followed && !it.statusEnum().isActive } ?: return
+            e.known(over)
+        }
+        agents.recordRun(agentId, record)
+    }
+
+    /**
      * The story the followed run's stream has told so far is kept for the run (see [partial]) when the run has no
      * complete trace: what the screen showed of the turn does not go blank because the follow ends — the screen
      * paused, the next run followed, the run over by its record with the stream broken. Under the entry's monitor.
@@ -2080,6 +2095,8 @@ class ConversationRepository(
                     else -> null
                 }
                 if (fetched) {
+                    // The row first, when the page shows the followed run over (see [patchRowIfFollowedOver]).
+                    page?.let { patchRowIfFollowedOver(e, agentId, it.items) }
                     // The traces are kept: they are complete, and a finished run's log does not change. Local prompts
                     // hand over to the server once it reports them in full.
                     e.publish(
@@ -2169,6 +2186,7 @@ class ConversationRepository(
         val (known, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
         val newest = newestRuns(api, agentId, firstPage, latestId, known, knownComplete)
         if (newest.page.items.isEmpty()) return
+        patchRowIfFollowedOver(e, agentId, newest.page.items)
         var latest: RunDto? = null
         var over: RunDto? = null
         e.publish(
@@ -2321,6 +2339,7 @@ class ConversationRepository(
             val latestId = agents.agent(agentId)?.latestRunId?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
             val (knownRuns, knownComplete) = synchronized(e) { e.runs to e.runsComplete }
             val newest = newestRuns(cursorApi, agentId, firstPage, latestId, knownRuns, knownComplete)
+            patchRowIfFollowedOver(e, agentId, newest.page.items)
             var latest: RunDto? = null
             var merged: List<RunDto> = emptyList()
             e.publish(
@@ -2535,6 +2554,7 @@ class ConversationRepository(
             page = ListRunsResponseDto(items = page.items + more.items.filter { it.id !in have }, nextCursor = more.nextCursor)
             pages++
         }
+        patchRowIfFollowedOver(e, agentId, page.items)
         var over: RunDto? = null
         e.publish(
             mutate = {

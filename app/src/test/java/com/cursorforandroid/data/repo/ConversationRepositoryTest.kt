@@ -321,16 +321,27 @@ class ConversationRepositoryTest {
      * while the stream on that run is still on — the record's footer and the stream's end arrive in one frame.
      * Main's CI at `adcd808` caught a frame that broke it, once, in the test below; a sampled `state.value` can miss it.
      */
-    private inner class Frames(conversations: ConversationRepository, agentId: String) {
-        val frames = java.util.concurrent.CopyOnWriteArrayList<ConversationState>()
-        private val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { conversations.state(agentId).collect { frames += it } }
+    private inner class Frames(conversations: ConversationRepository, private val agentId: String) {
+        /** Each frame with the agent row's word at the instant it was published: whether the row ran. */
+        val frames = java.util.concurrent.CopyOnWriteArrayList<Pair<ConversationState, Boolean?>>()
+        private val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { conversations.state(agentId).collect { frames += it to agents.agent(agentId)?.isRunning } }
 
         fun stop() = job.cancel()
 
+        /**
+         * No frame shows [runId]'s footer with the stream on it still on; and the first frame that shows the footer
+         * finds the row no longer running — the row is patched before the frame that ends the stream (#237/#241),
+         * which `LiveFinishFaultsTest` caught the merge-frame version of on the follow-up PR's first CI run.
+         */
         fun assertNoEndedRunStreaming(runId: String) {
-            frames.forEachIndexed { i, f ->
+            var first = true
+            frames.forEachIndexed { i, (f, rowRunning) ->
                 val footer = f.items.any { it is RunFooter && it.runId == runId }
                 assertWithMessage("frame $i shows $runId's footer with the stream still on: streaming=${f.isStreaming} status=${f.runStatus} items=${f.types()}").that(footer && f.isStreaming && f.activeRunId == runId).isFalse()
+                if (footer && first) {
+                    first = false
+                    assertWithMessage("frame $i, the first with $runId's footer, finds the row still running").that(rowRunning).isFalse()
+                }
             }
         }
     }
