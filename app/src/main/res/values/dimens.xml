@@ -2,4 +2,10 @@
 <resources>
     <!-- Widget corners: the app's xl radius; values-v31 swaps in the system widget radius. -->
     <dimen name="widget_corner_radius">12dp</dimen>
+    <!--
+      Where the picker layout's corner disc sits from the widget's edges: the floor of the inset the rendered widget
+      computes (CornerButtonSpec: the launcher's corner radius less the disc's own, kept between 8 and 20dp), which is
+      what every launcher radius up to 28dp comes to for the 40dp disc.
+    -->
+    <dimen name="widget_corner_button_inset">8dp</dimen>
 </resources>

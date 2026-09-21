@@ -76,4 +76,8 @@
     <string name="widget_preview_row_2">House environment overhaul</string>
     <string name="widget_preview_row_3">Codex-Poly-Bot Scaling</string>
     <string name="widget_preview_row_4">Market replay engine</string>
+    <string name="widget_preview_meta_1">cursor-for-android · 19m</string>
+    <string name="widget_preview_meta_2">visual-engine · 30m</string>
+    <string name="widget_preview_meta_3">codex-poly-bot · 34m</string>
+    <string name="widget_preview_meta_4">market-replay · 52m</string>
 </resources>
