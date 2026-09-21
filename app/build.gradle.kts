@@ -338,12 +338,12 @@ tasks.withType<Test>().configureEach {
 //                            Compose UI tests - which assert on wall-clock behaviour, or wait on it - timed out on one
 //                            shard job in five; alone in their JVM, as they always were, they did not.
 //   -Papp.testShard=I/N      run only the I-th of N deterministic slices of the test classes (I from 1), the benchmarks
-//                            excepted (below). The test source files are sorted by path and dealt out in turn, the
-//                            classes in `heavyTestClasses` first so that each slice gets its share of them; the slices
-//                            are stable across runs and machines and together cover every class exactly once. A nested
-//                            class travels with its outer class; a class whose file is not named after it goes by a
-//                            hash of the name. Combine with `--tests` or `-Papp.skipScreenshotTests` as usual: both
-//                            filters apply.
+//                            excepted (below). The test source files are assigned heaviest first, each onto the slice
+//                            with the least in it so far (`testClassSeconds`), so the slices take about the same time;
+//                            they are stable across runs and machines and together cover every class exactly once. A
+//                            nested class travels with its outer class; a class whose file is not named after it goes
+//                            by a hash of the name. Combine with `--tests` or `-Papp.skipScreenshotTests` as usual:
+//                            both filters apply.
 //   -Papp.testShard=benchmarks
 //                            run only the benchmark classes (`*BenchmarkTest`, `TranscriptPerf*`): the frame-time and
 //                            throughput claims. Always one JVM, whatever -Papp.testForks says, and nothing else beside
@@ -391,29 +391,38 @@ class TestShardFilter(private val shard: TestShard, private val slices: Map<Stri
 }
 
 /**
- * The test classes that take 15 s or more each - the fault and harness suites, built on real timeouts and paced
- * retries: a dozen of the ~300 classes but half of the suite's time - heaviest first. Dealt out first, one per slice
- * in turn, so no slice ends up with several of the biggest while another has none; everything else follows, sorted,
- * in the same manner. A slow class missing here only costs balance, never correctness; so does a stale order. Measure
- * with the per-class `time` in the `unit-tests-results-*` artifacts every CI run uploads (the TEST-*.xml files under
- * app/build/test-results/testDebugUnitTest). The benchmarks are not here: they have their own shard.
+ * How long a test class takes alone in its JVM, in seconds, for the ones that take more than a few: the fault and
+ * harness suites (built on real timeouts and paced retries: a dozen classes, half of the suite's time) and the larger
+ * Compose and repository suites. Every other class counts as one second. The slices are filled with these: heaviest
+ * class first, each onto the slice with the least in it so far, so no slice ends up with two of the biggest while
+ * another has none. Only the balance depends on the numbers - a class missing here, or a stale one, costs seconds of
+ * wall time, never correctness. Refresh them from the per-class `time` in the `unit-tests-results-*` artifacts every CI
+ * run uploads (the TEST-*.xml files under app/build/test-results/testDebugUnitTest). The benchmarks are not here: they
+ * have their own shard.
  */
-val heavyTestClasses = listOf(
-    "SendFaultsTest", "LongProjectReopenTest", "TranscriptVerifyHarness", "TranscriptFaultsTest", "LiveTurnDeliveryTest",
-    "RefreshFaultsTest", "NewAgentViewModelTest", "LongProjectLoadTest", "LiveFinishFaultsTest", "DemoBackendTest",
-    "LiveNotificationServiceTest",
+val testClassSeconds = mapOf(
+    "SendFaultsTest" to 80, "LongProjectReopenTest" to 65, "TranscriptVerifyHarness" to 60, "TranscriptFaultsTest" to 45,
+    "RefreshFaultsTest" to 40, "LiveTurnDeliveryTest" to 40, "NewAgentViewModelTest" to 25, "LongProjectLoadTest" to 25,
+    "LiveFinishFaultsTest" to 25, "DemoBackendTest" to 20, "LiveNotificationServiceTest" to 15, "ConversationViewModelTest" to 15,
+    "PredictiveBackTest" to 10, "FollowUpRepositoryTest" to 10, "RegularChatTextTest" to 10, "LiveStatusTruthTest" to 10,
+    "WidgetSyncTest" to 10, "ConversationRepositoryTest" to 10, "MainActivityThemeTest" to 5, "SidebarCollapsePersistenceTest" to 5,
+    "AppGraphTest" to 5, "AppGraphExtendedModeTest" to 5, "LocalEchoOrderTest" to 5, "DeferredStartupTest" to 5,
+    "AttachmentStoreTest" to 5, "AccountSimulationTest" to 5, "WidgetRefreshTest" to 5, "SnoozeChatDialogTest" to 5,
 )
 
-/** Every ordinary test source file as the class path it compiles to: the heavy ones first, heaviest first, then the rest sorted, dealt out over [count] slices in turn. */
+/** Every ordinary test source file as the class path it compiles to, assigned to one of [count] slices: heaviest first, each onto the lightest slice so far. */
 fun testShardSlices(count: Int): Map<String, Int> {
     val classPaths = layout.projectDirectory.dir("src/test/java").asFileTree
         .matching { include("**/*.kt", "**/*.java") }
         .files.map { it.relativeTo(file("src/test/java")).path.replace(File.separatorChar, '/').substringBeforeLast('.') }
         .filterNot { TestShardFilter.isBenchmark(it.substringAfterLast('/')) }
-        .sorted()
-    val (heavy, light) = classPaths.partition { it.substringAfterLast('/') in heavyTestClasses }
-    val heaviestFirst = heavy.sortedBy { heavyTestClasses.indexOf(it.substringAfterLast('/')) }
-    return (heaviestFirst + light).withIndex().associate { (position, classPath) -> classPath to position % count + 1 }
+    fun seconds(classPath: String) = testClassSeconds[classPath.substringAfterLast('/')] ?: 1
+    val load = IntArray(count)
+    return classPaths.sortedWith(compareByDescending<String> { seconds(it) }.thenBy { it }).associateWith { classPath ->
+        val lightest = load.indices.minBy { load[it] }
+        load[lightest] += seconds(classPath)
+        lightest + 1
+    }
 }
 
 tasks.withType<Test>().configureEach {
