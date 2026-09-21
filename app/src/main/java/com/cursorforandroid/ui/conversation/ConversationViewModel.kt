@@ -299,8 +299,11 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         }
         viewModelScope.launch {
             // The draft left here last time comes back once the disk has been read — unless something was typed first.
+            // Nothing kept means nothing to put back: no trip off the main thread, during which a file attached just
+            // now would have been written over by an empty draft.
             val restored = graph.followUps.state(agentId).first { it.restored }
-            if (draft.value.isEmpty() && attachments.value.isEmpty() && files.value.isEmpty()) adoptDraft(restored.draft)
+            if (restored.draft.isEmpty) return@launch
+            if (composerIsEmpty()) adoptDraft(restored.draft, unlessWrittenInto = true)
         }
         viewModelScope.launch {
             graph.followUps.state(agentId).map { s -> s.queue.flatMap { it.images } + s.draft.images }.collect(::decodeThumbnails)
@@ -463,13 +466,20 @@ class ConversationViewModel(private val graph: AppGraph, val agentId: String) : 
         graph.attachmentUploads.retry(item.id)
     }
 
-    /** Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. */
-    private suspend fun adoptDraft(saved: FollowUpDraft) {
+    private fun composerIsEmpty(): Boolean = draft.value.isEmpty() && attachments.value.isEmpty() && files.value.isEmpty()
+
+    /**
+     * Puts the repository's draft in the composer: a restored one, or a queued message taken back for editing. The
+     * previews are decoded off the main thread first; with [unlessWrittenInto], a composer written into meanwhile —
+     * a word typed, a file attached — keeps what it has, and the restored draft stays on disk for the next time.
+     */
+    private suspend fun adoptDraft(saved: FollowUpDraft, unlessWrittenInto: Boolean = false) {
         val restored = withContext(Dispatchers.Default) {
             saved.images.map { PendingAttachment.of(it.image, it.id, thumbnails.value[it.id]) }
         }
         // An image file's chip thumbnail is decoded on the way back too, off the main thread.
         val restoredFiles = withContext(Dispatchers.Default) { saved.files.map { PendingFile.of(it.file, it.id) } }
+        if (unlessWrittenInto && !composerIsEmpty()) return
         thumbnails.update { cache -> cache + restored.mapNotNull { a -> a.thumbnail?.let { a.id to it } } }
         draft.value = saved.text
         attachments.value = restored

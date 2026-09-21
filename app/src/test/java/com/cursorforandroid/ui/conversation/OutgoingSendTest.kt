@@ -102,7 +102,7 @@ class OutgoingSendTest {
         // the sends and uploads cancelled, the storage's held requests released before it closes.
         stores.forEach { it.clear() }
         account.gate?.countDown()
-        graph.outgoing.resetAll()
+        runBlocking { graph.outgoing.resetAll() }
         graph.attachmentUploads.resetAll()
         storage.release()
         storage.shutdown()
@@ -177,9 +177,9 @@ class OutgoingSendTest {
         fun hold(name: String) { gates[name] = CountDownLatch(1) }
         fun release(name: String? = null) { if (name == null) gates.values.forEach { it.countDown() } else gates[name]?.countDown() }
 
+        val presigns = CopyOnWriteArrayList<String>()
+        val completes = CopyOnWriteArrayList<String>()
         val api: PromptUploadApi = object : PromptUploadApi {
-            val presigns = CopyOnWriteArrayList<String>()
-            val completes = CopyOnWriteArrayList<String>()
             override suspend fun presign(filename: String, mimeType: String, contentLengthBytes: Long, teamId: Int?): PresignedPromptUpload {
                 presigns += filename
                 if (filename == failPresignOf) throw ConnectRpcException(503, "unavailable", "Storage is unavailable right now.")
@@ -223,7 +223,15 @@ class OutgoingSendTest {
 
     /** The composer's chip state for [id], as the screen reads it — collected, since the flow only runs while something collects it. */
     private suspend fun awaitChip(vm: ConversationViewModel, id: String, condition: (com.cursorforandroid.ui.components.FileUploadState?) -> Boolean) {
-        withTimeout(15_000) { vm.fileUploads.first { condition(it[id]) } }
+        try {
+            withTimeout(15_000) { vm.fileUploads.first { condition(it[id]) } }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            throw AssertionError(
+                "chip $id never met the condition: composer files=${vm.pendingFiles.value.map { it.id }} chip=${vm.fileUploads.value[id]} " +
+                    "upload=${uploads.states.value[id]} toast=${vm.toastMessage.value} capabilities=${vm.capabilities.value.promptFiles} demo=${graph.session.isDemo} presigns=${storage.presigns} puts=${storage.puts}",
+                e,
+            )
+        }
     }
 
     private suspend fun awaitUntil(what: String, timeoutMs: Long = 15_000, condition: () -> Boolean) {
@@ -447,6 +455,8 @@ class OutgoingSendTest {
         vm.send()
         assertThat(vm.composerIsEmpty()).isTrue()
         val bubble = await("the bubble") { pendingBubbles().singleOrNull() }
+        // The status follows the bubble by a step; the send takes its 300–900 ms after that.
+        awaitStatus(vm, bubble.id) { it != null }
         awaitStatus(vm, bubble.id) { it == null }
         assertThat(account.sent.single().text).isEqualTo("When you are done, read the spec")
         // Queued: the bubble is down, the card carries the message from here.

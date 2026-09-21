@@ -23,6 +23,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -131,6 +132,7 @@ class OutgoingMessages(
     private val lock = Any()
     private val outgoing = HashMap<String, Outgoing>()
     private var tail: Deferred<Unit>? = null
+    private val staging = java.util.concurrent.atomic.AtomicInteger()
 
     /** True while a message is going up or out (a failed one, waiting on the reader, does not count). */
     fun inFlight(statuses: Map<String, OutgoingStatus> = _statuses.value): Boolean = statuses.values.any { it !is OutgoingStatus.Failed }
@@ -141,15 +143,21 @@ class OutgoingMessages(
      */
     fun send(draft: Draft, route: Route): Job {
         val ticket = take()
+        // In flight from the tap, under a provisional id until the bubble has one: the composer's "sending" reads true
+        // the moment send returns, not once the attachments have been written to disk.
+        val provisional = "staging-${staging.incrementAndGet()}"
+        _statuses.update { it + (provisional to OutgoingStatus.Sending) }
         return scope.launch {
             val staged = try {
                 conversations.stageFollowUp(agentId, draft.text, draft.images.map { it.image }, draft.files.map { it.file })
             } catch (e: CancellationException) {
+                _statuses.update { it - provisional }
                 ticket.done.complete(Unit)
                 throw e
             }
             val message = Outgoing(staged.localId, draft, route, staged)
             synchronized(lock) { outgoing[message.id] = message }
+            _statuses.update { it - provisional + (message.id to OutgoingStatus.Sending) }
             run(message, ticket)
         }
     }
@@ -298,12 +306,13 @@ class OutgoingSends(
         perChat.getOrPut(agentId) { OutgoingMessages(agentId, scope, conversations, uploads, onBusy = { draft -> refusedAsBusy(agentId, draft) }) }
 
     /**
-     * The account is gone (a sign-out): every send under way is cancelled and every chat's messages forgotten, so
-     * nothing of this account is still about to go out. The listeners stay — a composer still open hears of the
-     * next account's messages through the same [OutgoingMessages].
+     * The account is gone (a sign-out): every send under way is cancelled — and has stopped, by the time this returns,
+     * so nothing it was about to do (put a file up, ask the account) lands after the wipes that follow — and every
+     * chat's messages are forgotten. The listeners stay: a composer still open hears of the next account's messages
+     * through the same [OutgoingMessages].
      */
-    fun resetAll() {
-        scope.coroutineContext[Job]?.children?.forEach { it.cancel() }
+    suspend fun resetAll() {
+        scope.coroutineContext[Job]?.children?.toList()?.forEach { it.cancelAndJoin() }
         perChat.values.forEach { it.reset() }
     }
 
