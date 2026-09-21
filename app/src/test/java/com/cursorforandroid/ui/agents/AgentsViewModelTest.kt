@@ -18,6 +18,7 @@ import com.cursorforandroid.domain.SortOrder
 import com.cursorforandroid.domain.StatusFilter
 import com.cursorforandroid.util.AppClock
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -38,6 +39,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * The list state both the sidebar and the New Chat pane render from, against the demo backend (seventeen agents, three
@@ -59,6 +61,12 @@ class AgentsViewModelTest {
     @Volatile private var failList: Throwable? = null
     @Volatile private var listCalls = 0
     private val listCallReached = mutableListOf<CompletableDeferred<Unit>>()
+    /** The list calls numbered from 1 that fail as if the server could not be reached; the polling cadence is read off the rest. */
+    @Volatile private var failListCalls: IntRange? = null
+    /** The test's virtual clock, read at each list call (see [listCallTimes]); the wall clock until a test sets it. */
+    @Volatile private var virtualNow: () -> Long = { 0L }
+    /** When each list call was made, on the virtual clock: the polling cadence, with nothing of the real threads' timing in it. */
+    private val listCallTimes = CopyOnWriteArrayList<Long>()
     @Volatile private var blockListCall: Int? = null
     private var listCallGate = CompletableDeferred<Unit>()
 
@@ -71,6 +79,8 @@ class AgentsViewModelTest {
     private suspend fun buildGraph() {
         listCalls = 0
         listCallReached.clear()
+        listCallTimes.clear()
+        failListCalls = null
         blockListCall = null
         listCallGate = CompletableDeferred()
         val (demoApi, demoStreamer) = DemoBackendFactory.create()
@@ -82,8 +92,11 @@ class AgentsViewModelTest {
 
             override suspend fun listAgents(limit: Int, cursor: String?, includeArchived: Boolean): ListAgentsResponseDto {
                 listCalls++
-                listCallReached.getOrNull(listCalls - 1)?.complete(Unit)
-                if (listCalls == blockListCall) listCallGate.await()
+                val call = listCalls
+                listCallTimes += virtualNow()
+                listCallReached.getOrNull(call - 1)?.complete(Unit)
+                if (call == blockListCall) listCallGate.await()
+                if (failListCalls?.contains(call) == true) throw IOException("offline")
                 failList?.let { throw it }
                 return demoApi.listAgents(limit, cursor, includeArchived)
             }
@@ -213,40 +226,52 @@ class AgentsViewModelTest {
         }
     }
 
+    /**
+     * The cadence is read off the virtual clock at each list call, not off how many calls a window of virtual time
+     * let through: the fetch itself runs on the repository's own threads, and `advanceTimeBy` does not wait for
+     * them, so "no fifth call within two seconds" was true only while the fifth call's thread had not reached the
+     * server yet — and after three refusals the fifth attempt is eight intervals away, well inside two seconds. Under
+     * load the thread got there first (three rounds in eight).
+     */
     @Test
     fun `polling backs off while the list cannot be fetched and picks its cadence up once it can`() = runTest {
         mainDispatcher.set(StandardTestDispatcher(testScheduler))
-        listCallGate = CompletableDeferred()
+        virtualNow = { testScheduler.currentTime }
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
+        assertThat(listCalls).isEqualTo(1)
+        val landed = graph.agents.refreshCompleted.value
+        // The next three polls are refused; the one after them gets through.
         now += 60_000
-        failList = IOException("offline")
+        failListCalls = 2..4
+        val started = testScheduler.currentTime
         val polling = vm.pollWhileVisible()
         try {
-            expectListCall(3).await()
-            assertThat(listCalls).isEqualTo(4)
-            blockListCall = 5
-            advanceTimeBy(2_000)
-            runCurrent()
-            assertThat(listCalls).isEqualTo(4)
+            // Three refusals in a row: the interval, then twice, four and eight times it (each with up to a quarter of jitter).
+            expectListCall(4).await()
+            val gaps = (listOf(started) + listCallTimes.drop(1)).zipWithNext { a, b -> b - a }
+            assertWithMessage("poll gaps on the virtual clock: $gaps").that(gaps).hasSize(4)
+            assertThat(gaps[0]).isEqualTo(100L)
+            assertThat(gaps[1]).isIn(200L..250L)
+            assertThat(gaps[2]).isIn(400L..500L)
+            assertThat(gaps[3]).isIn(800L..1000L)
 
-            failList = null
+            // The fifth call answers: the run of failures is cleared, and the plain interval is back for the calls after
+            // it. A fetch that lands stamps the list with the frozen clock, and a poll within half an interval of the
+            // last landing is skipped, so the clock moves on after each landing — as it does on a phone.
+            awaitRefresh(landed)
             now += 60_000
-            blockListCall = null
-            listCallGate.complete(Unit)
-            awaitRefresh()
-            failList = IOException("offline")
+            expectListCall(5).await()
+            awaitRefresh(landed + 1)
             now += 60_000
-            val start = listCalls
-            expectListCall(start).await()
-            expectListCall(start + 1).await()
+            expectListCall(6).await()
+            val recovered = listCallTimes.drop(4).zipWithNext { a, b -> b - a }
+            assertWithMessage("poll gaps after the recovery: $recovered").that(recovered).containsExactly(100L, 100L).inOrder()
         } finally {
-            blockListCall = null
-            if (!listCallGate.isCompleted) listCallGate.complete(Unit)
             polling.cancel()
-            // What the cancel and the gate's release scheduled on the test's own dispatcher runs to its end here,
-            // rather than being reported as coroutines the test left behind.
+            // What the cancel scheduled on the test's own dispatcher runs to its end here, rather than being reported
+            // as coroutines the test left behind.
             advanceUntilIdle()
         }
     }

@@ -75,10 +75,9 @@ import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
-import kotlinx.coroutines.Dispatchers
+import com.cursorforandroid.util.ioThenMain
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * Cursor's prompt box as measured on cursor.com/agents: `--cursor-editor` surface, 8 % stroke (20 % focused),
@@ -533,7 +532,8 @@ internal fun rememberImagePasteReceiver(
             val add = addAttachments.value
             val taken = count.value
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { importAttachments(context, uris, taken) }
+                // The import off the main thread, the callbacks below back on it (see ioThenMain).
+                val imported = ioThenMain { importAttachments(context, uris, taken) }
                 if (imported.attachments.isNotEmpty()) add(imported.attachments)
                 imported.error?.let { attachmentError.value?.invoke(it) }
             }
