@@ -211,7 +211,8 @@ class LiveRunMonitorTest {
         assertThat(row.isRunning).isFalse()
         assertThat(row.updatedAtMillis).isEqualTo(now)
         assertThat(row.prUrl).isEqualTo("https://github.com/acme/app/pull/7")
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The footer and the end of streaming are published a beat apart; the wait covers both.
+        awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
         assertThat(conversations.state("bc-1").value.isStreaming).isFalse()
         val finishedAt = now
         awaitUntil { prefs.localAgentState.first().readMarkers["bc-1"] == finishedAt }

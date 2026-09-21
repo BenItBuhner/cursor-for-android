@@ -486,7 +486,7 @@ class ConversationRepositoryTest {
         // each is shown as it lands: with the transcript ahead of the replay the turn reads prompt, reply, footer
         // for a moment, its trace pending (the same footer this wait used to stop at — the flake in a full run).
         // Settled is when the one trace shown is on screen and nothing is pending.
-        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && it.traceStatus.pending == 0 && it.traceStatus.shown == 1 && it.items.lastOrNull() is RunFooter } }
+        awaitUntil { conversations.state("bc-1").value.let { !it.isLoading && !it.isStreaming && it.traceStatus.pending == 0 && it.traceStatus.shown == 1 && it.items.lastOrNull() is RunFooter } }
         val state = conversations.state("bc-1").value
         assertThat(state.isStreaming).isFalse()
         assertThat(state.runStatus).isEqualTo(RunStatus.FINISHED)
@@ -1343,7 +1343,8 @@ class ConversationRepositoryTest {
         // A reopen reads the same record and still shows the turn as over, with a footer closing it.
         now += 60_000
         conversations.revalidate("bc-1")
-        awaitUntil { conversations.state("bc-1").value.items.lastOrNull() is RunFooter }
+        // The footer and the end of streaming are published a beat apart; the wait covers both.
+        awaitUntil { conversations.state("bc-1").value.let { it.items.lastOrNull() is RunFooter && !it.isStreaming } }
         val reopened = conversations.state("bc-1").value
         assertThat(reopened.isStreaming).isFalse()
         assertThat((reopened.items.last() as RunFooter).status).isEqualTo(RunStatus.UNKNOWN)

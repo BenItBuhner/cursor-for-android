@@ -5,4 +5,4 @@ package com.cursorforandroid.screenshots
  * are compared pixel for pixel with `screenshots/`, and the build's version changes with every release, which used
  * to re-record seven of them per cut. It is the version they showed when it was pinned; it never has to move.
  */
-internal const val SCREENSHOT_APP_VERSION = "0.3.49"
+internal const val SCREENSHOT_APP_VERSION = "0.3.50"
