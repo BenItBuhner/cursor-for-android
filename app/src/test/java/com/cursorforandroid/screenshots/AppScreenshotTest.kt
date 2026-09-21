@@ -107,7 +107,7 @@ class AppScreenshotTest {
      */
     private fun appGraph(): AppGraph {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) })
+        return AppGraph(context, SecureKeyStore(context) { context.getSharedPreferences("stand-in-secure", Context.MODE_PRIVATE) }, appVersion = SCREENSHOT_APP_VERSION)
     }
 
     @OptIn(ExperimentalMaterial3Api::class)

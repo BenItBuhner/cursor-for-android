@@ -27,11 +27,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
       # Dev builds report e.g. 0.1.0-dev.42+gabc1234 in Settings and the User-Agent so an installed build can be traced
-      # back to this run and commit. The base version stays whatever gradle.properties says.
+      # back to this run and commit. The base version is the one git derives (app/build.gradle.kts): the release after the
+      # highest tag; the stamp replaces its `-dev`.
       - name: Stamp dev version
         id: stamp
         env:
@@ -71,6 +74,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
@@ -110,6 +115,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
@@ -141,6 +148,8 @@ jobs:
         shard: ["1/5", "2/5", "3/5", "4/5", "5/5", "benchmarks"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 
@@ -183,6 +192,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-tags: true # the version is derived from the release tags (app/build.gradle.kts)
 
       - uses: ./.github/actions/android-toolchain
 

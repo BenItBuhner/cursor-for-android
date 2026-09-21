@@ -2,9 +2,10 @@ package com.cursorforandroid.domain
 
 /**
  * Slash commands the way the web composer attaches them: `/multitask` and `/skill-name` apply to the message they
- * lead. The prompt itself is plain text, so a command is a standalone `/name` token kept at the front of it; the
- * composer paints the tokens in the Cursor orange and wears `/multitask` as a pill (see `ModePills`), but what
- * leaves the device is the text with the token in it.
+ * lead. The prompt itself is plain text, so a command is a standalone `/name` token kept at the front of it; the app
+ * paints the tokens ([tokenRanges]) in the Plan pill's tint — in the composer and wherever the message is shown
+ * after it (see `SlashCommandHighlight.kt`) — and the composer wears `/multitask` as a pill (see `ModePills`), but
+ * what leaves the device is the text with the token in it.
  */
 object SlashCommands {
     /** `/multitask`: run async subagents in parallel instead of queueing (the "Multitask" row of the "+" menu). */
@@ -32,7 +33,11 @@ object SlashCommands {
     /** Every `/command` token in [text], in order. */
     fun commands(text: String): List<String> = TOKEN.findAll(text).map { it.groupValues[1] }.toList()
 
-    /** The span of every `/command` token in [text], in order — what the composer paints as a command. */
+    /**
+     * The span of every `/command` token in [text], in order — what is painted as a command, in the composer and in
+     * the message once sent: the one rule for both, so the two never disagree. Any standalone `/name` counts, known
+     * to the catalog or not, wherever in the text it stands.
+     */
     fun tokenRanges(text: String): List<IntRange> = TOKEN.findAll(text).map { it.range }.toList()
 
     /** Whether [text] carries `/name` as a standalone token. */

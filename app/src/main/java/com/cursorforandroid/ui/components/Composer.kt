@@ -72,7 +72,6 @@ import androidx.compose.ui.unit.dp
 import com.cursorforandroid.domain.SlashCatalog
 import com.cursorforandroid.domain.SlashCommand
 import com.cursorforandroid.domain.SlashCommands
-import com.cursorforandroid.ui.theme.CursorColors
 import com.cursorforandroid.ui.theme.CursorDimens
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -91,7 +90,7 @@ import kotlinx.coroutines.withContext
  * controls ([CursorDimens.roundButton] beside [CursorTypography.input]), as on the web; the chips sit in between.
  * Typing `/` opens the [SlashCommandPopover] under the cursor with [commands] — `/goal`, the skills, the machine's
  * commands — narrowed by what follows the slash; the same catalog backs the "+" menu's Skills page. A `/command`
- * standing in the text is painted in the Cursor orange ([CommandOrange]) over the field's own glyphs, without
+ * standing in the text is painted in the Plan pill's tint ([slashCommandTint]) over the field's own glyphs, without
  * the field editing anything differently. A few commands are not text at all but pills right of "+", as on the web
  * ([ModePills]): `/multitask`, which the owner's [value] still carries in front so the request is unchanged, and
  * the modes — `/plan`, and with [extendedModes] `/ask` and `/debug` — which are [modePill]. Typing one with a space
@@ -212,6 +211,7 @@ fun ComposerBox(
         }
     }
     val textScroll = rememberScrollState()
+    val commandTint = slashCommandTint()
     val receiveImages = rememberImagePasteReceiver(
         enabled = onAddAttachments != null,
         currentCount = attachments.size,
@@ -345,7 +345,7 @@ fun ComposerBox(
                         // The field's own text, not the owner's: a placeholder that follows a lagging owner blinks
                         // back over the first character typed.
                         if (field.text.isEmpty()) Text(placeholder, style = type.input, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = CommandOrange)) {
+                        Box(Modifier.slashCommandHighlight(layout = { textLayout.get?.invoke() }, scroll = textScroll, color = commandTint)) {
                             inner()
                         }
                     }
@@ -443,12 +443,6 @@ private fun ComposerBusyButton(modifier: Modifier = Modifier) {
 private const val CancelOfferDelayMillis = 2_500L
 
 /**
- * `--cursor-brand` (#F54E00), the Cursor orange the web and desktop composers paint `/commands` in; the same in
- * every theme, so it is not a [CursorColors] token here. (main carries it as `CursorColors.brand`; this is that value.)
- */
-internal val CommandOrange = Color(0xFFF54E00)
-
-/**
  * Where a text field leaves its layout provider: set from `onTextLayout` during the field's measure, read while the
  * command highlight draws. Not snapshot state on purpose — the provider itself reads the field's layout result, which
  * is, so the draw is invalidated by the layout changing rather than by a write made in the middle of measuring.
@@ -458,11 +452,12 @@ private class TextLayoutHandle {
 }
 
 /**
- * Paints the `/command` tokens of a text field in [color] — the Cursor orange — the way cursor.com/agents and the
- * desktop composer set a command apart from the request. Purely a matter of drawing: the field lays its text out
- * once and hands the result over through `onTextLayout` ([layout]); after the field has drawn, the same layout is
- * drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of the laid-out text), so
- * the orange glyphs land exactly on the field's own. Nothing about editing, selection or the caret changes. The
+ * Paints the `/command` tokens of a text field in [color] — the Plan pill's tint ([slashCommandTint]) — the way
+ * cursor.com/agents and the desktop composer set a command apart from the request. Purely a matter of drawing: the
+ * field lays its text out once and hands the result over through `onTextLayout` ([layout]); after the field has
+ * drawn, the same layout is drawn again in [color], clipped to the box of each token ([SlashCommands.tokenRanges] of
+ * the laid-out text), so the tinted glyphs land exactly on the field's own. Nothing about editing, selection or the
+ * caret changes; the same rule and tint paint the message once sent (see [highlightSlashCommands]). The
  * field draws its text in the space of its scrolled content (its core node places that content at `-scroll` and
  * draws there), so the repaint follows [scroll] the same way and is clipped to the field's bounds like the field.
  */
