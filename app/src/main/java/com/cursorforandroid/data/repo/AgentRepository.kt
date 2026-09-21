@@ -361,11 +361,33 @@ class AgentRepository(
      * whole busy recheck (`IDLE_SETTLE_MS`, and again for as long as the record lagged) on a row nothing else would
      * settle — the hub reports a run's end once. The same hole `ConversationRepository.Entry.known` closed for the
      * chat's own run page after a Stop (#179). The run's terminal word, from anywhere, still stands; so does any
-     * other run the server names. Cleared with the list.
+     * newer run the server names. An older one it names active is over too (see [endedBefore]): an agent runs one
+     * turn at a time, so a run begun before the one this device saw end had ended before it began. Cleared with
+     * the list.
      */
     private val endedRuns = ConcurrentHashMap<String, EndedRun>()
 
-    private class EndedRun(val runId: String, val status: RunStatus)
+    /** [startedAtMillis] is the run's `createdAt` when the list has read its record ([runStarts]); null when it never has. */
+    private class EndedRun(val runId: String, val status: RunStatus, val startedAtMillis: Long?)
+
+    /**
+     * When each agent's last few runs began, by run id: every run record the list reads passes [known], which
+     * remembers it here, so a run stopped or seen finished later can be placed in time against the records a
+     * chat's stale load still holds (see [endedBefore]), and an older run's end told late (its replay finishing)
+     * against the newer run's (see [noteRunEnded]). Server clock throughout — a run's `createdAt` compared with
+     * another's — never this device's. The [RUN_STARTS_KEPT] newest per agent; cleared with the list.
+     */
+    private val runStarts = ConcurrentHashMap<String, RunStarts>()
+
+    /** The starts of one agent's newest runs, by id; its own monitor, as [known] is called under and outside [publishLock]. */
+    private class RunStarts {
+        private val byRun = HashMap<String, Long>()
+        @Synchronized fun note(runId: String, startedAtMillis: Long) {
+            byRun[runId] = startedAtMillis
+            while (byRun.size > RUN_STARTS_KEPT) byRun.remove(byRun.minByOrNull { it.value }!!.key)
+        }
+        @Synchronized fun of(runId: String): Long? = byRun[runId]
+    }
     /**
      * The parent links stamped onto chats beside their records, the way the desktop stamps them (see
      * [AgentsWindowList]): a root's `ListWorkersForManager` answer naming a worker (the desktop's seeded
@@ -487,25 +509,46 @@ class AgentRepository(
         _runningScan.value = RunningScan()
         pinnedUnresolved.clear()
         endedRuns.clear()
+        runStarts.clear()
         synchronized(launchTraces) { launchTraces.clear() }
     }
 
     /**
      * [run]'s record as this device knows it: an active status for a run it saw end reads as it ended (see
-     * [endedRuns]). Applied to every run record before it reaches a row, here and through [recordRun].
+     * [endedRuns]). Applied to every run record before it reaches a row, here and through [recordRun] — which makes
+     * this the one place every run record the list reads passes, so each is remembered by its start here too (see
+     * [runStarts]).
      */
     private fun known(agentId: String, run: RunDto): RunDto {
+        noteRunStart(agentId, run)
         if (!run.statusEnum().isActive) return run
         val ended = endedRuns[agentId]?.takeIf { it.runId == run.id } ?: return run
         return run.copy(status = ended.status.name)
     }
 
+    /** Remembers when [run] began (see [runStarts]); a record whose start cannot be read is not placed. */
+    private fun noteRunStart(agentId: String, run: RunDto) {
+        val startedAt = parseIsoMillis(run.createdAt).takeIf { it > 0 } ?: return
+        runStarts.getOrPut(agentId) { RunStarts() }.note(run.id, startedAt)
+    }
+
+    /** When the list has read [runId]'s record: its start, for the memory of its end (see [EndedRun.startedAtMillis]). */
+    private fun startOf(agentId: String, runId: String): Long? = runStarts[agentId]?.of(runId)
+
     /**
      * The hub followed [runId] to its end, on its own stream or its record: remembered so a record read that predates
      * the end cannot put the row back to running for it (see [endedRuns]). Called before the row is patched with the end.
+     * The end of a run that began before the one remembered — an older turn's replay, followed for its trace after
+     * the newer turn was stopped or finished here — is not the agent's last end, and leaves the memory of the newer
+     * one standing: its stale records are the ones still on their way.
      */
     fun noteRunEnded(agentId: String, runId: String, status: RunStatus) {
-        synchronized(publishLock) { endedRuns[agentId] = EndedRun(runId, status) }
+        synchronized(publishLock) {
+            val startedAt = startOf(agentId, runId)
+            val held = endedRuns[agentId]
+            if (held != null && held.runId != runId && held.startedAtMillis != null && startedAt != null && startedAt < held.startedAtMillis) return
+            endedRuns[agentId] = EndedRun(runId, status, startedAt)
+        }
     }
 
     /**
@@ -515,6 +558,22 @@ class AgentRepository(
      * that run active in the chat either (see `ConversationRepository.Entry.statusOf`).
      */
     fun endedStatus(agentId: String, runId: String?): RunStatus? = runId?.let { id -> endedRuns[agentId]?.takeIf { it.runId == id }?.status }
+
+    /**
+     * True when [run] began before the run of [agentId] this device last saw end (see [endedRuns]) — and so is over
+     * itself, whatever its record says, an agent running one turn at a time: a chat's load that read its run page
+     * before a Stop or a finish that moved the agent past that page must not follow, as the turn under way, a run
+     * that ended before the one it saw end (the spinner back on an old turn, and a steered message waiting on it).
+     * Decided on the server's clock alone (`createdAt` against `createdAt`), and never when the ended run's start is
+     * not known here (see [runStarts]) or the record's cannot be read.
+     */
+    fun endedBefore(agentId: String, run: RunDto): Boolean {
+        val ended = endedRuns[agentId] ?: return false
+        if (ended.runId == run.id) return false
+        val endedStart = ended.startedAtMillis ?: return false
+        val start = parseIsoMillis(run.createdAt).takeIf { it > 0 } ?: return false
+        return start < endedStart
+    }
 
     /**
      * Folds a run record a caller read into the row, when it is the row's latest run (see [Agent.withLatestRun]) —
@@ -1483,9 +1542,17 @@ class AgentRepository(
         val record = if (agent(id)?.record == null && !session.isDemo && capabilities().accountSession) runCatching { recordOf(id) }.getOrNull() else null
         // Merged into the row as it is at publication, under the lock a cancel patches under, and with the run as
         // this device knows it (see [known]): a Stop that landed while the record was on its way — the read a chat's
-        // load launched before it — is not undone by a record that predates it.
+        // load launched before it — is not undone by a record that predates it. A record whose latest run began
+        // before the run this device saw end since is that read: the turn moved on past it (see [endedBefore]), and
+        // the row keeps its own word on where the agent is — its latest run, that run's status, its lifecycle, its
+        // activity time — taking from the record only what is not about that (the repository, the branch, the name).
         val merged = synchronized(publishLock) {
-            val merged = dto.mergeInto(agent(id), run?.let { known(id, it) })
+            val row = agent(id)
+            val merged = if (row != null && run != null && endedBefore(id, run)) {
+                dto.mergeInto(row, null).copy(latestRunId = row.latestRunId, runStatus = row.runStatus, lifecycle = row.lifecycle, updatedAtMillis = row.updatedAtMillis)
+            } else {
+                dto.mergeInto(row, run?.let { known(id, it) })
+            }
             if (record != null && noteRecords(listOf(record), startedIn)) {
                 publish(null, startedIn) { s ->
                     val exists = s.agents.any { it.id == merged.id }
@@ -1853,7 +1920,7 @@ class AgentRepository(
         // Remembered and patched as one step: a record read landing between the two would put the row back to
         // running for the run just stopped, and the memory is what tells the next read not to.
         synchronized(publishLock) {
-            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(runId, RunStatus.CANCELLED)
+            if (generation.get() == startedIn) endedRuns[agentId] = EndedRun(runId, RunStatus.CANCELLED, startOf(agentId, runId))
             patch(agentId, startedIn) { it.copy(runStatus = RunStatus.CANCELLED, lifecycle = AgentLifecycle.IDLE) }
         }
     }
@@ -2163,6 +2230,9 @@ class AgentRepository(
         const val RECORD_RETRY_MS = 10 * 60_000L
         /** How long a stamp made by an action here stands over a record that has not caught up with it (the desktop keeps its stamp until the next list refresh). */
         const val ACTION_GRACE_MS = 5 * 60_000L
+        /** How many of an agent's newest runs are kept by their start (see [runStarts]): the turns a stale read can still name. */
+        private const val RUN_STARTS_KEPT = 8
+
         /** How long a fetch's first publication waits for the account's list (see [accountPrime]). */
         const val ACCOUNT_WORD_WAIT_MS = 4_000L
         /**

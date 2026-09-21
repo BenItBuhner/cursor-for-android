@@ -577,6 +577,8 @@ class ConversationRepository(
         var streamJob: Job? = null
         var traceJob: Job? = null
         var loadJob: Job? = null
+        /** A forced revalidation asked for while [loadJob] was in flight: the chat is read again once it lands (see [revalidateNow]). */
+        var rereadAfterLoad = false
         /** Cuts the window back a while after the last screen left (see [trimWindow]); cancelled by a screen coming back. */
         var trimJob: Job? = null
         /**
@@ -615,13 +617,19 @@ class ConversationRepository(
          * the run it cancelled as cancelled, and the run the hub followed to its finish as the hub saw it finish
          * (`AgentRepository.endedStatus`, the list's memory of each chat's last ended run). A record that predates
          * the end — the run page a load read before the Stop, the record a next-run look reads a poll behind the
-         * stream — is not the run's word on itself.
+         * stream — is not the run's word on itself. Nor is an active record of a run that began before the one this
+         * device saw end (`AgentRepository.endedBefore`): the agent ran that one first, so the older run is over,
+         * how being what the next read of its record says — [RunStatus.UNKNOWN] until then, never running. The case
+         * is a load whose run page was read before a steer's Stop of a turn the page did not hold yet, landing after
+         * it: followed as the turn under way, that page's run put the spinner back on a turn long over and held the
+         * steered message behind a stream that had nothing to say.
          */
         fun statusOf(run: RunDto): RunStatus {
             val status = run.statusEnum()
             if (!status.isActive) return status
             if (run.id == cancelledRunId) return RunStatus.CANCELLED
-            return agents.endedStatus(agentId, run.id) ?: status
+            agents.endedStatus(agentId, run.id)?.let { return it }
+            return if (agents.endedBefore(agentId, run)) RunStatus.UNKNOWN else status
         }
 
         /**
@@ -1769,15 +1777,30 @@ class ConversationRepository(
      * Brings an open chat back up to date after the app returns to the foreground: while it was away the network
      * may have taken the stream down mid-run, or the run may have finished. Loads the history again, which restarts
      * the stream of a run still going and replays one that ended. A load already in flight, or one that completed
-     * moments ago (the first open), is left alone. Called from the composition, so it is settled off that thread for
-     * the same reason [resume] is.
+     * moments ago (the first open), is left alone — unless [force]: the caller knows the chat's copy is behind the
+     * server (a Stop the server refused because the turn was over already), and a load in flight read its page
+     * before that, so the chat is read again once it lands. Called from the composition, so it is settled off that
+     * thread for the same reason [resume] is.
      */
-    fun revalidate(agentId: String) = offload(agentId) { e -> revalidateNow(e) }
+    fun revalidate(agentId: String, force: Boolean = false) = offload(agentId) { e -> revalidateNow(e, force) }
 
     private fun revalidateNow(e: Entry, force: Boolean = false) {
         synchronized(e) {
             // A chat still being launched has nothing on the server to fetch; the launch settles it when the server answers.
-            if (e.attached == 0 || e.loadJob?.isActive == true || e.launching) return
+            if (e.attached == 0 || e.launching) return
+            val inFlight = e.loadJob?.takeIf { it.isActive }
+            if (inFlight != null) {
+                // The load under way read its run page before whatever prompted this; what it publishes is that
+                // page's word. A forced revalidation is owed a read that postdates the cause: once, when the load lands.
+                if (force && !e.rereadAfterLoad) {
+                    e.rereadAfterLoad = true
+                    inFlight.invokeOnCompletion {
+                        synchronized(e) { e.rereadAfterLoad = false }
+                        revalidateNow(e, force = true)
+                    }
+                }
+                return
+            }
             if (!force && AppClock.now() - e.fetchedAt < REVALIDATE_MIN_INTERVAL_MS) return
             e.loadJob = e.scope.launch { load(e, e.agentId) }
         }

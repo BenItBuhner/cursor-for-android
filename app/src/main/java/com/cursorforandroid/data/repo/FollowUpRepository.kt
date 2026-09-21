@@ -376,9 +376,11 @@ class FollowUpRepository(
             when {
                 error?.code == RUN_NOT_CANCELLABLE || error?.httpCode == 404 -> {
                     // The turn ended by itself while the cancel was on its way: the message goes out all the same, so
-                    // that is not a failure to report. The chat is brought up to date so it shows the turn as finished.
+                    // that is not a failure to report. The chat is brought up to date so it shows the turn as finished
+                    // — forced, since the server has just said the chat's copy is behind it, and a load it has in
+                    // flight read its page before this too.
                     over += target
-                    conversations.revalidate(e.agentId)
+                    conversations.revalidate(e.agentId, force = true)
                 }
                 t.isTransientFailure() && retries < MAX_CANCEL_RETRIES -> delay(retryBaseMs shl retries++)
                 else -> return Result.failure(t)
