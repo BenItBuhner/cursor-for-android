@@ -76,6 +76,8 @@ data class TranscriptLoadDiagnostics(
         val accountRunning: Boolean,
         val rowNewerThanRecordMs: Long?,
         val failure: FailureLine? = null,
+        /** When the account last named this composer's status (the reading [accountRunning] is), so the `send:` line's older reading is read against it. */
+        val accountAtIso: String? = null,
     )
 
     /**
@@ -103,7 +105,18 @@ data class TranscriptLoadDiagnostics(
      * The record: its size in steps, where the loaded steps begin, how many turns are loaded of how many the account
      * says the chat has, whether the state was read, whether the record answered with nothing, and the last failure.
      */
-    data class RecordLine(val total: Int, val firstStep: Int, val turnsLoaded: Int, val turnCount: Int?, val stateRead: Boolean, val empty: Boolean, val error: String?, val fallback: FallbackLine? = null)
+    data class RecordLine(
+        val total: Int,
+        val firstStep: Int,
+        val turnsLoaded: Int,
+        val turnCount: Int?,
+        val stateRead: Boolean,
+        val empty: Boolean,
+        val error: String?,
+        val fallback: FallbackLine? = null,
+        /** How the record is read: `turns` (the blob-backed record, `GetLatestAgentConversationState` + `GetBlobForAgentKV`) or `steps` (`FetchBackgroundComposer`). */
+        val read: String = "steps",
+    )
 
     /**
      * The record refused or failed with nothing of it on screen and the documented path stands in (see
@@ -215,11 +228,11 @@ object TranscriptDiagnostics {
                 " window=${load.window} turns=[${load.windowStart},${load.chatTurns})",
         )
         load.record?.let { r ->
-            appendLine("record: total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
+            appendLine("record: read=${r.read} total=${r.total} firstStep=${r.firstStep} turnsLoaded=${r.turnsLoaded} turnCount=${r.turnCount ?: "-"} state=${if (r.stateRead) "read" else "-"} empty=${r.empty}" + (r.error?.let { " error=\"${redact(it)}\"" } ?: "") + (r.fallback?.let { " ${it.text}" } ?: ""))
         }
         load.status?.let { st ->
             appendLine(
-                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
+                "status: shown=${st.shown} latestRun=${st.latestRun} streaming=${st.streaming} rowRunning=${st.rowRunning} accountRunning=${st.accountRunning}${st.accountAtIso?.let { "@$it" } ?: ""} rowNewerThanRecordMs=${st.rowNewerThanRecordMs ?: "-"}" +
                     (st.failure?.let { f -> " failed: ${f.copy(reason = f.reason?.let(::redact)).text}" } ?: ""),
             )
         }

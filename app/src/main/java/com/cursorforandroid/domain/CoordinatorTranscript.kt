@@ -149,15 +149,113 @@ object CoordinatorTranscript {
         return repeats ?: emptyMap()
     }
 
+    /** Everything [items] leave out as said again: the message copies ([repeatedMessages]) and the replayed activity ([replayedActivity]), by key. */
+    fun leftOut(items: List<TimelineItem>): Set<String> {
+        val messages = repeatedMessages(items)
+        val replays = replayedActivity(items)
+        return when {
+            replays.isEmpty() -> messages.keys
+            messages.isEmpty() -> replays.keys
+            else -> messages.keys + replays.keys
+        }
+    }
+
+    /** The key a whole item is left out under (see [replayedActivity]): `item:` and its id. */
+    fun itemKey(item: TimelineItem): String = "item:${item.id}"
+
     /**
-     * [items] without the message calls keyed in [repeats] (see [repeatedMessages]): a group loses the call, and a
-     * group left with nothing goes. The same list when nothing is left out.
+     * Every call and item of [items] that is an earlier run's activity said again, by the key it is left out under
+     * ([messageKey] for a call, [itemKey] for a whole item), mapped to the run the original was drawn in.
+     *
+     * Bennett's 2026-09-20 export settled it: a silent turn's log replays the previous turn's *whole* activity, not
+     * its message alone — eleven tool calls with the very ids the turn before had drawn, then the same assistant text,
+     * under a footer of its own. [repeatedMessages] caught the message and left the other ten calls and the text
+     * to be drawn twice. Here every tool call whose id (and tool) an earlier run's group already drew is a replay;
+     * a group whose calls are all replays goes whole, its thoughts with it (the thoughts came with the calls); and
+     * an assistant text that reads as one an earlier run drew goes when the run it sits in has no call of its own —
+     * a silent run whose log carried the last turn's words and nothing else (the export's third `assistant
+     * chars=239` under a 4 s footer). A run with new calls keeps its text: a coordinator may say the same words
+     * twice. Footers are never a replay: the silent run did run, and its footer and stretch are its own. Runs are
+     * cut at their footers; the items after the last footer are the run under way.
+     */
+    /**
+     * The identity a call is drawn once under: its id and tool, and the arguments as the row reads them. A replayed
+     * event carries all four again; a call that merely shares an id with an earlier one (an id scheme counting from
+     * one per run) does not, and is drawn.
+     */
+    private fun callKey(call: ToolCall): String = "${call.callId}\u0000${call.name.lowercase()}\u0000${call.summary}\u0000${call.detail ?: ""}"
+
+    fun replayedActivity(items: List<TimelineItem>): Map<String, String> {
+        var out: MutableMap<String, String>? = null
+        // Where each call id was first drawn: by group, and the run's footer id once known (the original's run).
+        val seenCalls = HashMap<String, String>()
+        val seenTexts = HashMap<String, String>()
+        var start = 0
+        var runNo = 0
+        while (start < items.size) {
+            var end = start
+            while (end < items.size && items[end] !is RunFooter) end++
+            val run = items.subList(start, minOf(end + 1, items.size))
+            val runName = (run.lastOrNull() as? RunFooter)?.let { "run:${it.runId}" } ?: "run#$runNo"
+            // First pass: which calls of this run were drawn before, and whether any call is the run's own.
+            var own = false
+            val replayed = HashSet<String>()
+            for (item in run) {
+                if (item !is ActivityGroup) continue
+                for (step in item.steps) {
+                    if (step !is ToolCall || step.callId.isBlank()) continue
+                    val key = callKey(step)
+                    if (seenCalls.containsKey(key)) replayed += messageKey(item, step) else own = true
+                }
+            }
+            // Second pass: the calls and items left out, and what this run adds to what has been drawn.
+            for (item in run) {
+                when (item) {
+                    is ActivityGroup -> {
+                        val calls = item.steps.filterIsInstance<ToolCall>()
+                        val gone = calls.filter { messageKey(item, it) in replayed }
+                        if (gone.isEmpty()) {
+                            calls.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
+                            continue
+                        }
+                        val map = out ?: LinkedHashMap<String, String>().also { out = it }
+                        if (gone.size == calls.size) {
+                            map[itemKey(item)] = seenCalls.getValue(callKey(gone.first()))
+                        } else {
+                            gone.forEach { map[messageKey(item, it)] = seenCalls.getValue(callKey(it)) }
+                            calls.filter { messageKey(item, it) !in replayed }.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
+                        }
+                    }
+                    is AssistantMessage -> {
+                        val text = normalize(item.markdown)
+                        if (text.isEmpty()) continue
+                        val earlier = seenTexts[text]
+                        if (earlier != null && !own && earlier != runName) {
+                            (out ?: LinkedHashMap<String, String>().also { out = it })[itemKey(item)] = earlier
+                        } else {
+                            seenTexts.putIfAbsent(text, runName)
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+            start = end + 1
+            runNo++
+        }
+        return out ?: emptyMap()
+    }
+
+    /**
+     * [items] without the message calls keyed in [repeats] (see [repeatedMessages]) and without the calls and items
+     * keyed as replays (see [replayedActivity]): a group loses the call, a group left with nothing goes, an item
+     * keyed whole goes. The same list when nothing is left out.
      */
     fun withoutRepeats(items: List<TimelineItem>, repeats: Set<String>): List<TimelineItem> {
         if (repeats.isEmpty()) return items
         var changed = false
         val out = ArrayList<TimelineItem>(items.size)
         for (item in items) {
+            if (itemKey(item) in repeats) { changed = true; continue }
             if (item !is ActivityGroup || item.steps.none { it is ToolCall && messageKey(item, it) in repeats }) {
                 out += item
                 continue
@@ -221,7 +319,7 @@ object CoordinatorTranscript {
      * ([SystemNotification.narration]) rather than standing as a "Background" line of its own; a turn that spoke
      * to the user, or wrote more than a remark, keeps its rows.
      */
-    fun present(items: List<TimelineItem>, coordinatorMode: Boolean, repeats: Set<String> = repeatedMessages(items).keys): List<TimelineItem> {
+    fun present(items: List<TimelineItem>, coordinatorMode: Boolean, repeats: Set<String> = leftOut(items)): List<TimelineItem> {
         val once = withoutRepeats(items, repeats)
         val read = once.map { item -> if (item is ActivityGroup) reinterpret(item) else item }
         return if (coordinatorMode) foldRemarks(read) else read

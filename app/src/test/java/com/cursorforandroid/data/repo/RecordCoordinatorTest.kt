@@ -140,7 +140,10 @@ class RecordCoordinatorTest {
         server.start()
         val client = OkHttpClient()
         val base = server.url("/").toString()
-        record = HeadlessConversationApi(ConnectJsonClient(client, base), SessionTokenProvider(client, apiKeyProvider = { "key_abc" }, apiUrl = base, now = { now }))
+        // The step-indexed wire (`FetchBackgroundComposer`), whose captured shapes these fixtures are — the shapes the
+        // record carried a turn's error and a streamed call's pieces in. The blob-backed read, which the server
+        // answers today, is covered by BlobRecordTest and the fault tests (see BlobFixtures).
+        record = HeadlessConversationApi(ConnectJsonClient(client, base), SessionTokenProvider(client, apiKeyProvider = { "key_abc" }, apiUrl = base, now = { now }), readsTurns = false)
     }
 
     @After

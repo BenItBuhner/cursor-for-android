@@ -353,7 +353,7 @@ class TranscriptVerifier(
             while (raw!!.firstStep > 0 && reads < MAX_INDEPENDENT_READS && HeadlessTranscript.split(raw.steps).count { it.prompt != null } < want) {
                 val older = RecordPager.before(record, agentId, raw.firstStep, wantTurns = minOf(want, 10))
                 if (older.steps.isEmpty()) break
-                raw = RecordPager.Raw(older.steps + raw.steps, older.firstStep, raw.total)
+                raw = RecordPager.Raw(older.steps + raw.steps, older.firstStep, raw.total, raw.turnIndexed)
                 reads++
             }
             val state = runCatching { record.state(agentId) }.getOrElse { t -> line("GetLatestAgentConversationState failed: ${describeError(t)}"); null }
@@ -362,8 +362,9 @@ class TranscriptVerifier(
             var index = raw.firstStep
             val independent = ArrayList<IndependentTurn>()
             turns.forEachIndexed { i, turn ->
-                val stepIndex = index
-                index += turn.steps.size + (if (turn.prompt != null) 1 else 0)
+                // The blob-backed record indexes by turn; the step-indexed record's steps are counted.
+                val stepIndex = turn.turnIndex ?: index
+                index = if (turn.turnIndex != null) turn.turnIndex + 1 else index + turn.steps.size + (if (turn.prompt != null) 1 else 0)
                 val shape = HeadlessTranscript.shape(turn, stepIndex)
                 val items = HeadlessTranscript.body(turn, "verify-$stepIndex")
                 val turnIndex = turnCount - turns.size + i
@@ -381,7 +382,7 @@ class TranscriptVerifier(
                 )
             }
             val runs = allRuns()
-            line("record: total=${raw.total} steps, read from step ${raw.firstStep} (${raw.steps.size} steps, ${turns.size} turns) in ${reads + 1} read(s); state: turnCount=${state?.turnCount ?: "-"} timings=${state?.timings?.size ?: "-"} pendingToolCalls=${state?.pendingToolCalls ?: "-"} isRootProject=${state?.isRootProject ?: "-"} rewindEpoch=${state?.rewindEpoch ?: "-"}")
+            line("record: read=${if (raw.turnIndexed) "turns (GetLatestAgentConversationState + GetBlobForAgentKV)" else "steps (FetchBackgroundComposer)"} total=${raw.total} ${if (raw.turnIndexed) "turns" else "steps"}, read from ${if (raw.turnIndexed) "turn" else "step"} ${raw.firstStep} (${raw.steps.size} steps, ${turns.size} turns) in ${reads + 1} read(s); state: turnCount=${state?.turnCount ?: "-"} timings=${state?.timings?.size ?: "-"} pendingToolCalls=${state?.pendingToolCalls ?: "-"} isRootProject=${state?.isRootProject ?: "-"} rewindEpoch=${state?.rewindEpoch ?: "-"}")
             line("runs: ${runs.size} listed (${runs.count { it.status == "FINISHED" }} finished, ${runs.count { it.status == "RUNNING" || it.status == "CREATING" }} active, ${runs.count { it.status == "CANCELLED" }} cancelled, ${runs.count { it.status == "ERROR" }} error) · record turns=${turnCount} · ${if (runs.size == turnCount) "one run per turn" else "MISMATCH: the run list and the record disagree on the turn count (${runs.size} runs vs $turnCount turns)"}")
             val byStage = independent.groupingBy { it.messageStage.substringBefore(' ') }.eachCount()
             line("sendMessage by stage over the turns read: ${byStage.entries.joinToString(", ") { "${it.key}=${it.value}" }} · user prompts=${independent.count { it.prompt == "user" }} injected=${independent.count { it.prompt == "injected" }} promptless=${independent.count { it.prompt == "none" }} · turns without a body=${independent.count { !it.hasBody }}")
