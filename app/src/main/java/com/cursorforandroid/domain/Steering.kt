@@ -123,6 +123,8 @@ data class QueuePlacement(
 
     companion object {
         val NONE = QueuePlacement()
+        /** The id a [waiting] row carries for a message queued without an id of the account's: its staged copy's own, so prefixed. */
+        const val LOCAL_ID_PREFIX = "local:"
 
         /** The words of a message as they compare across the card, the transcript and the account: whitespace folded. */
         fun textKey(text: String): String = text.replace(WHITESPACE, " ").trim()
@@ -226,8 +228,10 @@ data class ConversationControls(
                 else -> item
             }
         }
-        // This device's queued messages the list does not name (yet, or any more): kept on the card until the transcript shows them.
-        val kept = placement.waiting.filter { w -> shown.none { it.id == w.id || QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w.text) } }
+        // This device's queued messages the list does not name (yet, or any more): kept on the card until the transcript
+        // shows them. By id; by words only for one queued without an id of the account's (the list's row for it is the
+        // account's own name for the same message) — the same words are other queued messages' too.
+        val kept = placement.waiting.filter { w -> shown.none { it.id == w.id || (w.id.startsWith(QueuePlacement.LOCAL_ID_PREFIX) && QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w.text)) } }
         if (kept.isNotEmpty()) changed = true
         return if (changed) copy(queue = shown + kept) else this
     }

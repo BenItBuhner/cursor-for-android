@@ -80,7 +80,14 @@ class QueuedMessagePlacementTest {
     @Before
     fun setUp() {
         server = FaultServer(rttMillis = 150L..350L).start()
-        turns = LongProject.turns(firstAt, turns = TURNS)
+        install(LongProject.turns(firstAt, turns = TURNS))
+    }
+
+    /** The chat on the server: [turns], the newest under way. Called again by a test that wants the turns shaped otherwise. */
+    private fun install(turns: List<LongProject.Turn>) {
+        this.turns = turns
+        server.runs.clear()
+        server.logs.clear()
         turns.forEach { turn ->
             server.runs[turn.runId] = RunDto(id = turn.runId, agentId = agentId, status = turn.status, createdAt = LongProject.iso(turn.startedAt), updatedAt = LongProject.iso(turn.endedAt), durationMs = turn.durationMs, result = null)
             server.logs[turn.runId] = turn.log
@@ -115,7 +122,7 @@ class QueuedMessagePlacementTest {
         val c = rig!!.steering.state(agentId).value
         println("== $label: items=${s.items.size} run=${s.runStatus} streaming=${s.isStreaming} active=${s.activeRunId} loading=${s.isLoading} placement=${s.queuePlacement}")
         println("   card(raw)=${c.queue.map { "${it.id}:${it.text.take(16)}" }} load=${c.queueLoad} card(placed)=${c.placed(s.queuePlacement).queue.map { "${it.id}${it.note?.let { n -> "[$n]" } ?: ""}" }}")
-        println("   prompts=${s.items.filterIsInstance<UserMessage>().map { it.text.take(20) }}")
+        println("   prompts=${s.items.filterIsInstance<UserMessage>().map { "${it.id}:${it.text.take(20)}" }}")
         println("   server: pending=${server.pending[agentId]?.map { "${it.followupId}@${it.consumedAtMs}" }} delivered=${server.delivered} requests=${server.seen.groupingBy { it.route }.eachCount()}")
         rig!!.conversations.loadDiagnostics(agentId)?.let { d -> println("   load: source=${d.source} runs=${d.runsLoaded} live=${d.liveRunId} following=${d.following} stream=${d.liveStream}") }
     }
@@ -163,6 +170,13 @@ class QueuedMessagePlacementTest {
         since.forEachIndexed { i, frame ->
             val card = frame.cardShows(followupId, text)
             val transcript = frame.transcriptShows(text)
+            if (card && transcript) {
+                println("== BOTH at frame $i of ${since.size}")
+                for (j in maxOf(0, i - 4)..minOf(since.lastIndex, i + 1)) {
+                    val f = since[j]
+                    println("   frame $j: raw=${f.controls.queue.map { it.id.take(12) }} load=${f.controls.queueLoad} placement=${f.state.queuePlacement} prompts=${f.state.items.filterIsInstance<UserMessage>().map { "${it.id.take(28)}${if (it.isPending) "(pending)" else ""}" }}")
+                }
+            }
             assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} items=${frame.state.items.filterIsInstance<UserMessage>().map { it.text.take(24) }} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
             if (i >= first) assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
         }
@@ -517,6 +531,217 @@ class QueuedMessagePlacementTest {
             val transcript = frame.transcriptShows(MESSAGE)
             assertWithMessage("frame $i: on the card and in the transcript at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && transcript).isFalse()
             assertWithMessage("frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || transcript).isTrue()
+        }
+    }
+
+    // -- (8) identity: three queued messages whose words are earlier prompts', two of them each other's ------------------
+
+    /**
+     * The card as this frame projects it, by followup id; the transcript by the message's own filing — its echo (the
+     * staged copy's local id) while its run has no prompt of the transcript's yet, the transcript's prompt for the run
+     * the account delivered it on once it has (the fake names that prompt `<runId>-u`).
+     */
+    private fun Frame.cardHas(followupId: String) = controls.placed(state.queuePlacement).queue.any { it.id == followupId }
+    private fun Frame.transcriptHasOwn(ownIds: Set<String>) = state.items.any { it is UserMessage && it.id in ownIds }
+    private fun ownIds(localId: String, followupId: String): Set<String> = setOfNotNull(localId, server.delivered.firstOrNull { it.first == followupId }?.second?.let { "$it-u" })
+
+    /**
+     * Identity is the followup id and the message's own filing, never the words: three messages queued from the
+     * composer whose words are earlier prompts' — the first and the third the same words as each other — each on the
+     * card by its id until the frame that shows its own filing, never in both places, never in neither, while the
+     * account delivers them one turn at a time and the oldest turns scroll out of the rendered window.
+     */
+    @Test
+    fun `three queued messages sharing their words with earlier prompts are each on the card until their own filing, by id`() = runBlocking<Unit> {
+        // The chat's first turn and its live one are the reader's own prompts; the messages queued take their words:
+        // the first and the third the oldest prompt's (a turn that scrolls out of the rendered window as the runs
+        // grow), the second the live turn's (on screen the whole time).
+        install(LongProject.turns(firstAt, turns = TURNS, lastIsUser = true))
+        server.queueLagMs = 1_500L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        val words = listOf(turns.first().prompt, turns.last().prompt, turns.first().prompt)
+        assertThat(words[0]).isNotEqualTo(words[1])
+        val initialCopies = words.distinct().associateWith { w -> state.items.count { it is UserMessage && QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w) } }
+        assertWithMessage("the fixture must already show these words as earlier prompts: $initialCopies").that(initialCopies.values.all { it >= 1 }).isTrue()
+        val sentAt = System.nanoTime()
+        // Queued the composer's way, one after another: the bubble shown at the tap, the account taking each behind the turn.
+        val queued = words.map { text ->
+            val followupId = AccountFollowup.newId()
+            val staged = rig.conversations.stageFollowUp(agentId, text)
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = text, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+            Triple(followupId, text, staged)
+        }
+        val ids = queued.map { it.first }
+        fun explainCard(label: String) = explain(label)
+        // All three on the card, in order, by id; none in the transcript beyond the earlier prompts.
+        rig.awaitUntilOr(20_000, "the list to name all three") { rig.steering.state(agentId).value.queue.map { it.id }.containsAll(ids) }
+        run {
+            val s = state
+            val card = rig.steering.state(agentId).value.placed(s.queuePlacement).queue.map { it.id }
+            assertWithMessage("card after queuing").that(card).containsExactlyElementsIn(ids).inOrder()
+            words.distinct().forEach { w -> assertWithMessage("transcript copies of '${w.take(24)}' after queuing").that(s.items.count { it is UserMessage && QueuePlacement.textKey(it.text) == QueuePlacement.textKey(w) }).isEqualTo(initialCopies.getValue(w)) }
+        }
+        // Delivered one turn at a time: each leaves the card as its own filing appears, the others stay by their ids.
+        val runsOf = ArrayList<String>()
+        for (k in ids.indices) {
+            server.endTurn(agentId)
+            val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1 + k).last().log)!!
+            runsOf += next.id
+            server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+            val own = setOf(queued[k].third.localId, "${next.id}-u")
+            rig.awaitUntilOr(45_000, "message ${k + 1} filed") { state.items.any { it is UserMessage && it.id in own } }
+            rig.awaitUntilOr(20_000, "the list to let message ${k + 1} go") { rig.steering.state(agentId).value.queue.none { it.id == ids[k] } }
+            // The new run followed: its first rows on screen under the message.
+            rig.awaitUntilOr(30_000, "run ${next.id} followed") { state.items.any { it.id.startsWith("activity-${next.id}-") } }
+            delay(800)
+            val s = state
+            val card = rig.steering.state(agentId).value.placed(s.queuePlacement).queue.map { it.id }
+            assertWithMessage("card after delivery ${k + 1}").that(card).containsExactlyElementsIn(ids.drop(k + 1)).inOrder()
+            // Its own filing, once, ahead of the run the account started on it; the words' copies grown by exactly one.
+            assertWithMessage("message ${k + 1}'s own filing after delivery").that(s.items.filterIsInstance<UserMessage>().filter { it.id in own }).hasSize(1)
+            val at = s.items.indexOfFirst { it is UserMessage && it.id in own }
+            if (s.items.drop(at + 1).firstOrNull { it !is UserMessage }?.id?.startsWith("activity-${next.id}-") != true) {
+                explain("MISPLACED message ${k + 1}")
+                println("   items tail=${s.items.takeLast(14).map { it.id.take(40) }}")
+                println("   server runs=${server.runs.keys.sorted()} transcript prompts=${server.transcripts[agentId]?.filter { it.type == "user_message" }?.map { it.id }}")
+            }
+            assertWithMessage("message ${k + 1} stands ahead of its run — items from it: ${s.items.drop(at).map { it.id.take(36) }}").that(s.items.drop(at + 1).firstOrNull { it !is UserMessage }?.id?.startsWith("activity-${next.id}-")).isTrue()
+        }
+        // Every frame since the tap, every message: on the card by its id, or its own filing on screen — one, never both, never neither.
+        val sinceSent = frames.filter { it.atNanos >= sentAt }
+        queued.forEachIndexed { k, (followupId, text, staged) ->
+            val ownIds = ownIds(staged.localId, followupId)
+            val first = sinceSent.indexOfFirst { it.transcriptHasOwn(ownIds) || it.cardHas(followupId) }
+            assertWithMessage("message ${k + 1} was never seen anywhere").that(first).isAtLeast(0)
+            sinceSent.drop(first).forEachIndexed { i, frame ->
+                val card = frame.cardHas(followupId)
+                val own = frame.transcriptHasOwn(ownIds)
+                assertWithMessage("message ${k + 1} ('${text.take(24)}'), frame $i: on the card and filed at once — card=${frame.card} placement=${frame.state.queuePlacement}").that(card && own).isFalse()
+                assertWithMessage("message ${k + 1} ('${text.take(24)}'), frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement} prompts=${frame.state.items.filterIsInstance<UserMessage>().map { it.id }}").that(card || own).isTrue()
+            }
+        }
+    }
+
+    // -- (9) the card's actions act on the right message: edit, delete, steer now; the edited one delivered after --------
+
+    /**
+     * Three queued from the composer — the first and the third the same words. The card's actions, each by followup
+     * id: the second is edited (its row reads the new words, its filing later carries them and its attachment); the
+     * third is deleted (off the card at once, never in the transcript, never "delivering"); the first is sent as a
+     * steer into the turn under way (filed once among the run's rows). Then the edited one is delivered as the next
+     * turn. At every frame each message is in one place by its id — never both, never neither.
+     */
+    @Test
+    fun `edit, delete and steer-now act on the right queued message, and the edited one is delivered with its new words`() = runBlocking<Unit> {
+        install(LongProject.turns(firstAt, turns = TURNS, lastIsUser = true))
+        server.queueLagMs = 1_500L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        val sentAt = System.nanoTime()
+        val texts = listOf(turns.first().prompt, "Then compare the free tiers side by side.", turns.first().prompt)
+        val spec = PromptFile(ByteArray(1_024) { 0x25 }, "tiers.pdf", "application/pdf")
+        val queued = texts.mapIndexed { k, text ->
+            val followupId = AccountFollowup.newId()
+            val staged = rig.conversations.stageFollowUp(agentId, text, files = if (k == 1) listOf(spec) else emptyList())
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = text, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+            Triple(followupId, text, staged)
+        }
+        val (first, second, third) = queued.map { it.first }
+        rig.awaitUntilOr(20_000, "the list to name all three") { rig.steering.state(agentId).value.queue.map { it.id }.containsAll(listOf(first, second, third)) }
+        fun card() = rig.steering.state(agentId).value.placed(state.queuePlacement).queue
+        assertThat(card().map { it.id }).containsExactly(first, second, third).inOrder()
+
+        // Edit the second: its row reads the new words under the same id, the others untouched.
+        val edited = "Then compare the free tiers side by side, and the trial lengths."
+        rig.steering.updatePending(agentId, second, edited).getOrThrow()
+        rig.awaitUntilOr(10_000, "the row to read the new words") { card().any { it.id == second && it.text == edited } }
+        assertThat(card().map { it.id }).containsExactly(first, second, third).inOrder()
+
+        // Delete the third: off the card at once, never "delivering", never in the transcript.
+        rig.steering.deletePending(agentId, third).getOrThrow()
+        rig.awaitUntilOr(10_000, "the deleted row to go") { card().none { it.id == third } }
+        assertThat(card().map { it.id }).containsExactly(first, second).inOrder()
+        assertThat(card().none { it.note != null }).isTrue()
+        delay(3_000)
+        assertWithMessage("a deleted message must not come back as delivering").that(card().map { it.id }).containsExactly(first, second).inOrder()
+        assertThat(state.queuePlacement.waiting.map { it.id }).containsExactly(first, second).inOrder()
+
+        // Steer the first now: delivered into the turn under way, filed once among its rows, off the card.
+        rig.steering.promotePending(agentId, first).getOrThrow()
+        val firstOwn = setOf(queued[0].third.localId)
+        rig.awaitUntilOr(45_000, "the steer filed") { state.items.any { it is UserMessage && it.id in firstOwn } }
+        rig.awaitUntilOr(20_000, "the list to let the steer go") { rig.steering.state(agentId).value.queue.none { it.id == first } }
+        delay(1_200)
+        run {
+            val s = state
+            assertThat(card().map { it.id }).containsExactly(second)
+            assertThat(s.items.filterIsInstance<UserMessage>().filter { it.id in firstOwn }).hasSize(1)
+            val at = s.items.indexOfFirst { it is UserMessage && it.id in firstOwn }
+            assertWithMessage("among the running turn's rows").that(s.items.take(at).any { it.id.startsWith("activity-${live.runId}-") }).isTrue()
+        }
+
+        // The turn ends; the account starts the next run on the edited message: filed once, its new words, its file.
+        server.endTurn(agentId)
+        val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1).last().log)!!
+        server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+        val secondOwn = setOf(queued[1].third.localId, "${next.id}-u")
+        rig.awaitUntilOr(45_000, "the edited message filed") { state.items.any { it is UserMessage && it.id in secondOwn } }
+        rig.awaitUntilOr(20_000, "the list to let it go") { rig.steering.state(agentId).value.queue.none { it.id == second } }
+        delay(1_200)
+        run {
+            val s = state
+            assertThat(card()).isEmpty()
+            val filed = s.items.filterIsInstance<UserMessage>().filter { it.id in secondOwn }
+            assertThat(filed).hasSize(1)
+            assertThat(filed.single().text).isEqualTo(edited)
+            assertThat(filed.single().attachments.map { it.name }).containsExactly("tiers.pdf")
+            assertWithMessage("the deleted message is nowhere").that(s.items.filterIsInstance<UserMessage>().filter { it.id == queued[2].third.localId }).isEmpty()
+        }
+        // Every frame since the tap: each message in one place by its id — never both, never neither (the deleted one: nowhere, once deleted).
+        val sinceSent = frames.filter { it.atNanos >= sentAt }
+        val deletedAt = sinceSent.indexOfFirst { !it.cardHas(third) && sinceSent.indexOf(it) > 0 && it.controls.queueLoad == com.cursorforandroid.domain.QueueLoad.Loaded }
+        listOf(first to firstOwn, second to secondOwn).forEach { (followupId, ownIds) ->
+            val start = sinceSent.indexOfFirst { it.transcriptHasOwn(ownIds) || it.cardHas(followupId) }
+            assertThat(start).isAtLeast(0)
+            sinceSent.drop(start).forEachIndexed { i, frame ->
+                val card = frame.cardHas(followupId)
+                val own = frame.transcriptHasOwn(ownIds)
+                assertWithMessage("$followupId frame $i: on the card and filed at once").that(card && own).isFalse()
+                assertWithMessage("$followupId frame $i: in neither place — card=${frame.card} placement=${frame.state.queuePlacement}").that(card || own).isTrue()
+            }
+        }
+        assertWithMessage("the deleted message was never in the transcript").that(sinceSent.none { it.transcriptHasOwn(setOf(queued[2].third.localId)) && !it.state.items.any { m -> m is UserMessage && m.id == queued[2].third.localId && m.isPending } }).isTrue()
+    }
+
+    // -- (10) three deliveries in a row: each run the account starts on a queued message is followed -------------------
+
+    @Test
+    fun `three queued messages delivered one turn after another each have their run followed`() = runBlocking<Unit> {
+        server.queueLagMs = 1_500L
+        val rig = rig(pollMs = 1_000L)
+        rig.open()
+        val texts = listOf("First: compare the free tiers.", "Second: then the trial lengths.", "Third: and file both under research.")
+        val ids = texts.map { text ->
+            val followupId = AccountFollowup.newId()
+            val staged = rig.conversations.stageFollowUp(agentId, text)
+            rig.conversations.sendStagedVia(agentId, staged, followupId = followupId, discardOnFailure = false) {
+                rig.steering.sendFollowup(agentId, AccountFollowup(text = text, followupId = followupId)).getOrThrow()
+            }.getOrThrow()
+            followupId
+        }
+        rig.awaitUntilOr(20_000, "the list to name all three") { rig.steering.state(agentId).value.queue.map { it.id }.containsAll(ids) }
+        for (k in ids.indices) {
+            server.endTurn(agentId)
+            val next = server.deliverNext(agentId, log = LongProject.turns(firstAt, turns = TURNS + 1 + k).last().log)!!
+            server.outage(Route.Stream, Fault.StreamCut(events = 3), path = "/${next.id}/")
+            rig.awaitUntilOr(45_000, "message ${k + 1} in the transcript") { state.items.any { it is UserMessage && it.text == texts[k] } }
+            rig.awaitUntilOr(30_000, "run ${next.id} followed (message ${k + 1})") { state.activeRunId == next.id && state.items.any { it.id.startsWith("activity-${next.id}-") } }
+            rig.awaitUntilOr(20_000, "the list to let message ${k + 1} go") { rig.steering.state(agentId).value.queue.none { it.id == ids[k] } }
         }
     }
 
