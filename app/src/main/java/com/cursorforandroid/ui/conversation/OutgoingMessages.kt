@@ -177,6 +177,15 @@ class OutgoingMessages(
         composer.onReturned(message.draft)
     }
 
+    /** The account is gone: nothing more is kept of the messages on their way (their runs are cancelled by the scope's owner). */
+    internal fun reset() {
+        synchronized(lock) {
+            outgoing.clear()
+            tail = null
+        }
+        _statuses.value = emptyMap()
+    }
+
     private fun take(): Ticket = synchronized(lock) { Ticket(tail).also { tail = it.done } }
 
     private suspend fun run(message: Outgoing, ticket: Ticket) {
@@ -287,6 +296,16 @@ class OutgoingSends(
 
     fun forAgent(agentId: String): OutgoingMessages =
         perChat.getOrPut(agentId) { OutgoingMessages(agentId, scope, conversations, uploads, onBusy = { draft -> refusedAsBusy(agentId, draft) }) }
+
+    /**
+     * The account is gone (a sign-out): every send under way is cancelled and every chat's messages forgotten, so
+     * nothing of this account is still about to go out. The listeners stay — a composer still open hears of the
+     * next account's messages through the same [OutgoingMessages].
+     */
+    fun resetAll() {
+        scope.coroutineContext[Job]?.children?.forEach { it.cancel() }
+        perChat.values.forEach { it.reset() }
+    }
 
     /** The account's follow-up for [draft]: `AddAsyncFollowupBackgroundComposer` with its images inline and its files by their uploads. */
     fun accountRoute(agentId: String, draft: OutgoingMessages.Draft): OutgoingMessages.Route.Account = OutgoingMessages.Route.Account { uploaded ->

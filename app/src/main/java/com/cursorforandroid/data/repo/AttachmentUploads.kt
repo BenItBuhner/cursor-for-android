@@ -144,6 +144,22 @@ class AttachmentUploads(
         }
     }
 
+    /**
+     * The account is gone (a sign-out): every upload under way is cancelled — its staged parts dropped, as a cancel
+     * drops them — and nothing is kept of any file. Completed uploads are the account's to expire; the session that
+     * could abort them is gone with it.
+     */
+    fun resetAll() {
+        synchronized(lock) {
+            attempts.values.toList().forEach { stop(it) }
+            attempts.clear()
+            files.clear()
+            queue.clear()
+            turn.value = null
+            _states.value = emptyMap()
+        }
+    }
+
     /** Under [lock]: [attempt] is no longer wanted — its run is cancelled and its place in the order given up. */
     private fun stop(attempt: Attempt) {
         attempt.job.cancel()

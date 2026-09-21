@@ -535,6 +535,33 @@ class OutgoingSendTest {
         awaitUntil("filed") { pendingBubbles().isEmpty() }
     }
 
+    /**
+     * Signed out with a message's file still going up: the upload and the send stop with the account — nothing of it
+     * reaches the account service after — and the composer keeps nothing of the message's chips or status.
+     */
+    @Test
+    fun `a sign-out stops a send under way, upload and all`() = runBlocking<Unit> {
+        val vm = open()
+        val big = file("big.mov", size = 8_192)
+        storage.hold("big.mov")
+        vm.addFiles(listOf(big))
+        vm.setDraft("Gone with the account")
+        awaitChip(vm, big.id) { it?.isUploading == true }
+        vm.send()
+        val bubble = await("the bubble") { pendingBubbles().singleOrNull() }
+        awaitStatus(vm, bubble.id) { it is OutgoingStatus.Uploading }
+
+        graph.session.signOut()
+        storage.release("big.mov")
+
+        withTimeout(15_000) { vm.isSending.first { !it } }
+        assertThat(vm.outgoingStatuses.value).isEmpty()
+        assertThat(uploads.states.value).isEmpty()
+        // Watched for a while: the account is never asked for the message of an account that is gone.
+        delay(1_500)
+        assertThat(account.calls.get()).isEqualTo(0)
+    }
+
     private companion object {
         const val AGENT = "bc-attach"
     }

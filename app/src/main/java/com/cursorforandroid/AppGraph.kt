@@ -742,6 +742,9 @@ class AppGraph(
             if (lazyLiveRuns.isInitialized()) liveRuns.resetAll()
             if (lazyConversations.isInitialized()) conversations.resetAll()
             if (lazyFollowUps.isInitialized()) followUps.resetAll()
+            // Sends and uploads on their way out for this account stop here, before the composer's stores are wiped.
+            if (lazyOutgoing.isInitialized()) outgoing.resetAll()
+            if (lazyAttachmentUploads.isInitialized()) attachmentUploads.resetAll()
             if (lazyPins.isInitialized()) pins.reset()
             if (lazyProjects.isInitialized()) projects.reset()
             if (lazySteering.isInitialized()) steering.reset()
@@ -843,6 +846,8 @@ class AppGraph(
             "liveRuns" to lazyLiveRuns,
             "conversations" to lazyConversations,
             "launcher" to lazyLauncher,
+            "outgoing" to lazyOutgoing,
+            "attachmentUploads" to lazyAttachmentUploads,
             "followUps" to lazyFollowUps,
             "artifacts" to lazyArtifacts,
             "storeFiles" to lazyStoreFiles,
