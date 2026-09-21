@@ -42,6 +42,7 @@ import com.cursorforandroid.domain.NoticeTone
 import com.cursorforandroid.domain.ProjectDiagnostics
 import com.cursorforandroid.domain.PromptFile
 import com.cursorforandroid.domain.PromptImage
+import com.cursorforandroid.domain.PendingAttachment
 import com.cursorforandroid.domain.PendingFollowup
 import com.cursorforandroid.domain.QueuePlacement
 import com.cursorforandroid.domain.RunFooter
@@ -255,6 +256,11 @@ class ConversationRepository(
          * ahead of the run, where a prompt that started the run goes. Null for a prompt that started its run.
          */
         val steeredAfter: Int? = null,
+        /**
+         * The account's id for the message, when its send minted one (see [sendStagedVia]): by which the card above the
+         * composer leaves the account's row for it out while the bubble stands (see [Entry.queuePlacement]).
+         */
+        val followupId: String? = null,
     ) {
         /** True once the server has answered with the real run; until then [run] is the placeholder named after the prompt. */
         val filed: Boolean get() = run.id != message.id
@@ -516,12 +522,19 @@ class ConversationRepository(
          * never shows a message the transcript it is drawn beside shows, whichever source drew it first.
          */
         fun queuePlacement(items: List<TimelineItem>): QueuePlacement {
-            if (delivered.isEmpty() && returned.isEmpty() && awaiting.isEmpty()) return QueuePlacement.NONE
+            val bubbles = local.filter { !it.filed }
+            if (delivered.isEmpty() && returned.isEmpty() && awaiting.isEmpty() && bubbles.isEmpty()) return QueuePlacement.NONE
             val ids = HashSet<String>()
             val texts = HashSet<String>()
             val waiting = ArrayList<PendingFollowup>()
             val shown = HashMap<String, Int>()
             for (item in items) if (item is UserMessage) shown.merge(QueuePlacement.textKey(item.text), 1, Int::plus)
+            // A message the composer shows as a bubble ahead of its request is off the card for as long as the bubble
+            // stands: the account may list it — the send's reply still on its way back — before the bubble has come
+            // down for the card to take it (see [sendStagedVia]). Its place is the bubble, whatever the list says.
+            // Kept apart from the delivered sets: a bubble's coming is no reason to read the account's queue again.
+            val shownIds = bubbles.mapNotNullTo(HashSet()) { it.followupId }
+            val shownTexts = bubbles.mapTo(HashSet()) { QueuePlacement.textKey(it.message.text) }
             // A message filed under its run: off the card while the frame shows it — which is every frame, bar a
             // conversation rewound past it, when the account's list (which still names it) is the place it is.
             for (d in delivered) {
@@ -535,19 +548,22 @@ class ConversationRepository(
                         // The frame shows it — the server's copy ahead of the filing: off the card from this frame on.
                         if (a.followupId != null) ids += a.followupId else texts += key
                     } else {
-                        // Not shown yet: on the card, from this device's own knowledge, until it is.
+                        // Not shown yet: on the card, from this device's own knowledge, until it is — with what it
+                        // carries, as the account's own row would say it: its files by name and type, its pictures by count.
+                        val carried = a.staged.attachments.attachments
                         waiting += PendingFollowup(
                             id = a.followupId ?: "local:${a.staged.localId}",
                             text = a.staged.text,
                             createdAtMillis = a.queuedAt,
-                            imageCount = a.staged.attachments.attachments.size,
+                            files = carried.filter { it.isFile }.map { PendingAttachment(it.name ?: "Document", it.mimeType.orEmpty()) },
+                            imageCount = carried.count { !it.isFile },
                             note = if (a.queuedOnAccount) null else QueuePlacement.DELIVERING_NOTE,
                         )
                     }
                 }
             }
-            if (ids.isEmpty() && texts.isEmpty() && returned.isEmpty() && waiting.isEmpty()) return QueuePlacement.NONE
-            return QueuePlacement(deliveredIds = ids, deliveredTexts = texts, returned = returned, waiting = waiting)
+            if (ids.isEmpty() && texts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()) return QueuePlacement.NONE
+            return QueuePlacement(deliveredIds = ids, deliveredTexts = texts, returned = returned, waiting = waiting, shownIds = shownIds, shownTexts = shownTexts)
         }
         /**
          * Finished runs whose traces are wanted and not yet in memory, by run id, in the order they were asked for.
@@ -3682,16 +3698,24 @@ class ConversationRepository(
 
     /**
      * Keeps [staged] — a prompt the account has queued under [followupId], when the send minted one — until the run
-     * it is delivered on is seen (see [expectDelivery]).
+     * it is delivered on is seen (see [expectDelivery]). A bubble the composer showed ahead of the request comes down
+     * in the same frame: the card is the one place a queued message is, and its staged attachments wait with it, to be
+     * filed under the run with it (see [file]).
      */
     private fun awaitDelivery(agentId: String, staged: StagedFollowUp, followupId: String?) {
         val e = entry(agentId)
         // Published: the card shows the message from this frame on, before the account's list has been read again.
         e.publish(mutate = {
-            val behind = latestRun()?.id?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
+            // How many prompts with these words the transcript shows besides the bubble coming down: the bubble is
+            // this message, not a prior copy of it.
             val key = QueuePlacement.textKey(staged.text)
-            val prior = state.value.items.count { it is UserMessage && QueuePlacement.textKey(it.text) == key }
+            val prior = state.value.items.count { it is UserMessage && it.id != staged.localId && QueuePlacement.textKey(it.text) == key }
             val priorTranscript = messages.count { it.type == USER_MESSAGE && QueuePlacement.textKey(it.text) == key }
+            if (staged.shown) {
+                local = local.filterNot { it.run.id == staged.localId }
+                promptImages = promptImages - staged.localId
+            }
+            val behind = latestRun()?.id?.takeUnless { it.startsWith(LOCAL_RUN_PREFIX) }
             awaiting = awaiting + Awaiting(staged, behind, AppClock.now(), followupId = followupId, priorCopies = prior, priorTranscriptCopies = priorTranscript)
         })
     }
@@ -3950,6 +3974,9 @@ class ConversationRepository(
         send: suspend () -> String?,
     ): Result<Unit> {
         val e = entry(agentId)
+        // The bubble learns the account's id for its message before the request goes out, so the card leaves the
+        // account's row out by that id from the first read that could name it (see [Entry.queuePlacement]).
+        if (staged.shown && followupId != null) e.publish(mutate = { local = local.map { if (it.run.id == staged.localId) it.copy(followupId = followupId) else it } })
         return agents.followUpVia(agentId, modelId, modelParams, modelDisplayName, send)
             .map { run ->
                 if (run != null) {
@@ -3957,9 +3984,10 @@ class ConversationRepository(
                 } else {
                     // The account queued the message behind a turn under way: the bubble shown ahead comes down —
                     // the card above the composer is what shows a queued message — and the message waits here for
-                    // the run the account starts on it (see [expectDelivery]). A turn this device did not know of
-                    // has the chat read again, for the run the account is on; one it is following already stands.
-                    if (staged.shown) e.publish(mutate = { local = local.filterNot { it.run.id == staged.localId }; promptImages = promptImages - staged.localId })
+                    // the run the account starts on it (see [expectDelivery]), its attachments with it. The two are
+                    // one frame: the bubble down and the card up together, so the message is never out of both.
+                    // A turn this device did not know of has the chat read again, for the run the account is on;
+                    // one it is following already stands.
                     awaitDelivery(agentId, staged, followupId)
                     if (!synchronized(e) { e.isChatRunning() }) reload(agentId)
                 }

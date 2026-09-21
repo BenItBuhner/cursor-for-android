@@ -106,11 +106,20 @@ data class QueuePlacement(
      * is never in neither place. A message the list names too is shown once, the list's row standing.
      */
     val waiting: List<PendingFollowup> = emptyList(),
+    /**
+     * Messages the transcript shows as bubbles ahead of their requests — the composer's, from the tap until the send
+     * is answered (see `ConversationRepository.sendStagedVia`) — by the account's followup id when the send minted
+     * one, and by their [textKey]s: the account may already list one, its send's reply still on its way back, before
+     * the bubble has come down for the card to take it. The bubble is its place; the card leaves the row out.
+     */
+    val shownIds: Set<String> = emptySet(),
+    val shownTexts: Set<String> = emptySet(),
 ) {
-    val isEmpty: Boolean get() = deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty()
+    val isEmpty: Boolean get() = deliveredIds.isEmpty() && deliveredTexts.isEmpty() && returned.isEmpty() && waiting.isEmpty() && shownIds.isEmpty() && shownTexts.isEmpty()
 
-    /** Whether [followup] is in the transcript now, and so not on the card. */
-    fun holds(followup: PendingFollowup): Boolean = followup.id in deliveredIds || textKey(followup.text) in deliveredTexts
+    /** Whether [followup] is in the transcript now — filed under its run, or standing as the composer's bubble — and so not on the card. */
+    fun holds(followup: PendingFollowup): Boolean =
+        followup.id in deliveredIds || followup.id in shownIds || textKey(followup.text).let { it in deliveredTexts || it in shownTexts }
 
     companion object {
         val NONE = QueuePlacement()
