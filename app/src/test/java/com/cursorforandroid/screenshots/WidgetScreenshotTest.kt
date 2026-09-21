@@ -86,6 +86,27 @@ class WidgetScreenshotTest {
         capture("18_widget_preview", WidgetData.sample(ThemeMode.Dark, FIXED_NOW), WidgetMode.Recent, DpSize(320.dp, 158.dp))
     }
 
+    /**
+     * The picker's static picture (`previewLayout`): what Android 12–14 launchers show, and what Android 15 falls back to
+     * before the app has published its generated preview or after a reboot took it. Inflated as a launcher inflates it —
+     * under a widget host, through RemoteViews' class filter — so a layout the launcher would refuse fails here too.
+     */
+    @Test
+    fun previewLayout() {
+        val size = DpSize(320.dp, 158.dp)
+        lateinit var host: AppWidgetHostView
+        compose.activityRule.scenario.onActivity { activity ->
+            val density = activity.resources.displayMetrics.density
+            host = AppWidgetHostView(activity)
+            val inflater = android.view.LayoutInflater.from(activity).cloneInContext(activity)
+            inflater.filter = android.view.LayoutInflater.Filter { it.isAnnotationPresent(android.widget.RemoteViews.RemoteView::class.java) }
+            host.addView(inflater.inflate(com.cursorforandroid.R.layout.widget_chats_preview, host, false))
+            activity.setContentView(host, ViewGroup.LayoutParams((size.width.value * density).toInt(), (size.height.value * density).toInt()))
+        }
+        compose.waitForIdle()
+        host.captureRoboImage(File(outDir, "117_widget_preview_layout.png").path, RoborazziOptions())
+    }
+
     /** The screen the launcher opens when the widget is placed (and the widget's title reopens). */
     @Test
     fun configure() {
