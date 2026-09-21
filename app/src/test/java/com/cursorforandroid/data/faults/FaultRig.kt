@@ -31,6 +31,7 @@ import com.cursorforandroid.domain.FollowUpComposerState
 import com.cursorforandroid.domain.QueuedFollowUp
 import com.cursorforandroid.util.AppClock
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -195,7 +196,9 @@ class QueueRecording(flow: StateFlow<FollowUpComposerState>, scope: CoroutineSco
     enum class Card { QUEUED, SENDING, HELD, FAILED, CONFIRM, STEERED }
 
     private val frames = CopyOnWriteArrayList<Map<String, Card>>()
-    private val job: Job = scope.launch { flow.collect { state -> frames += state.queue.associate { it.id to it.card() } } }
+    // Subscribed before the caller's next line runs (undispatched): the first frame recorded is the queue as it stands,
+    // not as the dispatcher has moved it a few milliseconds later under a loaded test run.
+    private val job: Job = scope.launch(start = CoroutineStart.UNDISPATCHED) { flow.collect { state -> frames += state.queue.associate { it.id to it.card() } } }
 
     private fun QueuedFollowUp.card(): Card = when {
         error != null -> Card.FAILED

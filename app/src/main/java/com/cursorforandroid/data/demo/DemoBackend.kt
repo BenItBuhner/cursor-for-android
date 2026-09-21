@@ -116,7 +116,11 @@ internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
     @Synchronized
     fun eventLog(runId: String): List<RunStreamEvent>? = eventLogs[runId]?.toList()
 
-    /** Turns a finished turn's scripted steps into the events its stream would have carried, mirroring the transcript. */
+    /**
+     * Turns a finished turn's scripted steps into the events its stream would have carried, mirroring the transcript.
+     * Call ids are the run's own, as the real stream's `toolu_…` ids are unique across a chat: an id shared across runs
+     * reads as a turn's log replaying an earlier turn (see `CoordinatorTranscript.replayedActivity`).
+     */
     private fun eventLog(trace: List<DemoData.Step>, turnReplies: List<String>, run: RunDto): List<RunStreamEvent> = buildList {
         add(RunStreamEvent.Status(run.id, RunStatus.RUNNING))
         val replies = turnReplies.iterator()
@@ -125,7 +129,7 @@ internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
             when (step) {
                 is DemoData.Step.Thought -> add(RunStreamEvent.Thinking(step.text))
                 is DemoData.Step.Tool -> {
-                    val id = "c${++calls}"
+                    val id = "${run.id}:c${++calls}"
                     val key = when (step.name) {
                         "grep" -> "pattern"
                         "codebase_search", "web_search" -> "query"
@@ -136,12 +140,12 @@ internal class DemoStore(seeds: List<DemoData.Seed> = DemoData.seeds) {
                     add(toolEvent(id, step.name, "completed", key to step.arg))
                 }
                 is DemoData.Step.Delegate -> {
-                    val id = "s${++calls}"
+                    val id = "${run.id}:s${++calls}"
                     add(toolEvent(id, "task", "running", "subagent_type" to "explore", "description" to step.description))
                     add(toolEvent(id, "task", "completed", "subagent_type" to "explore", "description" to step.description))
                 }
                 is DemoData.Step.Call -> {
-                    val id = "k${++calls}"
+                    val id = "${run.id}:k${++calls}"
                     val args = Json.parseToJsonElement(step.args)
                     add(RunStreamEvent.ToolCall(SseToolCallDto(callId = id, name = step.name, status = "running", args = args)))
                     add(RunStreamEvent.ToolCall(SseToolCallDto(callId = id, name = step.name, status = "completed", args = args, result = step.result?.let(Json::parseToJsonElement))))

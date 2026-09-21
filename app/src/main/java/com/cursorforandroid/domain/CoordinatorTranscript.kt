@@ -178,6 +178,13 @@ object CoordinatorTranscript {
      * twice. Footers are never a replay: the silent run did run, and its footer and stretch are its own. Runs are
      * cut at their footers; the items after the last footer are the run under way.
      */
+    /**
+     * The identity a call is drawn once under: its id and tool, and the arguments as the row reads them. A replayed
+     * event carries all four again; a call that merely shares an id with an earlier one (an id scheme counting from
+     * one per run) does not, and is drawn.
+     */
+    private fun callKey(call: ToolCall): String = "${call.callId}\u0000${call.name.lowercase()}\u0000${call.summary}\u0000${call.detail ?: ""}"
+
     fun replayedActivity(items: List<TimelineItem>): Map<String, String> {
         var out: MutableMap<String, String>? = null
         // Where each call id was first drawn: by group, and the run's footer id once known (the original's run).
@@ -197,7 +204,7 @@ object CoordinatorTranscript {
                 if (item !is ActivityGroup) continue
                 for (step in item.steps) {
                     if (step !is ToolCall || step.callId.isBlank()) continue
-                    val key = "${step.callId}\u0000${step.name.lowercase()}"
+                    val key = callKey(step)
                     if (seenCalls.containsKey(key)) replayed += messageKey(item, step) else own = true
                 }
             }
@@ -208,15 +215,15 @@ object CoordinatorTranscript {
                         val calls = item.steps.filterIsInstance<ToolCall>()
                         val gone = calls.filter { messageKey(item, it) in replayed }
                         if (gone.isEmpty()) {
-                            calls.forEach { seenCalls.putIfAbsent("${it.callId}\u0000${it.name.lowercase()}", runName) }
+                            calls.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
                             continue
                         }
                         val map = out ?: LinkedHashMap<String, String>().also { out = it }
                         if (gone.size == calls.size) {
-                            map[itemKey(item)] = seenCalls.getValue("${gone.first().callId}\u0000${gone.first().name.lowercase()}")
+                            map[itemKey(item)] = seenCalls.getValue(callKey(gone.first()))
                         } else {
-                            gone.forEach { map[messageKey(item, it)] = seenCalls.getValue("${it.callId}\u0000${it.name.lowercase()}") }
-                            calls.filter { messageKey(item, it) !in replayed }.forEach { seenCalls.putIfAbsent("${it.callId}\u0000${it.name.lowercase()}", runName) }
+                            gone.forEach { map[messageKey(item, it)] = seenCalls.getValue(callKey(it)) }
+                            calls.filter { messageKey(item, it) !in replayed }.forEach { seenCalls.putIfAbsent(callKey(it), runName) }
                         }
                     }
                     is AssistantMessage -> {
