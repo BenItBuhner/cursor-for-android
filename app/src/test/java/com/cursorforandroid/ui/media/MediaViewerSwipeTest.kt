@@ -68,7 +68,9 @@ class MediaViewerSwipeTest {
 
     private fun open(description: String, page: Int) {
         compose.setContent { ViewerScene(state, loader, entries) }
-        settle { nodes(description) == 1 }
+        // Every thumbnail decoded before the tap, not only the one tapped: a decode still in flight would land on a
+        // worker part-way through the open, and the harness's unconfined effects are not to be trusted with that.
+        settle { entries.all { nodes(it.caption!!) == 1 } }
         compose.onAllNodes(hasContentDescription(description))[0].performClick()
         settle { state.phase == MediaViewerState.Phase.Open && exists("viewer-image-$page") }
     }
