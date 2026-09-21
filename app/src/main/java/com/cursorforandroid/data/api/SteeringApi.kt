@@ -97,9 +97,9 @@ interface RunControlApi {
 }
 
 /**
- * The goal the account keeps on a chat: `GetLatestAgentConversationState {bc_id}` → `latest_conversation_state
- * .conversation_state.goal_state` (`agent.v1.GoalState`), the same record the desktop's goal tray and Cursor's
- * goal-continuation reconciler read. Null when the account has no goal on the chat.
+ * The goal the account keeps on a chat: `StreamConversation`'s `initial_state.cloud_agent_state.conversation_state
+ * .goal_state` (`agent.v1.GoalState`, see [ConversationStateReader]), the same record the desktop's goal tray and
+ * Cursor's goal-continuation reconciler read. Null when the account has no goal on the chat.
  */
 fun interface GoalStateApi {
     suspend fun goal(agentId: String): Goal?
@@ -115,19 +115,24 @@ fun interface GoalStateApi {
 class SteeringApi(
     private val rpc: ConnectJsonClient,
     private val tokens: SessionTokenProvider,
+    /** The record's blobs, shared with the transcript's reader so the state read tells the server what this device holds already. */
+    blobs: BlobCache = BlobCache(),
 ) : InteractionApi, FollowupQueueApi, RunControlApi, GoalStateApi {
+
+    private val states = ConversationStateReader(rpc, tokens, blobs)
 
     // ---- the goal ---------------------------------------------------------------------------------------------------
 
     /**
-     * `GetLatestAgentConversationState`: the conversation's state structure, of which the goal is read and the rest —
-     * the turns' blob ids, the todos, the plans — skipped. Enums arrive by name (`GOAL_STATUS_ACTIVE`) or by number,
-     * the two `uint64` timings as decimal strings, and a field at its default (a zero count) is left out, as proto3
-     * JSON does; a status this build cannot read, or no `goal_state` at all, is no goal.
+     * The conversation's state structure off `StreamConversation`'s initial state (see [ConversationStateReader]),
+     * of which the goal is read and the rest — the turns' blob ids, the todos, the plans — skipped. Enums arrive by
+     * name (`GOAL_STATUS_ACTIVE`) or by number, the two `uint64` timings as decimal strings, and a field at its
+     * default (a zero count) is left out, as proto3 JSON does; a status this build cannot read, or no `goal_state`
+     * at all, is no goal.
      */
     override suspend fun goal(agentId: String): Goal? {
-        val response = call("GetLatestAgentConversationState", BcIdDto(agentId), BcIdDto.serializer(), ConversationStateResponseDto.serializer())
-        val state = response.latestConversationState?.conversationState?.goalState ?: return null
+        val conversation = states.read(agentId).conversationState ?: return null
+        val state = runCatching { CursorJson.decodeFromJsonElement(ConversationStateDto.serializer(), conversation) }.getOrNull()?.goalState ?: return null
         val objective = state.objective?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val status = GoalStatus.parse(state.status) ?: return null
         return Goal.fromAccount(
@@ -454,13 +459,6 @@ class SteeringApi(
 
     @Serializable
     private data class WakeResponseDto(val signaled: Boolean? = null)
-
-    /** `GetLatestAgentConversationStateResponse`, the goal's corner of it; `pre_fetched_blobs` and the rest are skipped. */
-    @Serializable
-    private data class ConversationStateResponseDto(val latestConversationState: LatestConversationStateDto? = null)
-
-    @Serializable
-    private data class LatestConversationStateDto(val conversationState: ConversationStateDto? = null)
 
     /** `agent.v1.ConversationStateStructure`, of which only `goal_state` (field 32) is read. */
     @Serializable

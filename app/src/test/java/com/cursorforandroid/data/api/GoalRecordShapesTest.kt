@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
  *
  *  - the account's transcript (`FetchBackgroundComposer`), whose `ClientSideToolV2Call` records name the goal tools
  *    from the desktop's model-facing table (`create_goal`, `update_goal`) with `rawArgs = JSON.stringify(args)`;
- *  - the account's goal state (`GetLatestAgentConversationState` → `conversation_state.goal_state`), the record the
+ *  - the account's goal state (`StreamConversation` → `initial_state.cloud_agent_state.conversation_state.goal_state`), the record the
  *    desktop's goal tray reads, with the enum by name or number and the two `uint64` timings as decimal strings.
  */
 class GoalRecordShapesTest {
@@ -104,13 +104,17 @@ class GoalRecordShapesTest {
             server.enqueue(MockResponse().setBody("""{"accessToken":"s","refreshToken":"rt"}"""))
             sessionIssued = true
         }
-        server.enqueue(MockResponse().setBody(GoalFixtures.stateResponse(name)))
+        // The state off the stream Cursor's client reads it from (`StreamConversation`, PREWARM), the unary being gone from the server.
+        server.enqueue(ConnectStreamFixtures.prewarmResponse(GoalFixtures.conversationState(name)))
         val goal = steering.goal("bc-goal")
         var request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
         if (request.path?.contains("exchange_user_api_key") == true) request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
-        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/GetLatestAgentConversationState")
+        assertThat(request.path).isEqualTo("/aiserver.v1.BackgroundComposerService/StreamConversation")
         assertThat(request.getHeader("Authorization")).isEqualTo("Bearer s")
-        assertThat(Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("bcId").jsonPrimitive.content).isEqualTo("bc-goal")
+        assertThat(request.getHeader("Content-Type")).startsWith("application/connect+json")
+        val body = Json.parseToJsonElement(ConnectStreamFixtures.requestJson(request)).jsonObject
+        assertThat(body.getValue("bcId").jsonPrimitive.content).isEqualTo("bc-goal")
+        assertThat(body.getValue("purpose").jsonPrimitive.content).isEqualTo("STREAM_CONVERSATION_PURPOSE_PREWARM")
         return goal
     }
 

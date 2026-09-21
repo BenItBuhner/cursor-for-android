@@ -16,6 +16,7 @@ import com.cursorforandroid.data.api.ConnectAgentStartApi
 import com.cursorforandroid.data.api.ConnectPromptUploadApi
 import com.cursorforandroid.data.api.RootScan
 import com.cursorforandroid.data.api.ConnectJsonClient
+import com.cursorforandroid.data.api.BlobCache
 import com.cursorforandroid.data.api.HeadlessPage
 import com.cursorforandroid.data.api.HeadlessTurnPage
 import com.cursorforandroid.data.api.RecordState
@@ -266,7 +267,9 @@ class AppGraph(
     /** Where the agent's machine is, for its desktop. */
     private val lazyMachineApi = lazy { MachineApi(lazyAccountRpc.value, lazySessionTokens.value) }
     /** A chat's controls on the account: answering its question, its queue, steering and holding its run. */
-    private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value) }
+    /** The account records' blobs, shared by the transcript's record reader and the goal strip's state read (see BlobCache). */
+    private val lazyBlobCache = lazy { BlobCache() }
+    private val lazySteeringApi = lazy { SteeringApi(lazyAccountRpc.value, lazySessionTokens.value, blobs = lazyBlobCache.value) }
     /**
      * The account's own transcript of a chat (`FetchBackgroundComposer`), on the account client with the transcript's
      * call timeout: a page of a coordinator's record is hundreds of kilobytes to megabytes of payloads, and the
@@ -279,7 +282,7 @@ class AppGraph(
         // The blob-backed record is read a few blobs at a time (see HeadlessConversationApi.BLOB_PARALLELISM); the
         // dispatcher's five-per-host would queue them behind each other.
         client.dispatcher.maxRequestsPerHost = maxOf(client.dispatcher.maxRequestsPerHost, HeadlessConversationApi.BLOB_PARALLELISM + 2)
-        HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value)
+        HeadlessConversationApi(ConnectJsonClient(client, CursorLoginEndpoints.API_URL, throttle = lazyAccountRpc.value.throttle), lazySessionTokens.value, blobs = lazyBlobCache.value)
     }
 
     /**

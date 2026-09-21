@@ -40,4 +40,7 @@ object GoalFixtures {
 
     /** One `GetLatestAgentConversationStateResponse` of `goal_state.json`, as the account would answer it. */
     fun stateResponse(name: String): String = json("goal_state.json").getValue(name).toString()
+
+    /** The same state's `conversation_state`, as `StreamConversation`'s `initial_state.cloud_agent_state.conversation_state` carries it (see `ConnectStreamFixtures.prewarmResponse`). */
+    fun conversationState(name: String): String = json("goal_state.json").getValue(name).jsonObject.getValue("latestConversationState").jsonObject.getValue("conversationState").toString()
 }

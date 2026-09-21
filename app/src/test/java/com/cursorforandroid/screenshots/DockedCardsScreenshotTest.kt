@@ -85,7 +85,7 @@ class DockedCardsScreenshotTest {
         holdReason = QueuedFollowUp.RATE_LIMITED, serverReason = "Too many requests from this key.", throttleRefusals = 1,
     )
 
-    private val fallback = RecordFallback("FetchBackgroundComposer has been removed", sinceMillis = now, readMillis = 640L, retryAfterMillis = null)
+    private val fallback = RecordFallback("getLatestAgentConversationState has been removed", sinceMillis = now, readMillis = 640L, retryAfterMillis = null, path = "/aiserver.v1.BackgroundComposerService/GetLatestAgentConversationState", httpCode = 404, code = "unimplemented")
 
     private fun capture(name: String) {
         compose.waitForIdle()

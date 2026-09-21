@@ -33,6 +33,7 @@ import com.cursorforandroid.fixtures.LongProject
 import com.cursorforandroid.ui.components.ComposerBox
 import com.cursorforandroid.ui.components.ComposerMenuActions
 import com.cursorforandroid.ui.conversation.LocalTranscriptControls
+import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_ASKED
 import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_DETAIL
 import com.cursorforandroid.ui.conversation.RECORD_FALLBACK_TITLE
 import com.cursorforandroid.ui.conversation.RecordFallbackRow
@@ -91,7 +92,7 @@ class RecordFallbackScreenshotTest {
         captureScreenRoboImage(File(outDir, "$name.png").path, RoborazziOptions())
     }
 
-    private val fallback = RecordFallback("Rate limited by Cursor: Too many requests. Try again in 2 s.", sinceMillis = AppClock.now(), readMillis = 640L, retryAfterMillis = 2_000L)
+    private val fallback = RecordFallback("Rate limited by Cursor: Too many requests. Try again in 2 s.", sinceMillis = AppClock.now(), readMillis = 640L, retryAfterMillis = 2_000L, path = "/aiserver.v1.BackgroundComposerService/StreamConversation", httpCode = 429, code = "resource_exhausted")
 
     /** The newest runs of the Project bare, and under them the dock: the record's card while [shown], and the composer. */
     @OptIn(ExperimentalMaterial3Api::class)
@@ -139,7 +140,9 @@ class RecordFallbackScreenshotTest {
         compose.setContent { Screen(shown = true, onRetry = { retried++ }, onDismiss = {}) }
         compose.waitForIdle()
         compose.onNodeWithText("$RECORD_FALLBACK_TITLE: ${fallback.reason}").assertExists()
-        compose.onNodeWithText(RECORD_FALLBACK_DETAIL).assertExists()
+        // The request path as sent and the answer as received, ahead of what is on screen because of it.
+        compose.onNodeWithText("$RECORD_FALLBACK_ASKED ${fallback.asked}\n$RECORD_FALLBACK_DETAIL").assertExists()
+        assertThat(fallback.asked).isEqualTo("POST /aiserver.v1.BackgroundComposerService/StreamConversation → HTTP 429 resource_exhausted")
         compose.onNodeWithTag("record-fallback-retry").performClick()
         assertThat(retried).isEqualTo(1)
         // The X stands in the card's top-right corner, beside the title's first line and clear of its two lines.

@@ -706,6 +706,8 @@ internal fun RecordFallbackRow(fallback: RecordFallback, onRetry: () -> Unit, on
  * a day after the run), which only the account's record still holds.
  */
 internal const val RECORD_FALLBACK_TITLE = "Account transcript unavailable"
+/** Ahead of the request path and the server's answer, as sent and as received (see `RecordFallback.asked`). */
+internal const val RECORD_FALLBACK_ASKED = "Asked:"
 internal const val RECORD_FALLBACK_DETAIL = "Showing the transcript and the runs' logs. Turns older than about a day have no activity to show until the account's copy can be read again."
 
 /**
