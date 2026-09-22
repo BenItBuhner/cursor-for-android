@@ -2,31 +2,18 @@ package com.cursorforandroid.ui.settings
 
 import android.content.Intent
 import android.widget.Toast
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.pressable
-import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -40,8 +27,6 @@ import java.io.File
  */
 @Composable
 fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -64,11 +49,12 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
         runCatching { context.startActivity(Intent.createChooser(intent, "Share Project diagnostics").apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }) }
             .onFailure { Toast.makeText(context, "Nothing on this device can receive the report.", Toast.LENGTH_SHORT).show() }
     }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable({
-                if (busy) return@pressable
+    SettingsRow(
+        title = ProjectDiagnosticsCopy.TITLE,
+        description = ProjectDiagnosticsCopy.SUBTITLE,
+        modifier = Modifier.testTag(ProjectDiagnosticsCopy.TAG),
+        onClick = {
+            if (!busy) {
                 busy = true
                 scope.launch {
                     try {
@@ -77,18 +63,10 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
                         busy = false
                     }
                 }
-            }, CursorTheme.shapes.lg)
-            .testTag(ProjectDiagnosticsCopy.TAG)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(ProjectDiagnosticsCopy.TITLE, style = type.base, color = colors.textPrimary)
-            Text(ProjectDiagnosticsCopy.SUBTITLE, style = type.small, color = colors.textTertiary)
-        }
-        Spacer(Modifier.width(12.dp))
-        Icon(CursorIcons.ExternalLink, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
-    }
+            }
+        },
+        trailing = { RowGlyph(CursorIcons.ExternalLink) },
+    )
 }
 
 /**
@@ -98,16 +76,15 @@ fun ProjectDiagnosticsRow(graph: AppGraph, share: ((String) -> Unit)? = null) {
  */
 @Composable
 fun DeepRefreshRow(graph: AppGraph) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable({
-                if (busy) return@pressable
+    SettingsRow(
+        title = DeepRefreshCopy.TITLE,
+        description = DeepRefreshCopy.SUBTITLE,
+        modifier = Modifier.testTag(DeepRefreshCopy.TAG),
+        onClick = {
+            if (!busy) {
                 busy = true
                 Toast.makeText(context, DeepRefreshCopy.STARTED, Toast.LENGTH_SHORT).show()
                 scope.launch {
@@ -117,29 +94,21 @@ fun DeepRefreshRow(graph: AppGraph) {
                         busy = false
                     }
                 }
-            }, CursorTheme.shapes.lg)
-            .testTag(DeepRefreshCopy.TAG)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(DeepRefreshCopy.TITLE, style = type.base, color = colors.textPrimary)
-            Text(DeepRefreshCopy.SUBTITLE, style = type.small, color = colors.textTertiary)
-        }
-        Spacer(Modifier.width(12.dp))
-        Icon(CursorIcons.Refresh, null, tint = colors.iconTertiary, modifier = Modifier.size(16.dp))
-    }
+            }
+        },
+        trailing = { RowGlyph(CursorIcons.Refresh) },
+    )
 }
 
 object DeepRefreshCopy {
     const val TITLE = "Deep refresh"
-    const val SUBTITLE = "Re-reads the whole account for Projects: a pull stops at the ones already known. Runs in the background."
+    const val SUBTITLE = "Re-reads the whole account to find Projects."
     const val STARTED = "Deep refresh started"
     const val TAG = "deep-refresh"
 }
 
 object ProjectDiagnosticsCopy {
     const val TITLE = "Export Project diagnostics"
-    const val SUBTITLE = "Which chats are Projects, workers and side chats, and what placed each. Ids shortened; no names or text. Send it if a Project's chat still shows among your chats."
+    const val SUBTITLE = "How each chat was placed; no names or text."
     const val TAG = "project-diagnostics"
 }

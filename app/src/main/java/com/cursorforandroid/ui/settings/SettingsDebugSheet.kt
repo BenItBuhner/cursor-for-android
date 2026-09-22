@@ -1,7 +1,6 @@
 package com.cursorforandroid.ui.settings
 
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -16,7 +15,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.BuildConfig
 import com.cursorforandroid.data.update.GitHubReleasesClient
-import com.cursorforandroid.ui.components.CursorCard
 import com.cursorforandroid.ui.components.CursorSheet
 import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.SheetHeader
@@ -28,6 +26,7 @@ object SettingsDebugCopy {
     const val GROUP_DIAGNOSTICS = "Diagnostics"
     const val GROUP_ABOUT = "About"
     const val GROUP_CREDITS = "Credits"
+    const val API = "API"
     const val API_DOCS = "API documentation"
     const val SOURCE = "Source code and releases"
     const val API_DOCS_URL = "https://cursor.com/docs/cloud-agent/api/endpoints"
@@ -54,19 +53,23 @@ fun SettingsDebugSheet(graph: AppGraph, isDemo: Boolean, extendedMode: Boolean, 
         Column(Modifier.testTag(SettingsTags.DEBUG_SHEET).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
             Group(SettingsDebugCopy.GROUP_DIAGNOSTICS)
             // The exports read what the app already holds and say which mode it held it under; neither needs the mode.
-            CursorCard(Modifier.fillMaxWidth()) {
+            // Sending them to the Project writes to the account's store, which only the mode does.
+            SettingsCard {
                 ProjectDiagnosticsRow(graph)
                 HairlineDivider()
                 TranscriptDiagnosticsRow(graph)
                 HairlineDivider()
-                SendDiagnosticsRow(graph)
+                SendDiagnosticsRow(graph, enabled = extendedMode && !isDemo)
                 HairlineDivider()
                 DeepRefreshRow(graph)
             }
 
             Group(SettingsDebugCopy.GROUP_ABOUT)
-            CursorCard(Modifier.fillMaxWidth()) {
-                InfoRow("API", if (extendedMode && !isDemo) "Cloud Agents v1 · v0 transcript · Cursor account service" else "Cloud Agents v1 · v0 transcript")
+            SettingsCard {
+                SettingsRow(
+                    title = SettingsDebugCopy.API,
+                    description = if (extendedMode && !isDemo) "Cloud Agents v1 · v0 transcript · Cursor account service" else "Cloud Agents v1 · v0 transcript",
+                )
                 HairlineDivider()
                 LinkRow(SettingsDebugCopy.API_DOCS, SettingsDebugCopy.API_DOCS_URL, open)
                 HairlineDivider()

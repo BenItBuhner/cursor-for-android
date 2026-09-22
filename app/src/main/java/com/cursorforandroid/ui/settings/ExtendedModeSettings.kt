@@ -25,16 +25,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cursorforandroid.AppGraph
 import com.cursorforandroid.domain.TranscriptEngine
-import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.CursorIcons
-import com.cursorforandroid.ui.components.CursorToggle
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.theme.CursorTheme
 import kotlinx.coroutines.Dispatchers
@@ -47,9 +44,11 @@ import kotlinx.coroutines.launch
  */
 object ExtendedModeCopy {
     const val SETTING_TITLE = "Extended mode"
-    const val SETTING_OFF = "Off. Only the documented Cloud Agents API."
-    const val SETTING_ON = "On. Also calls undocumented Cursor endpoints."
+    const val SETTING_DETAIL = "Also uses Cursor's private API."
     const val INDICATOR = "Extended mode"
+
+    /** The reason a row that only does anything in Extended mode gives while the mode is off. */
+    const val NEEDS_MODE = "Needs Extended mode."
 
     const val DIALOG_TITLE = "Turn on Extended mode?"
     const val DIALOG_INTRO =
@@ -74,13 +73,9 @@ object ExtendedModeCopy {
     /** The dialog's text as one string, for the tests that pin the wording. */
     val DIALOG_TEXT: String get() = listOf(DIALOG_INTRO, DIALOG_POINTS.joinToString("\n") { "• $it" }, DIALOG_CLOSING).joinToString("\n\n")
 
-    // The transcript engine (see TranscriptEngine): shown under the switch while the mode is on, since it only matters then.
-    const val ENGINE_TITLE = "Transcript engine"
-    const val ENGINE_STABLE = "Stable"
-    const val ENGINE_STABLE_DETAIL = "Reads only Cursor's documented API for transcripts. Never shows the \"Account transcript unavailable\" notice."
-    const val ENGINE_BETA = "Beta"
-    const val ENGINE_BETA_DETAIL = "Adds the account record read over Cursor's private path (can break when Cursor changes it) and other in-progress transcript features."
-    const val ENGINE_FOOTNOTE = "Takes effect the next time a chat is opened."
+    /** The transcript engine (see TranscriptEngine) as one switch: on is Beta, off is Stable, the default. */
+    const val ENGINE_TITLE = "Beta transcript engine"
+    const val ENGINE_DETAIL = "Experimental transcript features that can break."
 }
 
 /** Test tags, for the tests that drive the toggle and its dialog. */
@@ -90,24 +85,21 @@ object ExtendedModeTags {
     const val DIALOG_CHECKBOX = "extended_mode_dialog_checkbox"
     const val DIALOG_CONFIRM = "extended_mode_dialog_confirm"
     const val NOTICE = "extended_mode_notice"
-    const val ENGINE_STABLE = "transcript_engine_stable"
-    const val ENGINE_BETA = "transcript_engine_beta"
+    const val ENGINE_ROW = "transcript_engine_row"
+    const val ENGINE_TOGGLE = "transcript_engine_toggle"
 }
 
 /**
- * The Extended mode section: the toggle, and under it — only while the mode is on, since it matters only then — the
- * transcript engine ([TranscriptEngineRows]). Turning the mode on for the first time opens the acknowledgment
- * dialog, which is the only way the setting can come on; once acknowledged it flips like any other switch, and
- * turning it off is immediate. Everything the mode adds follows the switch — the pins sync with the account exactly
- * while it is on — so there is no option here that could do nothing.
+ * The Extended mode switch. Turning the mode on for the first time opens the acknowledgment dialog, which is the only
+ * way the setting can come on; once acknowledged it flips like any other switch, and turning it off is immediate.
+ * Everything the mode adds follows the switch — the pins sync with the account exactly while it is on — so nothing
+ * is listed under it. The transcript engine is a setting of its own beside it ([TranscriptEngineRow]).
  *
  * [enabled] is the screen's reading of the mode, collected once by the screen and shared with everything on it that
- * shows the mode (the debug sheet's API row), so the two can never disagree for a frame.
+ * shows the mode (the engine row, the debug sheet's API row), so they can never disagree for a frame.
  */
 @Composable
-fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
+fun ExtendedModeRow(graph: AppGraph, enabled: Boolean) {
     val scope = rememberCoroutineScope()
     // On the main dispatcher, as the screen's reading of the mode is (see SettingsScreen): written from the store's IO
     // thread, a first value can be lost to the recomposer's bookkeeping under the test harness's unconfined dispatcher.
@@ -122,21 +114,13 @@ fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
         }
     }
 
-    Row(
-        Modifier.fillMaxWidth().pressable({ setEnabled(!enabled) }, CursorTheme.shapes.lg).padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(ExtendedModeCopy.SETTING_TITLE, style = type.base, color = colors.textPrimary)
-            Text(if (enabled) ExtendedModeCopy.SETTING_ON else ExtendedModeCopy.SETTING_OFF, style = type.small, color = colors.textTertiary)
-        }
-        Spacer(Modifier.width(12.dp))
-        CursorToggle(checked = enabled, onCheckedChange = ::setEnabled, modifier = Modifier.semantics { testTag = ExtendedModeTags.TOGGLE })
-    }
-    if (enabled) {
-        HairlineDivider(Modifier.padding(horizontal = 14.dp))
-        TranscriptEngineRows(graph)
-    }
+    SettingsToggleRow(
+        title = ExtendedModeCopy.SETTING_TITLE,
+        description = ExtendedModeCopy.SETTING_DETAIL,
+        checked = enabled,
+        onCheckedChange = ::setEnabled,
+        toggleModifier = Modifier.semantics { testTag = ExtendedModeTags.TOGGLE },
+    )
 
     if (dialogOpen) {
         ExtendedModeAcknowledgmentDialog(
@@ -152,44 +136,24 @@ fun ExtendedModeRows(graph: AppGraph, enabled: Boolean) {
 }
 
 /**
- * The transcript engine (see [TranscriptEngine]): Stable or Beta, one chosen, in plain words about what each reads
- * and risks. Written the moment it is tapped; the footnote says when it takes effect. Under the Extended mode switch
- * because the record it governs is a private surface: with the mode off there is nothing for it to choose.
+ * The transcript engine (see [TranscriptEngine]) as one switch: on is Beta, off is Stable, which stays the default.
+ * A setting of its own, beside Extended mode rather than under it; but the record Beta reads is a private surface,
+ * so with the mode off the switch does nothing, and it says so — dimmed, the reason as its description — while still
+ * showing what is stored. Written the moment it is flipped; a chat reads it when it next opens.
  */
 @Composable
-fun TranscriptEngineRows(graph: AppGraph) {
-    val colors = CursorTheme.colors
-    val type = CursorTheme.typography
+fun TranscriptEngineRow(graph: AppGraph, extendedMode: Boolean) {
     val scope = rememberCoroutineScope()
     val engine by graph.extendedMode.engine.collectAsStateWithLifecycle(initialValue = TranscriptEngine.DEFAULT, context = Dispatchers.Main.immediate)
-    Text(
-        ExtendedModeCopy.ENGINE_TITLE,
-        style = type.rowMedium, color = colors.textTertiary,
-        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 2.dp),
+    SettingsToggleRow(
+        title = ExtendedModeCopy.ENGINE_TITLE,
+        description = if (extendedMode) ExtendedModeCopy.ENGINE_DETAIL else ExtendedModeCopy.NEEDS_MODE,
+        checked = engine == TranscriptEngine.BETA,
+        onCheckedChange = { beta -> scope.launch { graph.extendedMode.setEngine(if (beta) TranscriptEngine.BETA else TranscriptEngine.STABLE) } },
+        enabled = extendedMode,
+        modifier = Modifier.semantics { testTag = ExtendedModeTags.ENGINE_ROW },
+        toggleModifier = Modifier.semantics { testTag = ExtendedModeTags.ENGINE_TOGGLE },
     )
-    TranscriptEngine.entries.forEach { choice ->
-        val (title, detail, tag) = when (choice) {
-            TranscriptEngine.STABLE -> Triple(ExtendedModeCopy.ENGINE_STABLE, ExtendedModeCopy.ENGINE_STABLE_DETAIL, ExtendedModeTags.ENGINE_STABLE)
-            TranscriptEngine.BETA -> Triple(ExtendedModeCopy.ENGINE_BETA, ExtendedModeCopy.ENGINE_BETA_DETAIL, ExtendedModeTags.ENGINE_BETA)
-        }
-        val chosen = engine == choice
-        Row(
-            Modifier.fillMaxWidth()
-                .pressable({ scope.launch { graph.extendedMode.setEngine(choice) } }, CursorTheme.shapes.lg)
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-                .semantics { testTag = tag; selected = chosen },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = type.base, color = colors.textPrimary)
-                Text(detail, style = type.small, color = colors.textTertiary)
-            }
-            Spacer(Modifier.width(12.dp))
-            if (chosen) Icon(CursorIcons.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp))
-            else Spacer(Modifier.size(16.dp))
-        }
-    }
-    Text(ExtendedModeCopy.ENGINE_FOOTNOTE, style = type.small, color = colors.textQuaternary, modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 12.dp))
 }
 
 /**

@@ -32,8 +32,8 @@ import com.cursorforandroid.ui.components.CursorButton
 import com.cursorforandroid.ui.components.CursorHeader
 import com.cursorforandroid.ui.components.CursorIcons
 import com.cursorforandroid.ui.components.FlatIconButton
-import com.cursorforandroid.ui.components.HairlineDivider
 import com.cursorforandroid.ui.components.MarkdownText
+import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 import kotlinx.coroutines.launch
@@ -65,7 +65,8 @@ object WhatsNewTags {
 /**
  * The installed version's release notes: the version and its release date in the header, the curated notes as
  * markdown beneath (the lead line, the headed sections, code spans and bullets as the release page shows them), and a
- * footer with the release page on GitHub and Done. Opening the page is what reads it — the row in Settings and the
+ * footer with the release page on GitHub and Done, the notes dissolving into it while there is more of them below.
+ * Opening the page is what reads it — the row in Settings and the
  * card in the sidebar go for this version from here on — and Done reads it again on its way out, for a page reached
  * before the notes arrived.
  */
@@ -90,7 +91,13 @@ fun WhatsNewScreen(graph: AppGraph, onBack: () -> Unit, modifier: Modifier = Mod
             subtitle = notes?.publishedAtMs?.takeIf { it > 0 }?.let(WhatsNewCopy::released),
             leading = { FlatIconButton(CursorIcons.ChevronLeft, "Back", onClick = onBack) },
         )
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp)) {
+        val scroll = rememberScrollState()
+        Column(
+            Modifier.weight(1f).fillMaxWidth()
+                .scrollEdgeFade(clippedAtTop = scroll.canScrollBackward, clippedAtBottom = scroll.canScrollForward, surface = colors.canvas)
+                .verticalScroll(scroll)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
             val current = notes
             if (current != null) {
                 Notes(current)
@@ -98,7 +105,6 @@ fun WhatsNewScreen(graph: AppGraph, onBack: () -> Unit, modifier: Modifier = Mod
                 Unavailable(version)
             }
         }
-        HairlineDivider()
         Row(
             Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
