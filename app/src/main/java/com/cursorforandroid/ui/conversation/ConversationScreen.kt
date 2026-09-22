@@ -59,6 +59,8 @@ import com.cursorforandroid.data.repo.ConversationState
 import com.cursorforandroid.data.repo.TraceStatus
 import com.cursorforandroid.data.repo.RecordFallback
 import com.cursorforandroid.domain.AssistantMessage
+import com.cursorforandroid.domain.CarriedFile
+import com.cursorforandroid.domain.FileOpenRequest
 import com.cursorforandroid.domain.NoticeCard
 import com.cursorforandroid.domain.TranscriptRow
 import com.cursorforandroid.domain.DesktopEligibility
@@ -89,6 +91,9 @@ import com.cursorforandroid.ui.components.rememberFilePicker
 import com.cursorforandroid.ui.components.rememberMediaPicker
 import com.cursorforandroid.ui.components.scrollEdgeFade
 import com.cursorforandroid.ui.compose.rememberComposerMenuActions
+import com.cursorforandroid.ui.files.FileOpenRequestSaver
+import com.cursorforandroid.ui.files.FullFileDialog
+import com.cursorforandroid.ui.files.FullFileResolver
 import com.cursorforandroid.ui.home.ModelSheet
 import com.cursorforandroid.ui.media.ConversationMedia
 import com.cursorforandroid.ui.home.NoModelRow
@@ -178,6 +183,9 @@ fun ConversationScreen(
     // in hand from the first frame. Decided with the rows, off the main thread (see [TranscriptPresenter]).
     val coordinatorMode = presentedTranscript.coordinatorMode
     val outgoing by viewModel.outgoingStatuses.collectAsStateWithLifecycle()
+    // A file a tool call names, tapped: the full-file viewer over the chat (pictures, recordings and sounds open the
+    // media viewer from the row instead). Kept across a rotation and a process death, like the store sheet.
+    var openFile by rememberSaveable(agentId, stateSaver = FileOpenRequestSaver) { mutableStateOf<FileOpenRequest?>(null) }
     val transcriptControls = remember(controls, capabilities, agentsById, onOpenAgent, coordinatorMode, outgoing) {
         TranscriptControls(
             state = controls,
@@ -192,6 +200,7 @@ fun ConversationScreen(
             onRetryOutgoing = viewModel::retryOutgoing,
             onEditOutgoing = viewModel::editOutgoing,
             onDismissNotice = viewModel::dismissInlineNotice,
+            onOpenFile = { openFile = it },
         )
     }
     // The "+" menu's two pickers: the gallery — images alone in the default mode, images and videos as real files in
@@ -632,6 +641,15 @@ fun ConversationScreen(
             )
         }
     }
+    }
+
+    openFile?.let { request ->
+        val resolver = remember(graph) { FullFileResolver.of(graph.agentFileReads, { graph.extendedMode.capabilities().workspaceFiles && !graph.session.isDemo }, graph.media) }
+        FullFileDialog(
+            request,
+            load = { force -> resolver.resolve(agentId, request, CarriedFile.of(latestItems.value, request.path, request.callId), force) },
+            onClose = { openFile = null },
+        )
     }
 
     openStorePath?.let { text -> StorePath.parse(text)?.let { path -> storeRef(path, agentId) } }?.let { ref ->

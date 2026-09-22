@@ -350,6 +350,8 @@ object TranscriptDiagnostics {
             is ToolPayload.Recording -> "recording"
             is ToolPayload.Subagent -> "subagent(cloud=${p.isCloudAgent})"
             is ToolPayload.Question -> "question(${p.questions.size},answered=${p.isAnswered})"
+            is ToolPayload.ReadMedia -> "read_media(src=${p.src != null})"
+            is ToolPayload.FileHits -> "file_hits(${p.hits.size}${if (p.truncated) ",truncated" else ""})"
         }
         val truncated = call.truncated?.let { t -> listOfNotNull("args".takeIf { t.args }, "result".takeIf { t.result }).joinToString("+") } ?: "-"
         // The id's tail joins the line to the shape dump's call line for the same call.

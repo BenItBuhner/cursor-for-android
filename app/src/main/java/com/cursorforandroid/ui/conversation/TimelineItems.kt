@@ -92,6 +92,9 @@ import com.cursorforandroid.ui.components.ShimmerText
 import com.cursorforandroid.ui.components.cursorSurface
 import com.cursorforandroid.ui.components.pressable
 import com.cursorforandroid.ui.components.slashCommandTint
+import com.cursorforandroid.ui.files.fileLink
+import com.cursorforandroid.ui.files.openablePath
+import com.cursorforandroid.ui.files.rememberFileOpener
 import com.cursorforandroid.ui.theme.CursorTheme
 import com.cursorforandroid.util.TimeFormat
 
@@ -548,13 +551,15 @@ internal fun ToolCallLine(call: ToolCall, modifier: Modifier = Modifier) {
             val details = detailsText(call)
             if (details.isNotEmpty()) {
                 Spacer(Modifier.width(4.dp))
+                // The file's name is a tap target of its own: it opens the file, where the rest of the row opens the call.
+                val opener = call.openablePath?.let { rememberFileOpener(it, call) }
                 Text(
                     details,
                     style = type.base.copy(fontFeatureSettings = "tnum"),
                     color = colors.textTertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f, fill = false).then(if (opener != null) Modifier.fileLink(opener) else Modifier),
                 )
             }
             call.lineStats?.let { stats ->

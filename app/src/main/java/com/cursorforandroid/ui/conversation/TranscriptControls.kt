@@ -3,6 +3,7 @@ package com.cursorforandroid.ui.conversation
 import androidx.compose.runtime.compositionLocalOf
 import com.cursorforandroid.domain.Agent
 import com.cursorforandroid.domain.ConversationControls
+import com.cursorforandroid.domain.FileOpenRequest
 import com.cursorforandroid.domain.ToolPayload
 
 /**
@@ -48,6 +49,12 @@ data class TranscriptControls(
      * without a chat behind them, and the notices show no X.
      */
     val onDismissNotice: ((key: String) -> Unit)? = null,
+    /**
+     * A file path a tool call names was tapped — a read, an edit, a write, a search hit — and it is not a picture, a
+     * recording or a sound (those open the media viewer from the row itself): the full-file viewer opens on it. Null
+     * where the rows are rendered without a chat behind them, and the paths are plain text.
+     */
+    val onOpenFile: ((FileOpenRequest) -> Unit)? = null,
 )
 
 /** The transcript's controls, provided by the conversation screen around its list; the defaults where it is rendered alone. */

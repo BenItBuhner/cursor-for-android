@@ -41,10 +41,43 @@ sealed interface ToolPayload {
         val totalLines: Int? = null,
         val fileSize: Long? = null,
         val truncated: Boolean = false,
+        /** A read of a range (`offset` / `start_line_one_indexed`): the file's line [content] starts at; null for a read from the top. */
+        val startLine: Int? = null,
     ) : ToolPayload {
         enum class Kind { Read, Written }
 
         val lineCount: Int get() = totalLines ?: content.lineSequence().count()
+
+        /** The whole file as it was: a write, or a read from the top that reached the end and was not cut. */
+        val isWhole: Boolean get() = !truncated && (kind == Kind.Written || (startLine ?: 1) <= 1 && (totalLines == null || totalLines <= contentLines))
+
+        private val contentLines: Int get() = content.replace("\r\n", "\n").trimEnd('\n').lineSequence().count()
+    }
+
+    /**
+     * A picture the agent read (`read.result.data`, the image bytes the read tool hands the model instead of text):
+     * [src] is where the device kept them, a `file://` URI, or the `data:` URI when small; null when nothing was kept.
+     */
+    @Serializable
+    @SerialName("read_media")
+    data class ReadMedia(
+        override val path: String,
+        val src: String? = null,
+        val mimeType: String? = null,
+    ) : ToolPayload
+
+    /**
+     * The files a search or a listing found (`grep`'s `workspaceResults`, `glob`'s `files`, `ls`'s tree): each by its
+     * path, with the first matching line for a content search. Clipped to [ToolPayloadLimits.MAX_HITS].
+     */
+    @Serializable
+    @SerialName("file_hits")
+    data class FileHits(
+        val hits: List<Hit>,
+        val truncated: Boolean = false,
+    ) : ToolPayload {
+        @Serializable
+        data class Hit(val path: String, val line: Int? = null, val text: String? = null)
     }
 
     /**
@@ -235,6 +268,9 @@ data class WorkerStatus(
 /** How much of a payload's text is kept: enough for any edit or file a screen can scroll, bounded for the trace file. */
 object ToolPayloadLimits {
     const val MAX_TEXT_CHARS = 40_000
+
+    /** The files a search or a listing keeps: a screen's worth and more, bounded for the trace file. */
+    const val MAX_HITS = 200
 
     /** An image larger than this as base64 is not kept inline in a trace; a store on the device keeps the bytes instead. */
     const val MAX_INLINE_IMAGE_CHARS = 256 * 1024
