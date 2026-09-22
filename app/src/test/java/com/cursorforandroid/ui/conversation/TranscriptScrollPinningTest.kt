@@ -147,6 +147,8 @@ class TranscriptScrollPinningTest {
             }
         }
         compose.waitUntil(60_000) { graph.conversations.state(agentId).value.let { !it.isLoading && it.isStreaming && it.traceStatus.pending == 0 } }
+        // The live run's seeded story whole before anything is measured: a slow runner is still delivering it here.
+        compose.waitUntil(60_000) { liveSteps().count { it is ToolCall } == LIVE_CALLS }
         awaitLiveSummary()
         compose.waitUntil(20_000) { runCatching { summary(stretchOf(turns - 1)) }.isSuccess }
         compose.waitForIdle()
@@ -193,11 +195,18 @@ class TranscriptScrollPinningTest {
 
     /** The live stretch's line has caught up with the stream: the rows on screen are the newest the screen was given. */
     private fun awaitLiveSummary() {
-        val items = graph.conversations.state(agentId).value.items
-        val turn = items.subList(items.indexOfLast { it is UserMessage } + 1, items.size).filterIsInstance<ActivityGroup>().flatMap { it.steps }
-        val line = "${turn.count { it is ToolCall }} files · ${turn.count { it is ThinkingBlock && it.text.isNotBlank() }} thought"
-        compose.waitUntil(20_000) { compose.onAllNodes(hasText(line, substring = true), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(20_000) { compose.onAllNodes(hasText(liveLine(), substring = true), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
+    }
+
+    /** The live stretch's counts as the stream has them now, which is what its line will say once drawn. */
+    private fun liveLine(): String {
+        val turn = liveSteps()
+        return "${turn.count { it is ToolCall }} files · ${turn.count { it is ThinkingBlock && it.text.isNotBlank() }} thought"
+    }
+
+    private fun liveSteps() = graph.conversations.state(agentId).value.items.let { items ->
+        items.subList(items.indexOfLast { it is UserMessage } + 1, items.size).filterIsInstance<ActivityGroup>().flatMap { it.steps }
     }
 
     /** A finished turn's stretch line, which starts with its count of files. */
