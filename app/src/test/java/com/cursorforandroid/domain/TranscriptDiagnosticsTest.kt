@@ -216,4 +216,31 @@ class TranscriptDiagnosticsTest {
         val unloaded = TranscriptDiagnostics.render(TranscriptDiagnostics.Input("0.3.7", "2026-09-14T04:00:00Z", extendedMode = false, agentId = "bc-1234567890", agent = null, state = null))
         assertThat(unloaded).contains("state: none (the chat has not been loaded)")
     }
+
+    @Test
+    fun `the files block names each file opened, the path the machine was asked for, what came back and the end`() {
+        val line = com.cursorforandroid.data.repo.FileReadAttempt(
+            atMillis = 0L,
+            agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668",
+            path = "/tmp/reel_frames_s.jpg",
+            listing = "loaded(212)",
+            vm = "/tmp/reel_frames_s.jpg→NotFound [POST /aiserver.v1.BackgroundComposerService/ReadBinaryFile → HTTP 404 not_found \"File not found\"]",
+            repository = "skipped (outside the workspace)",
+            result = "NotFound \"The agent's machine has no such file (any more).\"",
+        ).text
+        val report = TranscriptDiagnostics.render(
+            TranscriptDiagnostics.Input(
+                appVersion = "0.3.7",
+                nowIso = "2026-09-14T04:00:00Z",
+                extendedMode = true,
+                agentId = "bc-bae107cb-2562-40b2-b814-4f8eca874668",
+                agent = null,
+                state = TranscriptDiagnostics.State(items, runStatus = RunStatus.FINISHED),
+                fileReads = listOf(line),
+            ),
+        )
+        assertThat(report).contains("files: 1 opened")
+        assertThat(report).contains("  open /tmp/reel_frames_s.jpg list=loaded(212) vm=/tmp/reel_frames_s.jpg→NotFound [POST /aiserver.v1.BackgroundComposerService/ReadBinaryFile → HTTP 404 not_found \"File not found\"] repo=skipped (outside the workspace) result=NotFound")
+        assertThat(render()).doesNotContain("files:")
+    }
 }

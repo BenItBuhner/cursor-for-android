@@ -370,6 +370,7 @@ class AppGraph(
             workspace = workspace,
             repository = { repoUrl, ref, path -> reviews.contents(repoUrl, ref, path) },
             agent = { id -> agents.agent(id) },
+            wakeMachine = { id -> steering.wake(id).getOrDefault(false) },
         )
     }
     val agentFileReads: AgentFileRepository get() = lazyAgentFileReads.value
@@ -1048,6 +1049,7 @@ class AppGraph(
                 },
                 placement = agentId?.let { agents.placementOf(it) },
                 load = agentId?.let { conversations.loadDiagnostics(it) },
+                fileReads = agentId?.takeIf { lazyAgentFileReads.isInitialized() }?.let { id -> agentFileReads.attempts(id).map { it.text } }.orEmpty(),
                 perf = agentId?.let { com.cursorforandroid.domain.TranscriptPerf.sessionOrNull(it)?.snapshot() },
                 send = agentId?.let { sendDiagnostics(it) },
             ),

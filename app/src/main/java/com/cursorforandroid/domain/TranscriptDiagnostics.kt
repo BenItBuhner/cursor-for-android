@@ -197,6 +197,13 @@ object TranscriptDiagnostics {
         val perf: TranscriptPerf.Snapshot? = null,
         /** The send path's account of the chat (see [SendDiagnostics]); null when nothing was sent or queued from here. */
         val send: SendDiagnostics? = null,
+        /**
+         * The files the chat's tool calls named that were opened this process, one line each — the path, how
+         * `ListWorkspaceFiles` and `ReadBinaryFile` answered (the request as sent and the answer), the repository's
+         * read, and how the open ended — so a "Couldn't open" is read off the export (see `FileReadAttempt.text`).
+         * Paths are the agent's own, not anything anyone wrote.
+         */
+        val fileReads: List<String> = emptyList(),
     )
 
     /** The decision the conversation screen makes, spelled out: which of its three words fired. */
@@ -237,6 +244,10 @@ object TranscriptDiagnostics {
         input.perf?.let { appendLine(it.render()) }
         // The send path: the last send-or-queue decision with every input it read, the queue, and each attempt's outcome.
         input.send?.let { append(it.render()) }
+        if (input.fileReads.isNotEmpty()) {
+            appendLine("files: ${input.fileReads.size} opened")
+            input.fileReads.forEach { appendLine("  ${redactIds(it)}") }
+        }
         val decision = decide(agent, state.items, state.recordProjectMode)
         appendLine("classification: ${if (decision.coordinatorMode) "COORDINATOR" else "agent"} listProject=${decision.listProject} recordProjectMode=${decision.recordProjectMode} content=${decision.content}" + (if (decision.evidence.isNotEmpty()) " evidence=${decision.evidence.joinToString(",")}" else ""))
         val presented = CoordinatorTranscript.present(state.items, decision.coordinatorMode)
@@ -371,6 +382,10 @@ object TranscriptDiagnostics {
     }
 
     /** An error message keeps its words but not any id, URL or quoted text it might carry. */
+    /** Ids and links out of a line that is otherwise meant whole (a path, a request, its answer). */
+    private fun redactIds(text: String): String =
+        text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").take(600)
+
     private fun redact(text: String): String =
         text.replace(Regex("""bc-[A-Za-z0-9-]+"""), "bc-…").replace(Regex("""https?://[^\s)"]+"""), "<url>").replace(Regex("\"[^\"]*\""), "\"…\"").take(160)
 }
