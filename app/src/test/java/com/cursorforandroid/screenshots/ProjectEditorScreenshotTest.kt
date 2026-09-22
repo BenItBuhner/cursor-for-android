@@ -141,17 +141,17 @@ class ProjectEditorScreenshotTest {
     }
 
     @Test
-    fun createProjectSheetDark() = createFlow(ThemeMode.Dark, "143_project_create_empty", "144_project_create_needs_repository", "76_project_create_sheet", picker = "145_project_repository_picker")
+    fun createProjectSheetDark() = createFlow(ThemeMode.Dark, "147_project_create_empty", "148_project_create_needs_repository", "76_project_create_sheet", picker = "149_project_repository_picker")
 
     @Test
-    fun createProjectSheetLight() = createFlow(ThemeMode.Light, "146_project_create_empty_light", "147_project_create_needs_repository_light", "148_project_create_sheet_light")
+    fun createProjectSheetLight() = createFlow(ThemeMode.Light, "150_project_create_empty_light", "151_project_create_needs_repository_light", "152_project_create_sheet_light")
 
     @Test
     fun iconCatalog() {
         showCreate(ThemeMode.Dark)
         compose.onNodeWithTag("browse-icons").performScrollTo().performClick()
         waitFor("All icons")
-        capture("149_project_icon_catalog")
+        capture("153_project_icon_catalog")
     }
 
     private fun edit(mode: ThemeMode, name: String) {
@@ -181,5 +181,5 @@ class ProjectEditorScreenshotTest {
     fun editProjectSheetDark() = edit(ThemeMode.Dark, "77_project_edit_sheet")
 
     @Test
-    fun editProjectSheetLight() = edit(ThemeMode.Light, "150_project_edit_sheet_light")
+    fun editProjectSheetLight() = edit(ThemeMode.Light, "154_project_edit_sheet_light")
 }
