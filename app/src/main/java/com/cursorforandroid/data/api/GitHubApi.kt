@@ -88,6 +88,8 @@ class GitHubApi(
     private val client: OkHttpClient,
     private val baseUrl: String = BASE_URL,
     private val now: () -> Long = AppClock::now,
+    /** Where GitHub serves the objects of files kept with Git LFS. */
+    private val mediaBaseUrl: String = MEDIA_BASE_URL,
 ) {
     @Volatile private var rateLimitedUntilMs = 0L
 
@@ -240,7 +242,7 @@ class GitHubApi(
         val at = ref?.trim()?.takeIf { it.isNotEmpty() } ?: "HEAD"
         val encoded = path.split('/').filter { it.isNotEmpty() }.joinToString("/") { encode(it) }
         val refPath = at.split('/').filter { it.isNotEmpty() }.joinToString("/") { encode(it) }
-        return raw("https://media.githubusercontent.com/media/${repo.owner}/${repo.name}/$refPath/$encoded")?.takeIf { FileBytes.of(it) !is FileBytes.LfsPointer }
+        return raw("${mediaBaseUrl.trimEnd('/')}/${repo.owner}/${repo.name}/$refPath/$encoded")?.takeIf { FileBytes.of(it) !is FileBytes.LfsPointer }
     }
 
     private fun millis(iso: String?): Long? = iso?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
@@ -383,6 +385,7 @@ class GitHubApi(
         /** The largest file read past the inline limit: a screenshot or a recording, not a release asset. */
         const val MAX_RAW_BYTES = 48L * 1024 * 1024
         const val BASE_URL = "https://api.github.com/"
+        const val MEDIA_BASE_URL = "https://media.githubusercontent.com/media/"
         const val API_VERSION = "2022-11-28"
         /** GitHub's maximum page; one page is what the panel shows, and every page is a request against the hourly budget. */
         const val PAGE_SIZE = 100

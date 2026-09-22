@@ -429,7 +429,7 @@ internal fun AudioChip(src: String, name: String, subtitle: String?, modifier: M
     Row(
         modifier
             .thumbnailSlot(slot)
-            .widthIn(min = 180.dp, max = 360.dp)
+            .widthIn(max = 360.dp)
             .cursorSurface(colors.fillFaint, colors.strokeSubtle, shape)
             .pressable(
                 {

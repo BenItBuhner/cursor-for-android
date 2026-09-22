@@ -479,11 +479,13 @@ internal fun AudioPage(
             contentAlignment = Alignment.Center,
         ) {
             Image(artwork, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().testTag("viewer-audio-card"))
+            // Under the note: the disc while paused, a ring while it loads.
+            val under = Modifier.align(Alignment.BottomCenter).padding(bottom = with(density) { (fitted.height * 0.1f).toDp() })
             when {
                 problem != null -> Unit
-                playback == null -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f))
-                playback.isBuffering -> SpinnerRing(size = 24.dp, color = Color.White.copy(alpha = 0.8f))
-                !playback.isPlaying && state.phase == MediaViewerState.Phase.Open -> PlayDisc(playback)
+                playback == null -> SpinnerRing(size = 20.dp, color = Color.White.copy(alpha = 0.7f), modifier = under.padding(bottom = 22.dp))
+                playback.isBuffering -> SpinnerRing(size = 24.dp, color = Color.White.copy(alpha = 0.8f), modifier = under.padding(bottom = 20.dp))
+                !playback.isPlaying && state.phase == MediaViewerState.Phase.Open -> PlayDisc(playback, under)
             }
         }
         if (problem != null) {
@@ -521,9 +523,10 @@ private fun rememberAudioArtwork(sizePx: Int): ImageBitmap {
         val bitmap = ImageBitmap(side, side)
         CanvasDrawScope().draw(density, LayoutDirection.Ltr, androidx.compose.ui.graphics.Canvas(bitmap), Size(side.toFloat(), side.toFloat())) {
             drawRoundRect(AudioCardFill, cornerRadius = CornerRadius(side * 0.08f))
-            drawCircle(Color.White.copy(alpha = 0.05f), radius = side * 0.3f, center = center)
-            val glyphSize = side * 0.28f
-            translate(left = (side - glyphSize) / 2f, top = (side - glyphSize) / 2f) {
+            val glyphCenter = androidx.compose.ui.geometry.Offset(side / 2f, side * AudioGlyphAt)
+            drawCircle(Color.White.copy(alpha = 0.05f), radius = side * 0.22f, center = glyphCenter)
+            val glyphSize = side * 0.22f
+            translate(left = glyphCenter.x - glyphSize / 2f, top = glyphCenter.y - glyphSize / 2f) {
                 with(glyph) { draw(Size(glyphSize, glyphSize), alpha = 0.9f, colorFilter = ColorFilter.tint(Color.White)) }
             }
         }
@@ -571,6 +574,8 @@ private fun ViewerPill(label: String, icon: ImageVector, tag: String, onClick: (
     }
 }
 
+/** Where the note sits on the card, as a share of its height: above the middle, the play disc below it. */
+private const val AudioGlyphAt = 0.4f
 /** A sound's card: this share of the viewport's short edge, and never more than [AudioCardMax]. */
 private const val AudioCardShare = 0.62f
 private val AudioCardMax = 320.dp
