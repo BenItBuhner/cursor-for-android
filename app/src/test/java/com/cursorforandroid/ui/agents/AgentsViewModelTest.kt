@@ -214,6 +214,9 @@ class AgentsViewModelTest {
         val vm = AgentsViewModel(graph, pollIntervalMs = 100)
         advanceUntilIdle()
         vm.loaded()
+        // The rows are published a step before the fetch is stamped as landed (on its own thread, the stamp and the
+        // completion under one lock): the stamp is read once the completion has been counted.
+        awaitRefresh(0)
         assertThat(graph.agents.lastRefreshedAt).isEqualTo(now)
         val before = graph.agents.refreshCompleted.value
         val polling = vm.pollWhileVisible()
